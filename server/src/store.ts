@@ -11,6 +11,8 @@ import {
   type LaneStatus,
   type Link,
   type Position,
+  type Project,
+  type ProjectRole,
   type Requirement,
   type RequirementStatus,
   type Stance,
@@ -21,6 +23,8 @@ export class NotFoundError extends Error {}
 
 const MAX_POSITIONS = 20;
 export class ConflictError extends Error {}
+/** The caller may see the thing but not do this to it; a 403. */
+export class ForbiddenError extends Error {}
 /** Input that's well-formed but not acceptable (e.g. an overbroad tag); a 400. */
 export class ValidationError extends Error {}
 
@@ -34,7 +38,9 @@ export interface RequirementInput {
   requirement: string;
   justification: string;
   tags: string[];
-  /** Group id; null or absent for product-wide. */
+  /** Project it applies to; null for every project (an owner-wide rule). */
+  project?: string | null;
+  /** Qualified group id within that project; null or absent for project-wide. */
   group?: string | null;
   /** Escalation (id or code) the owner decided this in; its decider becomes `decidedBy`. */
   sourceEscalation?: string | null;
@@ -67,6 +73,19 @@ function indexOfLetter(letters: string): number {
   for (const c of letters.toUpperCase()) n = n * 26 + (c.charCodeAt(0) - 64);
   return n - 1;
 }
+
+/** The project existing data moves into, and the one a fresh install starts with. */
+export const DEFAULT_PROJECT = 'default';
+
+/** Lane and group ids are stored qualified with their project: "project/lane". */
+export const qualify = (project: string, id: string) => `${project}/${id}`;
+export const localId = (qualified: string) => qualified.slice(qualified.indexOf('/') + 1);
+export const projectOf = (qualified: string) => {
+  const i = qualified.indexOf('/');
+  // A bare id here is a bug in the caller, not bad input: fail loudly rather than write to project "".
+  if (i <= 0) throw new Error(`internal: "${qualified}" is not qualified with a project`);
+  return qualified.slice(0, i);
+};
 
 /** How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker. */
 const WAIT_GRACE_MS = 30_000;
@@ -110,29 +129,32 @@ export type ExportDataset = (typeof EXPORT_DATASETS)[number];
 /** Fixed column order per dataset, so a CSV's header never depends on whether it has rows. */
 export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
   escalations: [
-    'id', 'ref', 'lane_id', 'lane_name', 'group_id', 'group_name', 'ticket', 'ticket_url', 'question', 'context',
+    'id', 'ref', 'project', 'lane_id', 'lane_name', 'group_id', 'group_name', 'ticket', 'ticket_url', 'question', 'context',
     'recommendation', 'recommended_option', 'cost', 'alternatives', 'options', 'blocking', 'state', 'created_by',
     'created_at', 'decided_by', 'decided_at', 'decision', 'decision_note', 'followed_recommendation',
     'acknowledged_at', 'resolution', 'closed_at', 'seconds_to_decision', 'seconds_to_acknowledge', 'seconds_open',
     'positions_agree', 'positions_disagree', 'positions_neutral', 'links',
   ],
-  positions: ['escalation_id', 'escalation_ref', 'lane_id', 'question', 'agent', 'stance', 'note', 'at'],
+  positions: ['escalation_id', 'escalation_ref', 'project', 'lane_id', 'question', 'agent', 'stance', 'note', 'at'],
   lanes: [
-    'id', 'name', 'group_id', 'group_name', 'status', 'ticket', 'ticket_url', 'activity', 'last_published_by',
+    'id', 'project', 'name', 'group_id', 'group_name', 'status', 'ticket', 'ticket_url', 'activity', 'last_published_by',
     'created_at', 'updated_at', 'status_since', 'blocked_seconds_total', 'blocked_since', 'escalations_total',
     'escalations_open', 'links', 'archived_at',
   ],
-  groups: ['id', 'name', 'ticket', 'ticket_url', 'links', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
-  events: ['id', 'lane_id', 'at', 'kind', 'message', 'actor'],
+  groups: ['id', 'project', 'name', 'ticket', 'ticket_url', 'links', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
+  events: ['id', 'project', 'lane_id', 'at', 'kind', 'message', 'actor'],
   requirements: [
-    'id', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'decided_by',
+    'id', 'project', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'decided_by',
     'source_escalation', 'recorded_by', 'created_at', 'updated_at',
   ],
 };
 export interface ExportFilter {
   from?: string;
   to?: string;
+  /** Qualified lane id. */
   laneId?: string;
+  /** Projects to include (requirements for all projects are always included); undefined = every project. */
+  projects?: string[];
 }
 
 export interface GroupPatch {
@@ -178,7 +200,7 @@ export interface StoreOptions {
   broadTags?: string[];
 }
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 type Row = Record<string, unknown>;
 
@@ -313,6 +335,7 @@ export class Store {
           END;
         `);
       }
+      if (version < 8) this.migrateV8();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -358,6 +381,53 @@ export class Store {
       seqs.set(index, seq);
       this.db.prepare('UPDATE escalations SET letter_index = ?, seq = ? WHERE rowid = ?').run(index, seq, Number(e.rid));
     }
+  }
+
+  /**
+   * Projects: independent applications, each with its own groups, lanes,
+   * escalations and requirements. Lane and group ids become qualified with
+   * their project ("default/auth-rework"), so ids only need to be unique
+   * within a project; `project_id` is derived from them. Existing data moves
+   * into the first project.
+   */
+  private migrateV8() {
+    const at = this.now().toISOString();
+    this.db.exec('PRAGMA defer_foreign_keys = ON');
+    this.db.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        key TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE project_members (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        notify INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (project_id, user_id)
+      );
+      UPDATE groups SET id = '${DEFAULT_PROJECT}/' || id;
+      UPDATE lanes SET id = '${DEFAULT_PROJECT}/' || id,
+        group_id = CASE WHEN group_id IS NULL THEN NULL ELSE '${DEFAULT_PROJECT}/' || group_id END;
+      UPDATE escalations SET lane_id = '${DEFAULT_PROJECT}/' || lane_id;
+      UPDATE lane_events SET lane_id = '${DEFAULT_PROJECT}/' || lane_id;
+      UPDATE requirements SET group_id = '${DEFAULT_PROJECT}/' || group_id WHERE group_id IS NOT NULL;
+      ALTER TABLE groups ADD COLUMN project_id TEXT GENERATED ALWAYS AS (substr(id, 1, instr(id, '/') - 1)) VIRTUAL;
+      ALTER TABLE lanes ADD COLUMN project_id TEXT GENERATED ALWAYS AS (substr(id, 1, instr(id, '/') - 1)) VIRTUAL;
+      ALTER TABLE escalations ADD COLUMN project_id TEXT GENERATED ALWAYS AS (substr(lane_id, 1, instr(lane_id, '/') - 1)) VIRTUAL;
+      ALTER TABLE requirements ADD COLUMN project_id TEXT;
+      UPDATE requirements SET project_id = '${DEFAULT_PROJECT}';
+      DROP INDEX lanes_letter;
+      CREATE UNIQUE INDEX lanes_letter ON lanes(project_id, letter_index) WHERE letter_index IS NOT NULL;
+      DROP INDEX escalations_code;
+      CREATE UNIQUE INDEX escalations_code ON escalations(project_id, letter_index, seq) WHERE letter_index IS NOT NULL;
+      CREATE INDEX lanes_project ON lanes(project_id);
+      CREATE INDEX escalations_project ON escalations(project_id, state);
+    `);
+    this.db
+      .prepare('INSERT INTO projects (id, key, name, created_at) VALUES (?, ?, ?, ?)')
+      .run(DEFAULT_PROJECT, 'MAIN', 'Main', at);
   }
 
   private hasColumn(table: string, column: string) {
@@ -453,6 +523,7 @@ export class Store {
     const ticket = (r.ticket as string | null) ?? null;
     return {
       id: r.id as string,
+      project: r.project_id as string,
       name: r.name as string,
       ticket,
       ticketUrl: ticket ? this.resolveTicketUrl(ticket) : null,
@@ -463,11 +534,19 @@ export class Store {
     };
   }
 
-  /** Active groups (archived ones are kept for export but hidden). */
-  listGroups(): Group[] {
-    return (this.db.prepare('SELECT * FROM groups WHERE archived_at IS NULL ORDER BY name').all() as Row[]).map((r) =>
-      this.groupFromRow(r),
-    );
+  /** `AND project_id IN (...)` for an optional project list (undefined = every project). */
+  private inProjects(projects: string[] | undefined, column = 'project_id') {
+    if (!projects) return { sql: '', params: [] as string[] };
+    if (!projects.length) return { sql: ' AND 0', params: [] as string[] };
+    return { sql: ` AND ${column} IN (${projects.map(() => '?').join(',')})`, params: projects };
+  }
+
+  /** Active groups (archived ones are kept for export but hidden), optionally of some projects only. */
+  listGroups(projects?: string[]): Group[] {
+    const p = this.inProjects(projects);
+    return (
+      this.db.prepare(`SELECT * FROM groups WHERE archived_at IS NULL${p.sql} ORDER BY name`).all(...p.params) as Row[]
+    ).map((r) => this.groupFromRow(r));
   }
 
   getGroup(id: string): Group | null {
@@ -487,7 +566,7 @@ export class Store {
     if (!existing) {
       this.db
         .prepare('INSERT INTO groups (id, name, ticket, links, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(id, patch.name ?? id, patch.ticket ?? null, JSON.stringify(patch.links ?? []), actor, at, at);
+        .run(id, patch.name ?? localId(id), patch.ticket ?? null, JSON.stringify(patch.links ?? []), actor, at, at);
       return false;
     }
     if (patch.name === undefined && patch.ticket === undefined && patch.links === undefined) return restored;
@@ -512,6 +591,7 @@ export class Store {
   }
 
   upsertGroup(id: string, patch: GroupPatch, actor: string | null): Group {
+    projectOf(id);
     const { group, restored } = this.tx(() => {
       const restored = this.writeGroup(id, patch, actor, this.now().toISOString());
       return { group: this.getGroup(id)!, restored };
@@ -532,11 +612,11 @@ export class Store {
         .map((l) => l.id);
       const at = this.now().toISOString();
       const res = this.db.prepare('UPDATE groups SET archived_at = ? WHERE id = ? AND archived_at IS NULL').run(at, id);
-      if (res.changes === 0) throw new NotFoundError(`Group "${id}" not found`);
-      for (const laneId of affected) this.addEvent(laneId, at, 'status', `Group "${id}" removed`, actor);
+      if (res.changes === 0) throw new NotFoundError(`Group "${localId(id)}" not found`);
+      for (const laneId of affected) this.addEvent(laneId, at, 'status', `Group "${localId(id)}" removed`, actor);
       return affected.map((laneId) => this.requireLane(laneId));
     });
-    this.emit({ type: 'group_deleted', id });
+    this.emit({ type: 'group_deleted', id, project: projectOf(id) });
     for (const lane of lanes) this.emit({ type: 'lane', lane });
   }
 
@@ -546,6 +626,7 @@ export class Store {
     const ticket = (r.ticket as string | null) ?? null;
     return {
       id: r.id as string,
+      project: r.project_id as string,
       letter: r.letter_index == null ? null : letterOf(Number(r.letter_index)),
       name: r.name as string,
       // A lane in an archived group shows as ungrouped; the raw group_id is kept for exports.
@@ -575,9 +656,12 @@ export class Store {
     FROM lanes l`;
 
   /** Active lanes (archived ones are kept for export but hidden). */
-  listLanes(): Lane[] {
+  listLanes(projects?: string[]): Lane[] {
+    const p = this.inProjects(projects, 'l.project_id');
     return (
-      this.db.prepare(`${Store.LANE_SELECT} WHERE l.archived_at IS NULL ORDER BY l.updated_at DESC`).all() as Row[]
+      this.db
+        .prepare(`${Store.LANE_SELECT} WHERE l.archived_at IS NULL${p.sql} ORDER BY l.updated_at DESC`)
+        .all(...p.params) as Row[]
     ).map((r) => this.laneFromRow(r));
   }
 
@@ -616,9 +700,11 @@ export class Store {
     const needs = hold || Number(r.active) === 1 || Number(r.unresolved) > 0;
     if (needs && r.letter_index == null) {
       const used = new Set(
-        (this.db.prepare('SELECT letter_index FROM lanes WHERE letter_index IS NOT NULL').all() as Row[]).map((x) =>
-          Number(x.letter_index),
-        ),
+        (
+          this.db
+            .prepare('SELECT letter_index FROM lanes WHERE letter_index IS NOT NULL AND project_id = ?')
+            .all(projectOf(laneId)) as Row[]
+        ).map((x) => Number(x.letter_index)),
       );
       let index = 0;
       while (used.has(index)) index++;
@@ -630,11 +716,13 @@ export class Store {
 
   private requireLane(id: string): Lane {
     const lane = this.getLane(id);
-    if (!lane) throw new NotFoundError(`Lane "${id}" not found`);
+    if (!lane) throw new NotFoundError(`Lane "${localId(id)}" not found`);
     return lane;
   }
 
   upsertLane(id: string, patch: LanePatch, actor: string | null): Lane {
+    projectOf(id);
+    if (patch.group && projectOf(patch.group) !== projectOf(id)) throw new Error('internal: a lane\'s group must be in its project');
     if (patch.status && !LANE_STATUSES.includes(patch.status)) throw new Error(`Invalid status "${patch.status}"`);
     let createdGroup: Group | null = null;
     let groupRestored = false;
@@ -657,7 +745,7 @@ export class Store {
           )
           .run(
             id,
-            patch.name ?? id,
+            patch.name ?? localId(id),
             patch.group ?? null,
             status,
             patch.ticket ?? null,
@@ -733,7 +821,7 @@ export class Store {
   deleteLane(id: string, actor: string | null = null) {
     const withdrawn = this.tx(() => {
       const lane = this.getLane(id);
-      if (!lane) throw new NotFoundError(`Lane "${id}" not found`);
+      if (!lane) throw new NotFoundError(`Lane "${localId(id)}" not found`);
       const at = this.now().toISOString();
       // Only unanswered questions are withdrawn. Decided ones keep their answer and
       // can still be acknowledged by an agent that's acting on it.
@@ -754,7 +842,7 @@ export class Store {
       return pending.map((eid) => this.requireEscalation(eid));
     });
     for (const escalation of withdrawn) this.emit({ type: 'escalation', escalation });
-    this.emit({ type: 'lane_deleted', id });
+    this.emit({ type: 'lane_deleted', id, project: projectOf(id) });
   }
 
   private addEvent(laneId: string, at: string, kind: LaneEvent['kind'], message: string, actor: string | null) {
@@ -793,6 +881,8 @@ export class Store {
     return {
       id: r.id as string,
       ref: r.letter_index == null ? String(r.ref) : `${letterOf(Number(r.letter_index))}${Number(r.seq)}`,
+      project: r.project_id as string,
+      projectKey: this.projectKeyOf(r.project_id as string),
       laneId: r.lane_id as string,
       question: r.question as string,
       context: (r.context as string | null) ?? null,
@@ -823,7 +913,9 @@ export class Store {
    * The newest `limit` matches, returned oldest first. Default states:
    * everything not yet closed (open + decided-but-unacknowledged).
    */
-  listEscalations(filter: { states?: EscalationState[]; laneId?: string; limit?: number } = {}): Escalation[] {
+  listEscalations(
+    filter: { states?: EscalationState[]; laneId?: string; projects?: string[]; limit?: number } = {},
+  ): Escalation[] {
     const states = filter.states ?? ['open', 'decided'];
     const where = [`state IN (${states.map(() => '?').join(',')})`];
     const params: string[] = [...states];
@@ -831,9 +923,11 @@ export class Store {
       where.push('lane_id = ?');
       params.push(filter.laneId);
     }
+    const p = this.inProjects(filter.projects);
+    params.push(...p.params);
     return (
       this.db
-        .prepare(`SELECT * FROM escalations WHERE ${where.join(' AND ')} ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+        .prepare(`SELECT * FROM escalations WHERE ${where.join(' AND ')}${p.sql} ORDER BY created_at DESC, rowid DESC LIMIT ?`)
         .all(...params, filter.limit ?? 1000) as Row[]
     )
       .reverse()
@@ -841,22 +935,30 @@ export class Store {
   }
 
   /**
-   * By id, or by its code: "A12" (case-insensitive, an optional leading # is ignored).
-   * Plain numbers ("42", "#42") are the global numbers used before lane codes, still accepted.
+   * By id, or by its code: "A12" within `project`, or "KEY·A12" (also "KEY-A12",
+   * "KEY:A12") in any project (case-insensitive, a leading # is ignored). Without a
+   * project, a bare code resolves only if one project has it. Plain numbers ("42") are
+   * the global numbers used before lane codes, still accepted.
    */
-  getEscalation(id: string): Escalation | null {
-    const code = /^#?([A-Za-z]{1,4})(\d{1,9})$/.exec(id.trim());
-    const legacy = /^#?(\d{1,15})$/.exec(id.trim());
-    const r = (
-      code
-        ? this.db
-            .prepare('SELECT * FROM escalations WHERE letter_index = ? AND seq = ?')
-            .get(indexOfLetter(code[1]), Number(code[2]))
-        : legacy
-          ? this.db.prepare('SELECT * FROM escalations WHERE ref = ?').get(Number(legacy[1]))
-          : this.db.prepare('SELECT * FROM escalations WHERE id = ?').get(id)
-    ) as Row | undefined;
-    return r ? this.escalationFromRow(r) : null;
+  getEscalation(id: string, project?: string): Escalation | null {
+    const text = id.trim().replace(/^#/, '');
+    const keyed = /^([A-Za-z0-9]{1,10})[·:.-]([A-Za-z]{1,4})(\d{1,9})$/.exec(text);
+    const code = keyed ? [keyed[0], keyed[2], keyed[3]] : /^([A-Za-z]{1,4})(\d{1,9})$/.exec(text);
+    let rows: Row[];
+    if (code) {
+      const inProject = keyed ? this.projectByKey(keyed[1])?.id : project;
+      if (keyed && !inProject) return null;
+      const p = this.inProjects(inProject ? [inProject] : undefined);
+      rows = this.db
+        .prepare(`SELECT * FROM escalations WHERE letter_index = ? AND seq = ?${p.sql} LIMIT 2`)
+        .all(indexOfLetter(code[1]), Number(code[2]), ...p.params) as Row[];
+      if (rows.length !== 1) return null;
+    } else if (/^\d{1,15}$/.test(text)) {
+      rows = this.db.prepare('SELECT * FROM escalations WHERE ref = ?').all(Number(text)) as Row[];
+    } else {
+      rows = this.db.prepare('SELECT * FROM escalations WHERE id = ?').all(id) as Row[];
+    }
+    return rows[0] ? this.escalationFromRow(rows[0]) : null;
   }
 
   private requireEscalation(id: string): Escalation {
@@ -871,6 +973,7 @@ export class Store {
    * `duplicate: true` instead of creating a second one.
    */
   createEscalation(input: EscalationInput, actor: string): Escalation & { duplicate?: boolean } {
+    projectOf(input.laneId);
     const existing = this.db
       .prepare("SELECT id FROM escalations WHERE lane_id = ? AND question = ? AND created_by = ? AND state = 'open'")
       .get(input.laneId, input.question, actor) as Row | undefined;
@@ -885,7 +988,7 @@ export class Store {
           .prepare(
             `INSERT INTO lanes (id, name, status, agent, created_at, updated_at, status_since) VALUES (?, ?, 'active', ?, ?, ?, ?)`,
           )
-          .run(input.laneId, input.laneId, actor, at, at, at);
+          .run(input.laneId, localId(input.laneId), actor, at, at, at);
         lane = this.requireLane(input.laneId);
       }
       const id = randomUUID();
@@ -893,7 +996,11 @@ export class Store {
       this.syncLetter(input.laneId, true);
       const letterIndex = Number((this.db.prepare('SELECT letter_index FROM lanes WHERE id = ?').get(input.laneId) as Row).letter_index);
       const seq = Number(
-        (this.db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM escalations WHERE letter_index = ?').get(letterIndex) as Row).n,
+        (
+          this.db
+            .prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM escalations WHERE letter_index = ? AND project_id = ?')
+            .get(letterIndex, projectOf(input.laneId)) as Row
+        ).n,
       );
       const code = `${letterOf(letterIndex)}${seq}`;
       this.db
@@ -1067,7 +1174,7 @@ export class Store {
       // A finished lane gives its letter back once nothing is left for anyone to answer or pick up.
       this.syncLetter(current.laneId);
       const found = this.laneIncludingArchived(current.laneId);
-      if (!found) throw new NotFoundError(`Lane "${current.laneId}" not found`);
+      if (!found) throw new NotFoundError(`Lane "${localId(current.laneId)}" not found`);
       const { lane, archived } = found;
       const unblocked =
         !archived &&
@@ -1179,12 +1286,12 @@ export class Store {
     const byId = new Map<string, Escalation>(named.map((e) => [e.id, e]));
     const laneIds = new Set<string>();
     for (const id of scope.laneIds ?? []) {
-      if (!this.db.prepare('SELECT 1 FROM lanes WHERE id = ?').get(id)) throw new NotFoundError(`Lane "${id}" not found`);
+      if (!this.db.prepare('SELECT 1 FROM lanes WHERE id = ?').get(id)) throw new NotFoundError(`Lane "${localId(id)}" not found`);
       laneIds.add(id);
     }
     if (scope.groupId) {
       if (!this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(scope.groupId)) {
-        throw new NotFoundError(`Group "${scope.groupId}" not found`);
+        throw new NotFoundError(`Group "${localId(scope.groupId)}" not found`);
       }
       const rows = this.db.prepare('SELECT id FROM lanes WHERE group_id = ?').all(scope.groupId) as Row[];
       for (const r of rows) laneIds.add(r.id as string);
@@ -1317,18 +1424,34 @@ export class Store {
     const seconds = (from: unknown, to: unknown) =>
       typeof from === 'string' && typeof to === 'string' ? Math.round((Date.parse(to) - Date.parse(from)) / 1000) : null;
     /** WHERE clause: keyset position, optional time range on `timeCol`, optional lane. */
-    const where = (ridCol: string, laneCol: string, timeCol?: string) => {
+    const local = (v: unknown) => (typeof v === 'string' ? localId(v) : v);
+    const where = (
+      ridCol: string,
+      laneCol: string | null,
+      timeCol?: string,
+      projectCol = `substr(${laneCol}, 1, instr(${laneCol}, '/') - 1)`,
+    ) => {
       const parts = [`${ridCol} > ?`];
       const params: (string | number)[] = [after];
+      if (filter.projects) {
+        parts.push(filter.projects.length ? `${projectCol} IN (${filter.projects.map(() => '?').join(',')})` : '0');
+        params.push(...filter.projects);
+      }
       if (timeCol && filter.from) (parts.push(`${timeCol} >= ?`), params.push(filter.from));
       if (timeCol && filter.to) (parts.push(`${timeCol} < ?`), params.push(filter.to));
-      if (filter.laneId) (parts.push(`${laneCol} = ?`), params.push(filter.laneId));
+      if (filter.laneId && laneCol) (parts.push(`${laneCol} = ?`), params.push(filter.laneId));
       return { sql: `WHERE ${parts.join(' AND ')} ORDER BY ${ridCol} LIMIT ?`, params: [...params, limit] };
     };
 
     if (dataset === 'requirements') {
       const parts = ['num > ?'];
       const params: (string | number)[] = [after];
+      if (filter.projects) {
+        parts.push(
+          `(project_id IS NULL${filter.projects.length ? ` OR project_id IN (${filter.projects.map(() => '?').join(',')})` : ''})`,
+        );
+        params.push(...filter.projects);
+      }
       if (filter.from) (parts.push('created_at >= ?'), params.push(filter.from));
       if (filter.to) (parts.push('created_at < ?'), params.push(filter.to));
       const raw = this.db
@@ -1338,7 +1461,8 @@ export class Store {
         const req = this.requirementFromRow(r);
         return {
           id: req.id,
-          group_id: req.group,
+          project: req.project,
+          group_id: req.group && localId(req.group),
           requirement: req.requirement,
           justification: req.justification,
           tags: req.tags.join(' | '),
@@ -1354,11 +1478,12 @@ export class Store {
     }
 
     if (dataset === 'groups') {
-      const raw = this.db
-        .prepare('SELECT rowid AS _rid, * FROM groups WHERE rowid > ? ORDER BY rowid LIMIT ?')
-        .all(after, limit) as Row[];
+      // Groups are always complete (within the projects), like lanes, so filtered rows can be joined to them.
+      const w = where('rowid', null, undefined, 'project_id');
+      const raw = this.db.prepare(`SELECT rowid AS _rid, * FROM groups ${w.sql}`).all(...w.params) as Row[];
       return page(raw, (r) => ({
-        id: r.id,
+        id: local(r.id),
+        project: r.project_id,
         name: r.name,
         ticket: r.ticket,
         ticket_url: r.ticket ? this.resolveTicketUrl(r.ticket as string) : null,
@@ -1381,9 +1506,10 @@ export class Store {
         )
         .all(...w.params) as Row[];
       return page(raw, (r) => ({
-        id: r.id,
+        id: local(r.id),
+        project: r.project_id,
         name: r.name,
-        group_id: r.group_id,
+        group_id: local(r.group_id),
         group_name: r.group_name,
         status: r.status,
         ticket: r.ticket,
@@ -1411,7 +1537,8 @@ export class Store {
       const raw = this.db.prepare(`SELECT id AS _rid, * FROM lane_events ${w.sql}`).all(...w.params) as Row[];
       return page(raw, (r) => ({
         id: r.id,
-        lane_id: r.lane_id,
+        project: projectOf(r.lane_id as string),
+        lane_id: local(r.lane_id),
         at: r.at,
         kind: r.kind,
         message: r.message,
@@ -1431,7 +1558,8 @@ export class Store {
           .map((p) => ({
             escalation_id: e.id,
             escalation_ref: this.codeOf(e),
-            lane_id: e.lane_id,
+            project: projectOf(e.lane_id as string),
+            lane_id: local(e.lane_id),
             question: e.question,
             agent: p.agent,
             stance: p.stance,
@@ -1456,9 +1584,10 @@ export class Store {
       return {
         id: e.id,
         ref: this.codeOf(e),
-        lane_id: e.lane_id,
+        project: projectOf(e.lane_id as string),
+        lane_id: local(e.lane_id),
         lane_name: e.lane_name,
-        group_id: e.group_id,
+        group_id: local(e.group_id),
         group_name: e.group_name,
         ticket: e.ticket,
         ticket_url: e.ticket ? this.resolveTicketUrl(e.ticket as string) : null,
@@ -1497,12 +1626,142 @@ export class Store {
     return r.letter_index == null ? String(r.ref) : `${letterOf(Number(r.letter_index))}${Number(r.seq)}`;
   }
 
+  // ---- projects ----------------------------------------------------------------
+
+  private projectKeys: Map<string, string> | null = null;
+
+  private projectFromRow(r: Row): Project {
+    return { id: r.id as string, key: r.key as string, name: r.name as string, createdAt: r.created_at as string };
+  }
+
+  listProjects(): Project[] {
+    return (this.db.prepare('SELECT * FROM projects ORDER BY name').all() as Row[]).map((r) => this.projectFromRow(r));
+  }
+
+  getProject(id: string): Project | null {
+    const r = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Row | undefined;
+    return r ? this.projectFromRow(r) : null;
+  }
+
+  /** By id or key, case-insensitively. */
+  projectByKey(key: string): Project | null {
+    const r = this.db
+      .prepare('SELECT * FROM projects WHERE lower(key) = lower(?) OR lower(id) = lower(?) LIMIT 1')
+      .get(key, key) as Row | undefined;
+    return r ? this.projectFromRow(r) : null;
+  }
+
+  private projectKeyOf(id: string): string {
+    if (!this.projectKeys) {
+      this.projectKeys = new Map(
+        (this.db.prepare('SELECT id, key FROM projects').all() as Row[]).map((r) => [r.id as string, r.key as string]),
+      );
+    }
+    return this.projectKeys.get(id) ?? id;
+  }
+
+  /** Creates a project; its creator (if a person) becomes its admin. */
+  createProject(input: { id: string; key: string; name: string }, creatorUserId: string | null): Project {
+    const project = this.tx(() => {
+      if (this.getProject(input.id)) throw new ConflictError(`Project "${input.id}" already exists`);
+      if (this.projectByKey(input.key)) throw new ConflictError(`Key "${input.key}" is already used by another project`);
+      this.db
+        .prepare('INSERT INTO projects (id, key, name, created_at) VALUES (?, ?, ?, ?)')
+        .run(input.id, input.key.toUpperCase(), input.name, this.now().toISOString());
+      if (creatorUserId) this.setMember(input.id, creatorUserId, 'admin');
+      return this.getProject(input.id)!;
+    });
+    this.projectKeys = null;
+    return project;
+  }
+
+  updateProject(id: string, patch: { name?: string; key?: string }): Project {
+    const project = this.tx(() => {
+      const current = this.getProject(id);
+      if (!current) throw new NotFoundError(`Project "${id}" not found`);
+      if (patch.key) {
+        const other = this.projectByKey(patch.key);
+        if (other && other.id !== id) throw new ConflictError(`Key "${patch.key}" is already used by another project`);
+      }
+      this.db
+        .prepare('UPDATE projects SET name = ?, key = ? WHERE id = ?')
+        .run(patch.name ?? current.name, (patch.key ?? current.key).toUpperCase(), id);
+      return this.getProject(id)!;
+    });
+    this.projectKeys = null;
+    return project;
+  }
+
+  /** The caller's memberships: project id -> role and notification choice. */
+  membershipsOf(userId: string): Map<string, { role: ProjectRole; notify: boolean }> {
+    const rows = this.db.prepare('SELECT project_id, role, notify FROM project_members WHERE user_id = ?').all(userId) as Row[];
+    return new Map(rows.map((r) => [r.project_id as string, { role: r.role as ProjectRole, notify: Number(r.notify) === 1 }]));
+  }
+
+  projectMembers(project: string): { userId: string; role: ProjectRole; notify: boolean }[] {
+    return (
+      this.db.prepare('SELECT user_id, role, notify FROM project_members WHERE project_id = ?').all(project) as Row[]
+    ).map((r) => ({ userId: r.user_id as string, role: r.role as ProjectRole, notify: Number(r.notify) === 1 }));
+  }
+
+  /** Adds a member or changes their role (keeping their notification choice). */
+  setMember(project: string, userId: string, role: ProjectRole) {
+    if (!this.getProject(project)) throw new NotFoundError(`Project "${project}" not found`);
+    this.db
+      .prepare(
+        `INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)
+         ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role`,
+      )
+      .run(project, userId, role);
+  }
+
+  removeMember(project: string, userId: string) {
+    this.db.prepare('DELETE FROM project_members WHERE project_id = ? AND user_id = ?').run(project, userId);
+  }
+
+  /** Removes someone from every project (their account was removed). */
+  removeUserEverywhere(userId: string) {
+    this.db.prepare('DELETE FROM project_members WHERE user_id = ?').run(userId);
+  }
+
+  /**
+   * Turns push for one project on or off for a person. Someone without a
+   * membership row (an instance admin) gets one as admin, to hold the choice.
+   */
+  setNotify(project: string, userId: string, notify: boolean) {
+    if (!this.getProject(project)) throw new NotFoundError(`Project "${project}" not found`);
+    this.db
+      .prepare(
+        `INSERT INTO project_members (project_id, user_id, role, notify) VALUES (?, ?, 'admin', ?)
+         ON CONFLICT(project_id, user_id) DO UPDATE SET notify = excluded.notify`,
+      )
+      .run(project, userId, notify ? 1 : 0);
+  }
+
+  /**
+   * Once, when projects arrive: everyone who had access before becomes a member of the
+   * first project (admins as admin), so nobody loses sight of existing data.
+   */
+  seedDefaultMembers(users: { id: string; admin: boolean }[]) {
+    const done = this.db.prepare("SELECT 1 FROM meta WHERE key = 'members_seeded'").get();
+    if (done) return;
+    this.tx(() => {
+      for (const u of users) {
+        this.db
+          .prepare('INSERT OR IGNORE INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)')
+          .run(DEFAULT_PROJECT, u.id, u.admin ? 'admin' : 'member');
+      }
+      this.db.prepare("INSERT INTO meta (key, value) VALUES ('members_seeded', '1')").run();
+    });
+  }
+
   // ---- requirements ----------------------------------------------------------
 
   private requirementFromRow(r: Row): Requirement {
     const source = r.source_escalation_id ? this.getEscalation(r.source_escalation_id as string) : null;
     return {
       id: `R${Number(r.num)}`,
+      project: (r.project_id as string | null) ?? null,
       group: (r.group_id as string | null) ?? null,
       requirement: r.requirement as string,
       justification: r.justification as string,
@@ -1564,11 +1823,21 @@ export class Store {
     tags?: string[];
     group?: string;
     includeProductWide?: boolean;
+    /** Projects to search; requirements for all projects always match. Undefined = every project. */
+    projects?: string[];
     statuses?: RequirementStatus[];
     limit?: number;
   } = {}): Requirement[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
+    if (filter.projects) {
+      where.push(
+        filter.projects.length
+          ? `(r.project_id IS NULL OR r.project_id IN (${filter.projects.map(() => '?').join(',')}))`
+          : 'r.project_id IS NULL',
+      );
+      params.push(...filter.projects);
+    }
     const statuses = filter.statuses ?? ['active'];
     where.push(`r.status IN (${statuses.map(() => '?').join(',')})`);
     params.push(...statuses);
@@ -1583,7 +1852,7 @@ export class Store {
     // An id ("R14") finds that requirement, whatever its status.
     if (filter.query && this.requirementNum(filter.query) !== null && /^r/i.test(filter.query.trim())) {
       const one = this.getRequirement(filter.query);
-      return one ? [one] : [];
+      return one && (!filter.projects || one.project === null || filter.projects.includes(one.project)) ? [one] : [];
     }
     const limit = filter.limit ?? 50;
     const match = filter.query?.trim() ? this.ftsMatch(filter.query) : undefined;
@@ -1602,15 +1871,20 @@ export class Store {
     return rows.map((r) => this.requirementFromRow(r));
   }
 
-  /** Tags in use on active requirements, most used first. */
-  requirementTags(group?: string): { tag: string; count: number }[] {
+  /** Tags in use on active requirements (of these projects plus all-project ones), most used first. */
+  requirementTags(group?: string, projects?: string[]): { tag: string; count: number }[] {
+    const p = projects
+      ? projects.length
+        ? { sql: ` AND (r.project_id IS NULL OR r.project_id IN (${projects.map(() => '?').join(',')}))`, params: projects }
+        : { sql: ' AND r.project_id IS NULL', params: [] }
+      : { sql: '', params: [] };
     const rows = this.db
       .prepare(
         `SELECT j.value AS tag, COUNT(*) AS n FROM requirements r, json_each(r.tags) j
-         WHERE r.status = 'active' ${group !== undefined ? 'AND (r.group_id = ? OR r.group_id IS NULL)' : ''}
+         WHERE r.status = 'active' ${group !== undefined ? 'AND (r.group_id = ? OR r.group_id IS NULL)' : ''}${p.sql}
          GROUP BY j.value ORDER BY n DESC, j.value`,
       )
-      .all(...(group !== undefined ? [group] : [])) as Row[];
+      .all(...(group !== undefined ? [group] : []), ...p.params) as Row[];
     return rows.map((r) => ({ tag: r.tag as string, count: Number(r.n) }));
   }
 
@@ -1671,9 +1945,10 @@ export class Store {
       .prepare(
         `${match.cte} SELECT r.* FROM best JOIN requirements r ON r.num = best.num
          WHERE r.status = 'active' AND r.num <> ? AND (r.group_id IS ? OR r.group_id IS NULL OR ? IS NULL)
+           AND (r.project_id IS ? OR r.project_id IS NULL OR ? IS NULL)
          ORDER BY best.score LIMIT 3`,
       )
-      .all(...match.params, this.requirementNum(req.id)!, req.group, req.group) as Row[];
+      .all(...match.params, this.requirementNum(req.id)!, req.group, req.group, req.project, req.project) as Row[];
     return rows.map((r) => this.requirementFromRow(r));
   }
 
@@ -1688,15 +1963,19 @@ export class Store {
 
   /** Must run inside a transaction. */
   private insertRequirement(input: RequirementInput, actor: string, actorIsHuman: boolean, at: string): number {
-    if (input.group && !this.getGroup(input.group)) throw new NotFoundError(`Group "${input.group}" not found`);
+    if (input.group && !this.getGroup(input.group)) throw new NotFoundError(`Group "${localId(input.group)}" not found`);
+    if (input.group && input.project !== projectOf(input.group)) {
+      throw new ValidationError('A requirement for a group applies to that group\'s project, not to all projects');
+    }
+    if (input.project && !this.getProject(input.project)) throw new NotFoundError(`Project "${input.project}" not found`);
     const tags = this.cleanTags(input.tags);
     const { decidedBy, escalationId } = this.decisionSource(input, actor, actorIsHuman);
     const res = this.db
       .prepare(
-        `INSERT INTO requirements (group_id, requirement, justification, tags, status, decided_by, source_escalation_id,
-           recorded_by, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+        `INSERT INTO requirements (project_id, group_id, requirement, justification, tags, status, decided_by,
+           source_escalation_id, recorded_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
       )
-      .run(input.group ?? null, input.requirement.trim(), input.justification.trim(), JSON.stringify(tags), decidedBy, escalationId, actor, at, at);
+      .run(input.project ?? null, input.group ?? null, input.requirement.trim(), input.justification.trim(), JSON.stringify(tags), decidedBy, escalationId, actor, at, at);
     return Number(res.lastInsertRowid);
   }
 
@@ -1721,7 +2000,11 @@ export class Store {
       if (current.status !== 'active') throw new ConflictError(`${current.id} is ${current.status}; only active requirements can be superseded`);
       const at = this.now().toISOString();
       const num = this.insertRequirement(
-        { ...input, group: input.group === undefined ? current.group : input.group },
+        {
+          ...input,
+          group: input.group === undefined ? current.group : input.group,
+          project: input.project === undefined ? current.project : input.project,
+        },
         actor,
         actorIsHuman,
         at,

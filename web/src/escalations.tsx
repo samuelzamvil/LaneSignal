@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, Lane, Position } from './api.ts';
 import { Links, RichText, TicketLink } from './components.tsx';
 import { absolute, ago } from './format.ts';
+import { keyOf } from './merge.ts';
+
+/** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
+export function isCodeOf(e: Escalation, code: string) {
+  const c = decodeURIComponent(code).trim().toLowerCase().replace(/^#/, '');
+  const ref = e.ref.toLowerCase();
+  return c === ref || ['-', '·', ':'].some((sep) => c === `${e.projectKey.toLowerCase()}${sep}${ref}`);
+}
 
 /**
  * Whether the answer will reach an agent now. Open: is an agent waiting on it?
@@ -172,20 +180,23 @@ function EscHead({
   lane,
   group,
   now,
+  showProject,
 }: {
   esc: Escalation;
   lane: Lane | undefined;
   group: Group | undefined;
   now: number;
+  /** Prefix the code with the project key, when several projects are on screen. */
+  showProject: boolean;
 }) {
   return (
     <div className="esc-head">
       <span className="ref" title="Use this code when talking to the agent about it">
-        {esc.ref}
+        {showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref}
       </span>
       <a
         className="lane-ref"
-        href={`#/lane/${encodeURIComponent(esc.laneId)}`}
+        href={`#/lane/${encodeURIComponent(esc.project)}/${encodeURIComponent(esc.laneId)}`}
         onClick={(e) => e.stopPropagation()}
       >
         {lane?.name ?? esc.laneId}
@@ -208,6 +219,7 @@ export function EscalationCard({
   client,
   seq,
   staleMinutes,
+  showProject,
 }: {
   esc: Escalation;
   lane: Lane | undefined;
@@ -217,6 +229,7 @@ export function EscalationCard({
   /** Position among the lane's open escalations, when it has more than one. */
   seq?: { index: number; total: number };
   staleMinutes: number;
+  showProject: boolean;
 }) {
   const open = () => (location.hash = `#/esc/${esc.id}`);
   return (
@@ -227,7 +240,7 @@ export function EscalationCard({
       tabIndex={0}
       onKeyDown={(e) => e.target === e.currentTarget && e.key === 'Enter' && open()}
     >
-      <EscHead esc={esc} lane={lane} group={group} now={now} />
+      <EscHead esc={esc} lane={lane} group={group} now={now} showProject={showProject} />
       {seq && (
         <p className="seq">
           Question {seq.index + 1} of {seq.total} from this lane
@@ -279,6 +292,7 @@ export function EscalationDetail({
   staleMinutes,
   onClose,
   currentId,
+  showProject,
 }: {
   id: string;
   /** The escalation's id when the route names it by number. */
@@ -293,6 +307,7 @@ export function EscalationDetail({
   now: number;
   staleMinutes: number;
   onClose: () => void;
+  showProject: boolean;
 }) {
   const [loaded, setLoaded] = useState<Escalation | null>(null);
   const [changing, setChanging] = useState(false);
@@ -300,7 +315,10 @@ export function EscalationDetail({
   const sheet = useRef<HTMLElement>(null);
   // While stepping to another question, never show (or answer) the previous one.
   // `id` may be the escalation's code (#/esc/A12) as well as its id.
-  const esc = loaded && (loaded.id === id || loaded.ref.toLowerCase() === id.toLowerCase()) ? loaded : null;
+  // Fetch by id when the live data already resolved the code: a bare code is ambiguous across projects.
+  const target = currentId ?? id;
+  const esc = loaded && (loaded.id === target || isCodeOf(loaded, id)) ? loaded : null;
+  const lane = esc ? lanes.get(keyOf(esc.project, esc.laneId)) : undefined;
 
   useEffect(() => {
     sheet.current?.scrollTo(0, 0);
@@ -310,13 +328,13 @@ export function EscalationDetail({
   useEffect(() => {
     let cancelled = false;
     client
-      .escalation(id)
+      .escalation(target)
       .then((e) => !cancelled && (setLoaded(e), setError(null)))
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
-  }, [client, id, version]);
+  }, [client, target, version]);
 
   // Step through a lane's batch of questions without going back to the inbox.
   const idx = laneOpenIds.indexOf(currentId ?? id);
@@ -358,9 +376,10 @@ export function EscalationDetail({
           <div className="sheet-body esc-detail">
             <EscHead
               esc={esc}
-              lane={lanes.get(esc.laneId)}
-              group={groups.get(lanes.get(esc.laneId)?.group ?? '')}
+              lane={lane}
+              group={lane?.group ? groups.get(keyOf(lane.project, lane.group)) : undefined}
               now={now}
+              showProject={showProject}
             />
             <p className="byline">
               Raised by {esc.createdBy} · {absolute(esc.createdAt)}
@@ -447,7 +466,7 @@ export function EscalationDetail({
             {esc.state === 'open' ? (
               <section className="esc-section answer">
                 <h4>{esc.blocking ? 'Your decision' : 'Your reply (optional)'}</h4>
-                <AgentPresence esc={esc} lane={lanes.get(esc.laneId)} now={now} staleMinutes={staleMinutes} />
+                <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
                 <DecisionForm key={esc.id} esc={esc} client={client} />
               </section>
             ) : esc.state === 'decided' && changing ? (
@@ -470,7 +489,7 @@ export function EscalationDetail({
                 {esc.decisionNote && <p className="note">{esc.decisionNote}</p>}
                 {esc.state === 'decided' && (
                   <>
-                    <AgentPresence esc={esc} lane={lanes.get(esc.laneId)} now={now} staleMinutes={staleMinutes} />
+                    <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
                     <button className="ghost" onClick={() => setChanging(true)}>
                       Change decision
                     </button>

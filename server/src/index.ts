@@ -19,8 +19,19 @@ const store = new Store({
   broadTags: config.broadTags ?? undefined,
 });
 const accounts = await createAccounts(config, path.join(config.dataDir, 'lanesignal.db'));
-const push = startNotifier(config, store, accounts.userActive);
-accounts.people.on('gone', (userId, name) => store.removePushTokensOf(userId, name));
+// Everyone who could see the data before projects arrived keeps seeing it (once, on upgrade).
+store.seedDefaultMembers(accounts.listUsers());
+/** A person's phones get a project's push when they're active, can see it, and haven't turned it off. */
+const wantsPush = (userId: string, project: string) => {
+  if (!accounts.userActive(userId)) return false;
+  const membership = store.membershipsOf(userId).get(project);
+  return membership ? membership.notify : accounts.isAdmin(userId);
+};
+const push = startNotifier(config, store, wantsPush);
+accounts.people.on('gone', (userId, name, removed) => {
+  store.removePushTokensOf(userId, name);
+  if (removed) store.removeUserEverywhere(userId);
+});
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(process.env.LANESIGNAL_WEB_DIR ?? path.resolve(here, '../../web/dist'));

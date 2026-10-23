@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import type { Client, Group, Requirement } from './api.ts';
+import type { Client, Group, ProjectAccess, Requirement } from './api.ts';
 import { RichText } from './components.tsx';
 import { absolute } from './format.ts';
+import { keyOf } from './merge.ts';
 
 const STATUS_LABEL: Record<Requirement['status'], string> = {
   active: 'Active',
@@ -53,14 +54,15 @@ function EditForm({ req, client, onDone }: { req: Requirement; client: Client; o
 
 function RequirementCard({
   req,
-  groupName,
+  scopeName,
   client,
   canEdit,
   onTag,
   onOpen,
 }: {
   req: Requirement;
-  groupName: string | null;
+  /** Where it applies: a group, a project, or every project. */
+  scopeName: string;
   client: Client;
   canEdit: boolean;
   onTag: (tag: string) => void;
@@ -72,7 +74,7 @@ function RequirementCard({
     <article className={`req-card ${req.status}`}>
       <header className="esc-head">
         <span className="ref">{req.id}</span>
-        <span className="tag">{groupName ?? 'Product-wide'}</span>
+        <span className={`tag${req.project === null ? ' all-projects' : ''}`}>{scopeName}</span>
         {req.status !== 'active' && (
           <span className="pill tone-muted">
             {STATUS_LABEL[req.status]}
@@ -140,12 +142,18 @@ const LIMIT = 200;
 export function RequirementsPane({
   client,
   groups,
+  projects,
+  project,
   groupLabel,
   canEdit,
   version,
 }: {
   client: Client;
+  /** Keyed by keyOf(project, id). */
   groups: Map<string, Group>;
+  projects: ProjectAccess[];
+  /** The project being viewed, or '' for all of them. */
+  project: string;
   groupLabel: string;
   canEdit: boolean;
   /** Changes when a requirement changes, to refetch. */
@@ -153,7 +161,15 @@ export function RequirementsPane({
 }) {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
+  /** keyOf(project, group), or ''. */
   const [group, setGroup] = useState('');
+  const multiProject = projects.length > 1;
+  const groupOptions = [...groups.entries()].filter(([, g]) => !project || g.project === project);
+  const chosen = groups.get(group);
+  // Switching projects drops a group filter from another project.
+  useEffect(() => {
+    if (group && (!chosen || (project && chosen.project !== project))) setGroup('');
+  }, [project, group, chosen?.project]);
   const [tags, setTags] = useState<string[]>([]);
   const [showOld, setShowOld] = useState(false);
   const [items, setItems] = useState<Requirement[] | null>(null);
@@ -170,7 +186,8 @@ export function RequirementsPane({
       .requirements({
         q: debounced || undefined,
         tags,
-        group: group || undefined,
+        project: chosen?.project ?? (project || undefined),
+        group: chosen?.id,
         statuses: showOld ? ['active', 'superseded', 'retired'] : ['active'],
       })
       .then((r) => !cancelled && (setItems(r), setError(null)))
@@ -178,7 +195,14 @@ export function RequirementsPane({
     return () => {
       cancelled = true;
     };
-  }, [client, debounced, group, tags, showOld, version]);
+  }, [client, debounced, chosen?.project, chosen?.id, project, tags, showOld, version]);
+
+  const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
+  const scopeOf = (r: Requirement) => {
+    if (r.project === null) return 'All projects';
+    const where = multiProject && !project ? `${projectName(r.project)} · ` : '';
+    return r.group ? where + (groups.get(keyOf(r.project, r.group))?.name ?? r.group) : multiProject ? projectName(r.project) : 'Product-wide';
+  };
 
   const open = (id: string) => {
     setQuery(id);
@@ -198,9 +222,9 @@ export function RequirementsPane({
             {groupLabel}
             <select value={group} onChange={(e) => setGroup(e.target.value)}>
               <option value="">All</option>
-              {[...groups.values()].map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
+              {groupOptions.map(([k, g]) => (
+                <option key={k} value={k}>
+                  {multiProject && !project ? `${projects.find((p) => p.id === g.project)?.key ?? g.project} · ${g.name}` : g.name}
                 </option>
               ))}
             </select>
@@ -229,7 +253,7 @@ export function RequirementsPane({
         <RequirementCard
           key={r.id}
           req={r}
-          groupName={r.group ? (groups.get(r.group)?.name ?? r.group) : null}
+          scopeName={scopeOf(r)}
           client={client}
           canEdit={canEdit}
           onTag={(t) => setTags(tags.includes(t) ? tags : [...tags, t])}

@@ -1,8 +1,10 @@
+import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
+import { accessFor, pub, q, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import type { Config } from './config.ts';
@@ -10,8 +12,26 @@ import { log } from './log.ts';
 import { mcpHandler } from './mcp.ts';
 import * as s from './schemas.ts';
 import { datasetCsvAsync, datasetRowsAsync, exportZip } from './export.ts';
-import { ConflictError, EXPORT_DATASETS, NotFoundError, ValidationError, type ExportDataset, type Store } from './store.ts';
-import { LANE_STATUSES, type EscalationState, type PublicConfig, type StreamEvent } from './types.ts';
+import {
+  ConflictError,
+  EXPORT_DATASETS,
+  ForbiddenError,
+  localId,
+  NotFoundError,
+  ValidationError,
+  type ExportDataset,
+  type RecordResult,
+  type Store,
+} from './store.ts';
+import {
+  LANE_STATUSES,
+  type EscalationState,
+  type ProjectAccess,
+  type ProjectMember,
+  type PublicConfig,
+  type Requirement,
+  type StreamEvent,
+} from './types.ts';
 
 export interface AppOptions {
   config: Config;
@@ -125,6 +145,18 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   const agent = auth.require('agent');
   const human = auth.require('human');
 
+  /** What the caller may see across projects; worked out once per request. */
+  const acc = (res: Response): Access => (res.locals.access ??= accessFor(store, principalOf(res)));
+  const projectQuery = (req: Request) => (typeof req.query.project === 'string' ? req.query.project : undefined);
+  /** Fires when project memberships change, so open event streams reconnect with what they may now see. */
+  const membershipChanges = new EventEmitter<{ changed: [] }>();
+  membershipChanges.setMaxListeners(0);
+  const pubRecord = (r: RecordResult) => ({
+    ...r,
+    requirement: pub.requirement(r.requirement),
+    similar: r.similar.map(pub.requirement),
+  });
+
   // Break-glass people management for static human tokens (account admins use /api/auth/admin/*).
   const configAdmin = (_req: Request, res: Response, next: NextFunction) => {
     const p = principalOf(res);
@@ -172,60 +204,156 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     res.json(body);
   });
 
-  /** Everything a client needs on (re)connect. */
-  app.get('/api/snapshot', any, (_req, res) => {
+  /** Everything a client needs on (re)connect, across the caller's projects (or `?project=`). */
+  app.get('/api/snapshot', any, (req, res) => {
+    const projects = acc(res).scope(projectQuery(req));
     res.json({
-      groups: store.listGroups(),
-      lanes: store.listLanes(),
-      escalations: store.listEscalations(),
+      projects: projectList(res),
+      groups: store.listGroups(projects).map(pub.group),
+      lanes: store.listLanes(projects).map(pub.lane),
+      escalations: store.listEscalations({ projects }).map(pub.escalation),
       serverTime: new Date().toISOString(),
     });
   });
 
+  // ---- projects ----
+
+  /** Projects the caller can see, with their role and notification choice in each. */
+  const projectList = (res: Response): ProjectAccess[] => {
+    const a = acc(res);
+    const p = principalOf(res);
+    const mine = p.userId ? store.membershipsOf(p.userId) : new Map();
+    return store
+      .listProjects()
+      .filter((pr) => a.projects.includes(pr.id))
+      .map((pr) => ({
+        ...pr,
+        role: a.roleIn(pr.id) ?? 'member',
+        notify: mine.get(pr.id)?.notify ?? (!p.userId || !!p.superuser),
+      }));
+  };
+
+  app.get('/api/projects', any, (_req, res) => {
+    res.json(projectList(res));
+  });
+
+  /** Instance admins create projects; the creator becomes the project's admin. */
+  app.post('/api/projects', human, (req, res) => {
+    const p = principalOf(res);
+    if (!p.superuser && !(p.admin && !p.userId)) throw new ForbiddenError('Only instance admins create projects');
+    const project = store.createProject(parse(s.projectInput, req.body), p.userId ?? null);
+    membershipChanges.emit('changed');
+    res.status(201).json(project);
+  });
+
+  const requireProjectAdmin = (res: Response, id: string) => {
+    const project = acc(res).pick(id);
+    if (!acc(res).isAdmin(project)) throw new ForbiddenError('Only project admins manage this project');
+    return project;
+  };
+
+  app.patch('/api/projects/:id', human, (req, res) => {
+    const project = requireProjectAdmin(res, String(req.params.id));
+    const updated = store.updateProject(project, parse(s.projectPatch, req.body));
+    // Keys appear in codes on every client: have them reload.
+    membershipChanges.emit('changed');
+    res.json(updated);
+  });
+
+  app.get('/api/projects/:id/members', human, (req, res) => {
+    const project = acc(res).pick(String(req.params.id));
+    const users = new Map(accounts.listUsers().map((u) => [u.id, u]));
+    const members: ProjectMember[] = store
+      .projectMembers(project)
+      .filter((m) => users.has(m.userId))
+      .map((m) => ({ ...m, name: users.get(m.userId)!.name, email: users.get(m.userId)!.email }));
+    res.json(members);
+  });
+
+  app.put('/api/projects/:id/members/:userId', human, (req, res) => {
+    const project = requireProjectAdmin(res, String(req.params.id));
+    const userId = String(req.params.userId);
+    if (!accounts.listUsers().some((u) => u.id === userId)) throw new NotFoundError('No such person');
+    store.setMember(project, userId, parse(s.memberInput, req.body).role);
+    membershipChanges.emit('changed');
+    res.sendStatus(204);
+  });
+
+  app.delete('/api/projects/:id/members/:userId', human, (req, res) => {
+    const project = requireProjectAdmin(res, String(req.params.id));
+    store.removeMember(project, String(req.params.userId));
+    membershipChanges.emit('changed');
+    res.sendStatus(204);
+  });
+
+  /** Each person turns push on or off per project, for their own phones. */
+  app.put('/api/projects/:id/notifications', human, (req, res) => {
+    const p = principalOf(res);
+    if (!p.userId) throw new ValidationError('Config tokens have no notification settings');
+    store.setNotify(acc(res).pick(String(req.params.id)), p.userId, parse(s.notifyInput, req.body).enabled);
+    res.sendStatus(204);
+  });
+
+  /** People, for project admins choosing members. */
+  app.get('/api/people', human, (_req, res) => {
+    const a = acc(res);
+    if (!a.projects.some((pr) => a.isAdmin(pr))) throw new ForbiddenError('Only project admins list people');
+    res.json(accounts.listUsers().map((u) => ({ id: u.id, name: u.name, email: u.email })));
+  });
+
   // ---- groups (epic / train / overseer) ----
 
-  app.get('/api/groups', any, (_req, res) => {
-    res.json(store.listGroups());
+  app.get('/api/groups', any, (req, res) => {
+    res.json(store.listGroups(acc(res).scope(projectQuery(req))).map(pub.group));
   });
 
   app.put('/api/groups/:id', agent, (req, res) => {
+    const project = acc(res).pick(projectQuery(req));
     const id = parse(s.groupId, req.params.id);
-    res.json(store.upsertGroup(id, parse(s.groupPatch, req.body), principalOf(res).name));
+    res.json(pub.group(store.upsertGroup(q(project, id), parse(s.groupPatch, req.body), principalOf(res).name)));
   });
 
   app.delete('/api/groups/:id', human, (req, res) => {
-    store.deleteGroup(String(req.params.id), principalOf(res).name);
+    const project = acc(res).pick(projectQuery(req));
+    store.deleteGroup(q(project, String(req.params.id)), principalOf(res).name);
     res.sendStatus(204);
   });
 
   // ---- lanes ----
 
-  app.get('/api/lanes', any, (_req, res) => {
-    res.json(store.listLanes());
+  /** A lane patch from a client, with its group qualified to the lane's project. */
+  const lanePatchOf = (project: string, body: unknown) => {
+    const patch = parse(s.lanePatch, body);
+    return { ...patch, group: patch.group ? q(project, patch.group) : patch.group };
+  };
+
+  app.get('/api/lanes', any, (req, res) => {
+    res.json(store.listLanes(acc(res).scope(projectQuery(req))).map(pub.lane));
   });
 
   app.get('/api/lanes/:id', any, (req, res) => {
-    const lane = store.getLane(String(req.params.id));
+    const project = acc(res).pick(projectQuery(req));
+    const lane = store.getLane(q(project, String(req.params.id)));
     if (!lane) throw new NotFoundError('Lane not found');
     res.json({
-      lane,
-      escalations: store.listEscalations({
-        laneId: lane.id,
-        states: ['open', 'decided', 'acknowledged', 'withdrawn'],
-        limit: 50,
-      }),
-      events: store.laneEvents(lane.id, 100),
+      lane: pub.lane(lane),
+      escalations: store
+        .listEscalations({ laneId: lane.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 50 })
+        .map(pub.escalation),
+      events: store.laneEvents(lane.id, 100).map((e) => ({ ...e, laneId: localId(e.laneId) })),
     });
   });
 
   app.put('/api/lanes/:id', agent, (req, res) => {
+    const project = acc(res).pick(projectQuery(req));
     const id = parse(s.laneId, req.params.id);
-    res.json(store.upsertLane(id, parse(s.lanePatch, req.body), principalOf(res).name));
+    res.json(pub.lane(store.upsertLane(q(project, id), lanePatchOf(project, req.body), principalOf(res).name)));
   });
 
   // Humans remove lanes from the dashboard; overseers remove lanes whose work is over.
   app.delete('/api/lanes/:id', any, (req, res) => {
-    store.deleteLane(String(req.params.id), principalOf(res).name);
+    const project = acc(res).pick(projectQuery(req));
+    store.deleteLane(q(project, String(req.params.id)), principalOf(res).name);
     res.sendStatus(204);
   });
 
@@ -234,14 +362,25 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   app.get('/api/escalations', any, (req, res) => {
     const states =
       typeof req.query.state === 'string' ? (req.query.state.split(',') as EscalationState[]) : undefined;
-    const laneId = typeof req.query.lane === 'string' ? req.query.lane : undefined;
-    res.json(store.listEscalations({ states, laneId }));
+    const lane = typeof req.query.lane === 'string' ? req.query.lane : undefined;
+    const a = acc(res);
+    res.json(
+      store
+        .listEscalations({
+          states,
+          laneId: lane ? q(a.pick(projectQuery(req)), lane) : undefined,
+          projects: a.scope(projectQuery(req)),
+        })
+        .map(pub.escalation),
+    );
   });
 
   /** 201 when created; 200 with `duplicate: true` when the same open question already exists (a retry). */
   app.post('/api/escalations', agent, (req, res) => {
-    const escalation = store.createEscalation(parse(s.escalationInput, req.body), principalOf(res).name);
-    res.status(escalation.duplicate ? 200 : 201).json(escalation);
+    const project = acc(res).pick(projectQuery(req));
+    const input = parse(s.escalationInput, req.body);
+    const escalation = store.createEscalation({ ...input, laneId: q(project, input.laneId) }, principalOf(res).name);
+    res.status(escalation.duplicate ? 200 : 201).json(pub.escalation(escalation));
   });
 
   /**
@@ -254,15 +393,16 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     '/api/wait',
     any,
     h(async (req, res) => {
-      const q = parse(s.waitQuery, req.query);
-      const scope = {
-        ...parse(s.waitScope, { ids: q.ids, laneIds: q.lane, groupId: q.group, since: q.since }),
-        viewer: principalOf(res).name,
-      };
+      const query = parse(s.waitQuery, req.query);
+      const scope = waitScopeFor(
+        acc(res),
+        parse(s.waitScope, { ids: query.ids, laneIds: query.lane, groupId: query.group, since: query.since }),
+        query.project,
+      );
       const now = store.decisionsFor(scope);
-      const timeout = q.timeout ?? 300;
+      const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
-        res.json(now);
+        res.json(pub.wait(now));
         return;
       }
       const abort = new AbortController();
@@ -281,7 +421,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       }, 20_000);
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
-        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : result));
+        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : pub.wait(result)));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));
       } finally {
@@ -296,6 +436,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     '/api/escalations/:id',
     any,
     h(async (req, res) => {
+      const target = acc(res).escalation(String(req.params.id), projectQuery(req));
       const wait = Math.min(Math.max(Number(req.query.wait ?? 0) || 0, 0), 300);
       const abort = new AbortController();
       res.on('close', () => abort.abort());
@@ -307,7 +448,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       });
       let escalation;
       try {
-        escalation = await store.waitForDecision(String(req.params.id), wait * 1000, abort.signal);
+        escalation = await store.waitForDecision(target.id, wait * 1000, abort.signal);
       } finally {
         unwatch();
       }
@@ -315,22 +456,28 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
         res.status(401).json({ error: 'unauthorized' });
         return;
       }
-      res.json(escalation);
+      res.json(pub.escalation(escalation));
     }),
   );
+
+  const escalationOf = (req: Request, res: Response) => acc(res).escalation(String(req.params.id), projectQuery(req)).id;
 
   /** Agents record agreement/disagreement with the recommendation. */
   app.post('/api/escalations/:id/positions', agent, (req, res) => {
     const body = parse(s.position, req.body);
     res.json(
-      store.addPosition(String(req.params.id), { ...body, agent: body.agent ?? principalOf(res).name }, principalOf(res).name),
+      pub.escalation(
+        store.addPosition(escalationOf(req, res), { ...body, agent: body.agent ?? principalOf(res).name }, principalOf(res).name),
+      ),
     );
   });
 
   app.post('/api/escalations/:id/decide', human, (req, res) => {
     const body = parse(s.decision, req.body);
     res.json(
-      store.decideEscalation(String(req.params.id), body.decision, body.note ?? null, principalOf(res).name, body.change ?? false),
+      pub.escalation(
+        store.decideEscalation(escalationOf(req, res), body.decision, body.note ?? null, principalOf(res).name, body.change ?? false),
+      ),
     );
   });
 
@@ -338,69 +485,94 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   app.post('/api/escalations/:id/ack', agent, (req, res) => {
     const body = parse(s.acknowledgement, req.body ?? {});
     res.json(
-      store.acknowledgeEscalation(String(req.params.id), body.note ?? null, principalOf(res).name, {
-        status: body.status,
-        activity: body.activity,
-      }),
+      pub.escalation(
+        store.acknowledgeEscalation(escalationOf(req, res), body.note ?? null, principalOf(res).name, {
+          status: body.status,
+          activity: body.activity,
+        }),
+      ),
     );
   });
 
   // Agents withdraw (answered elsewhere / moot); humans may dismiss stale ones.
   app.post('/api/escalations/:id/withdraw', any, (req, res) => {
     const body = parse(s.resolution, req.body ?? {});
-    res.json(store.withdrawEscalation(String(req.params.id), body.note ?? null, principalOf(res).name));
+    res.json(pub.escalation(store.withdrawEscalation(escalationOf(req, res), body.note ?? null, principalOf(res).name)));
   });
 
   // ---- requirements (owner decisions about the product) ----
 
   app.get('/api/requirements', any, (req, res) => {
-    const q = parse(s.requirementQuery, req.query);
-    res.json(store.findRequirements({ query: q.q, tags: q.tag, group: q.group, statuses: q.status, limit: q.limit }));
+    const query = parse(s.requirementQuery, req.query);
+    const a = acc(res);
+    const projects = a.scope(query.project);
+    const group = query.group ? q(a.pick(query.project), query.group) : undefined;
+    res.json(
+      store
+        .findRequirements({ query: query.q, tags: query.tag, group, projects, statuses: query.status, limit: query.limit })
+        .map(pub.requirement),
+    );
   });
 
   app.get('/api/requirements/tags', any, (req, res) => {
-    const group = typeof req.query.group === 'string' ? parse(s.groupId, req.query.group) : undefined;
-    res.json(store.requirementTags(group));
+    const a = acc(res);
+    const group = typeof req.query.group === 'string' ? q(a.pick(projectQuery(req)), parse(s.groupId, req.query.group)) : undefined;
+    res.json(store.requirementTags(group, a.scope(projectQuery(req))));
   });
 
-  app.get('/api/requirements/:id', any, (req, res) => {
-    const found = store.getRequirement(String(req.params.id));
-    if (!found) throw new NotFoundError('Requirement not found');
-    res.json(found);
-  });
-
-  /** Agents record owner decisions; a person recording one is the decider unless they say otherwise. */
-  const requirementBody = (req: Request, res: Response) => {
-    const body = parse(s.requirementInput, req.body);
-    const who = principalOf(res);
-    return { ...body, decidedBy: body.decidedBy ?? (who.role === 'human' && !body.sourceEscalation ? who.name : null) };
+  /** A requirement the caller may see: one for all projects, or one of the caller's projects. */
+  const visibleRequirement = (res: Response, id: string) => {
+    const found = store.getRequirement(id);
+    if (!found || (found.project !== null && !acc(res).projects.includes(found.project))) {
+      throw new NotFoundError('Requirement not found');
+    }
+    return found;
   };
 
+  app.get('/api/requirements/:id', any, (req, res) => {
+    res.json(pub.requirement(visibleRequirement(res, String(req.params.id))));
+  });
+
+  const requirementBody = (req: Request, res: Response, current?: Requirement) =>
+    requirementInputFor(acc(res), parse(s.requirementInput, req.body), projectQuery(req), current);
+
   app.post('/api/requirements', any, (req, res) => {
-    res.status(201).json(store.recordRequirement(requirementBody(req, res), principalOf(res).name, principalOf(res).role === 'human'));
+    const result = store.recordRequirement(requirementBody(req, res), principalOf(res).name, principalOf(res).role === 'human');
+    res.status(201).json(pubRecord(result));
   });
 
   app.post('/api/requirements/:id/supersede', any, (req, res) => {
-    res
-      .status(201)
-      .json(
-        store.supersedeRequirement(String(req.params.id), requirementBody(req, res), principalOf(res).name, principalOf(res).role === 'human'),
-      );
+    const current = visibleRequirement(res, String(req.params.id));
+    const result = store.supersedeRequirement(
+      current.id,
+      requirementBody(req, res, current),
+      principalOf(res).name,
+      principalOf(res).role === 'human',
+    );
+    res.status(201).json(pubRecord(result));
   });
 
   app.patch('/api/requirements/:id', human, (req, res) => {
-    res.json(store.editRequirement(String(req.params.id), parse(s.requirementEdit, req.body)));
+    const current = visibleRequirement(res, String(req.params.id));
+    res.json(pub.requirement(store.editRequirement(current.id, parse(s.requirementEdit, req.body))));
   });
 
   app.post('/api/requirements/:id/retire', human, (req, res) => {
-    res.json(store.retireRequirement(String(req.params.id)));
+    const current = visibleRequirement(res, String(req.params.id));
+    res.json(pub.requirement(store.retireRequirement(current.id)));
   });
 
   // ---- export (CSV / JSON / zip for analysis) ----
 
-  const exportFilterOf = (req: Request) => {
-    const q = parse(s.exportFilter, req.query);
-    return { from: q.from, to: q.to, laneId: q.lane };
+  const exportFilterOf = (req: Request, res: Response) => {
+    const query = parse(s.exportFilter, req.query);
+    const a = acc(res);
+    return {
+      from: query.from,
+      to: query.to,
+      laneId: query.lane ? q(a.pick(query.project), query.lane) : undefined,
+      projects: a.scope(query.project),
+    };
   };
   const stamp = () => new Date().toISOString().slice(0, 10);
   // Building an export reads everything; one at a time keeps the server responsive.
@@ -416,7 +588,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   };
 
   app.get('/api/export', any, oneAtATime, h(async (req, res) => {
-    const body = await exportZip(store, exportFilterOf(req), new Date());
+    const body = await exportZip(store, exportFilterOf(req, res), new Date());
     res
       .set({
         'content-type': 'application/zip',
@@ -432,7 +604,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     if (!match || !dataset || !EXPORT_DATASETS.includes(dataset)) {
       throw new NotFoundError(`Unknown export; use one of ${EXPORT_DATASETS.map((d) => `${d}.csv`).join(', ')} (or .json)`);
     }
-    const filter = exportFilterOf(req);
+    const filter = exportFilterOf(req, res);
     res.set('cache-control', 'no-store');
     if (match[2] === 'json') {
       res.json(await datasetRowsAsync(store, dataset, filter));
@@ -462,7 +634,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
 
   // ---- real-time stream (SSE) ----
 
+  /** Events for the caller's projects (or `?project=`), as the client knows the ids. */
   app.get('/api/events', any, (req, res) => {
+    const projects = acc(res).scope(projectQuery(req));
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache, no-transform',
@@ -470,9 +644,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       'x-accel-buffering': 'no',
     });
     res.write('retry: 3000\n\n');
-    const send = (e: StreamEvent) => res.write(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
+    const send = (e: StreamEvent) => {
+      const visible = pub.event(e, projects);
+      if (visible) res.write(`event: ${visible.type}\ndata: ${JSON.stringify(visible)}\n\n`);
+    };
     // Close the stream as soon as its credential stops being valid: checked on every heartbeat
-    // and immediately whenever sessions or keys are revoked.
+    // and immediately whenever sessions or keys are revoked (or memberships change, so the
+    // client reconnects with what it may now see).
     const stillValid = stillValidOf(res);
     const heartbeat = setInterval(() => {
       res.write(': ping\n\n');
@@ -480,9 +658,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     }, 25_000);
     store.events.on('change', send);
     const unwatch = watchRevocationOf(res)(() => res.end());
+    const onMembership = () => res.end();
+    membershipChanges.on('changed', onMembership);
     req.on('close', () => {
       clearInterval(heartbeat);
       store.events.off('change', send);
+      membershipChanges.off('changed', onMembership);
       unwatch();
     });
   });
@@ -513,6 +694,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       res.status(400).json({ error: 'invalid request', issues: err.issues });
     } else if (err instanceof NotFoundError) {
       res.status(404).json({ error: err.message });
+    } else if (err instanceof ForbiddenError) {
+      res.status(403).json({ error: err.message });
     } else if (err instanceof ValidationError) {
       res.status(400).json({ error: err.message });
     } else if (err instanceof ConflictError) {

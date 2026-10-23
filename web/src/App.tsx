@@ -12,13 +12,14 @@ import {
   type PublicConfig,
 } from './api.ts';
 import { Chips, GroupHeader, LaneCard, LaneDetail } from './components.tsx';
-import { EscalationCard, EscalationDetail } from './escalations.tsx';
+import { EscalationCard, EscalationDetail, isCodeOf } from './escalations.tsx';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
+import { keyOf } from './merge.ts';
 import { useLiveData, useNow } from './live.ts';
 import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { RequirementsPane } from './requirements.tsx';
-import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection } from './settings.tsx';
+import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection, ProjectsSection } from './settings.tsx';
 
 // ---- routing (hash based, so it works from file-less Capacitor URLs and push deep links) ----
 
@@ -26,11 +27,14 @@ type View = 'inbox' | 'lanes' | 'reqs' | 'settings';
 interface Route {
   view: View;
   laneId?: string;
+  /** The lane's project; old links (#/lane/<id>) leave it out. */
+  laneProject?: string;
   escId?: string;
 }
 
 function parseRoute(hash: string): Route {
-  const [, a, b] = hash.replace(/^#/, '').split('/');
+  const [, a, b, c] = hash.replace(/^#/, '').split('/');
+  if (a === 'lane' && b && c) return { view: 'lanes', laneProject: decodeURIComponent(b), laneId: decodeURIComponent(c) };
   if (a === 'lane' && b) return { view: 'lanes', laneId: decodeURIComponent(b) };
   if (a === 'esc' && b) return { view: 'inbox', escId: b };
   if (a === 'lanes' || a === 'reqs' || a === 'settings') return { view: a };
@@ -93,6 +97,31 @@ function useFilters(): [Filters, (f: Partial<Filters>) => void] {
 }
 
 const toggle = <T,>(list: T[], v: T) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+
+/** Which project the views show: '' for all of them (the combined view). Remembered per device. */
+const PROJECT_KEY = 'lanesignal.project';
+function useProjectFilter(): [string, (p: string) => void] {
+  const [p, setP] = useState(() => {
+    try {
+      return localStorage.getItem(PROJECT_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  return [
+    p,
+    (next) => {
+      setP(next);
+      try {
+        localStorage.setItem(PROJECT_KEY, next);
+      } catch {
+        /* private mode: just don't remember */
+      }
+    },
+  ];
+}
+
+export const laneRoute = (project: string, id: string) => `#/lane/${encodeURIComponent(project)}/${encodeURIComponent(id)}`;
 
 // ---- root ----
 
@@ -187,40 +216,70 @@ function Dashboard({
     return () => void h.then((x) => x.remove());
   }, []);
 
-  const lanes = useMemo(() => [...live.lanes.values()].sort(compareLanes), [live.lanes]);
-  const escalations = useMemo(
-    () => [...live.escalations.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-    [live.escalations],
+  const [projectChoice, setProjectFilter] = useProjectFilter();
+  // Only a project the caller can still see filters anything; with one project there's nothing to pick.
+  const multiProject = live.projects.length > 1;
+  const projectFilter = multiProject && live.projects.some((p) => p.id === projectChoice) ? projectChoice : '';
+  const inScope = (project: string) => !projectFilter || project === projectFilter;
+  const lanes = useMemo(
+    () => [...live.lanes.values()].filter((l) => inScope(l.project)).sort(compareLanes),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [live.lanes, projectFilter],
   );
+  const escalations = useMemo(
+    () =>
+      [...live.escalations.values()]
+        .filter((e) => inScope(e.project))
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [live.escalations, projectFilter],
+  );
+  const laneOf = (e: { project: string; laneId: string }) => live.lanes.get(keyOf(e.project, e.laneId));
+  const groupOfLane = (l: { project: string; group: string | null } | undefined) =>
+    l?.group ? live.groups.get(keyOf(l.project, l.group)) : undefined;
   // Inbox order: lanes by their oldest open question, then each lane's questions in order,
   // so a batch ("four questions from #921") reads top to bottom.
   const openByLane = new Map<string, typeof escalations>();
   for (const e of escalations) {
     if (e.state !== 'open') continue;
-    openByLane.set(e.laneId, [...(openByLane.get(e.laneId) ?? []), e]);
+    const k = keyOf(e.project, e.laneId);
+    openByLane.set(k, [...(openByLane.get(k) ?? []), e]);
   }
   // Counts and badges are for blocking questions; FYI ones are listed separately.
   const open = [...openByLane.values()].flat().filter((e) => e.blocking);
   const fyi = [...openByLane.values()].flat().filter((e) => !e.blocking);
   const decided = escalations.filter((e) => e.state === 'decided');
+  // Old lane links carry no project: the one lane with that id, or the current/only project.
+  const routeLaneProject = route.laneId
+    ? (route.laneProject ??
+      [...live.lanes.values()].find((l) => l.id === route.laneId && inScope(l.project))?.project ??
+      (projectFilter || live.projects[0]?.id))
+    : undefined;
+  const routeLaneKey = route.laneId && routeLaneProject ? keyOf(routeLaneProject, route.laneId) : '';
   // Refetch lane detail only when something about that lane changed.
-  const laneVersion = route.laneId
+  const laneVersion = routeLaneKey
     ? [
-        live.lanes.get(route.laneId)?.updatedAt,
-        ...escalations.filter((e) => e.laneId === route.laneId).map((e) => e.id + e.state),
+        live.lanes.get(routeLaneKey)?.updatedAt,
+        ...[...live.escalations.values()]
+          .filter((e) => keyOf(e.project, e.laneId) === routeLaneKey)
+          .map((e) => e.id + e.state),
       ].join('|')
     : '';
-  // The route may name an escalation by its code (#/esc/A12).
+  // The route may name an escalation by its code (#/esc/A12, or #/esc/LS-A12 across projects).
   const routeEsc = route.escId
-    ? (live.escalations.get(route.escId) ?? escalations.find((e) => e.ref.toLowerCase() === route.escId!.toLowerCase()))
+    ? (live.escalations.get(route.escId) ??
+      [...live.escalations.values()].find((e) => isCodeOf(e, route.escId!) && inScope(e.project)) ??
+      [...live.escalations.values()].find((e) => isCodeOf(e, route.escId!)))
     : undefined;
   // Closed escalations drop out of the live map, which also changes this key.
   const escVersion = route.escId ? (routeEsc?.updatedAt ?? 'closed') : '';
   const seqOf = (e: (typeof escalations)[number]) => {
-    const siblings = openByLane.get(e.laneId) ?? [];
+    const siblings = openByLane.get(keyOf(e.project, e.laneId)) ?? [];
     return siblings.length > 1 ? { index: siblings.indexOf(e), total: siblings.length } : undefined;
   };
-  const escLaneId = routeEsc?.laneId ?? null;
+  const escLaneKey = routeEsc ? keyOf(routeEsc.project, routeEsc.laneId) : null;
+  /** In the combined view with several projects, codes and groups carry their project. */
+  const showProject = multiProject && !projectFilter;
   const blockedLanes = lanes.filter((l) => l.status === 'blocked_human' && l.blockingEscalations === 0);
 
   useEffect(() => {
@@ -253,9 +312,22 @@ function Dashboard({
   }
 
   const label = config.groupLabel;
-  const groupName = (id: string | null) => (id ? (live.groups.get(id)?.name ?? id) : `No ${label.toLowerCase()}`);
+  const projectKeyOf = (project: string) => live.projects.find((p) => p.id === project)?.key ?? project;
+  /** Group keys are keyOf(project, group). */
+  const groupName = (key: string | null) => {
+    if (!key) return `No ${label.toLowerCase()}`;
+    const g = live.groups.get(key);
+    const name = g?.name ?? key.slice(key.indexOf('/') + 1);
+    return showProject ? `${projectKeyOf(g?.project ?? key.slice(0, key.indexOf('/')))} · ${name}` : name;
+  };
+  const laneGroupKey = (l: { project: string; group: string | null }) => (l.group ? keyOf(l.project, l.group) : null);
   // Groups that have lanes, plus any the overseers published without lanes yet.
-  const groupIds = [...new Set([...live.groups.keys(), ...lanes.map((l) => l.group).filter((g): g is string => !!g)])];
+  const groupIds = [
+    ...new Set([
+      ...[...live.groups.values()].filter((g) => inScope(g.project)).map((g) => keyOf(g.project, g.id)),
+      ...lanes.map(laneGroupKey).filter((g): g is string => !!g),
+    ]),
+  ];
   const statusOptions = config.statuses.filter((s) => s !== 'completed' || filters.showCompleted);
   // Only filters the user can currently see (and so undo) take effect.
   const activeGroups = filters.groups.filter((g) => groupIds.includes(g));
@@ -263,7 +335,7 @@ function Dashboard({
   const visible = lanes.filter(
     (l) =>
       (filters.showCompleted || l.status !== 'completed' || needsHuman(l)) &&
-      (!activeGroups.length || (l.group !== null && activeGroups.includes(l.group))) &&
+      (!activeGroups.length || (l.group !== null && activeGroups.includes(laneGroupKey(l)!))) &&
       (!activeStatuses.length || activeStatuses.includes(l.status)),
   );
   type Section = { key: string; title?: string; groupId?: string | null; lanes: typeof visible };
@@ -272,7 +344,7 @@ function Dashboard({
     // Groups needing a human first, then alphabetical; ungrouped lanes last.
     const ids: (string | null)[] = [...groupIds, null];
     sections = ids
-      .map((id) => ({ key: id ?? '', groupId: id, lanes: visible.filter((l) => l.group === id) }))
+      .map((id) => ({ key: id ?? '', groupId: id, lanes: visible.filter((l) => laneGroupKey(l) === id) }))
       .sort(
         (a, b) =>
           Number(b.lanes.some(needsHuman)) - Number(a.lanes.some(needsHuman)) ||
@@ -297,18 +369,26 @@ function Dashboard({
           key={e.id}
           esc={e}
           seq={seqOf(e)}
-          lane={live.lanes.get(e.laneId)}
-          group={live.groups.get(live.lanes.get(e.laneId)?.group ?? '')}
+          lane={laneOf(e)}
+          group={groupOfLane(laneOf(e))}
           now={now}
           client={client}
           staleMinutes={config.staleMinutes}
+          showProject={showProject}
         />
       ))}
       {blockedLanes.length > 0 && (
         <>
           <h3 className="subhead">Blocked lanes without an escalation</h3>
           {blockedLanes.map((l) => (
-            <LaneCard key={l.id} lane={l} now={now} config={config} groupName={l.group && groupName(l.group)} onOpen={() => navigate(`#/lane/${encodeURIComponent(l.id)}`)} />
+            <LaneCard
+              key={keyOf(l.project, l.id)}
+              lane={l}
+              now={now}
+              config={config}
+              groupName={laneGroupKey(l) && groupName(laneGroupKey(l))}
+              onOpen={() => navigate(laneRoute(l.project, l.id))}
+            />
           ))}
         </>
       )}
@@ -322,11 +402,12 @@ function Dashboard({
               key={e.id}
               esc={e}
               seq={seqOf(e)}
-              lane={live.lanes.get(e.laneId)}
-              group={live.groups.get(live.lanes.get(e.laneId)?.group ?? '')}
+              lane={laneOf(e)}
+              group={groupOfLane(laneOf(e))}
               now={now}
               client={client}
               staleMinutes={config.staleMinutes}
+              showProject={showProject}
             />
           ))}
         </>
@@ -338,11 +419,12 @@ function Dashboard({
             <EscalationCard
               key={e.id}
               esc={e}
-              lane={live.lanes.get(e.laneId)}
-              group={live.groups.get(live.lanes.get(e.laneId)?.group ?? '')}
+              lane={laneOf(e)}
+              group={groupOfLane(laneOf(e))}
               now={now}
               client={client}
               staleMinutes={config.staleMinutes}
+              showProject={showProject}
             />
           ))}
         </>
@@ -417,12 +499,12 @@ function Dashboard({
               <div className="lane-grid">
                 {sec.lanes.map((l) => (
                   <LaneCard
-                    key={l.id}
+                    key={keyOf(l.project, l.id)}
                     lane={l}
                     now={now}
                     config={config}
-                    groupName={filters.arrange === 'group' || !l.group ? null : groupName(l.group)}
-                    onOpen={() => navigate(`#/lane/${encodeURIComponent(l.id)}`)}
+                    groupName={filters.arrange === 'group' || !l.group ? null : groupName(laneGroupKey(l))}
+                    onOpen={() => navigate(laneRoute(l.project, l.id))}
                   />
                 ))}
               </div>
@@ -459,9 +541,10 @@ function Dashboard({
         <dt>Ticket systems</dt>
         <dd>{config.ticketSystems.join(', ') || 'none configured'}</dd>
       </dl>
+      <ProjectsSection client={client} me={me} projects={live.projects} onChanged={live.refresh} />
       {me?.userId ? (
         <>
-          <AgentKeysSection client={client} serverUrl={conn.server || location.origin} now={now} />
+          <AgentKeysSection client={client} serverUrl={conn.server || location.origin} now={now} projects={live.projects} />
           {me.admin && <PeopleSection client={client} me={me} />}
           <PasswordSection client={client} onNewSession={onNewSession} />
         </>
@@ -481,6 +564,21 @@ function Dashboard({
         <a href="#/" className="brand">
           <img src="/icon.svg" alt="" width={24} height={24} /> {config.name}
         </a>
+        {multiProject && (
+          <select
+            className="project-switch"
+            aria-label="Project"
+            value={projectFilter}
+            onChange={(e) => setProjectFilter(e.target.value)}
+          >
+            <option value="">All projects</option>
+            {live.projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
         <nav className="topnav" aria-label="Views">
           <a href="#/lanes" className={route.view === 'lanes' || route.view === 'inbox' ? 'on' : ''}>
             Lanes
@@ -507,6 +605,8 @@ function Dashboard({
           <RequirementsPane
             client={client}
             groups={live.groups}
+            projects={live.projects}
+            project={projectFilter}
             groupLabel={config.groupLabel}
             canEdit={me?.role === 'human'}
             version={live.requirementsVersion}
@@ -536,7 +636,8 @@ function Dashboard({
           client={client}
           lanes={live.lanes}
           groups={live.groups}
-          laneOpenIds={escLaneId ? (openByLane.get(escLaneId) ?? []).map((e) => e.id) : []}
+          laneOpenIds={escLaneKey ? (openByLane.get(escLaneKey) ?? []).map((e) => e.id) : []}
+          showProject={multiProject}
           currentId={routeEsc?.id}
           version={escVersion}
           now={now}
@@ -544,14 +645,15 @@ function Dashboard({
           onClose={() => closeTo('#/')}
         />
       )}
-      {route.laneId && (
+      {route.laneId && routeLaneProject && (
         <LaneDetail
           laneId={route.laneId}
+          project={routeLaneProject}
           client={client}
           version={laneVersion}
           now={now}
           canDelete={me?.role === 'human'}
-          group={live.groups.get(live.lanes.get(route.laneId)?.group ?? '')}
+          group={groupOfLane(live.lanes.get(routeLaneKey))}
           groupLabel={config.groupLabel}
           onClose={() => closeTo('#/lanes')}
         />
