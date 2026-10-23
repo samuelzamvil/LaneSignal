@@ -264,6 +264,9 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
       res.status(409).json({ error: err.message });
     } else if (err instanceof SyntaxError) {
       res.status(400).json({ error: 'invalid JSON' });
+    } else if (typeof (err as { status?: unknown })?.status === 'number' && (err as { status: number }).status < 500) {
+      // body-parser errors: payload too large, unsupported charset, ...
+      res.status((err as { status: number }).status).json({ error: (err as Error).message });
     } else {
       log.error('unhandled error', { error: String(err), stack: (err as Error)?.stack });
       res.status(500).json({ error: 'internal error' });

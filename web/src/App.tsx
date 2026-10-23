@@ -35,10 +35,23 @@ function parseRoute(hash: string): Route {
   return { view: 'inbox' };
 }
 
+// History entries created inside the app are tagged, so closing a sheet only goes
+// "back" when back stays in the app (not to whatever site linked here).
+if (history.state === null) history.replaceState({ inApp: false }, '');
+
+/** Close a sheet: step back if we navigated here in-app, otherwise go to `fallback`. */
+export function closeTo(fallback: string) {
+  if ((history.state as { inApp?: boolean } | null)?.inApp) history.back();
+  else location.replace(fallback);
+}
+
 function useRoute(): [Route, (r: string) => void] {
   const [route, setRoute] = useState(() => parseRoute(location.hash));
   useEffect(() => {
-    const on = () => setRoute(parseRoute(location.hash));
+    const on = () => {
+      if (history.state === null) history.replaceState({ inApp: true }, '');
+      setRoute(parseRoute(location.hash));
+    };
     addEventListener('hashchange', on);
     return () => removeEventListener('hashchange', on);
   }, []);
@@ -172,17 +185,41 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
   const [route, navigate] = useRoute();
   const [filters, setFilters] = useFilters();
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const isLive = live.link === 'live';
+
+  // Load config + identity; retry every 5s while it fails, and again whenever the stream reconnects.
   useEffect(() => {
-    Promise.all([client.config(), client.me()])
-      .then(([c, m]) => (setConfig(c), setMe(m)))
-      .catch((e: { status?: number }) => e.status === 401 && setAuthError(true));
-  }, [client]);
+    if (config) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () =>
+      Promise.all([client.config(), client.me()])
+        .then(([c, m]) => !cancelled && (setConfig(c), setMe(m), setLoadError(null)))
+        .catch((e: { status?: number; message?: string }) => {
+          if (cancelled) return;
+          if (e.status === 401 || e.status === 403) return setAuthError(true);
+          setLoadError(e.message ?? 'Server unreachable');
+          timer = setTimeout(load, 5000);
+        });
+    void load();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [client, config, isLive]);
 
   useEffect(() => {
     if (!config) return;
+    let cancelled = false;
     let cleanup = () => {};
-    void setupPush(client, config, navigate).then((c) => (cleanup = c));
-    return () => cleanup();
+    setupPush(client, config, navigate)
+      .then((c) => (cancelled ? c() : (cleanup = c)))
+      .catch((err: unknown) => console.warn('push setup failed', err));
+    return () => {
+      cancelled = true;
+      cleanup();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, config]);
 
@@ -230,7 +267,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
     document.title = open.length ? `(${open.length}) LaneSignal` : 'LaneSignal';
   }, [open.length]);
 
-  if (authError) {
+  if (authError || live.link === 'unauthorized') {
     return (
       <main className="login">
         <form onSubmit={(e) => (e.preventDefault(), onSignOut(client))}>
@@ -241,18 +278,33 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
       </main>
     );
   }
-  if (!config) return <main className="loading">Connecting…</main>;
+  if (!config) {
+    return (
+      <main className="loading">
+        <div>
+          <p>Connecting…</p>
+          {loadError && <p className="error">{loadError} · retrying</p>}
+          <button className="link" onClick={() => onSignOut(client)}>
+            Sign out
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   const label = config.groupLabel;
   const groupName = (id: string | null) => (id ? (live.groups.get(id)?.name ?? id) : `No ${label.toLowerCase()}`);
   // Groups that have lanes, plus any the overseers published without lanes yet.
   const groupIds = [...new Set([...live.groups.keys(), ...lanes.map((l) => l.group).filter((g): g is string => !!g)])];
   const statusOptions = config.statuses.filter((s) => s !== 'completed' || filters.showCompleted);
+  // Only filters the user can currently see (and so undo) take effect.
+  const activeGroups = filters.groups.filter((g) => groupIds.includes(g));
+  const activeStatuses = filters.statuses.filter((s) => statusOptions.includes(s));
   const visible = lanes.filter(
     (l) =>
       (filters.showCompleted || l.status !== 'completed' || needsHuman(l)) &&
-      (!filters.groups.length || (l.group !== null && filters.groups.includes(l.group))) &&
-      (!filters.statuses.length || filters.statuses.includes(l.status)),
+      (!activeGroups.length || (l.group !== null && activeGroups.includes(l.group))) &&
+      (!activeStatuses.length || activeStatuses.includes(l.status)),
   );
   type Section = { key: string; title?: string; groupId?: string | null; lanes: typeof visible };
   let sections: Section[];
@@ -323,7 +375,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
         Lanes <span className="count">{visible.length}</span>
       </h2>
       <div className="filters">
-        {groupIds.length > 1 && (
+        {(groupIds.length > 1 || activeGroups.length > 0) && (
           <Chips
             label={label}
             options={groupIds}
@@ -356,7 +408,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
             />
             Completed ({completedCount})
           </label>
-          {(filters.groups.length > 0 || filters.statuses.length > 0) && (
+          {(activeGroups.length > 0 || activeStatuses.length > 0) && (
             <button className="link" onClick={() => setFilters({ groups: [], statuses: [] })}>
               Clear
             </button>
@@ -470,7 +522,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
           laneOpenIds={escLaneId ? (openByLane.get(escLaneId) ?? []).map((e) => e.id) : []}
           version={escVersion}
           now={now}
-          onClose={() => (history.length > 1 ? history.back() : navigate('#/'))}
+          onClose={() => closeTo('#/')}
         />
       )}
       {route.laneId && (
@@ -482,7 +534,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
           canDelete={me?.role === 'human'}
           group={live.groups.get(live.lanes.get(route.laneId)?.group ?? '')}
           groupLabel={config.groupLabel}
-          onClose={() => (history.length > 1 ? history.back() : navigate('#/lanes'))}
+          onClose={() => closeTo('#/lanes')}
         />
       )}
     </div>

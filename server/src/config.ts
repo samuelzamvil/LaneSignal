@@ -78,6 +78,16 @@ function parseTemplates(v: string | undefined): Record<string, string> | undefin
   );
 }
 
+/** Integer setting within [min, max]; anything else stops startup with a clear message. */
+function int(name: string, value: string | number | undefined, fallback: number, min: number, max: number) {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}, got "${value}"`);
+  }
+  return n;
+}
+
 const DEFAULT_CORS = ['capacitor://localhost', 'https://localhost', 'http://localhost'];
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -113,7 +123,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     name: env.LANESIGNAL_NAME ?? file.name ?? 'LaneSignal',
     host: env.HOST ?? '0.0.0.0',
-    port: Number(env.PORT ?? 8080),
+    port: int('PORT', env.PORT, 8080, 1, 65535),
     dataDir,
     publicUrl: env.LANESIGNAL_PUBLIC_URL ?? file.publicUrl ?? null,
     trustProxy: env.LANESIGNAL_TRUST_PROXY === 'true',
@@ -123,12 +133,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ticketTemplates,
     defaultTicketSystem:
       env.LANESIGNAL_TICKET_DEFAULT ?? file.defaultTicketSystem ?? Object.keys(ticketTemplates)[0] ?? null,
-    staleMinutes: Number(env.LANESIGNAL_STALE_MINUTES ?? file.staleMinutes ?? 30),
+    staleMinutes: int('LANESIGNAL_STALE_MINUTES', env.LANESIGNAL_STALE_MINUTES ?? file.staleMinutes, 30, 0, 100_000),
     notifyOn,
     fcmServiceAccountFile: env.LANESIGNAL_FCM_SERVICE_ACCOUNT_FILE ?? file.fcmServiceAccountFile ?? null,
     ntfyUrl: env.LANESIGNAL_NTFY_URL ?? file.ntfyUrl ?? null,
     ntfyToken: env.LANESIGNAL_NTFY_TOKEN ?? file.ntfyToken ?? null,
-    eventRetention: Number(env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention ?? 200),
+    eventRetention: int('LANESIGNAL_EVENT_RETENTION', env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention, 200, 1, 100_000),
   };
 }
 

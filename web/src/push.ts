@@ -25,8 +25,9 @@ export async function setupPush(client: Client, config: PublicConfig, navigate: 
   const handles = await Promise.all([
     PushNotifications.addListener('registration', (t) => {
       localStorage.setItem(TOKEN_KEY, t.value);
-      void client.registerPush(t.value);
+      client.registerPush(t.value).catch((err: unknown) => console.warn('push token registration failed', err));
     }),
+    PushNotifications.addListener('registrationError', (err) => console.warn('push registration failed', err)),
     PushNotifications.addListener('pushNotificationActionPerformed', (a) => {
       const route = (a.notification.data as { route?: string } | undefined)?.route;
       if (route) navigate(route);

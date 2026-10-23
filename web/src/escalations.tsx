@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, Lane, Position } from './api.ts';
 import { Links, RichText, TicketLink } from './components.tsx';
 import { absolute, ago } from './format.ts';
@@ -251,14 +251,21 @@ export function EscalationDetail({
   now: number;
   onClose: () => void;
 }) {
-  const [esc, setEsc] = useState<Escalation | null>(null);
+  const [loaded, setLoaded] = useState<Escalation | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const sheet = useRef<HTMLElement>(null);
+  // While stepping to another question, never show (or answer) the previous one.
+  const esc = loaded?.id === id ? loaded : null;
+
+  useEffect(() => {
+    sheet.current?.scrollTo(0, 0);
+  }, [id]);
 
   useEffect(() => {
     let cancelled = false;
     client
       .escalation(id)
-      .then((e) => !cancelled && (setEsc(e), setError(null)))
+      .then((e) => !cancelled && (setLoaded(e), setError(null)))
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
@@ -287,7 +294,7 @@ export function EscalationDetail({
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <section className="sheet" onClick={(e) => e.stopPropagation()} aria-label="Escalation details">
+      <section ref={sheet} className="sheet" onClick={(e) => e.stopPropagation()} aria-label="Escalation details">
         <header className="sheet-head">
           <button className="back" onClick={onClose} aria-label="Close">
             ←
@@ -389,7 +396,7 @@ export function EscalationDetail({
             {esc.state === 'open' ? (
               <section className="esc-section answer">
                 <h4>Your decision</h4>
-                <DecisionForm esc={esc} client={client} />
+                <DecisionForm key={esc.id} esc={esc} client={client} />
               </section>
             ) : (
               <section className="esc-section outcome">

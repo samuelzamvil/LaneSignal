@@ -353,7 +353,7 @@ textarea {
 .links a {
   display: inline-flex;
   align-items: center;
-  min-height: 32px;
+  min-height: 40px;
   padding: 4px 10px;
   border-radius: 8px;
   background: var(--surface-2);
@@ -501,9 +501,13 @@ textarea {
   padding: 4px 8px;
 }
 
+.filter-row .check {
+  min-height: var(--tap);
+}
+
 .filter-row .check input {
-  width: 20px;
-  min-height: 20px;
+  width: 22px;
+  min-height: 22px;
 }
 
 /* ---- escalations ---- */
@@ -540,7 +544,7 @@ textarea {
 .lane-ref {
   display: inline-flex;
   align-items: center;
-  min-height: 32px;
+  min-height: 40px;
   padding: 0 10px;
   border-radius: 8px;
   background: var(--surface-2);

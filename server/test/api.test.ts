@@ -113,6 +113,15 @@ describe('lanes', () => {
     await call('DELETE', '/api/lanes/tmp-lane', ALICE);
   });
 
+  test('body-parser errors are client errors, not 500s', async () => {
+    const res = await fetch(`${base}/api/lanes/big`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${AGENT}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ activity: 'x'.repeat(300_000) }),
+    });
+    assert.equal(res.status, 413);
+  });
+
   test('validates input', async () => {
     assert.equal((await call('PUT', '/api/lanes/bad%20id', AGENT, {})).status, 400);
     assert.equal((await call('PUT', '/api/lanes/ok', AGENT, { status: 'exploded' })).status, 400);

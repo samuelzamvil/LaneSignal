@@ -102,6 +102,8 @@ export interface Escalation {
   /** Suggested answers rendered as one-tap buttons. */
   options: string[];
   links: Link[];
+  /** Holds the lane in blocked_human while open; false for FYI questions. */
+  blocking: boolean;
   state: EscalationState;
   createdBy: string;
   createdAt: string;
@@ -144,6 +146,7 @@ export interface Principal {
 export type StreamEvent =
   | { type: 'group'; group: Group }
   | { type: 'group_deleted'; id: string }
-  | { type: 'lane'; lane: Lane }
+  /** `statusChanged` is set when this event is the lane's status transition (drives notifications). */
+  | { type: 'lane'; lane: Lane; statusChanged?: boolean }
   | { type: 'lane_deleted'; id: string }
   | { type: 'escalation'; escalation: Escalation };

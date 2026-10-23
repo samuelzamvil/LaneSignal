@@ -275,7 +275,10 @@ export function LaneDetail({
                 className="ghost danger"
                 onClick={() => {
                   if (confirm(`Remove lane "${data.lane.name}" and its history?`)) {
-                    void client.deleteLane(data.lane.id).then(onClose);
+                    client
+                      .deleteLane(data.lane.id)
+                      .then(onClose)
+                      .catch((err: Error) => alert(`Could not remove the lane: ${err.message}`));
                   }
                 }}
               >
