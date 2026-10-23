@@ -7,9 +7,9 @@ services:
       # Bind to localhost and put a TLS reverse proxy in front (docs/reverse-proxy.md).
       # For Dockge or the published image, see deploy/dockge/compose.yaml.
       - "127.0.0.1:${LANESIGNAL_PORT:-8080}:8080"
-    env_file:
-      - path: .env
-        required: false
+    # The stack's .env (from .env.example; it must exist, even if empty). The short form works on
+    # every Compose version; `path:`/`required:` needs Compose 2.24+.
+    env_file: .env
     environment:
       # One reverse proxy in front (Caddy, Traefik, nginx, tailscale serve). See docs/reverse-proxy.md.
       LANESIGNAL_TRUST_PROXY: "${LANESIGNAL_TRUST_PROXY:-1}"

@@ -22,6 +22,8 @@ CI publishes `ghcr.io/samuelzamvil/lanesignal:main` on every merge to `main`. Ne
    - `LANESIGNAL_TRUST_PROXY`: leave it at `false` while people connect straight to the port. Set it to `1` only once a reverse proxy is the only way in. See [Reverse proxy](reverse-proxy.md).
    - `LANESIGNAL_TICKET_TEMPLATES`: how ticket references become links.
    - `LANESIGNAL_NTFY_URL`: optional, for push to the ntfy app.
+
+   The stack needs this `.env` file to exist, even if you change nothing in it.
 4. Click **Deploy**. The status turns *healthy* after a few seconds. The image has its own `/healthz` health check.
 
 ## 3. Create the admin account
