@@ -27,12 +27,21 @@ function buildServer(store: Store, who: Principal) {
   server.registerTool(
     'list_lanes',
     {
-      description: 'List lanes with status, ticket, activity and open escalation counts.',
-      inputSchema: { status: z.enum(LANE_STATUSES).optional(), category: z.string().optional() },
+      description: 'List lanes with status, ticket, activity and open escalation counts, optionally for one group.',
+      inputSchema: { status: z.enum(LANE_STATUSES).optional(), group: z.string().optional() },
       annotations: { readOnlyHint: true },
     },
-    async ({ status, category }) =>
-      json(store.listLanes().filter((l) => (!status || l.status === status) && (!category || l.category === category))),
+    async ({ status, group }) =>
+      json(store.listLanes().filter((l) => (!status || l.status === status) && (!group || l.group === group))),
+  );
+
+  server.registerTool(
+    'list_groups',
+    {
+      description: 'List groups (the epic/train each overseer runs) with their ticket and links.',
+      annotations: { readOnlyHint: true },
+    },
+    async () => json(store.listGroups()),
   );
 
   server.registerTool(
@@ -67,10 +76,29 @@ function buildServer(store: Store, who: Principal) {
 
   if (who.role === 'agent') {
     server.registerTool(
+      'update_group',
+      {
+        description:
+          'Overseers: describe the group (epic/train) whose lanes you run. One overseer session owns one group; ' +
+          'name it after the epic or train, set `ticket` to its ticket, and put your Remote Control session in `links` ' +
+          'with kind "session" so humans can reach you. Lanes join a group via update_lane(group).',
+        inputSchema: { group_id: s.groupId, ...s.groupPatch.shape },
+      },
+      async ({ group_id, ...patch }) => {
+        try {
+          return json(store.upsertGroup(group_id, patch, who.name));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
       'update_lane',
       {
         description:
           `Publish this lane's current state. Creates the lane on first call; omitted fields are unchanged. ${STATUS_HELP} ` +
+          'Set `group` to the id of the epic/train group (your overseer) the lane belongs to. ' +
           'Ticket refs look like "redmine:1234", "gh:42" or a plain id for the default system. ' +
           'Call this on meaningful state changes, not on a timer.',
         inputSchema: { lane_id: s.laneId, ...s.lanePatch.shape },
@@ -88,7 +116,7 @@ function buildServer(store: Store, who: Principal) {
       'create_escalation',
       {
         description:
-          'Ask the human overseers for a decision. Shows prominently on the dashboard and sends a push notification. ' +
+          'Ask the humans for a decision. Shows prominently on the dashboard and sends a push notification. ' +
           'Structure: `context` (what a human needs to know, without opening your session), `question` (the decision, ' +
           'phrased as a question), `recommendation` (what you would do and why), and `positions` (other agents\' ' +
           'agreement/disagreement with the recommendation, if already known). Provide short `options` for one-tap answers ' +
@@ -165,7 +193,7 @@ function buildServer(store: Store, who: Principal) {
     );
   }
 
-  if (who.role === 'overseer') {
+  if (who.role === 'human') {
     server.registerTool(
       'decide_escalation',
       {

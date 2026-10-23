@@ -19,10 +19,29 @@ export interface Link {
   kind?: string;
 }
 
+/**
+ * A body of tickets (an epic or train) and the overseer agent session that
+ * runs its lanes. One overseer -> many lanes; the group is named after it.
+ */
+export interface Group {
+  id: string;
+  name: string;
+  /** The epic/train ticket, resolved like lane tickets. */
+  ticket: string | null;
+  ticketUrl: string | null;
+  /** Typically the overseer's Remote Control session (kind "session"). */
+  links: Link[];
+  /** Token name that last updated the group. */
+  agent: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Lane {
   id: string;
   name: string;
-  category: string | null;
+  /** Id of the group (epic/train/overseer) this lane belongs to. */
+  group: string | null;
   status: LaneStatus;
   /** Raw ticket reference as published by the agent, e.g. "redmine:1234" or "#42". */
   ticket: string | null;
@@ -100,14 +119,15 @@ export interface LaneEvent {
 
 export interface PublicConfig {
   name: string;
-  categories: string[];
+  /** What groups are called in this deployment: "Epic", "Train", "Overseer", ... */
+  groupLabel: string;
   statuses: readonly LaneStatus[];
   ticketSystems: string[];
   staleMinutes: number;
   push: { fcm: boolean; ntfy: boolean };
 }
 
-export type Role = 'overseer' | 'agent';
+export type Role = 'human' | 'agent';
 
 export interface Principal {
   name: string;
@@ -115,6 +135,8 @@ export interface Principal {
 }
 
 export type StreamEvent =
+  | { type: 'group'; group: Group }
+  | { type: 'group_deleted'; id: string }
   | { type: 'lane'; lane: Lane }
   | { type: 'lane_deleted'; id: string }
   | { type: 'escalation'; escalation: Escalation };

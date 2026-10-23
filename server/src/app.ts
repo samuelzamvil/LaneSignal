@@ -78,7 +78,7 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
 
   const any = auth.require();
   const agent = auth.require('agent');
-  const overseer = auth.require('overseer');
+  const human = auth.require('human');
 
   app.get('/api/me', any, (_req, res) => {
     res.json(principalOf(res));
@@ -87,7 +87,7 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
   app.get('/api/config', any, (_req, res) => {
     const body: PublicConfig = {
       name: config.name,
-      categories: config.categories,
+      groupLabel: config.groupLabel,
       statuses: LANE_STATUSES,
       ticketSystems: Object.keys(config.ticketTemplates),
       staleMinutes: config.staleMinutes,
@@ -98,7 +98,28 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
 
   /** Everything a client needs on (re)connect. */
   app.get('/api/snapshot', any, (_req, res) => {
-    res.json({ lanes: store.listLanes(), escalations: store.listEscalations(), serverTime: new Date().toISOString() });
+    res.json({
+      groups: store.listGroups(),
+      lanes: store.listLanes(),
+      escalations: store.listEscalations(),
+      serverTime: new Date().toISOString(),
+    });
+  });
+
+  // ---- groups (epic / train / overseer) ----
+
+  app.get('/api/groups', any, (_req, res) => {
+    res.json(store.listGroups());
+  });
+
+  app.put('/api/groups/:id', agent, (req, res) => {
+    const id = parse(s.groupId, req.params.id);
+    res.json(store.upsertGroup(id, parse(s.groupPatch, req.body), principalOf(res).name));
+  });
+
+  app.delete('/api/groups/:id', human, (req, res) => {
+    store.deleteGroup(String(req.params.id));
+    res.sendStatus(204);
   });
 
   // ---- lanes ----
@@ -126,7 +147,7 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
     res.json(store.upsertLane(id, parse(s.lanePatch, req.body), principalOf(res).name));
   });
 
-  app.delete('/api/lanes/:id', overseer, (req, res) => {
+  app.delete('/api/lanes/:id', human, (req, res) => {
     store.deleteLane(String(req.params.id));
     res.sendStatus(204);
   });
@@ -164,7 +185,7 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
     );
   });
 
-  app.post('/api/escalations/:id/decide', overseer, (req, res) => {
+  app.post('/api/escalations/:id/decide', human, (req, res) => {
     const body = parse(s.decision, req.body);
     res.json(store.decideEscalation(String(req.params.id), body.decision, body.note ?? null, principalOf(res).name));
   });
@@ -174,7 +195,7 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
     res.json(store.acknowledgeEscalation(String(req.params.id), body.note ?? null, principalOf(res).name));
   });
 
-  // Agents withdraw (answered elsewhere / moot); overseers may dismiss stale ones.
+  // Agents withdraw (answered elsewhere / moot); humans may dismiss stale ones.
   app.post('/api/escalations/:id/withdraw', any, (req, res) => {
     const body = parse(s.resolution, req.body ?? {});
     res.json(store.withdrawEscalation(String(req.params.id), body.note ?? null, principalOf(res).name));
@@ -182,13 +203,13 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
 
   // ---- push ----
 
-  app.post('/api/push/register', overseer, (req, res) => {
+  app.post('/api/push/register', human, (req, res) => {
     const body = parse(s.pushRegistration, req.body);
     store.addPushToken(body.token, body.platform, principalOf(res).name);
     res.sendStatus(204);
   });
 
-  app.post('/api/push/unregister', overseer, (req, res) => {
+  app.post('/api/push/unregister', human, (req, res) => {
     const body = parse(s.pushRegistration.pick({ token: true }), req.body);
     store.removePushToken(body.token);
     res.sendStatus(204);

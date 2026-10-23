@@ -12,7 +12,7 @@ import {
   type Principal,
   type PublicConfig,
 } from './api.ts';
-import { Chips, LaneCard, LaneDetail } from './components.tsx';
+import { Chips, GroupHeader, LaneCard, LaneDetail } from './components.tsx';
 import { EscalationCard, EscalationDetail } from './escalations.tsx';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { useLiveData, useNow } from './live.ts';
@@ -48,14 +48,15 @@ function useRoute(): [Route, (r: string) => void] {
 // ---- persisted filters ----
 
 interface Filters {
-  categories: string[];
+  /** Group (epic/train/overseer) ids to show; empty = all. */
+  groups: string[];
   statuses: LaneStatus[];
-  group: 'none' | 'category' | 'status';
+  arrange: 'group' | 'priority' | 'status';
   showCompleted: boolean;
 }
 
-const FILTER_KEY = 'lanesignal.filters';
-const defaultFilters: Filters = { categories: [], statuses: [], group: 'none', showCompleted: false };
+const FILTER_KEY = 'lanesignal.filters.v2';
+const defaultFilters: Filters = { groups: [], statuses: [], arrange: 'group', showCompleted: false };
 
 function useFilters(): [Filters, (f: Partial<Filters>) => void] {
   const [f, setF] = useState<Filters>(() => {
@@ -109,7 +110,7 @@ function Login({ onConnected }: { onConnected: (c: Connection) => void }) {
     const c = { server: normalizeServer(server), token: token.trim() };
     try {
       const me = await createClient(c).me();
-      if (me.role !== 'overseer') throw new Error('This is an agent token; sign in with an overseer token.');
+      if (me.role !== 'human') throw new Error('This is an agent token; sign in with a human token.');
       onConnected(c);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -138,7 +139,7 @@ function Login({ onConnected }: { onConnected: (c: Connection) => void }) {
           </label>
         )}
         <label>
-          Overseer token
+          Access token
           <input
             type="password"
             value={token}
@@ -230,20 +231,35 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
   }
   if (!config) return <main className="loading">Connecting…</main>;
 
-  const categories = [...new Set([...config.categories, ...lanes.map((l) => l.category).filter((c): c is string => !!c)])];
+  const label = config.groupLabel;
+  const groupName = (id: string | null) => (id ? (live.groups.get(id)?.name ?? id) : `No ${label.toLowerCase()}`);
+  // Groups that have lanes, plus any the overseers published without lanes yet.
+  const groupIds = [...new Set([...live.groups.keys(), ...lanes.map((l) => l.group).filter((g): g is string => !!g)])];
   const statusOptions = config.statuses.filter((s) => s !== 'completed' || filters.showCompleted);
   const visible = lanes.filter(
     (l) =>
       (filters.showCompleted || l.status !== 'completed' || needsHuman(l)) &&
-      (!filters.categories.length || (l.category && filters.categories.includes(l.category))) &&
+      (!filters.groups.length || (l.group !== null && filters.groups.includes(l.group))) &&
       (!filters.statuses.length || filters.statuses.includes(l.status)),
   );
-  const groups: [string, typeof visible][] =
-    filters.group === 'none'
-      ? [['', visible]]
-      : filters.group === 'category'
-        ? [...categories, ''].map((c) => [c || 'Uncategorized', visible.filter((l) => (l.category ?? '') === c)])
-        : config.statuses.map((s) => [STATUS_META[s].label, visible.filter((l) => l.status === s)]);
+  type Section = { key: string; title?: string; groupId?: string | null; lanes: typeof visible };
+  let sections: Section[];
+  if (filters.arrange === 'group') {
+    // Groups needing a human first, then alphabetical; ungrouped lanes last.
+    const ids: (string | null)[] = [...groupIds, null];
+    sections = ids
+      .map((id) => ({ key: id ?? '', groupId: id, lanes: visible.filter((l) => l.group === id) }))
+      .sort(
+        (a, b) =>
+          Number(b.lanes.some(needsHuman)) - Number(a.lanes.some(needsHuman)) ||
+          Number(a.groupId === null) - Number(b.groupId === null) ||
+          groupName(a.groupId ?? null).localeCompare(groupName(b.groupId ?? null)),
+      );
+  } else if (filters.arrange === 'status') {
+    sections = config.statuses.map((s) => ({ key: s, title: STATUS_META[s].label, lanes: visible.filter((l) => l.status === s) }));
+  } else {
+    sections = [{ key: '', lanes: visible }];
+  }
   const completedCount = lanes.filter((l) => l.status === 'completed').length;
 
   const inbox = (
@@ -257,6 +273,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
           key={e.id}
           esc={e}
           lane={live.lanes.get(e.laneId)}
+          group={live.groups.get(live.lanes.get(e.laneId)?.group ?? '')}
           now={now}
           client={client}
         />
@@ -265,7 +282,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
         <>
           <h3 className="subhead">Blocked lanes without an escalation</h3>
           {blockedLanes.map((l) => (
-            <LaneCard key={l.id} lane={l} now={now} config={config} onOpen={() => navigate(`#/lane/${encodeURIComponent(l.id)}`)} />
+            <LaneCard key={l.id} lane={l} now={now} config={config} groupName={l.group && groupName(l.group)} onOpen={() => navigate(`#/lane/${encodeURIComponent(l.id)}`)} />
           ))}
         </>
       )}
@@ -277,6 +294,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
               key={e.id}
               esc={e}
               lane={live.lanes.get(e.laneId)}
+              group={live.groups.get(live.lanes.get(e.laneId)?.group ?? '')}
               now={now}
               client={client}
             />
@@ -292,12 +310,15 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
         Lanes <span className="count">{visible.length}</span>
       </h2>
       <div className="filters">
-        <Chips
-          label="Category"
-          options={categories}
-          selected={new Set(filters.categories)}
-          onToggle={(c) => setFilters({ categories: toggle(filters.categories, c) })}
-        />
+        {groupIds.length > 1 && (
+          <Chips
+            label={label}
+            options={groupIds}
+            selected={new Set(filters.groups)}
+            onToggle={(g) => setFilters({ groups: toggle(filters.groups, g) })}
+            render={groupName}
+          />
+        )}
         <Chips
           label="Status"
           options={statusOptions}
@@ -307,10 +328,10 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
         />
         <div className="filter-row">
           <label>
-            Group
-            <select value={filters.group} onChange={(e) => setFilters({ group: e.target.value as Filters['group'] })}>
-              <option value="none">Priority</option>
-              <option value="category">Category</option>
+            Arrange by
+            <select value={filters.arrange} onChange={(e) => setFilters({ arrange: e.target.value as Filters['arrange'] })}>
+              <option value="group">{label}</option>
+              <option value="priority">Priority</option>
               <option value="status">Status</option>
             </select>
           </label>
@@ -322,30 +343,39 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
             />
             Completed ({completedCount})
           </label>
-          {(filters.categories.length > 0 || filters.statuses.length > 0) && (
-            <button className="link" onClick={() => setFilters({ categories: [], statuses: [] })}>
+          {(filters.groups.length > 0 || filters.statuses.length > 0) && (
+            <button className="link" onClick={() => setFilters({ groups: [], statuses: [] })}>
               Clear
             </button>
           )}
         </div>
       </div>
       {visible.length === 0 && <p className="empty">No lanes match.</p>}
-      {groups.map(
-        ([name, items]) =>
-          items.length > 0 && (
-            <div key={name} className="group">
-              {name && (
-                <h3 className="subhead">
-                  {name} <span className="count">{items.length}</span>
-                </h3>
+      {sections.map(
+        (sec) =>
+          sec.lanes.length > 0 && (
+            <div key={sec.key} className="group">
+              {sec.groupId !== undefined ? (
+                <GroupHeader
+                  group={sec.groupId ? live.groups.get(sec.groupId) : undefined}
+                  name={groupName(sec.groupId)}
+                  lanes={sec.lanes}
+                />
+              ) : (
+                sec.title && (
+                  <h3 className="subhead">
+                    {sec.title} <span className="count">{sec.lanes.length}</span>
+                  </h3>
+                )
               )}
               <div className="lane-grid">
-                {items.map((l) => (
+                {sec.lanes.map((l) => (
                   <LaneCard
                     key={l.id}
                     lane={l}
                     now={now}
                     config={config}
+                    groupName={filters.arrange === 'group' || !l.group ? null : groupName(l.group)}
                     onOpen={() => navigate(`#/lane/${encodeURIComponent(l.id)}`)}
                   />
                 ))}
@@ -423,6 +453,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
           id={route.escId}
           client={client}
           lanes={live.lanes}
+          groups={live.groups}
           version={escVersion}
           now={now}
           onClose={() => (history.length > 1 ? history.back() : navigate('#/'))}
@@ -434,7 +465,9 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
           client={client}
           version={laneVersion}
           now={now}
-          canDelete={me?.role === 'overseer'}
+          canDelete={me?.role === 'human'}
+          group={live.groups.get(live.lanes.get(route.laneId)?.group ?? '')}
+          groupLabel={config.groupLabel}
           onClose={() => (history.length > 1 ? history.back() : navigate('#/lanes'))}
         />
       )}

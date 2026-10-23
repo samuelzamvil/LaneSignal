@@ -1,7 +1,7 @@
 {
   "name": "LaneSignal",
   "publicUrl": "https://lanesignal.example.com",
-  "categories": ["Epic", "Train", "Overseer"],
+  "groupLabel": "Epic",
   "ticketTemplates": {
     "redmine": "https://redmine.example.com/issues/{id}",
     "gh": "https://github.com/example/app/issues/{id}",
@@ -12,7 +12,7 @@
   "notifyOn": ["escalation"],
   "fcmServiceAccountFile": "/config/fcm-service-account.json",
   "tokens": [
-    { "name": "alice", "role": "overseer", "token": "replace-with-a-long-random-string-1" },
+    { "name": "alice", "role": "human", "token": "replace-with-a-long-random-string-1" },
     { "name": "lane-agents", "role": "agent", "token": "replace-with-a-long-random-string-2" }
   ]
 }

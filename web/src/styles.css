@@ -949,3 +949,31 @@ textarea {
     padding: 0;
   }
 }
+
+/* ---- group (epic / train / overseer) sections ---- */
+
+.group + .group {
+  margin-top: 8px;
+}
+
+.group-head {
+  margin: 20px 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.group-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.group-title h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.group-head .links {
+  margin-top: 6px;
+}

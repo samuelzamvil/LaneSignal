@@ -19,7 +19,8 @@ export interface Config {
   trustProxy: boolean;
   corsOrigins: string[];
   tokens: TokenEntry[];
-  categories: string[];
+  /** Display name for lane groups (epic / train / overseer). */
+  groupLabel: string;
   /** Ticket system key -> URL template containing {id}. */
   ticketTemplates: Record<string, string>;
   defaultTicketSystem: string | null;
@@ -38,7 +39,7 @@ interface FileConfig {
   publicUrl?: string;
   corsOrigins?: string[];
   tokens?: TokenEntry[];
-  categories?: string[];
+  groupLabel?: string;
   ticketTemplates?: Record<string, string>;
   defaultTicketSystem?: string;
   staleMinutes?: number;
@@ -89,9 +90,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   let tokens = [
-    ...parseTokens(env.LANESIGNAL_OVERSEER_TOKENS, 'overseer'),
+    ...parseTokens(env.LANESIGNAL_HUMAN_TOKENS, 'human'),
+    // Former name of LANESIGNAL_HUMAN_TOKENS, still accepted.
+    ...parseTokens(env.LANESIGNAL_OVERSEER_TOKENS, 'human'),
     ...parseTokens(env.LANESIGNAL_AGENT_TOKENS, 'agent'),
-    ...(file.tokens ?? []),
+    // "overseer" was the former name of the human role.
+    ...(file.tokens ?? []).map((t) => ({ ...t, role: (t.role as string) === 'overseer' ? ('human' as const) : t.role })),
   ];
   if (tokens.length === 0) tokens = bootstrapTokens(dataDir);
   for (const t of tokens) {
@@ -115,7 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustProxy: env.LANESIGNAL_TRUST_PROXY === 'true',
     corsOrigins: list(env.LANESIGNAL_CORS_ORIGINS) ?? file.corsOrigins ?? DEFAULT_CORS,
     tokens,
-    categories: list(env.LANESIGNAL_CATEGORIES) ?? file.categories ?? ['Epic', 'Train', 'Overseer'],
+    groupLabel: env.LANESIGNAL_GROUP_LABEL ?? file.groupLabel ?? 'Epic',
     ticketTemplates,
     defaultTicketSystem:
       env.LANESIGNAL_TICKET_DEFAULT ?? file.defaultTicketSystem ?? Object.keys(ticketTemplates)[0] ?? null,
@@ -129,15 +133,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 }
 
 /**
- * With no tokens configured, generate one overseer and one agent token and
+ * With no tokens configured, generate one human and one agent token and
  * keep them in the data volume so they survive restarts and upgrades.
  */
 function bootstrapTokens(dataDir: string): TokenEntry[] {
   const file = path.join(dataDir, 'generated-tokens.json');
-  if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8')) as TokenEntry[];
+  if (existsSync(file)) {
+    return (JSON.parse(readFileSync(file, 'utf8')) as TokenEntry[]).map((t) => ({
+      ...t,
+      role: (t.role as string) === 'overseer' ? ('human' as const) : t.role,
+    }));
+  }
   mkdirSync(dataDir, { recursive: true });
   const tokens: TokenEntry[] = [
-    { name: 'overseer', role: 'overseer', token: randomBytes(24).toString('base64url') },
+    { name: 'human', role: 'human', token: randomBytes(24).toString('base64url') },
     { name: 'agent', role: 'agent', token: randomBytes(24).toString('base64url') },
   ];
   writeFileSync(file, JSON.stringify(tokens, null, 2), { mode: 0o600 });

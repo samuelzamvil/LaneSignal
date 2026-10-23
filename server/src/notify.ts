@@ -134,7 +134,9 @@ export function startNotifier(config: Config, store: Store) {
       // Later open-state events (agent positions) don't re-notify.
       const lane = store.getLane(e.escalation.laneId);
       return {
-        title: `Decision needed · ${lane?.name ?? e.escalation.laneId}`,
+        title: `Decision needed · ${[lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? e.escalation.laneId]
+          .filter(Boolean)
+          .join(' / ')}`,
         body: e.escalation.recommendation
           ? `${e.escalation.question}\nRecommended: ${e.escalation.recommendation}`
           : e.escalation.question,

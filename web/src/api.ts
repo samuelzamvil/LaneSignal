@@ -1,7 +1,7 @@
 import { Capacitor } from '@capacitor/core';
-import type { Escalation, Lane, LaneEvent, Principal, PublicConfig, StreamEvent } from '../../server/src/types.ts';
+import type { Escalation, Group, Lane, LaneEvent, Principal, PublicConfig, StreamEvent } from '../../server/src/types.ts';
 
-export type { Escalation, Lane, LaneEvent, Principal, PublicConfig, StreamEvent };
+export type { Escalation, Group, Lane, LaneEvent, Principal, PublicConfig, StreamEvent };
 export type { LaneStatus, Link, Position } from '../../server/src/types.ts';
 
 export const isNative = Capacitor.isNativePlatform();
@@ -67,7 +67,7 @@ export function createClient(conn: Connection) {
   return {
     me: () => request<Principal>('GET', '/api/me'),
     config: () => request<PublicConfig>('GET', '/api/config'),
-    snapshot: () => request<{ lanes: Lane[]; escalations: Escalation[]; serverTime: string }>('GET', '/api/snapshot'),
+    snapshot: () => request<{ groups: Group[]; lanes: Lane[]; escalations: Escalation[]; serverTime: string }>('GET', '/api/snapshot'),
     laneDetail: (id: string) =>
       request<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[] }>(
         'GET',

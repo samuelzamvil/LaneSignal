@@ -19,7 +19,9 @@ before(async () => {
     LANESIGNAL_DATA_DIR: '/nonexistent-unused',
     LANESIGNAL_CONFIG: '/nonexistent.json',
     LANESIGNAL_AGENT_TOKENS: `bot:${AGENT}`,
-    LANESIGNAL_OVERSEER_TOKENS: `alice:${ALICE},bob:${BOB}`,
+    LANESIGNAL_HUMAN_TOKENS: `alice:${ALICE}`,
+    // legacy name of the human-token variable
+    LANESIGNAL_OVERSEER_TOKENS: `bob:${BOB}`,
     LANESIGNAL_TICKET_TEMPLATES: 'redmine=https://redmine.example/issues/{id},gh=https://github.com/o/r/issues/{id}',
   });
   store = new Store({ path: ':memory:', resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem) });
@@ -56,7 +58,8 @@ describe('auth', () => {
 
   test('enforces roles', async () => {
     assert.equal((await call('PUT', '/api/lanes/x', ALICE, { status: 'active' })).status, 403);
-    assert.deepEqual((await call('GET', '/api/me', ALICE)).body, { name: 'alice', role: 'overseer' });
+    assert.deepEqual((await call('GET', '/api/me', ALICE)).body, { name: 'alice', role: 'human' });
+    assert.deepEqual((await call('GET', '/api/me', BOB)).body, { name: 'bob', role: 'human' });
   });
 
   test('health check is public', async () => {
@@ -68,7 +71,7 @@ describe('lanes', () => {
   test('upsert creates, then patches, resolving ticket urls', async () => {
     const created = await call('PUT', '/api/lanes/epic-1', AGENT, {
       name: 'Epic 1',
-      category: 'Epic',
+      group: 'payments-epic',
       ticket: 'redmine:1234',
       activity: 'Writing migration',
       links: [{ label: 'PR #7', url: 'https://github.com/o/r/pull/7', kind: 'pr' }],
@@ -77,12 +80,37 @@ describe('lanes', () => {
     assert.equal(created.body.status, 'active');
     assert.equal(created.body.ticketUrl, 'https://redmine.example/issues/1234');
     assert.equal(created.body.agent, 'bot');
+    assert.equal(created.body.group, 'payments-epic');
 
     const patched = await call('PUT', '/api/lanes/epic-1', AGENT, { status: 'pending_ci', ticket: '#99' });
     assert.equal(patched.body.status, 'pending_ci');
     assert.equal(patched.body.name, 'Epic 1');
     assert.equal(patched.body.ticketUrl, 'https://redmine.example/issues/99');
     assert.equal(patched.body.links.length, 1);
+  });
+
+  test('unknown group ids create the group; overseer fills in its metadata', async () => {
+    const groups = (await call('GET', '/api/groups', ALICE)).body;
+    assert.deepEqual(
+      groups.map((g: { id: string; name: string }) => [g.id, g.name]),
+      [['payments-epic', 'payments-epic']],
+    );
+    const updated = await call('PUT', '/api/groups/payments-epic', AGENT, {
+      name: 'Payments epic',
+      ticket: 'redmine:4700',
+      links: [{ label: 'Overseer session', url: 'https://claude.ai/code/session_x', kind: 'session' }],
+    });
+    assert.equal(updated.body.ticketUrl, 'https://redmine.example/issues/4700');
+    const snap = (await call('GET', '/api/snapshot', ALICE)).body;
+    assert.equal(snap.groups[0].name, 'Payments epic');
+    assert.equal((await call('PUT', '/api/groups/x', ALICE, { name: 'nope' })).status, 403);
+  });
+
+  test('deleting a group ungroups its lanes', async () => {
+    await call('PUT', '/api/lanes/tmp-lane', AGENT, { group: 'tmp-group' });
+    assert.equal((await call('DELETE', '/api/groups/tmp-group', ALICE)).status, 204);
+    assert.equal((await call('GET', '/api/lanes/tmp-lane', ALICE)).body.lane.group, null);
+    await call('DELETE', '/api/lanes/tmp-lane', ALICE);
   });
 
   test('validates input', async () => {
@@ -158,7 +186,7 @@ describe('escalation lifecycle', () => {
     assert.equal((await call('POST', `/api/escalations/${id}/decide`, AGENT, { decision: 'Yes' })).status, 403);
   });
 
-  test('long-poll returns when decided; second overseer gets 409', async () => {
+  test('long-poll returns when decided; second human gets 409', async () => {
     const waiting = call('GET', `/api/escalations/${id}?wait=10`, AGENT);
     await new Promise((r) => setTimeout(r, 100));
     const decided = await call('POST', `/api/escalations/${id}/decide`, ALICE, { decision: 'Yes', note: 'backup first' });
@@ -237,6 +265,7 @@ describe('mcp', () => {
     assert.ok(names.includes('update_lane'));
     assert.ok(names.includes('create_escalation'));
     assert.ok(names.includes('add_position'));
+    assert.ok(names.includes('update_group'));
     assert.ok(!names.includes('decide_escalation'));
 
     const out = await rpc(AGENT, 'tools/call', {
@@ -259,7 +288,7 @@ describe('mcp', () => {
     assert.equal(bad.result.isError, true);
   });
 
-  test('overseer gets decide_escalation, not agent write tools', async () => {
+  test('humans get decide_escalation, not agent write tools', async () => {
     const names = (await rpc(ALICE, 'tools/list', {})).result.tools.map((t: { name: string }) => t.name);
     assert.ok(names.includes('decide_escalation'));
     assert.ok(!names.includes('update_lane'));

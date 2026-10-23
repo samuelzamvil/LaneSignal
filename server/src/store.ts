@@ -5,6 +5,7 @@ import {
   LANE_STATUSES,
   type Escalation,
   type EscalationState,
+  type Group,
   type Lane,
   type LaneEvent,
   type LaneStatus,
@@ -17,9 +18,16 @@ import {
 export class NotFoundError extends Error {}
 export class ConflictError extends Error {}
 
+export interface GroupPatch {
+  name?: string;
+  ticket?: string | null;
+  links?: Link[];
+}
+
 export interface LanePatch {
   name?: string;
-  category?: string | null;
+  /** Group id; unknown ids create the group. */
+  group?: string | null;
   status?: LaneStatus;
   ticket?: string | null;
   activity?: string | null;
@@ -85,10 +93,19 @@ export class Store {
     const version = row ? Number(row.value) : 0;
     if (version >= SCHEMA_VERSION) return;
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        ticket TEXT,
+        links TEXT NOT NULL DEFAULT '[]',
+        agent TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS lanes (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        category TEXT,
+        group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
         status TEXT NOT NULL,
         ticket TEXT,
         activity TEXT,
@@ -160,6 +177,74 @@ export class Store {
     this.events.emit('change', event);
   }
 
+  // ---- groups ------------------------------------------------------------
+
+  private groupFromRow(r: Row): Group {
+    const ticket = (r.ticket as string | null) ?? null;
+    return {
+      id: r.id as string,
+      name: r.name as string,
+      ticket,
+      ticketUrl: ticket ? this.resolveTicketUrl(ticket) : null,
+      links: JSON.parse(r.links as string) as Link[],
+      agent: (r.agent as string | null) ?? null,
+      createdAt: r.created_at as string,
+      updatedAt: r.updated_at as string,
+    };
+  }
+
+  listGroups(): Group[] {
+    return (this.db.prepare('SELECT * FROM groups ORDER BY name').all() as Row[]).map((r) => this.groupFromRow(r));
+  }
+
+  getGroup(id: string): Group | null {
+    const r = this.db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Row | undefined;
+    return r ? this.groupFromRow(r) : null;
+  }
+
+  /** Must run inside a transaction. Returns true when something changed. */
+  private writeGroup(id: string, patch: GroupPatch, actor: string | null, at: string): boolean {
+    const existing = this.getGroup(id);
+    if (!existing) {
+      this.db
+        .prepare('INSERT INTO groups (id, name, ticket, links, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, patch.name ?? id, patch.ticket ?? null, JSON.stringify(patch.links ?? []), actor, at, at);
+      return true;
+    }
+    if (patch.name === undefined && patch.ticket === undefined && patch.links === undefined) return false;
+    this.db
+      .prepare('UPDATE groups SET name = ?, ticket = ?, links = ?, agent = ?, updated_at = ? WHERE id = ?')
+      .run(
+        patch.name ?? existing.name,
+        patch.ticket !== undefined ? patch.ticket : existing.ticket,
+        JSON.stringify(patch.links ?? existing.links),
+        actor ?? existing.agent,
+        at,
+        id,
+      );
+    return true;
+  }
+
+  upsertGroup(id: string, patch: GroupPatch, actor: string | null): Group {
+    const group = this.tx(() => {
+      this.writeGroup(id, patch, actor, this.now().toISOString());
+      return this.getGroup(id)!;
+    });
+    this.emit({ type: 'group', group });
+    return group;
+  }
+
+  /** Lanes in the group become ungrouped. */
+  deleteGroup(id: string) {
+    const lanes = this.tx(() => {
+      const res = this.db.prepare('DELETE FROM groups WHERE id = ?').run(id);
+      if (res.changes === 0) throw new NotFoundError(`Group "${id}" not found`);
+      return this.listLanes().filter((l) => l.group === null);
+    });
+    this.emit({ type: 'group_deleted', id });
+    for (const lane of lanes) this.emit({ type: 'lane', lane });
+  }
+
   // ---- lanes -------------------------------------------------------------
 
   private laneFromRow(r: Row): Lane {
@@ -167,7 +252,7 @@ export class Store {
     return {
       id: r.id as string,
       name: r.name as string,
-      category: (r.category as string | null) ?? null,
+      group: (r.group_id as string | null) ?? null,
       status: r.status as LaneStatus,
       ticket,
       ticketUrl: ticket ? this.resolveTicketUrl(ticket) : null,
@@ -206,20 +291,25 @@ export class Store {
 
   upsertLane(id: string, patch: LanePatch, actor: string | null): Lane {
     if (patch.status && !LANE_STATUSES.includes(patch.status)) throw new Error(`Invalid status "${patch.status}"`);
+    let createdGroup: Group | null = null;
     const lane = this.tx(() => {
       const at = this.now().toISOString();
+      if (patch.group && !this.getGroup(patch.group)) {
+        this.writeGroup(patch.group, {}, actor, at);
+        createdGroup = this.getGroup(patch.group);
+      }
       const existing = this.getLane(id);
       if (!existing) {
         const status = patch.status ?? 'active';
         this.db
           .prepare(
-            `INSERT INTO lanes (id, name, category, status, ticket, activity, links, agent, created_at, updated_at, status_since, blocked_since)
+            `INSERT INTO lanes (id, name, group_id, status, ticket, activity, links, agent, created_at, updated_at, status_since, blocked_since)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             id,
             patch.name ?? id,
-            patch.category ?? null,
+            patch.group ?? null,
             status,
             patch.ticket ?? null,
             patch.activity ?? null,
@@ -237,6 +327,7 @@ export class Store {
       }
       return this.requireLane(id);
     });
+    if (createdGroup) this.emit({ type: 'group', group: createdGroup });
     this.emit({ type: 'lane', lane });
     return lane;
   }
@@ -261,12 +352,12 @@ export class Store {
     }
     this.db
       .prepare(
-        `UPDATE lanes SET name = ?, category = ?, status = ?, ticket = ?, activity = ?, links = ?, agent = ?,
+        `UPDATE lanes SET name = ?, group_id = ?, status = ?, ticket = ?, activity = ?, links = ?, agent = ?,
            updated_at = ?, status_since = ?, blocked_since = ?, blocked_total_ms = ? WHERE id = ?`,
       )
       .run(
         patch.name ?? existing.name,
-        patch.category !== undefined ? patch.category : existing.category,
+        patch.group !== undefined ? patch.group : existing.group,
         status,
         patch.ticket !== undefined ? patch.ticket : existing.ticket,
         patch.activity !== undefined ? patch.activity : existing.activity,

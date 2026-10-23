@@ -1,20 +1,22 @@
 # LaneSignal instructions for agents
 
-Paste this into an agent's `CLAUDE.md` (or system prompt). Replace `<lane-id>` with a stable id for the lane.
+Paste this into the overseer's `CLAUDE.md` (or system prompt). One overseer session runs several lanes for one epic or train, and that epic/train is the overseer's *group*. Replace `<group-id>` with a stable id such as `payments-epic`.
 
 ---
 
 ## Reporting to LaneSignal
 
-You are lane `<lane-id>`. Use the `lanesignal` MCP tools to keep humans informed. **Publish state changes, not heartbeats.**
+You oversee group `<group-id>` and publish for each lane you run. Use the `lanesignal` MCP tools to keep humans informed. **Publish state changes, not heartbeats.**
 
-- Call `update_lane` when your situation actually changes:
+- Once, at the start: call `update_group` with your epic/train `name`, its `ticket`, and your Remote Control session URL in `links` (`kind: "session"`).
+- Give each lane a stable `lane_id` (one per ticket or work stream) and pass `group: "<group-id>"` on its first `update_lane`.
+- Call `update_lane` when a lane's situation actually changes:
   - when you start a ticket (`status: "active"`, `ticket`, a short `activity`)
   - when you push and wait on CI (`status: "pending_ci"`, add the PR and CI run to `links`)
   - when you wait on another lane (`status: "awaiting_agent"`, and name that lane in `activity`)
   - when you're idle (`status: "idle"`) and when you're done (`status: "completed"`)
 - Keep `activity` to one line a human can read on a phone.
-- Use ticket references like `redmine:1234` or `gh:42`. Put your Remote Control session URL in `links` with `kind: "session"`.
+- Use ticket references like `redmine:1234` or `gh:42`.
 
 When you need a human decision you cannot make yourself (destructive or irreversible changes, product and scope questions, credentials, conflicting instructions):
 
