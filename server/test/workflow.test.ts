@@ -85,7 +85,7 @@ describe('overseer publishes its group and lanes', () => {
     assert.match(decide.text, /not found/i, 'the tool is not offered to agents');
     assert.equal((await srv.call('POST', `/api/escalations/${e.body.id}/decide`, AGENT, { decision: 'y' })).status, 403);
     assert.equal((await srv.call('GET', `/api/escalations/${e.body.id}`, ALICE)).body.state, 'open');
-    assert.equal((await srv.call('POST', `/api/escalations/${e.body.id}/withdraw`, AGENT, {})).status, 200);
+    assert.equal((await srv.call('POST', `/api/escalations/${e.body.id}/withdraw`, AGENT, { note: 'moot' })).status, 200);
   });
 });
 
@@ -198,7 +198,7 @@ describe('escalations on one lane', () => {
 
   test('withdrawing closes an open escalation answered elsewhere', async () => {
     const e = await srv.tool(AGENT, 'create_escalation', { lane_id: 'pay-2', question: 'Skip the flaky test?' });
-    const res = await srv.tool(AGENT, 'withdraw_escalation', { id: e.value.id, resolution: 'answered in Remote Control' });
+    const res = await srv.tool(AGENT, 'dismiss_escalation', { id: e.value.id, justification: 'answered in Remote Control' });
     assert.equal(res.value.state, 'withdrawn');
     assert.equal(res.value.resolution, 'answered in Remote Control');
   });
@@ -279,14 +279,13 @@ describe('real time and export', () => {
 });
 
 describe('agent skill', () => {
-  test('the server hands out the Claude Code skill, no credential needed', async () => {
-    const res = await fetch(`${srv.base}/api/skill`);
+  /** The skill a server hands out, and the tools an agent key sees there. */
+  async function skillAndTools(server: typeof srv) {
+    const res = await fetch(`${server.base}/api/skill`);
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type') ?? '', /text\/markdown/);
     const text = await res.text();
-    assert.match(text, /^---\nname: lanesignal\n/);
-    // Every tool the skill names exists.
-    const tools = (await fetch(`${srv.base}/mcp`, {
+    const tools = (await fetch(`${server.base}/mcp`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AGENT}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
@@ -295,13 +294,58 @@ describe('agent skill', () => {
       const line = body.split('\n').find((l) => l.startsWith('data: '));
       return JSON.parse(line ? line.slice(6) : body).result.tools as { name: string; inputSchema: { properties?: object } }[];
     }));
+    return { text, tools };
+  }
+
+  /** Every tool the skill names exists. */
+  function namesOnlyRealTools(text: string, tools: { name: string; inputSchema: { properties?: object } }[]) {
     const toolNames = tools.map((t) => t.name);
     const params = new Set(tools.flatMap((t) => Object.keys(t.inputSchema.properties ?? {})));
     const named = [...new Set(text.match(/`([a-z]+_[a-z_]+)`/g)?.map((m) => m.slice(1, -1)) ?? [])].filter(
-      (n) => /^(update|remove|create|add|wait|get|acknowledge|withdraw|find|record|supersede|list)_/.test(n) && !params.has(n),
+      (n) => /^(update|remove|create|add|wait|get|acknowledge|dismiss|find|record|supersede|list)_/.test(n) && !params.has(n),
     );
-    assert.ok(named.length > 10);
+    assert.ok(named.length > 5);
     for (const name of named) assert.ok(toolNames.includes(name), `skill names unknown tool ${name}`);
+    return toolNames;
+  }
+
+  test('by default the skill and tools are for alerts: no waiting or answering in LaneSignal', async () => {
+    const plain = await startServer({ LANESIGNAL_DECISIONS: 'false' });
+    try {
+      const { text, tools } = await skillAndTools(plain);
+      assert.match(text, /^---\nname: lanesignal\n/);
+      const names = namesOnlyRealTools(text, tools);
+      assert.ok(names.includes('dismiss_escalation'));
+      assert.ok(names.includes('find_requirements'), 'requirements are on by default');
+      for (const off of ['wait_for_decisions', 'acknowledge_escalation', 'add_position']) {
+        assert.ok(!names.includes(off), `${off} is off by default`);
+        assert.ok(!text.includes(off), `the skill doesn't mention ${off}`);
+      }
+    } finally {
+      plain.close();
+    }
+  });
+
+  test('with answering in LaneSignal on, the skill covers waiting too', async () => {
+    const { text, tools } = await skillAndTools(srv);
+    const names = namesOnlyRealTools(text, tools);
+    assert.ok(names.includes('wait_for_decisions'));
+    assert.match(text, /## Answering in LaneSignal/);
+  });
+
+  test('requirements can be turned off', async () => {
+    const off = await startServer({ LANESIGNAL_REQUIREMENTS: 'false' });
+    try {
+      const { text, tools } = await skillAndTools(off);
+      assert.ok(!tools.some((t) => t.name.includes('requirement')));
+      assert.ok(!text.includes('find_requirements'));
+      assert.equal((await off.call('GET', '/api/requirements', AGENT)).status, 404);
+      assert.equal((await off.call('GET', '/api/export/requirements.csv', ALICE)).status, 404);
+      assert.equal((await off.call('GET', '/api/config', ALICE)).body.requirements, false);
+    } finally {
+      off.close();
+    }
   });
 });
+
 

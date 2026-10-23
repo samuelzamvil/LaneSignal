@@ -19,6 +19,8 @@ export async function startServer(env: Record<string, string> = {}) {
     LANESIGNAL_HUMAN_TOKENS: `alice:${ALICE}`,
     LANESIGNAL_AUTH_SECRET: 'test-secret-0123456789-0123456789-0123',
     LANESIGNAL_TICKET_TEMPLATES: 'gh=https://github.com/o/r/issues/{id}',
+    // Most suites cover answering in LaneSignal (opt-in); alerts.test.ts covers the default.
+    LANESIGNAL_DECISIONS: 'true',
     ...env,
   });
   const store = new Store({

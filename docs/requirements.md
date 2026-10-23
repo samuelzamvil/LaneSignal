@@ -1,11 +1,12 @@
 # Requirements: the owner's product decisions
 
-Product direction tends to get buried in tickets and escalation threads, and finding it again later takes an investigation. The **requirements** register keeps each decision in one place, searchable, with the reasoning behind it.
+Product direction tends to get buried in tickets and agent sessions, and finding it again later takes an investigation. The **requirements** register keeps each decision in one place outside the repository, searchable by any agent, with the reasoning behind it. It's on by default; `LANESIGNAL_REQUIREMENTS=false` turns it off (tools, page, API and export).
 
 - **The decisions are the owner's.** Agents record them, but only decisions a person made: an answered escalation, or something the owner said (e.g. in Remote Control). An agent's own design choices don't belong here. An agent can cite only an escalation it raised, or one from a lane in the same train/epic.
 - **One decision per requirement**, so it can be found, cited and replaced on its own.
+- **Short.** The requirement is at most 300 characters and the justification at most 800, so agents can read many of them cheaply.
 - **Nothing is deleted.** When the owner changes direction, the new requirement *supersedes* the old one, which stays (marked) so the history of why is kept. A requirement retired by mistake can be restored.
-- **No duplicates from one decision.** Recording a requirement that cites an escalation an active requirement already cites returns that requirement (`duplicate: true`) instead of storing a second.
+- **Retries don't duplicate.** Recording the same requirement again from the same escalation returns the first (`duplicate: true`). A second, different decision from the same answer is stored, and `similar` shows the first.
 
 ## A requirement
 
@@ -17,8 +18,8 @@ Product direction tends to get buried in tickets and escalation threads, and fin
 | `tags` | 1–3 specific kebab-case tags naming the capability (`payout-retries`) |
 | `project` | The [project](projects.md) it belongs to, or none (`null`) when it applies to **all projects**: "all our apps store money as integers". Set with `allProjects: true` (`all_projects` in MCP) |
 | `group` | The train/epic it belongs to, or none for **product-wide** (the whole project) |
-| `decidedBy` | The person who decided. Taken from the escalation when one is cited |
-| `sourceEscalation` | The escalation the decision was made in (e.g. `A12`; `SH-A12` on an all-projects requirement), if any. It must be in the requirement's project |
+| `decidedBy` | The person who decided, e.g. "Sam (Remote Control, 2026-10-23)". Taken from the escalation when it was answered on the dashboard |
+| `sourceEscalation` | The alert the decision answered (e.g. `A12`; `SH-A12` on an all-projects requirement), if any. It must be in the requirement's project. When the owner answered in the agent's session, the agent cites it together with `decidedBy` |
 | `status` | `active`, `superseded` (with `supersededBy`) or `retired` (no longer applies, nothing replaces it) |
 | `recordedBy` | The agent key or person that wrote it down |
 

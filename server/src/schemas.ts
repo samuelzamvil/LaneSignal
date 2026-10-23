@@ -178,9 +178,13 @@ const requirementTags = z.preprocess(
   z.array(requirementTag).min(1).max(3),
 );
 
+/** Requirements are read by agents again and again: short ones keep that cheap. */
+export const REQUIREMENT_MAX = 300;
+export const JUSTIFICATION_MAX = 800;
+
 export const requirementInput = z.object({
-  requirement: z.string().trim().min(1).max(2000),
-  justification: z.string().trim().min(1).max(5000),
+  requirement: z.string().trim().min(1).max(REQUIREMENT_MAX),
+  justification: z.string().trim().min(1).max(JUSTIFICATION_MAX),
   tags: requirementTags,
   /** Group (train/epic) id; omit or null for a product-wide requirement. */
   group: groupId.nullable().optional(),
@@ -196,8 +200,8 @@ export const requirementInput = z.object({
 
 export const requirementEdit = z
   .object({
-    requirement: z.string().trim().min(1).max(2000).optional(),
-    justification: z.string().trim().min(1).max(5000).optional(),
+    requirement: z.string().trim().min(1).max(REQUIREMENT_MAX).optional(),
+    justification: z.string().trim().min(1).max(JUSTIFICATION_MAX).optional(),
     tags: requirementTags.optional(),
   })
   .strict();

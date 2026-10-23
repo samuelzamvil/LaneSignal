@@ -26,7 +26,7 @@ curl -X PUT $URL/api/lanes/auth-rework -H "authorization: Bearer $KEY" -H 'conte
        "activity":"Waiting on CI for PR #311",
        "links":[{"label":"PR #311","url":"https://github.com/o/r/pull/311","kind":"pr"}]}'
 
-# ask a question
+# alert the owner (their phone is notified; they answer in the agent's session)
 ID=$(curl -s -X POST $URL/api/escalations -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"laneId":"auth-rework",
        "context":"legacy_role has had no reads for 90 days; rollback needs a backup restore.",
@@ -36,6 +36,14 @@ ID=$(curl -s -X POST $URL/api/escalations -H "authorization: Bearer $KEY" -H 'co
        "alternatives":["Rename it to legacy_role_deprecated for one release."],
        "options":["Drop","Keep"],"recommendedOption":"Drop"}' | jq -r .id)
 
+# once the owner has answered in the session: dismiss it, saying what was decided, and publish the next state
+curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"note":"Sam: drop it (in session)","status":"active","activity":"Dropping legacy_role"}'
+```
+
+With answering on the dashboard on (`LANESIGNAL_DECISIONS=true`), an agent can instead wait for the answer and acknowledge it:
+
+```bash
 # wait for answers on any of the group's lanes (up to 24h per call; repeat while ready is false)
 curl -s "$URL/api/wait?group=payments-epic&timeout=86400" -H "authorization: Bearer $KEY" | jq '.decided[] | {ref,decision,decisionNote}'
 
@@ -73,18 +81,18 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `DELETE /api/lanes/:id` | any | Archives the lane and withdraws its unanswered escalations; decided ones keep their answer. Its history stays for export, and republishing restores it |
 | `GET /api/escalations?state=open,decided&lane=<id>` | any | Defaults to unresolved (open and decided) |
 | `POST /api/escalations` | agent | See the [fields](concepts.md#escalations). `blocking: false` for FYI questions. The lane must be published first (`404` otherwise). `201` when created; `200` with `duplicate: true` when the same question (ignoring spacing and case) is already open on that lane |
-| `GET /api/escalations/:id?wait=<s>` | any | `wait` (up to 300) holds the request until it's no longer open |
-| `GET /api/wait?group=&lane=a,b&ids=1,2&timeout=<s>` | any | Waits until something in scope needs the agent; give at least one of `group`, `lane`, `ids`. Returns `{ready, decided, closed, open, removedLanes, checkedAt}` ([details](agents.md#waiting-for-decisions)), with escalations in brief (no context; `GET /api/escalations/:id` has everything); pass `checkedAt` back as `since`. Unknown groups, lanes or ids are `404`. `timeout` defaults to 300, max 86400. If it has to wait, it sends `200` at once and a space every 20s until the JSON follows, so proxies keep it open |
-| `POST /api/escalations/:id/positions` | agent | `{stance, note?, agent?}`. Open escalations only; at most 20 agents |
-| `POST /api/escalations/:id/decide` | human | `{decision, note?, change?}`. A second decision is `409`, unless `change: true` and the agent hasn't acknowledged yet |
-| `POST /api/escalations/:id/ack` | any | `{note?, status?, activity?}`. Only the agent that raised it, or a person, can acknowledge (`403` for other agents). Returns the escalation with the final decision; `status`/`activity` update the lane. Repeating it returns the same result |
-| `POST /api/escalations/:id/withdraw` | any | `{note?}` |
+| `GET /api/escalations/:id?wait=<s>` | any | The escalation in full. With answering on the dashboard on, `wait` (up to 300) holds the request until it's no longer open |
+| `GET /api/wait?group=&lane=a,b&ids=1,2&timeout=<s>` | any | Decisions on (`404` otherwise). Waits until something in scope needs the agent; give at least one of `group`, `lane`, `ids`. Returns `{ready, decided, closed, open, removedLanes, checkedAt}` ([details](agents.md#waiting-for-decisions)), with escalations in brief (no context; `GET /api/escalations/:id` has everything); pass `checkedAt` back as `since`. Unknown groups, lanes or ids are `404`. `timeout` defaults to 300, max 86400. If it has to wait, it sends `200` at once and a space every 20s until the JSON follows, so proxies keep it open |
+| `POST /api/escalations/:id/positions` | agent | Decisions on. `{stance, note?, agent?}`. Open escalations only; at most 20 agents |
+| `POST /api/escalations/:id/decide` | human | Decisions on. `{decision, note?, change?}`. A second decision is `409`, unless `change: true` and the agent hasn't acknowledged yet |
+| `POST /api/escalations/:id/ack` | any | Decisions on. `{note?, status?, activity?}`. Only the agent that raised it, or a person, can acknowledge (`403` for other agents). Returns the escalation with the final decision; `status`/`activity` update the lane. Repeating it returns the same result |
+| `POST /api/escalations/:id/withdraw` | any | Dismiss: `{note, status?, activity?}`. Agents must give `note`, the justification (what was decided and where); only the agent that raised it can dismiss it (`403` otherwise), and people may dismiss stale ones. `status`/`activity` publish the lane's next state; a lane this unblocks goes back to `active` |
 | `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=&project=` filter. One export at a time (`429` while another runs). See [Export](export.md) |
 | `GET /api/export/<dataset>.csv` / `.json` | any | `escalations`, `positions`, `lanes`, `groups`, `events` or `requirements`. Same filters |
-| `GET /api/requirements?q=&tag=a,b&group=&status=active,superseded&limit=` | any | Search [requirements](requirements.md). Active only by default; `q` is free text, or an id like `R14`. Includes requirements for all projects |
+| `GET /api/requirements?q=&tag=a,b&group=&status=active,superseded&limit=` | any | Search [requirements](requirements.md). All `/api/requirements` routes are `404` when `LANESIGNAL_REQUIREMENTS=false`. Active only by default; `q` is free text, or an id like `R14`. Includes requirements for all projects |
 | `GET /api/requirements/tags?group=` | any | Tags in use, with counts |
 | `GET /api/requirements/:id` | any | One requirement |
-| `POST /api/requirements` | any | `{requirement, justification, tags, group?, sourceEscalation?, decidedBy?, allProjects?}`. Citing an escalation that an active requirement already cites returns that one with `duplicate: true`. `allProjects: true` makes it apply to every project. Agents must give `sourceEscalation` or `decidedBy`; a person recording one is the decider by default. Returns `{requirement, similar, warnings}` |
+| `POST /api/requirements` | any | `{requirement, justification, tags, group?, sourceEscalation?, decidedBy?, allProjects?}`. `requirement` is at most 300 characters and `justification` at most 800. Recording the same requirement again from the same escalation returns the first with `duplicate: true` (`200`). `allProjects: true` makes it apply to every project. Agents must say who decided: `decidedBy`, or a `sourceEscalation` decided on the dashboard (an alert answered in the session is cited together with `decidedBy`); a person recording one is the decider by default. Returns `{requirement, similar, warnings}` |
 | `POST /api/requirements/:id/supersede` | any | Same body; marks the old one superseded |
 | `PATCH /api/requirements/:id` | human | Fix `requirement`, `justification` or `tags` wording |
 | `POST /api/requirements/:id/retire` | human | It no longer applies; nothing replaces it |

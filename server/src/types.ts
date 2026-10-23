@@ -184,6 +184,10 @@ export interface PublicConfig {
   ticketSystems: string[];
   staleMinutes: number;
   push: { fcm: boolean; ntfy: boolean };
+  /** People answer escalations in LaneSignal; off, they answer in the agent's session and agents dismiss alerts. */
+  decisions: boolean;
+  /** The requirements register is on. */
+  requirements: boolean;
 }
 
 export type Role = 'human' | 'agent';

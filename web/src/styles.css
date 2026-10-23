@@ -283,7 +283,8 @@ textarea {
   inset: auto 0 0 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   padding-bottom: var(--safe-bottom);
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -1376,4 +1377,40 @@ textarea {
   margin: 0 0 4px;
   white-space: pre-wrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ---- alerts (answering in LaneSignal off) ---- */
+
+/* A link that looks like the primary button: "Answer in session". */
+a.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap);
+  padding: 0 16px;
+  border-radius: 10px;
+  text-decoration: none;
+}
+
+a.button.primary {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.options-line {
+  margin: 4px 0 8px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.options-line .recommended {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.options-line .recommended::after {
+  content: ' (recommended)';
+  font-weight: 400;
+  color: var(--muted);
 }

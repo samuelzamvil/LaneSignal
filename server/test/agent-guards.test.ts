@@ -96,14 +96,17 @@ describe('retries and duplicates', () => {
     assert.equal(again.duplicate, true);
   });
 
-  test('recording the same escalation twice returns the first requirement', async () => {
+  test('a retried requirement returns the first; a second decision from the same answer is kept', async () => {
     const e = await ask('pay-1', 'How many retries?');
-    await decide(e.id, '5');
+    await decide(e.id, '5, and alert on dead letters');
     const body = { requirement: 'Payouts retry 5 times.', justification: 'Owner said so.', tags: ['payout-retries'], source_escalation: e.ref };
     const first = (await srv.tool(AGENT, 'record_requirement', body)).value;
-    const second = (await srv.tool(AGENT, 'record_requirement', { ...body, requirement: 'Payout jobs retry five times.' })).value;
-    assert.equal(second.duplicate, true);
-    assert.equal(second.requirement.id, first.requirement.id);
+    const retry = (await srv.tool(AGENT, 'record_requirement', { ...body, requirement: '  payouts retry 5 times. ' })).value;
+    assert.equal(retry.duplicate, true);
+    assert.equal(retry.requirement.id, first.requirement.id);
+    const other = (await srv.tool(AGENT, 'record_requirement', { ...body, requirement: 'Dead letters alert on-call.', tags: ['dead-letters'] })).value;
+    assert.notEqual(other.requirement.id, first.requirement.id);
+    assert.equal(other.duplicate, undefined);
   });
 
   test('a tag that differs from an existing one by a plural is flagged', async () => {

@@ -83,13 +83,26 @@ export function accessFor(store: Store, principal: Principal): Access {
     // Several projects: an existing lane or group id names its project, so an overseer that
     // was running before a second project appeared keeps working without a `project`.
     const owners = (has: (p: string) => boolean) => visible.filter(has);
-    for (const found of [
-      hint?.lane ? owners((p) => store.laneExists(qualify(p, hint.lane!))) : [],
-      hint?.group ? owners((p) => store.groupExists(qualify(p, hint.group!))) : [],
-    ]) {
-      if (found.length === 1) return found[0];
-      if (found.length > 1) throw ask(found);
+    // Lanes on the dashboard count before removed ones (which come back only when republished).
+    const lanes = (id: string) => {
+      const active = owners((p) => store.getLane(qualify(p, id)) !== null);
+      return active.length ? active : owners((p) => store.laneExists(qualify(p, id)));
+    };
+    let found: string[] = [];
+    if (hint?.group) {
+      // A group decides: its project is where the lane goes (or already is) — never another project's lane.
+      found = owners((p) => store.groupExists(qualify(p, hint.group!)));
+      if (hint.lane && found.length > 1) {
+        const withLane = found.filter((p) => store.laneExists(qualify(p, hint.lane!)));
+        if (withLane.length) found = withLane;
+      }
+      // An unknown group: let the lane decide, so the store can say "Group … not found".
+      if (!found.length && hint.lane) found = lanes(hint.lane);
+    } else if (hint?.lane) {
+      found = lanes(hint.lane);
     }
+    if (found.length === 1) return found[0];
+    if (found.length > 1) throw ask(found);
     throw ask(visible);
   };
 
@@ -241,6 +254,7 @@ export const brief = (e: Escalation & { duplicate?: boolean }) => ({
   ref: e.ref,
   ...(e.duplicate ? { duplicate: true } : {}),
   project: e.project,
+  projectKey: e.projectKey,
   laneId: e.laneId,
   state: e.state,
   blocking: e.blocking,
@@ -257,12 +271,17 @@ export const brief = (e: Escalation & { duplicate?: boolean }) => ({
 /** A wait result with its escalations in brief. */
 export const briefWait = (w: WaitResult) => ({ ...w, decided: w.decided.map(brief), closed: w.closed.map(brief) });
 
+/** The identity an escalation records as its raiser: the key's account, or the config token. */
+export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}` : `token:${p.name}`);
+
 /**
- * Only the agent that raised an escalation acknowledges it (or a person, for it): codes repeat across
- * groups, and another overseer acknowledging by mistake would swallow the decision.
+ * Only whoever raised an escalation acknowledges or withdraws it as an agent (any key of the same
+ * account, so a rotated key still works), or a person on its behalf: codes repeat across groups, and
+ * another overseer closing it by mistake would swallow the decision.
  */
-export function requireRaiser(a: Access, e: Escalation) {
-  if (a.principal.role === 'agent' && e.createdBy !== a.principal.name) {
-    throw new ForbiddenError(`${e.ref} was raised by ${e.createdBy}; only that agent (or a person) can acknowledge it`);
-  }
+export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss') {
+  if (a.principal.role !== 'agent') return;
+  const owner = store.escalationOwner(e.id);
+  const mine = owner ? owner === ownerOf(a.principal) : e.createdBy === a.principal.name;
+  if (!mine) throw new ForbiddenError(`${e.ref} was raised by ${e.createdBy}; only that agent (or a person) can ${verb} it`);
 }

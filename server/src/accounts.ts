@@ -209,12 +209,13 @@ export async function createAccounts(config: Config, dbPath: string) {
     userActive: ownerActive,
     /** Every account, for picking project members. */
     listUsers: () =>
-      (db.prepare('SELECT id, name, email, role FROM user ORDER BY name').all() as {
+      (db.prepare('SELECT id, name, email, role, banned FROM user ORDER BY name').all() as {
         id: string;
         name: string;
         email: string;
         role: string | null;
-      }[]).map((u) => ({ id: u.id, name: u.name, email: u.email, admin: isAdminRole(u.role) })),
+        banned: number | null;
+      }[]).map((u) => ({ id: u.id, name: u.name, email: u.email, admin: isAdminRole(u.role), banned: !!u.banned })),
     isAdmin: (userId: string) => {
       const row = db.prepare('SELECT role FROM user WHERE id = ?').get(userId) as { role: string | null } | undefined;
       return !!row && isAdminRole(row.role);

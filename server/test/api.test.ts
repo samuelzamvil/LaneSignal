@@ -25,6 +25,7 @@ before(async () => {
     LANESIGNAL_OVERSEER_TOKENS: `bob:${BOB}`,
     LANESIGNAL_AUTH_SECRET: 'test-secret-0123456789-0123456789-0123',
     LANESIGNAL_TICKET_TEMPLATES: 'redmine=https://redmine.example/issues/{id},gh=https://github.com/o/r/issues/{id}',
+    LANESIGNAL_DECISIONS: 'true',
   });
   store = new Store({ path: ':memory:', resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem) });
   const accounts = await createAccounts(config, ':memory:');

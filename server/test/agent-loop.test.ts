@@ -33,7 +33,7 @@ describe('escalation codes', () => {
     assert.equal((await srv.tool(AGENT, 'add_position', { id: a.ref, stance: 'agree' })).value.positions.length, 1);
     assert.equal((await decide(a.ref, 'yes')).body.state, 'decided');
     assert.equal((await srv.tool(AGENT, 'acknowledge_escalation', { id: a.ref })).value.state, 'acknowledged');
-    assert.equal((await srv.tool(AGENT, 'withdraw_escalation', { id: b.ref })).value.state, 'withdrawn');
+    assert.equal((await srv.tool(AGENT, 'dismiss_escalation', { id: b.ref, justification: 'moot' })).value.state, 'withdrawn');
     assert.equal((await srv.call('GET', '/api/escalations/ZZZ999', ALICE)).status, 404);
   });
 
@@ -210,7 +210,7 @@ describe('waiting on many escalations', () => {
     const t0 = Date.now();
     const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'removals', wait_seconds: 30 });
     await sleep(150);
-    await srv.tool(AGENT, 'withdraw_escalation', { id: own.id, resolution: 'moot' });
+    await srv.tool(AGENT, 'dismiss_escalation', { id: own.id, justification: 'moot' });
     await sleep(100);
     await srv.call('DELETE', '/api/lanes/g-a', ALICE);
     const res = (await waiting).value;

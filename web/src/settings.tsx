@@ -102,11 +102,14 @@ export function AgentKeysSection({
   serverUrl,
   now,
   projects,
+  decisions,
 }: {
   client: Client;
   serverUrl: string;
   now: number;
   projects: ProjectAccess[];
+  /** Answering in LaneSignal is on: agents also need the environment for the skill's long waits. */
+  decisions: boolean;
 }) {
   const load = useCallback(() => client.listKeys(), [client]);
   const { data: keys, error, reload } = useAsync(load);
@@ -212,13 +215,17 @@ export function AgentKeysSection({
             <>
               <p className="hint">2. Install the skill that teaches agents how to use LaneSignal:</p>
               <CopyBlock label="Skill command" text={skillCommand} />
-              <p className="hint">
-                3. For long waits, put this in the project's <code>.claude/settings.local.json</code> (not committed: it holds
-                the key), with your group id:
-              </p>
-              <CopyBlock label="Settings" text={envBlock} />
+              {decisions && (
+                <>
+                  <p className="hint">
+                    For long waits, put this in the project's <code>.claude/settings.local.json</code> (not committed: it
+                    holds the key), with your group id:
+                  </p>
+                  <CopyBlock label="Settings" text={envBlock} />
+                </>
+              )}
               <details>
-                <summary className="hint">4. Tell the overseer when to use LaneSignal: a starter policy for its CLAUDE.md</summary>
+                <summary className="hint">3. Tell the overseer when to use LaneSignal: a starter policy for its CLAUDE.md</summary>
                 <CopyBlock label="Policy" text={policyFor('', needsProject ? '<project-id>' : null)} />
               </details>
             </>
@@ -549,7 +556,7 @@ export function PeopleSection({ client, me }: { client: Client; me: Principal })
 const DATASETS = ['escalations', 'positions', 'lanes', 'groups', 'events', 'requirements'] as const;
 
 /** Everything (including closed escalations and removed lanes) as CSV for analysis. */
-export function ExportSection({ client, serverUrl }: { client: Client; serverUrl: string }) {
+export function ExportSection({ client, serverUrl, requirements }: { client: Client; serverUrl: string; requirements: boolean }) {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -596,7 +603,7 @@ export function ExportSection({ client, serverUrl }: { client: Client; serverUrl
             Download everything (.zip)
           </button>
           <div className="dataset-links">
-            {DATASETS.map((d) => (
+            {DATASETS.filter((d) => d !== 'requirements' || requirements).map((d) => (
               <button key={d} className="ghost" disabled={busy} onClick={() => void get(`/api/export/${d}.csv`, `${d}.csv`)}>
                 {d}.csv
               </button>

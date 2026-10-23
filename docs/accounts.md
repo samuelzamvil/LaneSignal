@@ -48,7 +48,7 @@ Every person can create keys under **Settings → Keys**:
 
 Pick **Personal key** instead of **Agent key** to use LaneSignal from your own Claude session. A personal key acts as you:
 
-- It gets the human tools (`decide_escalation`, `withdraw_escalation`, and the read tools), and decisions show your name.
+- It gets the human tools (`dismiss_escalation`, the read tools, and `decide_escalation` when answering on the dashboard is on), and what it does shows your name.
 - It can't publish lanes or raise escalations.
 - It can't manage accounts, even if you're an admin.
 

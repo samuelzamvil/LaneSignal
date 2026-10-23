@@ -211,6 +211,8 @@ function Dashboard({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
+      // Escape while typing an answer shouldn't throw the draft away.
+      if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select')) return;
       const r = parseRoute(location.hash);
       if (r.escId) closeTo('#/');
       else if (r.laneId) closeTo('#/lanes');
@@ -393,7 +395,7 @@ function Dashboard({
             Nothing here yet. Next: <a href="#/settings">Settings → Keys</a> to connect your first overseer.
           </p>
         ) : (
-          <p className="empty">No decisions waiting. 🎉</p>
+          <p className="empty">Nothing needs you. 🎉</p>
         )
       )}
       {open.map((e) => (
@@ -407,6 +409,7 @@ function Dashboard({
           client={client}
           staleMinutes={config.staleMinutes}
           showProject={showProject}
+          decisions={config.decisions}
         />
       ))}
       {blockedLanes.length > 0 && (
@@ -440,6 +443,7 @@ function Dashboard({
               client={client}
               staleMinutes={config.staleMinutes}
               showProject={showProject}
+              decisions={config.decisions}
             />
           ))}
         </>
@@ -457,6 +461,7 @@ function Dashboard({
               client={client}
               staleMinutes={config.staleMinutes}
               showProject={showProject}
+              decisions={config.decisions}
             />
           ))}
         </>
@@ -576,14 +581,20 @@ function Dashboard({
       <ProjectsSection client={client} me={me} projects={live.projects} onChanged={live.refresh} />
       {me?.userId ? (
         <>
-          <AgentKeysSection client={client} serverUrl={conn.server || location.origin} now={now} projects={live.projects} />
+          <AgentKeysSection
+            client={client}
+            serverUrl={conn.server || location.origin}
+            now={now}
+            projects={live.projects}
+            decisions={config.decisions}
+          />
           {me.admin && <PeopleSection client={client} me={me} />}
           <PasswordSection client={client} onNewSession={onNewSession} />
         </>
       ) : (
         <p className="hint">Sign in with an account to manage agent keys and people.</p>
       )}
-      <ExportSection client={client} serverUrl={conn.server || location.origin} />
+      <ExportSection client={client} serverUrl={conn.server || location.origin} requirements={config.requirements} />
       <button className="ghost danger" onClick={() => onSignOut(client)}>
         Sign out
       </button>
@@ -615,9 +626,11 @@ function Dashboard({
           <a href="#/lanes" className={route.view === 'lanes' || route.view === 'inbox' ? 'on' : ''}>
             Lanes
           </a>
-          <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
-            Requirements
-          </a>
+          {config.requirements && (
+            <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
+              Requirements
+            </a>
+          )}
         </nav>
         <span className={`link-dot ${live.link}`} title={live.link} aria-label={`connection ${live.link}`} />
         <a href="#/settings" className="settings-link" aria-label="Settings">
@@ -633,14 +646,15 @@ function Dashboard({
       <Toaster />
       {open.length > 0 && route.view !== 'inbox' && (
         <a className="alert-banner" href="#/">
-          ⚑ {open.length} decision{open.length > 1 ? 's' : ''} waiting
+          ⚑ {open.length} {config.decisions ? 'decision' : 'alert'}
+          {open.length > 1 ? 's' : ''} waiting
         </a>
       )}
       <main className="panes">
         {inbox}
         {route.view === 'settings' ? (
           settings
-        ) : route.view === 'reqs' ? (
+        ) : route.view === 'reqs' && config.requirements ? (
           <RequirementsPane
             client={client}
             groups={live.groups}
@@ -662,9 +676,11 @@ function Dashboard({
         <a href="#/lanes" className={route.view === 'lanes' ? 'on' : ''}>
           <span className="icon">☰</span>Lanes
         </a>
-        <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
-          <span className="icon">§</span>Requirements
-        </a>
+        {config.requirements && (
+          <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
+            <span className="icon">§</span>Requirements
+          </a>
+        )}
         <a href="#/settings" className={route.view === 'settings' ? 'on' : ''}>
           <span className="icon">⚙</span>Settings
         </a>
@@ -677,6 +693,7 @@ function Dashboard({
           groups={live.groups}
           laneOpenIds={escLaneKey ? (openByLane.get(escLaneKey) ?? []).map((e) => e.id) : []}
           showProject={multiProject}
+          decisions={config.decisions}
           currentId={routeEsc?.id}
           version={escVersion}
           now={now}

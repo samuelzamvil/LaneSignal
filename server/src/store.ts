@@ -202,7 +202,7 @@ export interface StoreOptions {
   broadTags?: string[];
 }
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 type Row = Record<string, unknown>;
 
@@ -338,6 +338,10 @@ export class Store {
         `);
       }
       if (version < 8) this.migrateV8();
+      // v9: who raised each escalation (the owning account, or a config token), so only they acknowledge it.
+      if (version < 9 && !this.hasColumn('escalations', 'raised_by_owner')) {
+        this.db.exec('ALTER TABLE escalations ADD COLUMN raised_by_owner TEXT');
+      }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -561,11 +565,6 @@ export class Store {
   /** Whether the group exists, archived or not (publishing to an archived one restores it). */
   groupExists(id: string): boolean {
     return !!this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(id);
-  }
-
-  /** Ids of the group's lanes, removed ones included (their escalations still belong to the group). */
-  listLanesIncludingArchived(groupId: string): string[] {
-    return (this.db.prepare('SELECT id FROM lanes WHERE group_id = ?').all(groupId) as Row[]).map((r) => r.id as string);
   }
 
   /** Whether the lane exists, archived or not (publishing to a removed one restores it). */
@@ -944,7 +943,7 @@ export class Store {
    * everything not yet closed (open + decided-but-unacknowledged).
    */
   listEscalations(
-    filter: { states?: EscalationState[]; laneId?: string; projects?: string[]; limit?: number } = {},
+    filter: { states?: EscalationState[]; laneId?: string; groupId?: string; projects?: string[]; limit?: number } = {},
   ): Escalation[] {
     const states = filter.states ?? ['open', 'decided'];
     const where = [`state IN (${states.map(() => '?').join(',')})`];
@@ -952,6 +951,10 @@ export class Store {
     if (filter.laneId) {
       where.push('lane_id = ?');
       params.push(filter.laneId);
+    }
+    if (filter.groupId) {
+      where.push('lane_id IN (SELECT id FROM lanes WHERE group_id = ?)');
+      params.push(filter.groupId);
     }
     const p = this.inProjects(filter.projects);
     params.push(...p.params);
@@ -991,6 +994,12 @@ export class Store {
     return rows[0] ? this.escalationFromRow(rows[0]) : null;
   }
 
+  /** Who raised it ("user:<id>" or "token:<name>"); null for escalations from before this was recorded. */
+  escalationOwner(id: string): string | null {
+    const r = this.db.prepare('SELECT raised_by_owner FROM escalations WHERE id = ?').get(id) as Row | undefined;
+    return (r?.raised_by_owner as string | null) ?? null;
+  }
+
   private requireEscalation(id: string): Escalation {
     const e = this.getEscalation(id);
     if (!e) throw new NotFoundError(`Escalation "${id}" not found`);
@@ -1002,7 +1011,11 @@ export class Store {
    * open (e.g. a retried call) returns the existing escalation with
    * `duplicate: true` instead of creating a second one.
    */
-  createEscalation(input: EscalationInput, actor: string): Escalation & { duplicate?: boolean } {
+  /**
+   * `owner` identifies who may later acknowledge it: the raising key's account
+   * ("user:<id>") or config token ("token:<name>").
+   */
+  createEscalation(input: EscalationInput, actor: string, owner: string | null = null): Escalation & { duplicate?: boolean } {
     projectOf(input.laneId);
     // A typo would otherwise create a new lane outside the group, which the overseer's wait never sees.
     if (!this.laneExists(input.laneId)) {
@@ -1037,8 +1050,8 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO escalations (id, ref, letter_index, seq, lane_id, question, context, recommendation, recommended_option, cost,
-             alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+             alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at, raised_by_owner)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -1062,6 +1075,7 @@ export class Store {
           actor,
           at,
           at,
+          owner,
         );
       this.addEvent(input.laneId, at, 'escalation', `Escalated ${code}: ${input.question}`, actor);
       const blocks = input.blocking !== false && lane.status !== 'blocked_human';
@@ -1171,6 +1185,27 @@ export class Store {
       actor,
       true,
     );
+  }
+
+  /**
+   * Closes an alert that's been dealt with (the owner answered in the agent's session, or it became moot),
+   * with the justification, and publishes the lane's next state. A lane this unblocks goes back to
+   * `active` unless a status is given.
+   */
+  dismissEscalation(
+    id: string,
+    justification: string | null,
+    actor: string,
+    lane: Pick<LanePatch, 'status' | 'activity'> = {},
+  ): Escalation {
+    const before = this.requireEscalation(id);
+    const wasBlocked = this.getLane(before.laneId)?.status === 'blocked_human';
+    const escalation = this.withdrawEscalation(id, justification, actor);
+    const after = this.getLane(escalation.laneId);
+    if (!after) return escalation;
+    const status = lane.status ?? (wasBlocked && after.status === 'awaiting_agent' ? 'active' : undefined);
+    if (status || lane.activity !== undefined) this.upsertLane(after.id, { status, activity: lane.activity }, actor);
+    return escalation;
   }
 
   private openBlockingCount(laneId: string) {
@@ -1962,13 +1997,18 @@ export class Store {
     actor: string,
     actorIsHuman: boolean,
   ): { decidedBy: string; escalationId: string | null } {
-    if (input.sourceEscalation && input.decidedBy) {
-      throw new ValidationError('Give either source_escalation or decided_by, not both: the escalation names its decider.');
-    }
     if (input.sourceEscalation) {
       const esc = this.requireEscalation(input.sourceEscalation);
-      if (!esc.decidedBy || (esc.state !== 'decided' && esc.state !== 'acknowledged')) {
-        throw new ConflictError(`Escalation ${esc.ref} hasn't been decided by a person, so it can't be the source`);
+      // Decided in LaneSignal: the escalation names its decider. Otherwise (the owner answered in the
+      // agent's session and the alert was dismissed) it stays linked, and decided_by says who decided.
+      const decidedHere = !!esc.decidedBy && (esc.state === 'decided' || esc.state === 'acknowledged');
+      if (decidedHere && input.decidedBy) {
+        throw new ValidationError('Give either source_escalation or decided_by, not both: the escalation names its decider.');
+      }
+      if (!decidedHere && !input.decidedBy?.trim()) {
+        throw new ConflictError(
+          `Escalation ${esc.ref} hasn't been decided in LaneSignal; say who decided with decided_by (the escalation stays linked)`,
+        );
       }
       const laneGroup = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(esc.laneId) as Row | undefined)?.group_id;
       const related = esc.createdBy === actor || (input.group != null && laneGroup === input.group);
@@ -1978,7 +2018,7 @@ export class Store {
             'cite an escalation you raised or one from this group, or name who decided with decided_by.',
         );
       }
-      return { decidedBy: esc.decidedBy, escalationId: esc.id };
+      return { decidedBy: decidedHere ? esc.decidedBy! : input.decidedBy!.trim(), escalationId: esc.id };
     }
     const decidedBy = input.decidedBy?.trim();
     if (!decidedBy) {
@@ -2015,7 +2055,8 @@ export class Store {
     const forms = (t: string) =>
       new Set([t + 's', t + 'es', t.replace(/y$/, 'ies'), t.replace(/ies$/, 'y'), t.replace(/es$/, ''), t.replace(/s$/, '')]);
     const near = tags.flatMap((t) => {
-      const other = [...counts.keys()].find((c) => c !== t && !tags.includes(c) && forms(t).has(c));
+      // Short words ("bu"/"bus", "new"/"news") differ by more than a plural.
+      const other = [...counts.keys()].find((c) => c !== t && !tags.includes(c) && Math.min(c.length, t.length) >= 5 && forms(t).has(c));
       return other ? [`Tag "${t}" is close to the existing tag "${other}"; use that one if it means the same.`] : [];
     });
     if (total < 10) return near;
@@ -2047,11 +2088,15 @@ export class Store {
 
   /** Records an owner decision. Returns it with similar active requirements, so duplicates get noticed. */
   recordRequirement(input: RequirementInput, actor: string, actorIsHuman = false): RecordResult {
-    // One escalation, one decision: recording it again (a retry, or a second agent) returns the first.
-    if (input.sourceEscalation && !input.decidedBy) {
-      const same = this.db
-        .prepare("SELECT num FROM requirements WHERE source_escalation_id = ? AND status = 'active' AND project_id IS ?")
-        .get(input.sourceEscalation, input.project ?? null) as Row | undefined;
+    // A retry (the same requirement from the same escalation) returns the first instead of a copy.
+    // A second decision from the same answer is stored; `similar` shows the first.
+    if (input.sourceEscalation) {
+      const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
+      const same = (
+        this.db
+          .prepare("SELECT num, requirement FROM requirements WHERE source_escalation_id = ? AND status = 'active' AND project_id IS ?")
+          .all(input.sourceEscalation, input.project ?? null) as Row[]
+      ).find((row) => norm(row.requirement as string) === norm(input.requirement));
       if (same) return { requirement: this.requireRequirement(String(same.num)), similar: [], warnings: [], duplicate: true };
     }
     const requirement = this.tx(() => {
@@ -2113,7 +2158,6 @@ export class Store {
     return requirement;
   }
 
-  /** Withdraws a requirement with no replacement (the decision no longer applies). */
   /** Undoes a retire (e.g. a mis-tap): the requirement is active again. */
   restoreRequirement(id: string): Requirement {
     const requirement = this.tx(() => {
@@ -2128,6 +2172,7 @@ export class Store {
     return requirement;
   }
 
+  /** Withdraws a requirement with no replacement (the decision no longer applies). */
   retireRequirement(id: string): Requirement {
     const requirement = this.tx(() => {
       const current = this.requireRequirement(id);
