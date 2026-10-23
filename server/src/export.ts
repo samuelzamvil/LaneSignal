@@ -85,6 +85,7 @@ export async function exportZip(store: Store, filter: ExportFilter, generatedAt:
         'lanes.csv        every lane, including archived ones (archived_at set)',
         'groups.csv       every group (epic/train/overseer), including archived ones',
         'events.csv       lane history: status changes, escalation steps, recent activity text',
+        'requirements.csv the owner\'s product decisions, including superseded and retired ones',
         '',
         'Timestamps are UTC ISO 8601. Column reference: docs/export.md in the LaneSignal repository.',
         '',

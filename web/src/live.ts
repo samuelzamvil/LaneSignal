@@ -12,6 +12,8 @@ export interface LiveData {
   link: LinkState;
   /** Bumps on every event so detail views can refetch. */
   version: number;
+  /** Bumps on every requirement change and on each (re)connect, so the requirements view refetches. */
+  requirementsVersion: number;
   lastEvent: StreamEvent | null;
 }
 
@@ -32,6 +34,7 @@ export function useLiveData(client: Client): LiveData {
     escalations: new Map(),
     link: 'connecting',
     version: 0,
+    requirementsVersion: 0,
     lastEvent: null,
   });
   const kick = useRef<() => void>(() => {});
@@ -70,7 +73,14 @@ export function useLiveData(client: Client): LiveData {
                   for (const e of pending) base = applyEvent(base, e);
                   pending = null;
                   attempt = 0;
-                  setState((s) => ({ ...s, ...base, link: 'live', version: s.version + 1 }));
+                  // Anything may have changed while disconnected, requirements included.
+                  setState((s) => ({
+                    ...s,
+                    ...base,
+                    link: 'live',
+                    version: s.version + 1,
+                    requirementsVersion: s.requirementsVersion + 1,
+                  }));
                 },
                 (err) => {
                   // No snapshot means no trustworthy state: start over.
@@ -81,7 +91,14 @@ export function useLiveData(client: Client): LiveData {
             },
             onEvent: (e) => {
               if (pending) pending.push(e);
-              else setState((s) => ({ ...s, ...applyEvent(s, e), version: s.version + 1, lastEvent: e }));
+              else
+                setState((s) => ({
+                  ...s,
+                  ...applyEvent(s, e),
+                  version: s.version + 1,
+                  requirementsVersion: s.requirementsVersion + (e.type === 'requirement' ? 1 : 0),
+                  lastEvent: e,
+                }));
             },
             onActivity: alive,
           },

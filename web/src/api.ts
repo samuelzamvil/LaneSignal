@@ -1,7 +1,17 @@
 import { Capacitor } from '@capacitor/core';
-import type { Escalation, Group, Lane, LaneEvent, Principal, PublicConfig, StreamEvent } from '../../server/src/types.ts';
+import type {
+  Escalation,
+  Group,
+  Lane,
+  LaneEvent,
+  Principal,
+  PublicConfig,
+  Requirement,
+  RequirementStatus,
+  StreamEvent,
+} from '../../server/src/types.ts';
 
-export type { Escalation, Group, Lane, LaneEvent, Principal, PublicConfig, StreamEvent };
+export type { Escalation, Group, Lane, LaneEvent, Principal, PublicConfig, Requirement, RequirementStatus, StreamEvent };
 export type { LaneStatus, Link, Position } from '../../server/src/types.ts';
 
 export const isNative = Capacitor.isNativePlatform();
@@ -97,6 +107,19 @@ export function createClient(conn: Connection) {
         `/api/lanes/${encodeURIComponent(id)}`,
       ),
     escalation: (id: string) => request<Escalation>('GET', `/api/escalations/${encodeURIComponent(id)}`),
+    requirements: (f: { q?: string; tags?: string[]; group?: string; statuses?: RequirementStatus[] }) => {
+      const p = new URLSearchParams();
+      if (f.q) p.set('q', f.q);
+      if (f.tags?.length) p.set('tag', f.tags.join(','));
+      if (f.group) p.set('group', f.group);
+      if (f.statuses?.length) p.set('status', f.statuses.join(','));
+      p.set('limit', '200');
+      return request<Requirement[]>('GET', `/api/requirements?${p}`);
+    },
+    requirementTags: () => request<{ tag: string; count: number }[]>('GET', '/api/requirements/tags'),
+    editRequirement: (id: string, patch: { requirement?: string; justification?: string; tags?: string[] }) =>
+      request<Requirement>('PATCH', `/api/requirements/${encodeURIComponent(id)}`, patch),
+    retireRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/retire`, {}),
     deleteLane: (id: string) => request<void>('DELETE', `/api/lanes/${encodeURIComponent(id)}`),
     /** `change` replaces the answer on a decided escalation the agent hasn't acknowledged. */
     decide: (id: string, decision: string, note?: string, change = false) =>

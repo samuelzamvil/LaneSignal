@@ -32,6 +32,9 @@ Every request carries one bearer credential, which gets one of two roles:
 - Better Auth's built-in per-key rate limit (10 requests a day) is turned off, so long-running agents work.
 - **By design**, anyone with an account can create agent keys, and so can publish lane state. They are the people running the agents.
 - **By design**, any agent key can publish to or remove any lane, publish to any group, and withdraw any escalation. Removing another overseer's lane withdraws that overseer's open questions on it. Overseers on one install are trusted alike; give each overseer its own group and lane ids.
+- **Requirements:** any agent key can record or supersede a requirement and must name the human decision behind it.
+  - A cited escalation is checked: it must be answered by a person, and the agent must have raised it or it must come from a lane in the requirement's group. Its decider is recorded.
+  - A `decided_by` name is the agent's attestation, which the server can't verify. People review requirements in the app and can retire them.
 - **Personal keys** act as their owner for escalation decisions only. They can't publish lanes or manage accounts. Key metadata is limited to this role flag.
 
 ## Revocation reaches open connections

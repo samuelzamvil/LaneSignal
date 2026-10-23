@@ -3,6 +3,7 @@
 LaneSignal keeps everything needed for analysis:
 
 - every escalation, including decided, acknowledged and withdrawn ones
+- every requirement, including superseded and retired ones
 - every agent position
 - every lane and group, including ones that were removed from the dashboard (they're archived, not deleted)
 - each lane's full status and escalation history
@@ -83,6 +84,10 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 ### `groups.csv` (every group, including archived ones)
 
 `id`, `name`, `ticket`, `ticket_url`, `links`, `last_published_by`, `created_at`, `updated_at`, `archived_at`.
+
+### `requirements.csv` (the owner's product decisions)
+
+`id` (`R14`), `group_id` (empty for product-wide), `requirement`, `justification`, `tags`, `status` (`active`, `superseded`, `retired`), `superseded_by`, `decided_by`, `source_escalation`, `recorded_by`, `created_at`, `updated_at`. Every requirement is included, whatever its status; `from`/`to` filter by creation time. See [Requirements](requirements.md).
 
 ### `events.csv` (lane history)
 

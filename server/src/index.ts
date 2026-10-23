@@ -16,6 +16,7 @@ const store = new Store({
   path: path.join(config.dataDir, 'lanesignal.db'),
   resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem),
   eventRetention: config.eventRetention,
+  broadTags: config.broadTags ?? undefined,
 });
 const accounts = await createAccounts(config, path.join(config.dataDir, 'lanesignal.db'));
 const push = startNotifier(config, store, accounts.userActive);
