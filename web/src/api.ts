@@ -101,8 +101,18 @@ export function createClient(conn: Connection) {
     withdraw: (id: string, note?: string) =>
       request<Escalation>('POST', `/api/escalations/${id}/withdraw`, { note: note || null }),
     signOut: () => request<unknown>('POST', '/api/auth/sign-out', {}),
-    changePassword: (currentPassword: string, newPassword: string) =>
-      request<unknown>('POST', '/api/auth/change-password', { currentPassword, newPassword, revokeOtherSessions: true }),
+    /** Signs out every other device; returns this device's replacement session token. */
+    changePassword: async (currentPassword: string, newPassword: string): Promise<string> => {
+      const res = await fetch(`${base}/api/auth/change-password`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword, revokeOtherSessions: true }),
+      });
+      if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+      const token = res.headers.get('set-auth-token') ?? ((await res.json()) as { token?: string }).token;
+      if (!token) throw new ApiError(500, 'Server did not return a new session token');
+      return token;
+    },
 
     // Agent keys belong to the signed-in account.
     listKeys: async () => {
@@ -178,7 +188,7 @@ export const publicApi = {
     return (await res.json()) as { needsSetup: boolean };
   },
 
-  async setup(server: string, input: { email: string; name: string; password: string }) {
+  async setup(server: string, input: { email: string; name: string; password: string; code: string }) {
     const res = await fetch(`${server}/api/setup`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

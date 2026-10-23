@@ -51,6 +51,9 @@ export function createAuth(tokens: TokenEntry[], accounts: Pick<Accounts, 'ident
         return;
       }
       res.locals.principal = principal;
+      // Long-lived requests (SSE, long-polls) re-check the credential while they stay open.
+      const token = tokenFrom(req);
+      res.locals.stillValid = async () => (await identify(token)) !== null;
       next();
     };
   }
@@ -59,3 +62,4 @@ export function createAuth(tokens: TokenEntry[], accounts: Pick<Accounts, 'ident
 }
 
 export const principalOf = (res: Response) => res.locals.principal as Principal;
+export const stillValidOf = (res: Response) => res.locals.stillValid as () => Promise<boolean>;

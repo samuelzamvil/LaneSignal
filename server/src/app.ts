@@ -3,8 +3,8 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
-import type { Accounts } from './accounts.ts';
-import { createAuth, principalOf } from './auth.ts';
+import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
+import { createAuth, principalOf, stillValidOf } from './auth.ts';
 import type { Config } from './config.ts';
 import { log } from './log.ts';
 import { mcpHandler } from './mcp.ts';
@@ -70,7 +70,14 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
   });
 
   // Accounts, sessions and agent keys (Better Auth). Mounted before the JSON parser: it reads raw bodies.
-  app.all('/api/auth/{*splat}', toNodeHandler(accounts.auth));
+  const authHandler = toNodeHandler(accounts.auth);
+  app.all('/api/auth/{*splat}', (req, res) => {
+    // Bearer only: ignore cookies Better Auth may have set, so a stale cookie can't stand in for the bearer.
+    delete req.headers.cookie;
+    // The rate limiter keys on this; derived from the socket or trusted proxies only, never the client.
+    req.headers[CLIENT_IP_HEADER] = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+    void authHandler(req, res);
+  });
 
   app.use(express.json({ limit: '256kb' }));
 
@@ -82,7 +89,11 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
   app.post(
     '/api/setup',
     h(async (req, res) => {
-      const user = await accounts.setup(parse(s.setupInput, req.body));
+      // The setup code from the server log, or a static human token, proves control of the server.
+      const header = req.headers.authorization;
+      const caller = header?.startsWith('Bearer ') ? await auth.identify(header.slice(7).trim()) : null;
+      const trusted = !!caller?.admin && !caller.userId;
+      const user = await accounts.setup(parse(s.setupInput, req.body), trusted);
       if (!user) throw new ConflictError('Setup is already complete; sign in instead');
       res.status(201).json({ id: user.id, email: user.email, name: user.name });
     }),
@@ -100,6 +111,37 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
   const any = auth.require();
   const agent = auth.require('agent');
   const human = auth.require('human');
+
+  // Break-glass people management for static human tokens (account admins use /api/auth/admin/*).
+  const configAdmin = (_req: Request, res: Response, next: NextFunction) => {
+    const p = principalOf(res);
+    if (!p.admin || p.userId) {
+      res.status(403).json({ error: 'requires a static human token from the server config' });
+      return;
+    }
+    next();
+  };
+
+  app.post(
+    '/api/admin/people',
+    human,
+    configAdmin,
+    h(async (req, res) => {
+      const user = await accounts.createPerson(parse(s.personInput, req.body));
+      res.status(201).json({ id: user.id, email: user.email, name: user.name });
+    }),
+  );
+
+  app.post(
+    '/api/admin/people/password',
+    human,
+    configAdmin,
+    h(async (req, res) => {
+      const body = parse(s.passwordReset, req.body);
+      if (!(await accounts.resetPassword(body.email, body.password))) throw new NotFoundError('No account with that email');
+      res.sendStatus(204);
+    }),
+  );
 
   app.get('/api/me', any, (_req, res) => {
     res.json(principalOf(res));
@@ -194,7 +236,13 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
       const wait = Math.min(Math.max(Number(req.query.wait ?? 0) || 0, 0), 300);
       const abort = new AbortController();
       res.on('close', () => abort.abort());
-      res.json(await store.waitForDecision(String(req.params.id), wait * 1000, abort.signal));
+      const escalation = await store.waitForDecision(String(req.params.id), wait * 1000, abort.signal);
+      // The credential may have been revoked while we waited.
+      if (wait > 0 && !(await stillValidOf(res)())) {
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+      }
+      res.json(escalation);
     }),
   );
 
@@ -247,11 +295,24 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
     });
     res.write('retry: 3000\n\n');
     const send = (e: StreamEvent) => res.write(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
-    const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
+    // Close the stream as soon as its credential stops being valid: checked on every heartbeat
+    // and immediately whenever sessions or keys are revoked.
+    const stillValid = stillValidOf(res);
+    const recheck = () => {
+      void stillValid().then((ok) => {
+        if (!ok) res.end();
+      });
+    };
+    const heartbeat = setInterval(() => {
+      res.write(': ping\n\n');
+      recheck();
+    }, 25_000);
     store.events.on('change', send);
+    accounts.revocations.on('revoked', recheck);
     req.on('close', () => {
       clearInterval(heartbeat);
       store.events.off('change', send);
+      accounts.revocations.off('revoked', recheck);
     });
   });
 
@@ -285,6 +346,12 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
       res.status(409).json({ error: err.message });
     } else if (err instanceof SyntaxError) {
       res.status(400).json({ error: 'invalid JSON' });
+    } else if (
+      typeof (err as { statusCode?: unknown })?.statusCode === 'number' &&
+      (err as { statusCode: number }).statusCode < 500
+    ) {
+      // Better Auth APIError (e.g. password too long, wrong setup code)
+      res.status((err as { statusCode: number }).statusCode).json({ error: (err as Error).message });
     } else if (typeof (err as { status?: unknown })?.status === 'number' && (err as { status: number }).status < 500) {
       // body-parser errors: payload too large, unsupported charset, ...
       res.status((err as { status: number }).status).json({ error: (err as Error).message });

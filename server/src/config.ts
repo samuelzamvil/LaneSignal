@@ -21,6 +21,8 @@ export interface Config {
   tokens: TokenEntry[];
   /** Signs account sessions; generated into the data dir when unset. */
   authSecret: string | null;
+  /** Sign-in attempts allowed per client IP per window. */
+  signInRateLimit: { max: number; windowSeconds: number };
   /** Display name for lane groups (epic / train / overseer). */
   groupLabel: string;
   /** Ticket system key -> URL template containing {id}. */
@@ -135,6 +137,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     corsOrigins: list(env.LANESIGNAL_CORS_ORIGINS) ?? file.corsOrigins ?? DEFAULT_CORS,
     tokens,
     authSecret: env.LANESIGNAL_AUTH_SECRET ?? null,
+    signInRateLimit: {
+      max: int('LANESIGNAL_SIGNIN_RATE_MAX', env.LANESIGNAL_SIGNIN_RATE_MAX, 5, 1, 10_000),
+      windowSeconds: int('LANESIGNAL_SIGNIN_RATE_WINDOW', env.LANESIGNAL_SIGNIN_RATE_WINDOW, 60, 1, 86_400),
+    },
     groupLabel: env.LANESIGNAL_GROUP_LABEL ?? file.groupLabel ?? 'Epic',
     ticketTemplates,
     defaultTicketSystem:
