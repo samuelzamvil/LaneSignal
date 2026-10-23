@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "npm run build -w server && npm run build -w web",
-    "test": "npm test -w server",
+    "test": "npm test -w server && npm test -w web",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
     "dev:server": "npm run dev -w server",
     "dev:web": "npm run dev -w web"
