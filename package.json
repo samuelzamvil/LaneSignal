@@ -1,0 +1,15 @@
+{
+  "name": "lanesignal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted ops dashboard for autonomous coding-agent lanes and human-required escalations",
+  "workspaces": ["server", "web"],
+  "scripts": {
+    "build": "npm run build -w server && npm run build -w web",
+    "test": "npm test -w server",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "dev:server": "npm run dev -w server",
+    "dev:web": "npm run dev -w web"
+  },
+  "engines": { "node": ">=22.13" }
+}
