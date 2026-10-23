@@ -32,7 +32,11 @@ A lane is one work stream with a stable id the agent picks (`auth-rework`, `e2e-
 - **activity:** one line, readable on a phone
 - **links:** PRs, CI runs, sessions. URLs must be http(s)
 
-LaneSignal tracks when each lane last published, how long it has been in its current status, and total **time blocked**. A lane that is `active`, `pending_ci` or `awaiting_agent` and goes quiet for `LANESIGNAL_STALE_MINUTES` is flagged *stale*. Its activity history keeps the last `LANESIGNAL_EVENT_RETENTION` entries.
+LaneSignal tracks when each lane last published, how long it has been in its current status, and total **time blocked**. A lane that is `active`, `pending_ci` or `awaiting_agent` and goes quiet for `LANESIGNAL_STALE_MINUTES` is flagged *stale*.
+
+Its history keeps every status change and escalation step. Routine activity text is capped at the last `LANESIGNAL_EVENT_RETENTION` entries.
+
+**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md).
 
 ## Escalations
 

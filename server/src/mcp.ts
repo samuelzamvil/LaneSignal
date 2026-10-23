@@ -5,7 +5,8 @@ import { z } from 'zod';
 import { principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import { log } from './log.ts';
 import * as s from './schemas.ts';
-import { ConflictError, NotFoundError, type Store } from './store.ts';
+import { toCsv } from './export.ts';
+import { ConflictError, EXPORT_COLUMNS, EXPORT_DATASETS, NotFoundError, type Store } from './store.ts';
 import { LANE_STATUSES, type Principal } from './types.ts';
 
 const json = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
@@ -88,6 +89,55 @@ function buildServer(
         }
         if (revoked || (wait_seconds && !(await stillValid()))) return fail(new Error('Credential revoked'));
         return json(escalation);
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'export_data',
+    {
+      description:
+        'Export LaneSignal data for analysis, including closed escalations and archived lanes. Datasets: ' +
+        'escalations (one row each, with decision timings and position counts), positions (agent stances), ' +
+        'lanes, groups, events (status changes and escalation history). `from`/`to` (YYYY-MM-DD or ISO) filter ' +
+        'escalations, positions and events. Results come in pages (default 100 rows, and cut short to stay under ' +
+        'about 60 KB); the first line says which rows you got and the offset for the next page. For everything at ' +
+        'once as files, the HTTP API serves a zip at GET /api/export.',
+      inputSchema: {
+        dataset: z.enum(EXPORT_DATASETS),
+        format: z.enum(['csv', 'json']).optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        lane_id: z.string().optional(),
+        offset: z.number().int().min(0).optional(),
+        limit: z.number().int().min(1).max(1000).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ dataset, format, from, to, lane_id, offset, limit }) => {
+      try {
+        const f = s.exportFilter.parse({ from, to, lane: lane_id });
+        const rows = store.exportRows(dataset, { from: f.from, to: f.to, laneId: f.lane });
+        const start = offset ?? 0;
+        let page = rows.slice(start, start + (limit ?? 100));
+        const render = (p: typeof page) =>
+          format === 'json' ? JSON.stringify(p, null, 2) : toCsv(p, [...EXPORT_COLUMNS[dataset]]);
+        // Keep each response within what MCP clients accept.
+        let body = render(page);
+        while (body.length > 60_000 && page.length > 1) {
+          page = page.slice(0, Math.ceil(page.length / 2));
+          body = render(page);
+        }
+        const range = page.length ? `${start + 1}-${start + page.length}` : 'none';
+        const more = start + page.length < rows.length ? `; call again with offset ${start + page.length} for more` : '';
+        return {
+          content: [
+            { type: 'text' as const, text: `${dataset}: rows ${range} of ${rows.length}${more}` },
+            { type: 'text' as const, text: body },
+          ],
+        };
       } catch (err) {
         return fail(err);
       }

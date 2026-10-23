@@ -43,7 +43,7 @@ Open `http://<host>:8080` and create the admin account with that one-time setup 
 The wiki lives in [`docs/`](docs/README.md):
 
 - **Setup:** [Dockge](docs/install-dockge.md) · [Docker Compose](docs/install-docker.md) · [Accounts and agent keys](docs/accounts.md) · [Reverse proxy](docs/reverse-proxy.md) · [Configuration](docs/configuration.md)
-- **Use:** [Concepts](docs/concepts.md) · [Connecting agents](docs/agents.md) · [Agent instructions](docs/agent-instructions.md) · [HTTP API](docs/api.md) · [Android and push](docs/android.md)
+- **Use:** [Concepts](docs/concepts.md) · [Connecting agents](docs/agents.md) · [Agent instructions](docs/agent-instructions.md) · [HTTP API](docs/api.md) · [Android and push](docs/android.md) · [Export for analysis](docs/export.md)
 - **Run:** [Operations](docs/operations.md) · [Security](docs/security.md) · [Development](docs/development.md)
 
 ## Build vs. adopt: what was evaluated

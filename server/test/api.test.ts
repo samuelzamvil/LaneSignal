@@ -130,6 +130,31 @@ describe('lanes', () => {
     assert.equal((await call('PUT', '/api/groups/x', ALICE, { name: 'nope' })).status, 403);
   });
 
+  test('exports: zip of CSVs, single CSV/JSON datasets, date filters', async () => {
+    const zip = await fetch(`${base}/api/export`, { headers: { authorization: `Bearer ${ALICE}` } });
+    assert.equal(zip.status, 200);
+    assert.equal(zip.headers.get('content-type'), 'application/zip');
+    assert.match(zip.headers.get('content-disposition') ?? '', /lanesignal-export-\d{4}-\d{2}-\d{2}\.zip/);
+    const buf = Buffer.from(await zip.arrayBuffer());
+    assert.equal(buf.readUInt32LE(0), 0x04034b50);
+    for (const name of ['escalations.csv', 'positions.csv', 'lanes.csv', 'groups.csv', 'events.csv', 'README.txt']) {
+      assert.ok(buf.includes(Buffer.from(name)), name);
+    }
+
+    const csv = await fetch(`${base}/api/export/escalations.csv`, { headers: { authorization: `Bearer ${AGENT}` } });
+    assert.equal(csv.headers.get('content-type'), 'text/csv; charset=utf-8');
+    assert.ok((await csv.text()).startsWith('id,lane_id,lane_name,'));
+    const lanesCsv = await fetch(`${base}/api/export/lanes.csv`, { headers: { authorization: `Bearer ${AGENT}` } });
+    assert.ok((await lanesCsv.text()).includes('epic-1,Epic 1,payments-epic'));
+
+    const json = await call('GET', '/api/export/lanes.json', ALICE);
+    assert.ok(json.body.some((l: { id: string }) => l.id === 'epic-1'));
+    assert.equal((await call('GET', '/api/export/escalations.json?from=2999-01-01', ALICE)).body.length, 0);
+    assert.equal((await call('GET', '/api/export/secrets.csv', ALICE)).status, 404);
+    assert.equal((await call('GET', '/api/export/lanes.csv?from=yesterday', ALICE)).status, 400);
+    assert.equal((await call('GET', '/api/export', null)).status, 401);
+  });
+
   test('deleting a group ungroups its lanes', async () => {
     await call('PUT', '/api/lanes/tmp-lane', AGENT, { group: 'tmp-group' });
     assert.equal((await call('DELETE', '/api/groups/tmp-group', ALICE)).status, 204);
@@ -299,6 +324,7 @@ describe('mcp', () => {
     assert.ok(names.includes('create_escalation'));
     assert.ok(names.includes('add_position'));
     assert.ok(names.includes('update_group'));
+    assert.ok(names.includes('export_data'));
     assert.ok(!names.includes('decide_escalation'));
 
     const out = await rpc(AGENT, 'tools/call', {
@@ -318,6 +344,17 @@ describe('mcp', () => {
       name: 'create_escalation',
       arguments: { lane_id: 'mcp-lane', question: 'Merge?', options: ['Merge'], recommended_option: 'Nope' },
     });
+    assert.equal(bad.result.isError, true);
+  });
+
+  test('export_data returns CSV pages', async () => {
+    const out = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', limit: 1 } });
+    const [summary, body] = out.result.content.map((c: { text: string }) => c.text);
+    assert.match(summary, /^lanes: rows 1-1 of \d+; call again with offset 1/);
+    assert.ok(body.startsWith('id,name,group_id,'));
+    const empty = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', offset: 9999 } });
+    assert.ok(empty.result.content[1].text.startsWith('id,name,group_id,'), 'header even when empty');
+    const bad = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', from: 'soon' } });
     assert.equal(bad.result.isError, true);
   });
 
