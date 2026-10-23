@@ -46,6 +46,7 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | Method and path | Role | Notes |
 |---|---|---|
 | `GET /healthz` | public | `{"ok":true}` when the database answers. Used by the container health check |
+| `GET /api/skill` | public | The Claude Code skill for agents (`SKILL.md`) |
 | `GET /api/setup` | public | `{"needsSetup": bool}` |
 | `POST /api/setup` | public + code | First admin account: `{email, name, password, code}`. The code isn't needed when sending a static human token |
 | `GET /api/me` | any | Who the credential is: `{name, role, admin?, email?, userId?}` |

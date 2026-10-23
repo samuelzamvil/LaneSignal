@@ -276,3 +276,29 @@ describe('real time and export', () => {
     assert.ok(csv.content![1].text.startsWith('id,'));
   });
 });
+
+describe('agent skill', () => {
+  test('the server hands out the Claude Code skill, no credential needed', async () => {
+    const res = await fetch(`${srv.base}/api/skill`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') ?? '', /text\/markdown/);
+    const text = await res.text();
+    assert.match(text, /^---\nname: lanesignal\n/);
+    // Every tool the skill names exists.
+    const tools = (await fetch(`${srv.base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AGENT}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    }).then(async (r) => {
+      const body = await r.text();
+      const line = body.split('\n').find((l) => l.startsWith('data: '));
+      return JSON.parse(line ? line.slice(6) : body).result.tools.map((t: { name: string }) => t.name) as string[];
+    }));
+    const named = [...new Set(text.match(/`([a-z]+_[a-z_]+)`/g)?.map((m) => m.slice(1, -1)) ?? [])].filter(
+      (n) => /^(update|remove|create|add|wait|get|acknowledge|withdraw|find|record|supersede|list)_/.test(n),
+    );
+    assert.ok(named.length > 10);
+    for (const name of named) assert.ok(tools.includes(name), `skill names unknown tool ${name}`);
+  });
+});
+
