@@ -271,3 +271,7 @@ Layout:
 - Per-human notification preferences
 - Pruning of old acknowledged escalations
 - An OIDC front door: today you can put the server behind an authenticating proxy such as oauth2-proxy and keep tokens for agents
+
+## License
+
+[MIT](LICENSE)
