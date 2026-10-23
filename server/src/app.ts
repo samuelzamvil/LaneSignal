@@ -156,6 +156,14 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
     }),
   );
 
+  /** Agents record agreement/disagreement with the recommendation. */
+  app.post('/api/escalations/:id/positions', agent, (req, res) => {
+    const body = parse(s.position, req.body);
+    res.json(
+      store.addPosition(String(req.params.id), { ...body, agent: body.agent ?? principalOf(res).name }, principalOf(res).name),
+    );
+  });
+
   app.post('/api/escalations/:id/decide', overseer, (req, res) => {
     const body = parse(s.decision, req.body);
     res.json(store.decideEscalation(String(req.params.id), body.decision, body.note ?? null, principalOf(res).name));

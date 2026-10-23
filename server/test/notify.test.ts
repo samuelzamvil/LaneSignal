@@ -6,7 +6,7 @@ import { loadConfig } from '../src/config.ts';
 import { startNotifier } from '../src/notify.ts';
 import { Store } from '../src/store.ts';
 
-test('ntfy receives escalations only, not routine lane updates', async () => {
+test('ntfy receives new escalations only, not lane updates, positions or decisions', async () => {
   const received: { title: string; body: string; click?: string }[] = [];
   const sink = createServer((req, res) => {
     let body = '';
@@ -27,7 +27,9 @@ test('ntfy receives escalations only, not routine lane updates', async () => {
   assert.deepEqual(startNotifier(config, store), { fcm: false, ntfy: true });
 
   store.upsertLane('lane-1', { name: 'Lane one', status: 'pending_ci' }, 'bot');
-  const esc = store.createEscalation({ laneId: 'lane-1', title: 'Ship it?' }, 'bot');
+  const esc = store.createEscalation({ laneId: 'lane-1', question: 'Ship it?' }, 'bot');
+  await new Promise((r) => setTimeout(r, 5));
+  store.addPosition(esc.id, { agent: 'reviewer', stance: 'agree' }, 'bot');
   store.decideEscalation(esc.id, 'yes', null, 'alice');
   await new Promise((r) => setTimeout(r, 200));
 

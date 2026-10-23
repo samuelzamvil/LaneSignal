@@ -45,11 +45,34 @@ export interface Lane {
 
 export type EscalationState = 'open' | 'decided' | 'acknowledged' | 'withdrawn';
 
+export const STANCES = ['agree', 'disagree', 'neutral'] as const;
+export type Stance = (typeof STANCES)[number];
+
+/** One agent's view on the escalation's recommendation. */
+export interface Position {
+  agent: string;
+  stance: Stance;
+  note: string | null;
+  at: string;
+}
+
+/**
+ * Loose structure: Context -> Question -> Recommendation -> agent positions.
+ * Only `question` is required.
+ */
 export interface Escalation {
   id: string;
   laneId: string;
-  title: string;
-  body: string | null;
+  /** The decision being asked for; doubles as the headline. */
+  question: string;
+  /** Background a human needs to answer without opening the session. */
+  context: string | null;
+  /** What the escalating agent would do. */
+  recommendation: string | null;
+  /** Which of `options` the recommendation corresponds to, if any. */
+  recommendedOption: string | null;
+  /** Agreement/disagreement from agents, one entry per agent. */
+  positions: Position[];
   /** Suggested answers rendered as one-tap buttons. */
   options: string[];
   links: Link[];

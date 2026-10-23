@@ -109,16 +109,49 @@ describe('escalation lifecycle', () => {
   test('agent creates; lane becomes blocked_human', async () => {
     const res = await call('POST', '/api/escalations', AGENT, {
       laneId: 'train-a',
-      title: 'Drop legacy column?',
+      context: 'legacy_role has had no reads for 90 days.',
+      question: 'Drop legacy column?',
+      recommendation: 'Drop it; backups cover rollback.',
+      recommendedOption: 'Yes',
+      positions: [{ agent: 'reviewer', stance: 'agree', note: 'No readers found' }],
       options: ['Yes', 'No'],
     });
     assert.equal(res.status, 201);
     assert.equal(res.body.state, 'open');
+    assert.equal(res.body.recommendedOption, 'Yes');
+    assert.equal(res.body.positions[0].agent, 'reviewer');
     id = res.body.id;
     const lane = (await call('GET', '/api/lanes/train-a', ALICE)).body.lane;
     assert.equal(lane.status, 'blocked_human');
     assert.equal(lane.openEscalations, 1);
     assert.ok(lane.blockedSince);
+  });
+
+  test('recommendedOption must be one of the options', async () => {
+    const res = await call('POST', '/api/escalations', AGENT, {
+      laneId: 'train-a',
+      question: 'Q?',
+      options: ['A'],
+      recommendedOption: 'B',
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('agents add or replace positions while open', async () => {
+    await call('POST', `/api/escalations/${id}/positions`, AGENT, { stance: 'disagree', note: 'risky' });
+    const res = await call('POST', `/api/escalations/${id}/positions`, AGENT, {
+      agent: 'reviewer',
+      stance: 'neutral',
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(
+      res.body.positions.map((p: { agent: string; stance: string }) => [p.agent, p.stance]),
+      [
+        ['bot', 'disagree'],
+        ['reviewer', 'neutral'],
+      ],
+    );
+    assert.equal((await call('POST', `/api/escalations/${id}/positions`, ALICE, { stance: 'agree' })).status, 403);
   });
 
   test('agents cannot decide', async () => {
@@ -150,10 +183,11 @@ describe('escalation lifecycle', () => {
     const after = (await call('GET', '/api/escalations', ALICE)).body;
     assert.ok(!after.some((e: { id: string }) => e.id === id));
     assert.equal((await call('POST', `/api/escalations/${id}/ack`, AGENT, {})).status, 409);
+    assert.equal((await call('POST', `/api/escalations/${id}/positions`, AGENT, { stance: 'agree' })).status, 409);
   });
 
   test('withdraw closes an open escalation', async () => {
-    const e = (await call('POST', '/api/escalations', AGENT, { laneId: 'train-a', title: 'Q', blocking: false })).body;
+    const e = (await call('POST', '/api/escalations', AGENT, { laneId: 'train-a', question: 'Q', blocking: false })).body;
     const res = await call('POST', `/api/escalations/${e.id}/withdraw`, AGENT, { note: 'answered in Remote Control' });
     assert.equal(res.body.state, 'withdrawn');
   });
@@ -202,6 +236,7 @@ describe('mcp', () => {
     const names = tools.result.tools.map((t: { name: string }) => t.name);
     assert.ok(names.includes('update_lane'));
     assert.ok(names.includes('create_escalation'));
+    assert.ok(names.includes('add_position'));
     assert.ok(!names.includes('decide_escalation'));
 
     const out = await rpc(AGENT, 'tools/call', {
@@ -211,6 +246,17 @@ describe('mcp', () => {
     const lane = JSON.parse(out.result.content[0].text);
     assert.equal(lane.ticketUrl, 'https://github.com/o/r/issues/5');
     assert.equal(store.getLane('mcp-lane')?.agent, 'bot');
+
+    const created = await rpc(AGENT, 'tools/call', {
+      name: 'create_escalation',
+      arguments: { lane_id: 'mcp-lane', question: 'Merge?', options: ['Merge', 'Wait'], recommended_option: 'Merge' },
+    });
+    assert.equal(JSON.parse(created.result.content[0].text).recommendedOption, 'Merge');
+    const bad = await rpc(AGENT, 'tools/call', {
+      name: 'create_escalation',
+      arguments: { lane_id: 'mcp-lane', question: 'Merge?', options: ['Merge'], recommended_option: 'Nope' },
+    });
+    assert.equal(bad.result.isError, true);
   });
 
   test('overseer gets decide_escalation, not agent write tools', async () => {

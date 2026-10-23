@@ -58,7 +58,18 @@ For remote access, keep the port bound to localhost (the default in `docker-comp
 
 The server tracks `updatedAt`, time in the current status, and cumulative **time blocked**. The UI flags lanes as *stale* when an active lane hasn't published in `staleMinutes`.
 
-**Escalation**: a question for humans, attached to a lane. Its lifecycle:
+**Escalation**: a question for humans, attached to a lane. Only `question` is required. The other fields follow a loose structure:
+
+| Field | Meaning |
+|---|---|
+| `context` | What a human needs to know to answer without opening the agent's session |
+| `question` | The decision being asked for (also the headline) |
+| `recommendation` | What the escalating agent would do and why. `recommendedOption` marks one of `options` as recommended |
+| `positions` | Other agents' agreement or disagreement with the recommendation: `{agent, stance: agree\|disagree\|neutral, note}`. Positions can be given at creation or added later, one per agent |
+
+Inbox cards stay compact: the question, a one-line recommendation, the agree/disagree counts and one-tap options. Tapping a card opens the full detail sheet with every section, a free-text answer and a note. Push notifications and rows in a lane's history open the same sheet.
+
+Its lifecycle:
 
 ```
 open ──(human decides)──► decided ──(agent acknowledges)──► acknowledged
@@ -90,6 +101,7 @@ claude mcp add --transport http lanesignal https://lanesignal.example.com/mcp \
 |---|---|---|
 | `update_lane` | agent | Create or patch the lane's status, ticket, activity, links and category |
 | `create_escalation` | agent | Ask for a decision (`options` render as one-tap buttons) |
+| `add_position` | agent | Agree or disagree with an open escalation's recommendation (one per agent; `agent` names you on a shared token) |
 | `get_escalation` | any | Read one escalation. `wait_seconds` (≤300) long-polls until it is decided |
 | `acknowledge_escalation` | agent | Confirm the decision was received; closes the escalation |
 | `withdraw_escalation` | agent | Close it without a dashboard decision (answered in Remote Control, or moot) |
@@ -111,7 +123,16 @@ curl -X PUT $URL/api/lanes/auth-rework -H "authorization: Bearer $AGENT" -H 'con
 
 # escalate, then block until a human answers (long-poll, no busy polling)
 ID=$(curl -s -X POST $URL/api/escalations -H "authorization: Bearer $AGENT" -H 'content-type: application/json' \
-  -d '{"laneId":"auth-rework","title":"Drop legacy_role column?","options":["Drop","Keep"]}' | jq -r .id)
+  -d '{"laneId":"auth-rework",
+       "context":"legacy_role has had no reads for 90 days; rollback needs a backup restore.",
+       "question":"Drop legacy_role column?",
+       "recommendation":"Drop it; the auth rework is simpler without it.",
+       "options":["Drop","Keep"],"recommendedOption":"Drop"}' | jq -r .id)
+
+# another agent weighs in
+curl -s -X POST $URL/api/escalations/$ID/positions -H "authorization: Bearer $AGENT" -H 'content-type: application/json' \
+  -d '{"agent":"billing-export","stance":"disagree","note":"Billing job reads it via raw SQL"}'
+
 curl -s "$URL/api/escalations/$ID?wait=300" -H "authorization: Bearer $AGENT" | jq '{state,decision,decisionNote}'
 curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $AGENT" -H 'content-type: application/json' -d '{"note":"dropping"}'
 ```
@@ -127,6 +148,7 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $AGENT" -
 | `GET /api/escalations[?state=open,decided&lane=]` | any | |
 | `POST /api/escalations` | agent | |
 | `GET /api/escalations/:id[?wait=s]` | any | Long-poll |
+| `POST /api/escalations/:id/positions` | agent | `{stance, note?, agent?}`, open escalations only |
 | `POST /api/escalations/:id/decide` | overseer | `{decision, note?}` |
 | `POST /api/escalations/:id/ack` | agent | `{note?}` |
 | `POST /api/escalations/:id/withdraw` | any | `{note?}` |

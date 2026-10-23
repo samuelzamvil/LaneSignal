@@ -129,12 +129,15 @@ export function startNotifier(config: Config, store: Store) {
   }
 
   function toNotification(e: StreamEvent): Notification | null {
-    if (e.type === 'escalation' && e.escalation.state === 'open' && config.notifyOn.has('escalation')) {
-      // Escalations are only emitted in the open state when created.
+    const created = e.type === 'escalation' && e.escalation.createdAt === e.escalation.updatedAt;
+    if (e.type === 'escalation' && created && config.notifyOn.has('escalation')) {
+      // Later open-state events (agent positions) don't re-notify.
       const lane = store.getLane(e.escalation.laneId);
       return {
         title: `Decision needed · ${lane?.name ?? e.escalation.laneId}`,
-        body: e.escalation.title,
+        body: e.escalation.recommendation
+          ? `${e.escalation.question}\nRecommended: ${e.escalation.recommendation}`
+          : e.escalation.question,
         data: { escalationId: e.escalation.id, laneId: e.escalation.laneId },
         route: `#/esc/${e.escalation.id}`,
         urgent: true,

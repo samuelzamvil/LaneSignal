@@ -24,16 +24,31 @@ const lanes = [
 for (const [id, patch] of lanes) await call('PUT', `/api/lanes/${id}`, patch);
 
 await call('PUT', '/api/lanes/schema-migrations', { name: 'Schema migrations', category: 'Epic', ticket: 'redmine:4791', activity: 'Migration 0042 drafted; needs decision on legacy column', links: [{ label: 'Remote Control session', url: 'https://claude.ai/code', kind: 'session' }] });
-await call('POST', '/api/escalations', {
+const esc = await call('POST', '/api/escalations', {
   laneId: 'schema-migrations',
-  title: 'Drop users.legacy_role in migration 0042?',
-  body: 'The column has had no reads for 90 days (see query log). Dropping it simplifies the auth rework.\nRollback requires restoring from backup.',
+  context:
+    'Migration 0042 cleans up the users table for the auth rework. users.legacy_role has had no reads in 90 days ' +
+    '(query log: https://grafana.example.com/d/abc). Two internal reports still SELECT * from users.\n' +
+    'Rollback after dropping requires a restore from the nightly backup.',
+  question: 'Drop users.legacy_role in migration 0042?',
+  recommendation: 'Drop it now. The auth rework is simpler without it, and SELECT * reports tolerate a missing column.',
   options: ['Drop it', 'Keep for one more release', 'Rename to _deprecated'],
+  recommendedOption: 'Drop it',
+  positions: [{ agent: 'auth-rework', stance: 'agree', note: 'Unblocks 6 call sites in the session adapter.' }],
+  links: [{ label: 'Migration 0042', url: 'https://github.com/example/app/pull/318', kind: 'pr' }],
+});
+await call('POST', `/api/escalations/${esc.id}/positions`, {
+  agent: 'billing-export',
+  stance: 'disagree',
+  note: 'The billing CSV job reads legacy_role via a raw query that the log sampling misses. Rename first.',
 });
 await call('POST', '/api/escalations', {
   laneId: 'release-train-42',
-  title: 'Flaky e2e test blocks train — quarantine or hold?',
+  context: 'checkout.e2e.ts failed 2 of the last 10 runs on main; unrelated to train 42 changes.',
+  question: 'Hold the train for the flaky e2e test, or ship?',
+  recommendation: 'Ship; file a ticket for the flake.',
   options: ['Hold the train', 'Ship with known flake'],
+  recommendedOption: 'Ship with known flake',
   blocking: false,
 });
 console.log('seeded');

@@ -34,7 +34,7 @@ export function Links({ links }: { links: Link[] }) {
 }
 
 /** Plain text with bare URLs made clickable. */
-function RichText({ text }: { text: string }) {
+export function RichText({ text }: { text: string }) {
   const parts = text.split(/(https?:\/\/[^\s)]+)/g);
   return (
     <p className="rich">
@@ -98,124 +98,6 @@ export function LaneCard({
           <span>blocked {duration(blocked)} total</span>
         ) : null}
       </footer>
-    </article>
-  );
-}
-
-export function EscalationCard({
-  esc,
-  lane,
-  now,
-  client,
-  focused,
-  onOpenLane,
-}: {
-  esc: Escalation;
-  lane: Lane | undefined;
-  now: number;
-  client: Client;
-  focused?: boolean;
-  onOpenLane: () => void;
-}) {
-  const [choice, setChoice] = useState<string>('');
-  const [custom, setCustom] = useState('');
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const decision = custom.trim() || choice;
-
-  async function run(fn: () => Promise<unknown>) {
-    setBusy(true);
-    setError(null);
-    try {
-      await fn();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const head = (
-    <div className="esc-head">
-      <button className="lane-ref" onClick={onOpenLane}>
-        {lane?.name ?? esc.laneId}
-      </button>
-      {lane?.category && <span className="tag">{lane.category}</span>}
-      {lane && <TicketLink lane={lane} />}
-      <span className="when" title={absolute(esc.createdAt)}>
-        {ago(esc.createdAt, now)}
-      </span>
-    </div>
-  );
-
-  if (esc.state === 'decided') {
-    return (
-      <article className="esc-card decided" id={`esc-${esc.id}`}>
-        {head}
-        <h3>{esc.title}</h3>
-        <p className="decision">
-          <strong>{esc.decision}</strong> — {esc.decidedBy}, {esc.decidedAt && ago(esc.decidedAt, now)}
-        </p>
-        {esc.decisionNote && <p className="note">{esc.decisionNote}</p>}
-        <p className="hint">Waiting for the agent to acknowledge.</p>
-      </article>
-    );
-  }
-
-  return (
-    <article className={`esc-card open${focused ? ' focused' : ''}`} id={`esc-${esc.id}`}>
-      {head}
-      <h3>{esc.title}</h3>
-      {esc.body && <RichText text={esc.body} />}
-      <Links links={esc.links} />
-      {esc.options.length > 0 && (
-        <div className="options" role="radiogroup">
-          {esc.options.map((o) => (
-            <button
-              key={o}
-              role="radio"
-              aria-checked={choice === o && !custom}
-              className={choice === o && !custom ? 'selected' : ''}
-              onClick={() => {
-                setChoice(o);
-                setCustom('');
-              }}
-            >
-              {o}
-            </button>
-          ))}
-        </div>
-      )}
-      <input
-        className="custom"
-        placeholder={esc.options.length ? 'Or type another answer…' : 'Your decision…'}
-        value={custom}
-        onChange={(e) => setCustom(e.target.value)}
-      />
-      {decision && (
-        <textarea placeholder="Optional note for the agent" value={note} rows={2} onChange={(e) => setNote(e.target.value)} />
-      )}
-      {error && <p className="error">{error}</p>}
-      <div className="actions">
-        <button
-          className="primary"
-          disabled={!decision || busy}
-          onClick={() => run(() => client.decide(esc.id, decision, note))}
-        >
-          {busy ? 'Sending…' : 'Send decision'}
-        </button>
-        <button
-          className="ghost"
-          disabled={busy}
-          onClick={() => {
-            const why = prompt('Dismiss without a decision? Optional reason:');
-            if (why !== null) void run(() => client.withdraw(esc.id, why));
-          }}
-        >
-          Dismiss
-        </button>
-      </div>
     </article>
   );
 }
@@ -323,7 +205,9 @@ export function LaneDetail({
                 <ul className="esc-history">
                   {data.escalations.map((e) => (
                     <li key={e.id} className={`state-${e.state}`}>
-                      <span className="state">{e.state}</span> {e.title}
+                      <a href={`#/esc/${e.id}`} className="esc-row">
+                        <span className="state">{e.state}</span> {e.question}
+                      </a>
                       {e.decision && (
                         <span className="decision">
                           {' '}
