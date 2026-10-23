@@ -17,25 +17,41 @@ const decide = (id: string, decision: string, extra: Record<string, unknown> = {
   srv.call('POST', `/api/escalations/${encodeURIComponent(id)}/decide`, ALICE, { decision, ...extra });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-describe('short escalation numbers', () => {
-  test('each escalation gets the next number, usable wherever an id is', async () => {
+describe('escalation codes', () => {
+  test('codes are the lane letter and a number, usable wherever an id is', async () => {
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'refs' });
+    const letter = (await srv.call('GET', '/api/lanes/refs', ALICE)).body.lane.letter;
+    assert.match(letter, /^[A-Z]+$/);
     const a = await ask('refs', 'First?');
     const b = await ask('refs', 'Second?');
-    assert.equal(b.ref, a.ref + 1);
+    assert.match(a.ref, new RegExp(`^${letter}\\d+$`));
+    assert.equal(Number(b.ref.slice(letter.length)), Number(a.ref.slice(letter.length)) + 1);
     assert.equal((await srv.call('GET', `/api/escalations/${b.ref}`, ALICE)).body.id, b.id);
-    assert.equal((await srv.tool(AGENT, 'get_escalation', { id: `#${b.ref}` })).value.id, b.id);
-    assert.equal((await srv.tool(AGENT, 'add_position', { id: String(a.ref), stance: 'agree' })).value.positions.length, 1);
-    assert.equal((await decide(`#${a.ref}`, 'yes')).body.state, 'decided');
-    assert.equal((await srv.tool(AGENT, 'acknowledge_escalation', { id: `#${a.ref}` })).value.state, 'acknowledged');
-    assert.equal((await srv.tool(AGENT, 'withdraw_escalation', { id: String(b.ref) })).value.state, 'withdrawn');
-    assert.equal((await srv.call('GET', '/api/escalations/99999', ALICE)).status, 404);
+    assert.equal((await srv.tool(AGENT, 'get_escalation', { id: b.ref.toLowerCase() })).value.id, b.id);
+    assert.equal((await srv.tool(AGENT, 'add_position', { id: a.ref, stance: 'agree' })).value.positions.length, 1);
+    assert.equal((await decide(a.ref, 'yes')).body.state, 'decided');
+    assert.equal((await srv.tool(AGENT, 'acknowledge_escalation', { id: a.ref })).value.state, 'acknowledged');
+    assert.equal((await srv.tool(AGENT, 'withdraw_escalation', { id: b.ref })).value.state, 'withdrawn');
+    assert.equal((await srv.call('GET', '/api/escalations/ZZZ999', ALICE)).status, 404);
   });
 
-  test('numbers appear in exports and the lane history', async () => {
+  test('codes appear in exports and the lane history', async () => {
     const rows = (await srv.call('GET', '/api/export/escalations.json?lane=refs', ALICE)).body;
-    assert.ok(rows.every((r: any) => Number.isInteger(r.ref)));
+    assert.ok(rows.length > 0 && rows.every((r: any) => /^[A-Z]+\d+$/.test(r.ref)));
     const events = (await srv.call('GET', '/api/lanes/refs', ALICE)).body.events.map((e: any) => e.message);
-    assert.ok(events.some((m: string) => /^Escalated #\d+: First\?$/.test(m)));
+    assert.ok(events.some((m: string) => /^Escalated [A-Z]+\d+: First\?$/.test(m)));
+  });
+
+  test('overseers can remove a lane whose work is over', async () => {
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'finished' });
+    const e = await ask('finished', 'Still needed?');
+    const res = await srv.tool(AGENT, 'remove_lane', { lane_id: 'finished' });
+    assert.equal(res.isError, false, res.text);
+    assert.equal((await srv.call('GET', '/api/lanes/finished', ALICE)).status, 404);
+    const closed = (await srv.call('GET', `/api/escalations/${e.id}`, ALICE)).body;
+    assert.equal(closed.state, 'withdrawn');
+    assert.match(closed.resolution, /Lane removed by overseer/);
+    assert.equal((await srv.call('DELETE', '/api/lanes/nope', AGENT)).status, 404);
   });
 });
 
@@ -68,7 +84,7 @@ describe('safe retries', () => {
     const e = await ask('retry', 'Not yet?');
     const res = await srv.tool(AGENT, 'acknowledge_escalation', { id: e.id });
     assert.equal(res.isError, true);
-    assert.match(res.text, /#\d+ is open/);
+    assert.match(res.text, /[A-Z]+\d+ is open/);
   });
 
   test('validation errors name the fields as the tool spells them', async () => {

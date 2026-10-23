@@ -15,6 +15,7 @@ You oversee group `<group-id>` and publish for each lane you run. Use the `lanes
   - when you push and wait on CI (`status: "pending_ci"`, add the PR and CI run to `links`)
   - when you wait on another lane (`status: "awaiting_agent"`, and name that lane in `activity`)
   - when you're idle (`status: "idle"`) and when you're done (`status: "completed"`)
+- When a lane's work stream is over for good, call `remove_lane` to take it off the dashboard. Its history stays for export.
 - Keep `activity` to one line a human can read on a phone.
 - Use ticket references like `redmine:1234` or `gh:42`.
 
@@ -31,7 +32,7 @@ When you need a human decision you cannot make yourself (destructive or irrevers
    - `positions`: other agents' agreement or disagreement, if you already know it (e.g. the reviewer's view).
    - `blocking: false` for an FYI the human should see but that doesn't stop the lane. Leave it out when the lane must wait.
 
-   Each escalation gets a short number, its `ref` (shown as **#42**). Use it when you mention the question to the human, for example in Remote Control ("#42 is waiting on you"). The tools accept `"#42"` wherever they take an id. Retrying the same question on the same lane while it's open returns the first escalation (`duplicate: true`), so a retry after a network error is safe.
+   Each escalation gets a code, its `ref`: the lane's letter and a number, like **A12**. Use it when you mention the question to the human, for example in Remote Control ("A12 is waiting on you"). The tools accept `"A12"` wherever they take an id. Retrying the same question on the same lane while it's open returns the first escalation (`duplicate: true`), so a retry after a network error is safe.
 2. Wait for answers with `wait_for_decisions`, scoped to your whole group (`group_id: "<group-id>"`), so one call covers every lane. It returns as soon as anything needs you:
    - `decided`: answered. Handle each one (step 3).
    - `closed`: withdrawn by someone else. A resolution of "Lane removed by …" means a human stopped that lane: stop work on it, and don't publish to it again.
@@ -42,7 +43,7 @@ When you need a human decision you cannot make yourself (destructive or irrevers
    - `ready: true` with everything empty: nothing in your group is waiting on a human; stop waiting.
 
    Answers can take hours. If the call fails (a timeout, a dropped connection, a server restart), call it again: nothing is lost, because decided escalations wait for you until you acknowledge them. Keep working on unblocked lanes between waits.
-3. For each decided escalation, call `acknowledge_escalation` first, then act. The acknowledgement returns the final `decision` and `decisionNote` (a human may correct a mis-tap until you acknowledge). Pass `status` and `activity` in the same call to publish what the lane does next, e.g. `status: "active", activity: "Dropping the column (#42)"`. Repeating an acknowledgement is safe.
+3. For each decided escalation, call `acknowledge_escalation` first, then act. The acknowledgement returns the final `decision` and `decisionNote` (a human may correct a mis-tap until you acknowledge). Pass `status` and `activity` in the same call to publish what the lane does next, e.g. `status: "active", activity: "Dropping the column (A12)"`. Repeating an acknowledgement is safe.
 4. If another lane's escalation affects your work, call `add_position` with `agree` or `disagree` (or `neutral`) and a one-line reason. Do this only while it is still open.
 5. If the question gets answered another way (for example, in Remote Control), or stops mattering, call `withdraw_escalation` with the reason.
 

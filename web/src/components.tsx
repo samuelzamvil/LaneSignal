@@ -77,7 +77,14 @@ export function LaneCard({
       onKeyDown={(e) => e.key === 'Enter' && onOpen()}
     >
       <header>
-        <h3>{lane.name}</h3>
+        <h3>
+          {lane.letter && (
+            <span className="lane-letter" title={`Its questions are numbered ${lane.letter}1, ${lane.letter}2, …`}>
+              {lane.letter}
+            </span>
+          )}
+          {lane.name}
+        </h3>
         <StatusPill status={lane.status} />
       </header>
       <div className="meta">

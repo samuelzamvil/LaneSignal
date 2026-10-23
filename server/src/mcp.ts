@@ -78,7 +78,7 @@ async function cancellable<T>(
   }
 }
 
-const ID_HELP = 'Escalation id, or its short number such as "42" or "#42".';
+const ID_HELP = 'Escalation id, or its code such as "A12".';
 
 /** Builds an MCP server whose tools act as the authenticated principal. */
 function buildServer(
@@ -159,7 +159,7 @@ function buildServer(
       inputSchema: {
         group_id: s.groupId.optional().describe('Wait on every lane in this group (your epic/train).'),
         lane_ids: z.array(s.laneId).max(100).optional(),
-        ids: z.array(z.string()).max(100).optional().describe('Escalation ids or short numbers.'),
+        ids: z.array(z.string()).max(100).optional().describe('Escalation ids or codes such as "A12".'),
         wait_seconds: z.number().int().min(0).max(3600).optional(),
         since: z
           .string()
@@ -271,6 +271,25 @@ function buildServer(
     );
 
     server.registerTool(
+      'remove_lane',
+      {
+        description:
+          'Take a lane off the dashboard when its work stream is over (use update_lane status "completed" to show ' +
+          'it as done instead). Its unanswered escalations are withdrawn, decided ones can still be acknowledged, ' +
+          'and its history stays for export. Publishing to the same lane id later brings it back.',
+        inputSchema: { lane_id: s.laneId },
+      },
+      async ({ lane_id }) => {
+        try {
+          store.deleteLane(lane_id, who.name);
+          return { content: [{ type: 'text' as const, text: `Lane "${lane_id}" removed` }] };
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
       'create_escalation',
       {
         description:
@@ -282,8 +301,8 @@ function buildServer(
           'differs from the lane ticket. Provide short `options` for one-tap answers and set `recommended_option` to the ' +
           'one you recommend. A lane may have several open escalations; raise one per decision. ' +
           'By default marks the lane blocked_human until all are decided; set `blocking: false` for FYI questions ' +
-          'you can keep working around. Each escalation gets a short number (`ref`, shown as #42) that you and the ' +
-          'humans can use to refer to it, including in this server\'s tools. Retrying the same question on the same ' +
+          'you can keep working around. Each escalation gets a code (`ref`, e.g. "A12": the lane\'s letter and a number) ' +
+          'that you and the humans can use to refer to it, including in this server\'s tools. Retrying the same question on the same ' +
           'lane while it is open returns the existing escalation (`duplicate: true`). ' +
           'Then wait with wait_for_decisions and call acknowledge_escalation as soon as one is decided.',
         inputSchema: {

@@ -49,12 +49,13 @@ Paste the [agent instructions snippet](agent-instructions.md) into the overseer'
 
 ## Tools
 
-Which tools a client sees depends on its credential: agent keys get the agent tools, and personal keys (or human sessions) get the human ones. Wherever a tool takes an escalation id, it also accepts the short number, `"42"` or `"#42"`.
+Which tools a client sees depends on its credential: agent keys get the agent tools, and personal keys (or human sessions) get the human ones. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
 
 | Tool | Who | Purpose |
 |---|---|---|
 | `update_group` | agent | Name the epic/train, set its ticket, link the overseer's Remote Control session |
 | `update_lane` | agent | Create or update a lane: status, group, ticket, activity, links. Omitted fields stay unchanged |
+| `remove_lane` | agent | Take a finished lane off the dashboard (archived; open questions withdrawn; history kept) |
 | `create_escalation` | agent | Ask humans a question (see the [fields](concepts.md#escalations)). The same open question on the same lane returns the existing one (`duplicate: true`), so retries are safe |
 | `add_position` | agent | Agree, disagree or stay neutral on an open escalation's recommendation, with a reason |
 | `wait_for_decisions` | any | Wait on a group, lanes or escalations; returns as soon as one is decided. `wait_seconds` up to 3600 |

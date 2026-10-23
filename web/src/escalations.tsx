@@ -180,8 +180,8 @@ function EscHead({
 }) {
   return (
     <div className="esc-head">
-      <span className="ref" title="Use this number when talking to the agent about it">
-        #{esc.ref}
+      <span className="ref" title="Use this code when talking to the agent about it">
+        {esc.ref}
       </span>
       <a
         className="lane-ref"
@@ -299,8 +299,8 @@ export function EscalationDetail({
   const [error, setError] = useState<string | null>(null);
   const sheet = useRef<HTMLElement>(null);
   // While stepping to another question, never show (or answer) the previous one.
-  // `id` may be the escalation's short number (#/esc/42) as well as its id.
-  const esc = loaded && (loaded.id === id || String(loaded.ref) === id) ? loaded : null;
+  // `id` may be the escalation's code (#/esc/A12) as well as its id.
+  const esc = loaded && (loaded.id === id || loaded.ref.toLowerCase() === id.toLowerCase()) ? loaded : null;
 
   useEffect(() => {
     sheet.current?.scrollTo(0, 0);

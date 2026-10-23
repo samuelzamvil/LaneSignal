@@ -57,6 +57,11 @@ test('upgrades a schema v1 database without losing escalations', () => {
       ALTER TABLE escalations DROP COLUMN blocking;
       ALTER TABLE lanes DROP COLUMN archived_at;
       ALTER TABLE groups DROP COLUMN archived_at;
+      DROP INDEX lanes_letter;
+      DROP INDEX escalations_code;
+      ALTER TABLE lanes DROP COLUMN letter_index;
+      ALTER TABLE escalations DROP COLUMN letter_index;
+      ALTER TABLE escalations DROP COLUMN seq;
       DROP INDEX escalations_ref;
       ALTER TABLE escalations DROP COLUMN ref;
       ALTER TABLE escalations DROP COLUMN withdrawn_by;
@@ -72,8 +77,8 @@ test('upgrades a schema v1 database without losing escalations', () => {
     assert.deepEqual(migrated?.alternatives, []);
     assert.equal(migrated?.cost, null);
     assert.equal(migrated?.blocking, true);
-    assert.equal(migrated?.ref, 1);
-    assert.equal(store.getEscalation('#1')?.id, esc.id);
+    assert.equal(migrated?.ref, 'A1');
+    assert.equal(store.getEscalation('a1')?.id, esc.id);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -389,6 +394,11 @@ test('tokens registered before the upgrade are matched by name', () => {
     store.close();
     const db = new DatabaseSync(file);
     db.exec(`
+      DROP INDEX lanes_letter;
+      DROP INDEX escalations_code;
+      ALTER TABLE lanes DROP COLUMN letter_index;
+      ALTER TABLE escalations DROP COLUMN letter_index;
+      ALTER TABLE escalations DROP COLUMN seq;
       DROP INDEX escalations_ref;
       ALTER TABLE escalations DROP COLUMN ref;
       ALTER TABLE escalations DROP COLUMN withdrawn_by;
@@ -406,3 +416,83 @@ test('tokens registered before the upgrade are matched by name', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('active lanes get letters, smallest free first; finished lanes give theirs back', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  store.upsertLane('one', {}, 'bot');
+  store.upsertLane('two', {}, 'bot');
+  assert.equal(store.getLane('one')?.letter, 'A');
+  assert.equal(store.getLane('two')?.letter, 'B');
+  const a1 = store.createEscalation({ laneId: 'one', question: 'First?' }, 'bot');
+  const b1 = store.createEscalation({ laneId: 'two', question: 'Other lane?' }, 'bot');
+  assert.deepEqual([a1.ref, b1.ref], ['A1', 'B1']);
+  // Completing a lane keeps its letter while a question is still unanswered...
+  store.upsertLane('one', { status: 'completed' }, 'bot');
+  assert.equal(store.getLane('one')?.letter, 'A');
+  store.decideEscalation(a1.id, 'yes', null, 'alice');
+  assert.equal(store.getLane('one')?.letter, 'A', 'decided but not picked up yet');
+  store.acknowledgeEscalation(a1.id, null, 'bot');
+  assert.equal(store.getLane('one')?.letter, null);
+  // ...and the next lane takes the free letter; codes keep counting so they never repeat.
+  store.upsertLane('three', {}, 'bot');
+  assert.equal(store.getLane('three')?.letter, 'A');
+  const next = store.createEscalation({ laneId: 'three', question: 'Reused letter?' }, 'bot');
+  assert.equal(next.ref, 'A2');
+  assert.equal(store.getEscalation('A1')?.id, a1.id);
+  assert.equal(store.getEscalation('#a2')?.id, next.id);
+  // A finished lane that gets a new question takes a letter again.
+  const back = store.createEscalation({ laneId: 'one', question: 'One more?' }, 'bot');
+  assert.equal(store.getLane('one')?.letter, 'C');
+  assert.equal(back.ref, 'C1');
+  // Removing a lane frees its letter once nothing is pending.
+  store.deleteLane('two', 'alice');
+  assert.equal(store.listLanes().find((l) => l.id === 'two'), undefined);
+  store.upsertLane('four', {}, 'bot');
+  assert.equal(store.getLane('four')?.letter, 'B');
+  store.close();
+});
+
+test('letters go past Z like spreadsheet columns', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  for (let i = 0; i < 28; i++) store.upsertLane(`lane-${i}`, {}, 'bot');
+  assert.equal(store.getLane('lane-25')?.letter, 'Z');
+  assert.equal(store.getLane('lane-26')?.letter, 'AA');
+  assert.equal(store.createEscalation({ laneId: 'lane-27', question: 'Far?' }, 'bot').ref, 'AB1');
+  assert.equal(store.getEscalation('ab1')?.laneId, 'lane-27');
+  store.close();
+});
+
+test('upgrading gives active lanes letters first and keeps every code unique', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-'));
+  const file = path.join(dir, 'db.sqlite');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    store.upsertLane('done', {}, 'bot');
+    const old = store.createEscalation({ laneId: 'done', question: 'Old?' }, 'bot');
+    store.withdrawEscalation(old.id, null, 'bot');
+    store.upsertLane('done', { status: 'completed' }, 'bot');
+    store.upsertLane('live', {}, 'bot');
+    const open = store.createEscalation({ laneId: 'live', question: 'Open?' }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      DROP INDEX lanes_letter;
+      DROP INDEX escalations_code;
+      ALTER TABLE lanes DROP COLUMN letter_index;
+      ALTER TABLE escalations DROP COLUMN letter_index;
+      ALTER TABLE escalations DROP COLUMN seq;
+      UPDATE meta SET value = '5' WHERE key = 'schema_version';
+    `);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    assert.equal(store.getLane('live')?.letter, 'A');
+    assert.equal(store.getLane('done')?.letter, null);
+    assert.equal(store.getEscalation(open.id)?.ref, 'A1');
+    assert.equal(store.getEscalation(old.id)?.ref, 'B1');
+    assert.equal(store.createEscalation({ laneId: 'live', question: 'New?' }, 'bot').ref, 'A2');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+

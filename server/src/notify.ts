@@ -161,7 +161,7 @@ export function startNotifier(config: Config, store: Store, userActive: (userId:
       // FYI questions (non-blocking) still notify once, but quietly.
       const urgent = e.escalation.blocking;
       return {
-        title: `${urgent ? 'Decision needed' : 'FYI'} #${e.escalation.ref} · ${where}`,
+        title: `${urgent ? 'Decision needed' : 'FYI'} ${e.escalation.ref} · ${where}`,
         body: e.escalation.recommendation
           ? `${e.escalation.question}\nRecommended: ${e.escalation.recommendation}`
           : e.escalation.question,
