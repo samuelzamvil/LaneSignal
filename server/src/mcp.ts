@@ -13,7 +13,14 @@ import { LANE_STATUSES, type Principal } from './types.ts';
 
 const json = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
 /** Field names as the tools spell them, for validation messages. */
-const SNAKE: Record<string, string> = { laneId: 'lane_id', recommendedOption: 'recommended_option', groupId: 'group_id' };
+const SNAKE: Record<string, string> = {
+  laneId: 'lane_id',
+  recommendedOption: 'recommended_option',
+  groupId: 'group_id',
+  group: 'group_id',
+  sourceEscalation: 'source_escalation',
+  decidedBy: 'decided_by',
+};
 
 const fail = (err: unknown) => {
   if (err instanceof ZodError) {
@@ -191,7 +198,7 @@ function buildServer(
         'escalations (one row each, with decision timings and position counts), positions (agent stances), ' +
         'lanes, groups, events (status changes and escalation history), requirements (the owner\'s product decisions). ' +
         '`from`/`to` (YYYY-MM-DD or ISO) filter ' +
-        'escalations, positions and events. Results come in pages (default 100 rows, and cut short to stay under ' +
+        'escalations, positions, events and requirements (by creation time). Results come in pages (default 100 rows, and cut short to stay under ' +
         'about 60 KB); the first line says which rows you got and the offset for the next page. For everything at ' +
         'once as files, the HTTP API serves a zip at GET /api/export.',
       inputSchema: {
@@ -340,7 +347,7 @@ function buildServer(
     },
     async (args) => {
       try {
-        return json(store.recordRequirement(toInput(args), who.name));
+        return json(store.recordRequirement(toInput(args), who.name, who.role === 'human'));
       } catch (err) {
         return fail(err);
       }
@@ -357,7 +364,7 @@ function buildServer(
     },
     async ({ id, ...args }) => {
       try {
-        return json(store.supersedeRequirement(id, toInput(args), who.name));
+        return json(store.supersedeRequirement(id, toInput(args), who.name, who.role === 'human'));
       } catch (err) {
         return fail(err);
       }

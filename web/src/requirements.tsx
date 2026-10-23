@@ -134,6 +134,8 @@ function RequirementCard({
   );
 }
 
+const LIMIT = 200;
+
 /** The owner's product decisions: search, filter by train/epic and tag. */
 export function RequirementsPane({
   client,
@@ -186,7 +188,7 @@ export function RequirementsPane({
   return (
     <section className="pane requirements" aria-label="Requirements">
       <h2>
-        Requirements <span className="count">{items?.length ?? '…'}</span>
+        Requirements <span className="count">{items ? (items.length >= LIMIT ? `${LIMIT}+` : items.length) : '…'}</span>
       </h2>
       <p className="hint">Product decisions made by the owner, recorded by agents with the reasoning behind them.</p>
       <div className="filters">
@@ -220,6 +222,9 @@ export function RequirementsPane({
       </div>
       {error && <p className="error">{error}</p>}
       {items && items.length === 0 && <p className="empty">No requirements match.</p>}
+      {items && items.length >= LIMIT && (
+        <p className="hint">Showing the first {LIMIT}. Search or filter to narrow it down.</p>
+      )}
       {items?.map((r) => (
         <RequirementCard
           key={r.id}

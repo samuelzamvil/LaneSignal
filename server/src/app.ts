@@ -365,11 +365,15 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
   };
 
   app.post('/api/requirements', any, (req, res) => {
-    res.status(201).json(store.recordRequirement(requirementBody(req, res), principalOf(res).name));
+    res.status(201).json(store.recordRequirement(requirementBody(req, res), principalOf(res).name, principalOf(res).role === 'human'));
   });
 
   app.post('/api/requirements/:id/supersede', any, (req, res) => {
-    res.status(201).json(store.supersedeRequirement(String(req.params.id), requirementBody(req, res), principalOf(res).name));
+    res
+      .status(201)
+      .json(
+        store.supersedeRequirement(String(req.params.id), requirementBody(req, res), principalOf(res).name, principalOf(res).role === 'human'),
+      );
   });
 
   app.patch('/api/requirements/:id', human, (req, res) => {

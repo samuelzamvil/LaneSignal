@@ -2,7 +2,7 @@
 
 Product direction tends to get buried in tickets and escalation threads, and finding it again later takes an investigation. The **requirements** register keeps each decision in one place, searchable, with the reasoning behind it.
 
-- **The decisions are the owner's.** Agents record them, but only decisions a person made: an answered escalation, or something the owner said (e.g. in Remote Control). An agent's own design choices don't belong here.
+- **The decisions are the owner's.** Agents record them, but only decisions a person made: an answered escalation, or something the owner said (e.g. in Remote Control). An agent's own design choices don't belong here. An agent can cite only an escalation it raised, or one from a lane in the same train/epic.
 - **One decision per requirement**, so it can be found, cited and replaced on its own.
 - **Nothing is deleted.** When the owner changes direction, the new requirement *supersedes* the old one, which stays (marked) so the history of why is kept.
 
@@ -33,7 +33,7 @@ Tags exist to find things, so they must be specific:
 
 | Tool | Use |
 |---|---|
-| `find_requirements` | Before escalating a product or scope question, search here. If a requirement answers it, follow it and cite its id. Free-text search ranks the best matches first and matches word forms ("retries" finds "retry"); `group_id` covers that train/epic plus product-wide requirements |
+| `find_requirements` | Before escalating a product or scope question, search here. If a requirement answers it, follow it and cite its id. Free-text search ranks the best matches first, matches word forms ("retries" finds "retry") and prefixes ("deploy" finds "deployments"); an id like `R14` finds that requirement whatever its status or filters; `group_id` covers that train/epic plus product-wide requirements |
 | `record_requirement` | After the owner decides something that sets direction, record it with `source_escalation` (e.g. `"A12"`) or `decided_by` (e.g. `"Sam (Remote Control, 2026-10-23)"`). The result lists `similar` active requirements, so a duplicate is noticed straight away |
 | `supersede_requirement` | The owner changed their mind: record the new decision and mark the old one superseded |
 | `get_requirement`, `list_requirement_tags` | Read one; see tags in use |

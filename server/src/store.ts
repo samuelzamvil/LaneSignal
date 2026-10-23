@@ -285,17 +285,28 @@ export class Store {
             updated_at TEXT NOT NULL
           );
           CREATE INDEX requirements_group ON requirements(group_id, status);
+          -- Two indexes: stemmed (whole words in any form: "retries" finds "retry") and plain
+          -- (prefixes as you type: "deploy" finds "deployments"). Searches use both.
           CREATE VIRTUAL TABLE requirements_fts USING fts5(
             requirement, justification, tags, content='requirements', content_rowid='num', tokenize='porter unicode61'
           );
+          CREATE VIRTUAL TABLE requirements_fts_plain USING fts5(
+            requirement, justification, tags, content='requirements', content_rowid='num', tokenize='unicode61'
+          );
           CREATE TRIGGER requirements_ai AFTER INSERT ON requirements BEGIN
             INSERT INTO requirements_fts(rowid, requirement, justification, tags)
+              VALUES (new.num, new.requirement, new.justification, new.tags);
+            INSERT INTO requirements_fts_plain(rowid, requirement, justification, tags)
               VALUES (new.num, new.requirement, new.justification, new.tags);
           END;
           CREATE TRIGGER requirements_au AFTER UPDATE ON requirements BEGIN
             INSERT INTO requirements_fts(requirements_fts, rowid, requirement, justification, tags)
               VALUES ('delete', old.num, old.requirement, old.justification, old.tags);
             INSERT INTO requirements_fts(rowid, requirement, justification, tags)
+              VALUES (new.num, new.requirement, new.justification, new.tags);
+            INSERT INTO requirements_fts_plain(requirements_fts_plain, rowid, requirement, justification, tags)
+              VALUES ('delete', old.num, old.requirement, old.justification, old.tags);
+            INSERT INTO requirements_fts_plain(rowid, requirement, justification, tags)
               VALUES (new.num, new.requirement, new.justification, new.tags);
           END;
         `);
@@ -1504,13 +1515,22 @@ export class Store {
     return req;
   }
 
-  /** Words of free text as an FTS query: any word matches, prefixes included, best matches first. */
-  private ftsQuery(text: string) {
-    const words = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-    return [...new Set(words)]
-      .slice(0, 30)
-      .map((w) => `"${w}"*`)
-      .join(' OR ');
+  /**
+   * Free text as a ranked full-text match: any word, in any form (stemmed index) or as a
+   * prefix (plain index). Returns null when the text has no searchable words. Words are
+   * quoted, so FTS syntax in the text is inert.
+   */
+  private ftsMatch(text: string): { cte: string; params: string[] } | null {
+    const words = [...new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].slice(0, 30);
+    if (!words.length) return null;
+    return {
+      cte: `WITH hits(num, score) AS (
+          SELECT rowid, bm25(requirements_fts) FROM requirements_fts WHERE requirements_fts MATCH ?
+          UNION ALL
+          SELECT rowid, bm25(requirements_fts_plain) FROM requirements_fts_plain WHERE requirements_fts_plain MATCH ?
+        ), best AS (SELECT num, MIN(score) AS score FROM hits GROUP BY num)`,
+      params: [words.map((w) => `"${w}"`).join(' OR '), words.map((w) => `"${w}"*`).join(' OR ')],
+    };
   }
 
   /**
@@ -1544,15 +1564,17 @@ export class Store {
       const one = this.getRequirement(filter.query);
       return one ? [one] : [];
     }
-    const q = filter.query ? this.ftsQuery(filter.query) : '';
     const limit = filter.limit ?? 50;
-    const rows = q
+    const match = filter.query?.trim() ? this.ftsMatch(filter.query) : undefined;
+    // Text with nothing searchable in it ("?") matches nothing rather than everything.
+    if (match === null) return [];
+    const rows = match
       ? (this.db
           .prepare(
-            `SELECT r.* FROM requirements_fts f JOIN requirements r ON r.num = f.rowid
-             WHERE requirements_fts MATCH ? AND ${where.join(' AND ')} ORDER BY bm25(requirements_fts) LIMIT ?`,
+            `${match.cte} SELECT r.* FROM best JOIN requirements r ON r.num = best.num
+             WHERE ${where.join(' AND ')} ORDER BY best.score, r.num DESC LIMIT ?`,
           )
-          .all(q, ...params, limit) as Row[])
+          .all(...match.params, ...params, limit) as Row[])
       : (this.db
           .prepare(`SELECT r.* FROM requirements r WHERE ${where.join(' AND ')} ORDER BY r.num DESC LIMIT ?`)
           .all(...params, limit) as Row[]);
@@ -1584,12 +1606,31 @@ export class Store {
     return clean;
   }
 
-  /** Must run inside a transaction. Works out who decided, from the escalation or the given name. */
-  private decisionSource(input: RequirementInput): { decidedBy: string; escalationId: string | null } {
+  /**
+   * Must run inside a transaction. Works out who decided, from the escalation or the given
+   * name. An agent can only cite an escalation it raised itself, or one from a lane in the
+   * requirement's own group, so an unrelated answer can't be passed off as the source.
+   */
+  private decisionSource(
+    input: RequirementInput,
+    actor: string,
+    actorIsHuman: boolean,
+  ): { decidedBy: string; escalationId: string | null } {
+    if (input.sourceEscalation && input.decidedBy) {
+      throw new ValidationError('Give either source_escalation or decided_by, not both: the escalation names its decider.');
+    }
     if (input.sourceEscalation) {
       const esc = this.requireEscalation(input.sourceEscalation);
       if (!esc.decidedBy || (esc.state !== 'decided' && esc.state !== 'acknowledged')) {
         throw new ConflictError(`Escalation ${esc.ref} hasn't been decided by a person, so it can't be the source`);
+      }
+      const laneGroup = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(esc.laneId) as Row | undefined)?.group_id;
+      const related = esc.createdBy === actor || (input.group != null && laneGroup === input.group);
+      if (!actorIsHuman && !related) {
+        throw new ConflictError(
+          `Escalation ${esc.ref} was raised by ${esc.createdBy} in another ${laneGroup ? `group (${laneGroup})` : 'context'}; ` +
+            'cite an escalation you raised or one from this group, or name who decided with decided_by.',
+        );
       }
       return { decidedBy: esc.decidedBy, escalationId: esc.id };
     }
@@ -1603,16 +1644,15 @@ export class Store {
   }
 
   private similarTo(req: Requirement): Requirement[] {
-    const q = this.ftsQuery(req.requirement);
-    if (!q) return [];
+    const match = this.ftsMatch(req.requirement);
+    if (!match) return [];
     const rows = this.db
       .prepare(
-        `SELECT r.* FROM requirements_fts f JOIN requirements r ON r.num = f.rowid
-         WHERE requirements_fts MATCH ? AND r.status = 'active' AND r.num <> ?
-           AND (r.group_id IS ? OR r.group_id IS NULL OR ? IS NULL)
-         ORDER BY bm25(requirements_fts) LIMIT 3`,
+        `${match.cte} SELECT r.* FROM best JOIN requirements r ON r.num = best.num
+         WHERE r.status = 'active' AND r.num <> ? AND (r.group_id IS ? OR r.group_id IS NULL OR ? IS NULL)
+         ORDER BY best.score LIMIT 3`,
       )
-      .all(q, this.requirementNum(req.id)!, req.group, req.group) as Row[];
+      .all(...match.params, this.requirementNum(req.id)!, req.group, req.group) as Row[];
     return rows.map((r) => this.requirementFromRow(r));
   }
 
@@ -1626,12 +1666,10 @@ export class Store {
   }
 
   /** Must run inside a transaction. */
-  private insertRequirement(input: RequirementInput, actor: string, at: string): number {
-    if (input.group && !this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(input.group)) {
-      throw new NotFoundError(`Group "${input.group}" not found`);
-    }
+  private insertRequirement(input: RequirementInput, actor: string, actorIsHuman: boolean, at: string): number {
+    if (input.group && !this.getGroup(input.group)) throw new NotFoundError(`Group "${input.group}" not found`);
     const tags = this.cleanTags(input.tags);
-    const { decidedBy, escalationId } = this.decisionSource(input);
+    const { decidedBy, escalationId } = this.decisionSource(input, actor, actorIsHuman);
     const res = this.db
       .prepare(
         `INSERT INTO requirements (group_id, requirement, justification, tags, status, decided_by, source_escalation_id,
@@ -1642,9 +1680,9 @@ export class Store {
   }
 
   /** Records an owner decision. Returns it with similar active requirements, so duplicates get noticed. */
-  recordRequirement(input: RequirementInput, actor: string): RecordResult {
+  recordRequirement(input: RequirementInput, actor: string, actorIsHuman = false): RecordResult {
     const requirement = this.tx(() => {
-      const num = this.insertRequirement(input, actor, this.now().toISOString());
+      const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString());
       return this.requireRequirement(String(num));
     });
     this.emit({ type: 'requirement', requirement });
@@ -1656,12 +1694,17 @@ export class Store {
    * The old one stays, marked superseded, so the history of why is kept. Group
    * defaults to the old one's.
    */
-  supersedeRequirement(id: string, input: RequirementInput, actor: string): RecordResult {
+  supersedeRequirement(id: string, input: RequirementInput, actor: string, actorIsHuman = false): RecordResult {
     const { requirement, old } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (current.status !== 'active') throw new ConflictError(`${current.id} is ${current.status}; only active requirements can be superseded`);
       const at = this.now().toISOString();
-      const num = this.insertRequirement({ ...input, group: input.group === undefined ? current.group : input.group }, actor, at);
+      const num = this.insertRequirement(
+        { ...input, group: input.group === undefined ? current.group : input.group },
+        actor,
+        actorIsHuman,
+        at,
+      );
       this.db
         .prepare("UPDATE requirements SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE num = ?")
         .run(num, at, this.requirementNum(current.id)!);
@@ -1676,6 +1719,7 @@ export class Store {
   editRequirement(id: string, patch: { requirement?: string; justification?: string; tags?: string[] }): Requirement {
     const requirement = this.tx(() => {
       const current = this.requireRequirement(id);
+      if (current.status !== 'active') throw new ConflictError(`${current.id} is ${current.status}; only active requirements can be edited`);
       const tags = patch.tags ? this.cleanTags(patch.tags) : current.tags;
       this.db
         .prepare('UPDATE requirements SET requirement = ?, justification = ?, tags = ?, updated_at = ? WHERE num = ?')

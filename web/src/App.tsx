@@ -141,11 +141,6 @@ function Dashboard({
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const isLive = live.link === 'live';
-  // Bumps when a requirement changes, so the requirements view refetches.
-  const [reqVersion, setReqVersion] = useState(0);
-  useEffect(() => {
-    if (live.lastEvent?.type === 'requirement') setReqVersion((v) => v + 1);
-  }, [live.lastEvent]);
 
   // Load config + identity; retry every 5s while it fails, and again whenever the stream reconnects.
   useEffect(() => {
@@ -514,7 +509,7 @@ function Dashboard({
             groups={live.groups}
             groupLabel={config.groupLabel}
             canEdit={me?.role === 'human'}
-            version={reqVersion}
+            version={live.requirementsVersion}
           />
         ) : (
           lanePane

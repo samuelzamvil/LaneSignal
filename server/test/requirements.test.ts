@@ -1,7 +1,7 @@
 // Product requirements: owner decisions that agents record and find later.
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
-import { AGENT, ALICE, startServer } from './helpers.ts';
+import { AGENT, ALICE, REVIEWER, startServer } from './helpers.ts';
 
 let srv: Awaited<ReturnType<typeof startServer>>;
 before(async () => {
@@ -122,6 +122,65 @@ describe('finding requirements', () => {
   });
 });
 
+describe('review fixes', () => {
+  test('search matches prefixes as well as word forms; punctuation-only queries match nothing', async () => {
+    await record({ requirement: 'Deployments happen on Tuesdays.', justification: 'Support coverage.', tags: ['deploy-schedule'], decided_by: 'Sam' });
+    for (const q of ['deploy', 'deployment', 'tuesday', 'pay', 'retries']) {
+      const found = (await srv.tool(AGENT, 'find_requirements', { query: q })).value;
+      assert.ok(found.length > 0, q);
+    }
+    assert.deepEqual((await srv.tool(AGENT, 'find_requirements', { query: '?!' })).value, []);
+  });
+
+  test('an agent cannot cite an unrelated answered escalation as the source', async () => {
+    await srv.tool(REVIEWER, 'update_lane', { lane_id: 'theme', group: 'search' });
+    const other = (await srv.tool(REVIEWER, 'create_escalation', { lane_id: 'theme', question: 'Dark mode colour?' })).value;
+    await srv.call('POST', `/api/escalations/${other.ref}/decide`, ALICE, { decision: 'blue' });
+    const laundered = await record({
+      requirement: 'Payouts may skip KYC.',
+      justification: 'Faster.',
+      tags: ['kyc-checks'],
+      group_id: 'payments',
+      source_escalation: other.ref,
+    });
+    assert.equal(laundered.isError, true);
+    assert.match(laundered.text, /raised by reviewer/);
+    // The agent that raised it, or one in the same group, may cite it.
+    const own = await srv.tool(REVIEWER, 'record_requirement', {
+      requirement: 'Dark mode uses blue accents.',
+      justification: 'Owner preference.',
+      tags: ['dark-mode'],
+      group_id: 'search',
+      source_escalation: other.ref,
+    });
+    assert.equal(own.isError, false, own.text);
+    const sameGroup = await record({
+      requirement: 'Dark mode accents are blue.',
+      justification: 'Owner preference.',
+      tags: ['dark-mode'],
+      group_id: 'search',
+      source_escalation: other.ref,
+    });
+    assert.equal(sameGroup.isError, false, sameGroup.text);
+  });
+
+  test('bodies are strict and trimmed; one source only; tags dedupe before the limit', async () => {
+    const base = { requirement: 'X.', justification: 'Y.', tags: ['x-y'], decidedBy: 'Sam' };
+    assert.equal((await srv.call('POST', '/api/requirements', AGENT, { ...base, group_id: 'payments' })).status, 400);
+    assert.equal((await srv.call('POST', '/api/requirements', AGENT, { ...base, requirement: '   ' })).status, 400);
+    const both = await srv.call('POST', '/api/requirements', ALICE, { ...base, sourceEscalation: 'A1' });
+    assert.equal(both.status, 400);
+    assert.match(both.body.error, /either source_escalation or decided_by/);
+    const dedup = await srv.call('POST', '/api/requirements', AGENT, { ...base, tags: ['A-B', 'a-b', 'c-d', 'e-f'] });
+    assert.equal(dedup.status, 201, JSON.stringify(dedup.body));
+    assert.deepEqual(dedup.body.requirement.tags, ['a-b', 'c-d', 'e-f']);
+    const blank = await srv.call('PATCH', `/api/requirements/${dedup.body.requirement.id}`, ALICE, { requirement: '  ' });
+    assert.equal(blank.status, 400);
+    const mcp = await record({ requirement: 'X.', justification: 'Y.', tags: ['x-y'], decided_by: 'Sam', source_escalation: 'A1' });
+    assert.match(mcp.text, /source_escalation or decided_by/);
+  });
+});
+
 describe('changing direction', () => {
   test('superseding keeps the old decision, marked, and links forward', async () => {
     const old = (await srv.call('GET', '/api/requirements?tag=money-amounts', ALICE)).body[0];
@@ -153,6 +212,7 @@ describe('changing direction', () => {
     assert.equal(edited.body.justification, 'Confused customers (support).');
     assert.equal((await srv.call('POST', `/api/requirements/${r.id}/retire`, AGENT)).status, 403);
     assert.equal((await srv.call('POST', `/api/requirements/${r.id}/retire`, ALICE)).body.status, 'retired');
+    assert.equal((await srv.call('PATCH', `/api/requirements/${r.id}`, ALICE, { justification: 'z' })).status, 409, 'retired ones are history');
     assert.equal((await srv.call('GET', '/api/requirements?tag=search-results', ALICE)).body.length, 0);
     // Edits stay searchable.
     const hit = (await srv.call('GET', '/api/requirements?q=support&status=retired', ALICE)).body;
