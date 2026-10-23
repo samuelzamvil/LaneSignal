@@ -3,11 +3,12 @@
 Everything the MCP tools do is also available over plain HTTP, for scripts, CI jobs and agents without MCP.
 
 - **Auth:** every request (except `/healthz` and `/api/setup`) sends `Authorization: Bearer <credential>`. A credential is an agent key or personal key (`ls_…`), an account session token, or a static config token.
-- **Escalation ids:** wherever a path or field takes an escalation id, its code works too, e.g. `A12` (case doesn't matter). Plain numbers from before lane codes (`42`) still resolve.
+- **Projects:** every endpoint takes `?project=<id or key>`. It's needed only when your credential reaches several [projects](projects.md): writes then fail with `400 Say which project: …` without it, and listings cover every project you can see. Lane and group ids in paths and bodies are per project.
+- **Escalation ids:** wherever a path or field takes an escalation id, its code works too, e.g. `A12` (case doesn't matter), or `SH-A12` to name the project. Plain numbers from before lane codes (`42`) still resolve.
 - **Errors:** responses are JSON. Errors look like `{"error": "…"}` with a 4xx status:
   - `400` validation (with `issues`)
   - `401` no or invalid credential
-  - `403` wrong role
+  - `403` wrong role, or not a project admin
   - `404` not found
   - `409` a state conflict, such as deciding an already-decided escalation
 
@@ -49,10 +50,18 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `GET /api/skill` | public | The Claude Code skill for agents (`SKILL.md`) |
 | `GET /api/setup` | public | `{"needsSetup": bool}` |
 | `POST /api/setup` | public + code | First admin account: `{email, name, password, code}`. The code isn't needed when sending a static human token |
-| `GET /api/me` | any | Who the credential is: `{name, role, admin?, email?, userId?}` |
+| `GET /api/me` | any | Who the credential is: `{name, role, admin?, superuser?, project?, email?, userId?}` |
 | `GET /api/config` | any | Group label, statuses, ticket systems, push availability |
-| `GET /api/snapshot` | any | Groups, lanes and unresolved escalations |
-| `GET /api/events` | any | Server-Sent Events: `group`, `group_deleted`, `lane`, `lane_deleted`, `escalation`. Heartbeat every 25s. `?access_token=` is accepted here only, for clients that can't set headers |
+| `GET /api/snapshot` | any | Projects, groups, lanes and unresolved escalations |
+| `GET /api/projects` | any | Projects the credential reaches, with your `role` and `notify` setting |
+| `POST /api/projects` | instance admin | `{id, key, name}`. The creator becomes its admin |
+| `PATCH /api/projects/:id` | project admin | `{name?, key?}` |
+| `GET /api/projects/:id/members` | human | `[{userId, name, email, role, notify}]` |
+| `PUT /api/projects/:id/members/:userId` | project admin | `{role: "admin" \| "member"}`: add a person or change their role |
+| `DELETE /api/projects/:id/members/:userId` | project admin | Remove a member |
+| `PUT /api/projects/:id/notifications` | person | `{enabled}`: push for this project on your own devices |
+| `GET /api/people` | project admin | Everyone with an account, for adding members |
+| `GET /api/events` | any | Server-Sent Events: `group`, `group_deleted`, `lane`, `lane_deleted`, `escalation`. Only your projects' events. The stream ends when memberships or projects change; reconnect and re-snapshot. Heartbeat every 25s. `?access_token=` is accepted here only, for clients that can't set headers |
 | `GET /api/groups` | any | |
 | `PUT /api/groups/:id` | agent | Create or update `{name?, ticket?, links?}` |
 | `DELETE /api/groups/:id` | human | Archives it. Its lanes show as ungrouped, and exports keep the link |
@@ -68,12 +77,12 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `POST /api/escalations/:id/decide` | human | `{decision, note?, change?}`. A second decision is `409`, unless `change: true` and the agent hasn't acknowledged yet |
 | `POST /api/escalations/:id/ack` | agent | `{note?, status?, activity?}`. Returns the escalation with the final decision; `status`/`activity` update the lane. Repeating it returns the same result |
 | `POST /api/escalations/:id/withdraw` | any | `{note?}` |
-| `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=` filter. One export at a time (`429` while another runs). See [Export](export.md) |
-| `GET /api/export/<dataset>.csv` / `.json` | any | `escalations`, `positions`, `lanes`, `groups` or `events`. Same filters |
-| `GET /api/requirements?q=&tag=a,b&group=&status=active,superseded&limit=` | any | Search [requirements](requirements.md). Active only by default; `q` is free text, or an id like `R14` |
+| `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=&project=` filter. One export at a time (`429` while another runs). See [Export](export.md) |
+| `GET /api/export/<dataset>.csv` / `.json` | any | `escalations`, `positions`, `lanes`, `groups`, `events` or `requirements`. Same filters |
+| `GET /api/requirements?q=&tag=a,b&group=&status=active,superseded&limit=` | any | Search [requirements](requirements.md). Active only by default; `q` is free text, or an id like `R14`. Includes requirements for all projects |
 | `GET /api/requirements/tags?group=` | any | Tags in use, with counts |
 | `GET /api/requirements/:id` | any | One requirement |
-| `POST /api/requirements` | any | `{requirement, justification, tags, group?, sourceEscalation?, decidedBy?}`. Agents must give `sourceEscalation` or `decidedBy`; a person recording one is the decider by default. Returns `{requirement, similar, warnings}` |
+| `POST /api/requirements` | any | `{requirement, justification, tags, group?, sourceEscalation?, decidedBy?, allProjects?}`. `allProjects: true` makes it apply to every project. Agents must give `sourceEscalation` or `decidedBy`; a person recording one is the decider by default. Returns `{requirement, similar, warnings}` |
 | `POST /api/requirements/:id/supersede` | any | Same body; marks the old one superseded |
 | `PATCH /api/requirements/:id` | human | Fix `requirement`, `justification` or `tags` wording |
 | `POST /api/requirements/:id/retire` | human | It no longer applies; nothing replaces it |

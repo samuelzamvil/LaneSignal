@@ -31,11 +31,14 @@ curl -fsS -H "authorization: Bearer $KEY" "https://lanesignal.example.com/api/ex
 |---|---|---|
 | `from` | escalations (by creation time), positions (by when each was taken), events (by time) | `YYYY-MM-DD` (midnight UTC), or an ISO timestamp with a zone such as `2026-10-01T09:00:00Z` or `…+02:00`. Inclusive |
 | `to` | same | same, exclusive. Must be after `from` |
-| `lane` (`lane_id` in MCP) | escalations, positions, events, lanes | a lane id |
+| `project` | everything | a project id or key. Without it, every project you can see. Requirements for all projects are always included |
+| `lane` (`lane_id` in MCP) | escalations, positions, events, lanes | a lane id (with `project`, if you can see several) |
 
 Unknown parameters, timestamps without a zone, and impossible dates (`2026-02-30`) are rejected with `400`, rather than silently ignored or reinterpreted.
 
-Lanes and groups are always exported in full, so filtered escalations can still be joined to them.
+Lanes and groups are always exported in full (within the project filter), so filtered escalations can still be joined to them.
+
+Every dataset has a `project` column (the project id; empty in `requirements.csv` for requirements that apply to all projects). Lane, group and escalation codes are unique only within a project, so join on `project` plus the id. See [Projects](projects.md).
 
 ## Datasets and columns
 

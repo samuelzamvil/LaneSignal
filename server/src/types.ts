@@ -25,6 +25,8 @@ export interface Link {
  */
 export interface Group {
   id: string;
+  /** Project the group belongs to. */
+  project: string;
   name: string;
   /** The epic/train ticket, resolved like lane tickets. */
   ticket: string | null;
@@ -38,7 +40,10 @@ export interface Group {
 }
 
 export interface Lane {
+  /** Unique within its project. */
   id: string;
+  /** Project the lane belongs to. */
+  project: string;
   /**
    * Letter while the lane is active or has unresolved escalations (A, B, … Z, AA…); its
    * escalations are coded with it ("A12"). Freed for another lane once it's done.
@@ -92,6 +97,10 @@ export interface Escalation {
   id: string;
   /** Short code for humans and agents to refer to it by: its lane's letter and a number, e.g. "A12". Accepted wherever an id is. */
   ref: string;
+  /** Project the escalation's lane belongs to. */
+  project: string;
+  /** Short key of that project, so codes can be shown as "LS·A12" where projects mix. */
+  projectKey: string;
   laneId: string;
   /** The decision being asked for; doubles as the headline. */
   question: string;
@@ -137,6 +146,34 @@ export interface LaneEvent {
   actor: string | null;
 }
 
+/** One application or codebase, with its own groups, lanes, escalations and requirements. */
+export interface Project {
+  /** Stable id, e.g. "lanesignal". */
+  id: string;
+  /** Short uppercase key shown before escalation codes where projects mix ("LS·A12"). */
+  key: string;
+  name: string;
+  createdAt: string;
+}
+
+export type ProjectRole = 'admin' | 'member';
+
+/** A project as the caller sees it. */
+export interface ProjectAccess extends Project {
+  /** The caller's role; instance admins and config tokens are admins everywhere. */
+  role: ProjectRole;
+  /** Whether the caller's phones get push notifications for this project. */
+  notify: boolean;
+}
+
+export interface ProjectMember {
+  userId: string;
+  name: string;
+  email: string;
+  role: ProjectRole;
+  notify: boolean;
+}
+
 export interface PublicConfig {
   name: string;
   /** What groups are called in this deployment: "Epic", "Train", "Overseer", ... */
@@ -157,6 +194,10 @@ export interface Principal {
   email?: string;
   /** May manage accounts (account admins and config-file human tokens). */
   admin?: boolean;
+  /** Account admins (and keys they own): admin of every project. */
+  superuser?: boolean;
+  /** An agent key bound to one project. */
+  project?: string;
 }
 
 export type RequirementStatus = 'active' | 'superseded' | 'retired';
@@ -168,7 +209,9 @@ export type RequirementStatus = 'active' | 'superseded' | 'retired';
 export interface Requirement {
   /** "R14": global, never reused. */
   id: string;
-  /** Group (train/epic) it belongs to; null for product-wide requirements. */
+  /** Project it applies to; null when it applies to all projects (an owner-wide rule). */
+  project: string | null;
+  /** Group (train/epic) within the project it belongs to; null for project-wide requirements. */
   group: string | null;
   /** One normative statement, e.g. "Payout jobs retry at most 5 times." */
   requirement: string;
@@ -191,9 +234,9 @@ export interface Requirement {
 
 export type StreamEvent =
   | { type: 'group'; group: Group }
-  | { type: 'group_deleted'; id: string }
+  | { type: 'group_deleted'; id: string; project: string }
   /** `statusChanged` is set when this event is the lane's status transition (drives notifications). */
   | { type: 'lane'; lane: Lane; statusChanged?: boolean }
-  | { type: 'lane_deleted'; id: string }
+  | { type: 'lane_deleted'; id: string; project: string }
   | { type: 'escalation'; escalation: Escalation }
   | { type: 'requirement'; requirement: Requirement };

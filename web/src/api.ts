@@ -5,13 +5,31 @@ import type {
   Lane,
   LaneEvent,
   Principal,
+  Project,
+  ProjectAccess,
+  ProjectMember,
+  ProjectRole,
   PublicConfig,
   Requirement,
   RequirementStatus,
   StreamEvent,
 } from '../../server/src/types.ts';
 
-export type { Escalation, Group, Lane, LaneEvent, Principal, PublicConfig, Requirement, RequirementStatus, StreamEvent };
+export type {
+  Escalation,
+  Group,
+  Lane,
+  LaneEvent,
+  Principal,
+  Project,
+  ProjectAccess,
+  ProjectMember,
+  ProjectRole,
+  PublicConfig,
+  Requirement,
+  RequirementStatus,
+  StreamEvent,
+};
 export type { LaneStatus, Link, Position } from '../../server/src/types.ts';
 
 export const isNative = Capacitor.isNativePlatform();
@@ -31,8 +49,8 @@ export interface AgentKey {
   start: string | null;
   createdAt: string;
   lastRequest: string | null;
-  /** role "human" marks a personal key that answers escalations as its owner. */
-  metadata?: { role?: string } | null;
+  /** role "human" marks a personal key that answers escalations as its owner; `project` binds an agent key. */
+  metadata?: { role?: string; project?: string } | null;
 }
 
 export interface Person {
@@ -100,15 +118,20 @@ export function createClient(conn: Connection) {
   return {
     me: () => request<Principal>('GET', '/api/me'),
     config: () => request<PublicConfig>('GET', '/api/config'),
-    snapshot: () => request<{ groups: Group[]; lanes: Lane[]; escalations: Escalation[]; serverTime: string }>('GET', '/api/snapshot'),
-    laneDetail: (id: string) =>
+    snapshot: () =>
+      request<{ projects: ProjectAccess[]; groups: Group[]; lanes: Lane[]; escalations: Escalation[]; serverTime: string }>(
+        'GET',
+        '/api/snapshot',
+      ),
+    laneDetail: (project: string, id: string) =>
       request<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[] }>(
         'GET',
-        `/api/lanes/${encodeURIComponent(id)}`,
+        `/api/lanes/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`,
       ),
     escalation: (id: string) => request<Escalation>('GET', `/api/escalations/${encodeURIComponent(id)}`),
-    requirements: (f: { q?: string; tags?: string[]; group?: string; statuses?: RequirementStatus[] }) => {
+    requirements: (f: { q?: string; tags?: string[]; group?: string; project?: string; statuses?: RequirementStatus[] }) => {
       const p = new URLSearchParams();
+      if (f.project) p.set('project', f.project);
       if (f.q) p.set('q', f.q);
       if (f.tags?.length) p.set('tag', f.tags.join(','));
       if (f.group) p.set('group', f.group);
@@ -120,7 +143,22 @@ export function createClient(conn: Connection) {
     editRequirement: (id: string, patch: { requirement?: string; justification?: string; tags?: string[] }) =>
       request<Requirement>('PATCH', `/api/requirements/${encodeURIComponent(id)}`, patch),
     retireRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/retire`, {}),
-    deleteLane: (id: string) => request<void>('DELETE', `/api/lanes/${encodeURIComponent(id)}`),
+    deleteLane: (project: string, id: string) =>
+      request<void>('DELETE', `/api/lanes/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`),
+
+    // Projects: the caller's, and (for admins) their members and settings.
+    projects: () => request<ProjectAccess[]>('GET', '/api/projects'),
+    createProject: (p: { id: string; key: string; name: string }) => request<Project>('POST', '/api/projects', p),
+    updateProject: (id: string, patch: { name?: string; key?: string }) =>
+      request<Project>('PATCH', `/api/projects/${encodeURIComponent(id)}`, patch),
+    projectMembers: (id: string) => request<ProjectMember[]>('GET', `/api/projects/${encodeURIComponent(id)}/members`),
+    setProjectMember: (id: string, userId: string, role: ProjectRole) =>
+      request<void>('PUT', `/api/projects/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, { role }),
+    removeProjectMember: (id: string, userId: string) =>
+      request<void>('DELETE', `/api/projects/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`),
+    setProjectNotify: (id: string, enabled: boolean) =>
+      request<void>('PUT', `/api/projects/${encodeURIComponent(id)}/notifications`, { enabled }),
+    people: () => request<{ id: string; name: string; email: string }[]>('GET', '/api/people'),
     /** `change` replaces the answer on a decided escalation the agent hasn't acknowledged. */
     decide: (id: string, decision: string, note?: string, change = false) =>
       request<Escalation>('POST', `/api/escalations/${id}/decide`, { decision, note: note || null, ...(change ? { change } : {}) }),
@@ -145,10 +183,11 @@ export function createClient(conn: Connection) {
       const res = await request<{ apiKeys: AgentKey[] } | AgentKey[]>('GET', '/api/auth/api-key/list');
       return Array.isArray(res) ? res : res.apiKeys;
     },
-    createKey: (name: string, role: 'agent' | 'human' = 'agent') =>
+    /** `project` binds an agent key to that one project. */
+    createKey: (name: string, role: 'agent' | 'human' = 'agent', project?: string) =>
       request<AgentKey & { key: string }>('POST', '/api/auth/api-key/create', {
         name,
-        ...(role === 'human' ? { metadata: { role: 'human' } } : {}),
+        ...(role === 'human' ? { metadata: { role: 'human' } } : project ? { metadata: { role: 'agent', project } } : {}),
       }),
     deleteKey: (keyId: string) => request<unknown>('POST', '/api/auth/api-key/delete', { keyId }),
 

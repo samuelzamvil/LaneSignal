@@ -162,6 +162,7 @@ export function Chips<T extends string>({
 
 export function LaneDetail({
   laneId,
+  project,
   client,
   version,
   now,
@@ -171,6 +172,7 @@ export function LaneDetail({
   onClose,
 }: {
   laneId: string;
+  project: string;
   client: Client;
   group: Group | undefined;
   groupLabel: string;
@@ -185,13 +187,13 @@ export function LaneDetail({
   useEffect(() => {
     let cancelled = false;
     client
-      .laneDetail(laneId)
+      .laneDetail(project, laneId)
       .then((d) => !cancelled && (setData(d), setError(null)))
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
-  }, [client, laneId, version]);
+  }, [client, project, laneId, version]);
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
@@ -291,7 +293,7 @@ export function LaneDetail({
                 onClick={() => {
                   if (confirm(`Remove "${data.lane.name}" from the dashboard? Its open questions are withdrawn; its history stays available in exports.`)) {
                     client
-                      .deleteLane(data.lane.id)
+                      .deleteLane(data.lane.project, data.lane.id)
                       .then(onClose)
                       .catch((err: Error) => alert(`Could not remove the lane: ${err.message}`));
                   }

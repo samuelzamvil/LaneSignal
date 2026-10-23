@@ -121,6 +121,7 @@ export const exportFilter = z
     from: instant.optional(),
     to: instant.optional(),
     lane: z.string().max(100).optional(),
+    project: z.string().max(40).optional(),
   })
   // Unknown parameters (e.g. a misspelt filter) are errors, not silently ignored.
   .strict()
@@ -158,6 +159,7 @@ export const waitQuery = z
     ids: z.preprocess(csv, idList).optional(),
     timeout: z.coerce.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
     since: z.string().max(40).optional(),
+    project: z.string().max(40).optional(),
   })
   .strict();
 
@@ -186,6 +188,8 @@ export const requirementInput = z.object({
   sourceEscalation: z.string().min(1).max(100).nullable().optional(),
   /** Who decided, when there's no escalation, e.g. "Sam (Remote Control, 2026-10-23)". */
   decidedBy: z.string().trim().min(1).max(100).nullable().optional(),
+  /** An owner-wide rule that applies to every project, rather than to the request's project. */
+  allProjects: z.boolean().optional(),
 })
   // Unknown fields (e.g. group_id instead of group) are errors, not silently ignored.
   .strict();
@@ -208,6 +212,23 @@ export const requirementQuery = z
     group: groupId.optional(),
     status: z.preprocess(csv, z.array(z.enum(REQUIREMENT_STATUSES)).min(1)).optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
+    project: z.string().max(40).optional(),
   })
   .strict();
+
+// ---- projects ----
+
+export const projectId = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{0,39}$/, 'project ids are lowercase letters, digits and dashes, e.g. "lanesignal"');
+
+/** Shown before escalation codes where projects mix: "LS·A12". */
+export const projectKey = z
+  .string()
+  .regex(/^[A-Za-z][A-Za-z0-9]{1,9}$/, 'project keys are 2-10 letters or digits, starting with a letter, e.g. "LS"');
+
+export const projectInput = z.object({ id: projectId, key: projectKey, name: z.string().trim().min(1).max(100) }).strict();
+export const projectPatch = z.object({ key: projectKey.optional(), name: z.string().trim().min(1).max(100).optional() }).strict();
+export const memberInput = z.object({ role: z.enum(['admin', 'member']) }).strict();
+export const notifyInput = z.object({ enabled: z.boolean() }).strict();
 

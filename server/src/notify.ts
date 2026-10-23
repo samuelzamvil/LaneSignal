@@ -2,7 +2,7 @@ import { createSign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Config } from './config.ts';
 import { log } from './log.ts';
-import type { Store } from './store.ts';
+import { localId, type Store } from './store.ts';
 import type { StreamEvent } from './types.ts';
 
 export interface Notification {
@@ -12,6 +12,8 @@ export interface Notification {
   /** Deep link inside the app, e.g. "#/esc/<id>". */
   route: string;
   urgent: boolean;
+  /** The project it's about: only people subscribed to it are notified. */
+  project: string;
 }
 
 const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
@@ -89,9 +91,15 @@ class FcmSender {
 
 /**
  * Subscribes to store changes and sends push notifications for the configured
- * triggers. `userActive` filters out phones of people who were removed or banned.
+ * triggers. `wantsPush` says whether a person's phones get a project's
+ * notifications: they're an active member with notifications on (it filters out
+ * removed and banned people too). Phones registered with a config token get all.
  */
-export function startNotifier(config: Config, store: Store, userActive: (userId: string) => boolean = () => true) {
+export function startNotifier(
+  config: Config,
+  store: Store,
+  wantsPush: (userId: string, project: string) => boolean = () => true,
+) {
   let fcm: FcmSender | null = null;
   if (config.fcmServiceAccountFile) {
     try {
@@ -112,7 +120,7 @@ export function startNotifier(config: Config, store: Store, userActive: (userId:
         log.warn('cannot read push tokens', { error: String(err) });
       }
       for (const t of tokens) {
-        if (t.userId && !userActive(t.userId)) continue;
+        if (t.userId && !wantsPush(t.userId, n.project)) continue;
         try {
           if (!(await fcm.send(t.token, n))) {
             store.removePushToken(t.token);
@@ -157,17 +165,22 @@ export function startNotifier(config: Config, store: Store, userActive: (userId:
     if (e.type === 'escalation' && created && config.notifyOn.has('escalation')) {
       // Later open-state events (agent positions) don't re-notify.
       const lane = store.getLane(e.escalation.laneId);
-      const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? e.escalation.laneId].filter(Boolean).join(' / ');
+      const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? localId(e.escalation.laneId)]
+        .filter(Boolean)
+        .join(' / ');
       // FYI questions (non-blocking) still notify once, but quietly.
       const urgent = e.escalation.blocking;
+      // With several projects, the code carries its project's key: "LS·A12".
+      const code = store.listProjects().length > 1 ? `${e.escalation.projectKey}·${e.escalation.ref}` : e.escalation.ref;
       return {
-        title: `${urgent ? 'Decision needed' : 'FYI'} ${e.escalation.ref} · ${where}`,
+        title: `${urgent ? 'Decision needed' : 'FYI'} ${code} · ${where}`,
         body: e.escalation.recommendation
           ? `${e.escalation.question}\nRecommended: ${e.escalation.recommendation}`
           : e.escalation.question,
-        data: { escalationId: e.escalation.id, laneId: e.escalation.laneId },
+        data: { escalationId: e.escalation.id, laneId: localId(e.escalation.laneId), project: e.escalation.project },
         route: `#/esc/${e.escalation.id}`,
         urgent,
+        project: e.escalation.project,
       };
     }
     if (e.type === 'lane' && e.statusChanged) {
@@ -177,18 +190,20 @@ export function startNotifier(config: Config, store: Store, userActive: (userId:
         return {
           title: `Blocked · ${lane.name}`,
           body: lane.activity ?? 'Lane is blocked on a human decision',
-          data: { laneId: lane.id },
-          route: `#/lane/${encodeURIComponent(lane.id)}`,
+          data: { laneId: localId(lane.id), project: lane.project },
+          route: `#/lane/${encodeURIComponent(lane.project)}/${encodeURIComponent(localId(lane.id))}`,
           urgent: true,
+          project: lane.project,
         };
       }
       if (lane.status === 'completed' && config.notifyOn.has('completed')) {
         return {
           title: `Completed · ${lane.name}`,
           body: lane.activity ?? 'Lane completed',
-          data: { laneId: lane.id },
-          route: `#/lane/${encodeURIComponent(lane.id)}`,
+          data: { laneId: localId(lane.id), project: lane.project },
+          route: `#/lane/${encodeURIComponent(lane.project)}/${encodeURIComponent(localId(lane.id))}`,
           urgent: false,
+          project: lane.project,
         };
       }
     }

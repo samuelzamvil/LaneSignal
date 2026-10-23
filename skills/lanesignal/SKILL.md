@@ -13,6 +13,13 @@ Vocabulary:
 - An **escalation** is a question for the owner.
 - A **requirement** is a product decision the owner made, kept for later.
 
+## Projects
+
+A server can host several independent projects (apps), each with its own groups, lanes and codes. If your key is bound to one project, or reaches only one, ignore this section. Otherwise:
+
+- `list_projects` shows the ones you can reach. Use the project your owner's policy names (the same value as `LANESIGNAL_PROJECT` below).
+- Pass `project` (its id or key) on every call, or writes fail with "Say which project".
+
 ## Publishing state
 
 - **Start of a session:** call `update_group` once, with your `group_id` (the one your owner's policy gives you; the same value as `LANESIGNAL_GROUP` below), your epic/train `name`, its `ticket`, and your Remote Control session URL in `links` (`{label: "Overseer session", url: …, kind: "session"}`). Do this before waiting on the group: waiting on a group that doesn't exist yet is an error.
@@ -76,7 +83,7 @@ Answers can take minutes or a day.
   out=$(mktemp); since="${LANESIGNAL_SINCE:-}"; fails=0
   while :; do
     code=$(curl -sS -o "$out" -w '%{http_code}' -H "Authorization: Bearer $LANESIGNAL_KEY" \
-      "$LANESIGNAL_URL/api/wait?group=$LANESIGNAL_GROUP&timeout=86400${since:+&since=$since}" 2>/dev/null)
+      "$LANESIGNAL_URL/api/wait?group=$LANESIGNAL_GROUP&timeout=86400${since:+&since=$since}${LANESIGNAL_PROJECT:+&project=$LANESIGNAL_PROJECT}" 2>/dev/null)
     case "$code" in
       200) grep -q '"ready":true' "$out" && { cat "$out"; echo; break; }
            # A connection cut mid-wait, or a server error, has no checkedAt: keep the old since.
@@ -90,7 +97,7 @@ Answers can take minutes or a day.
   done
   ```
 
-  Set `LANESIGNAL_SINCE` to the most recent `checkedAt` you have (from this loop or from `wait_for_decisions`) when you start it. It prints the same JSON as `wait_for_decisions`, and gives up after about 10 minutes of failures.
+  If your key reaches several projects, also set `LANESIGNAL_PROJECT`. Set `LANESIGNAL_SINCE` to the most recent `checkedAt` you have (from this loop or from `wait_for_decisions`) when you start it. It prints the same JSON as `wait_for_decisions`, and gives up after about 10 minutes of failures.
 
 ## Acting on a decision
 
@@ -105,7 +112,7 @@ If your owner's policy asks you to keep product decisions (or you're told to rec
 - **Owner decisions only.** Record only what a person decided, never your own design choices. Every requirement names its source: `source_escalation: "A12"` (its decider is recorded), or `decided_by` (e.g. `"Sam (Remote Control, 2026-10-23)"`).
 - **One decision per requirement**, written as one normative statement ("Payout jobs retry at most 5 times, then go to the dead-letter queue."), with the reasoning in `justification`.
 - **Tags:** 1–3 specific kebab-case tags naming the capability (`payout-retries`, not `backend`). Check `list_requirement_tags` and reuse existing tags.
-- **Scope:** set `group_id` for your train/epic, or leave it out for product-wide decisions.
+- **Scope:** set `group_id` for your train/epic, or leave it out for decisions about the whole project. Pass `all_projects: true` only when the owner said the decision covers all their projects.
 - **Check the reply:** `similar` lists active requirements that read alike. If one is the same decision, it was a duplicate. If the owner changed an earlier decision, use `supersede_requirement` on the old one instead of recording a new one.
 
 ## After a restart

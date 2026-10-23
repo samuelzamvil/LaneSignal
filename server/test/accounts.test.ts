@@ -204,6 +204,7 @@ describe('accounts', () => {
       userId: (await call('GET', '/api/me', adminToken)).body.userId,
       email: 'ada@example.com',
       admin: false,
+      superuser: true,
     });
     const bot = (await call('POST', '/api/auth/api-key/create', adminToken, { name: 'personal-test-bot' })).body.key;
     const esc = await call('POST', '/api/escalations', bot, { laneId: 'wiring', question: 'Personal key?' });
