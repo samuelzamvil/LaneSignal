@@ -352,6 +352,8 @@ describe('mcp', () => {
     const [summary, body] = out.result.content.map((c: { text: string }) => c.text);
     assert.match(summary, /^lanes: rows 1-1 of \d+; call again with offset 1/);
     assert.ok(body.startsWith('id,name,group_id,'));
+    const empty = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', offset: 9999 } });
+    assert.ok(empty.result.content[1].text.startsWith('id,name,group_id,'), 'header even when empty');
     const bad = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', from: 'soon' } });
     assert.equal(bad.result.isError, true);
   });

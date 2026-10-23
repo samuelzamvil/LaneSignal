@@ -15,9 +15,9 @@ Only routine activity text is capped, at the last `LANESIGNAL_EVENT_RETENTION` e
 |---|---|
 | **Web app** | Settings → **Export data**: an optional date range, then **Download everything (.zip)** or a single CSV. The Android app points you to the web app or the API, because WebView downloads need an extra plugin |
 | **HTTP API** | `GET /api/export` for a zip of every CSV plus a README. `GET /api/export/<dataset>.csv` or `.json` for a single dataset |
-| **MCP** | The `export_data` tool returns CSV (or JSON) in pages, so a Claude session can analyse it directly |
+| **MCP** | The `export_data` tool returns CSV (or JSON) in pages, so a Claude session can analyse it directly. A page is 100 rows by default (up to 1000), and is cut short to stay under about 60 KB. The first line says which rows you got and the `offset` for the next page |
 
-Any signed-in person, agent key or static token can export.
+Any signed-in person, agent key or static token can export. The server builds one export at a time; a second request in the meantime gets `429` with `Retry-After`. Large exports are built in pages, so the server stays responsive while they run.
 
 ```bash
 curl -fsS -H "authorization: Bearer $KEY" -o lanesignal.zip https://lanesignal.example.com/api/export
@@ -28,9 +28,11 @@ curl -fsS -H "authorization: Bearer $KEY" "https://lanesignal.example.com/api/ex
 
 | Parameter | Applies to | Format |
 |---|---|---|
-| `from` | escalations and positions (by creation time), events (by time) | `YYYY-MM-DD` (midnight UTC) or an ISO timestamp, inclusive |
-| `to` | same | same, exclusive |
+| `from` | escalations (by creation time), positions (by when each was taken), events (by time) | `YYYY-MM-DD` (midnight UTC), or an ISO timestamp with a zone such as `2026-10-01T09:00:00Z` or `…+02:00`. Inclusive |
+| `to` | same | same, exclusive. Must be after `from` |
 | `lane` (`lane_id` in MCP) | escalations, positions, events, lanes | a lane id |
+
+Unknown parameters, timestamps without a zone, and impossible dates (`2026-02-30`) are rejected with `400`, rather than silently ignored or reinterpreted.
 
 Lanes and groups are always exported in full, so filtered escalations can still be joined to them.
 
@@ -96,7 +98,9 @@ To rebuild blocked time per lane over a period, pair the status changes in `stat
 **Removing a lane** in the app:
 
 - hides it from the dashboard
-- withdraws its unresolved escalations, so waiting agents get an answer ("Lane removed by …")
+- withdraws its **unanswered** escalations, so waiting agents get an answer ("Lane removed by …"). Each withdrawal is recorded in the history
+- leaves **decided** escalations as they are, so an agent already acting on an answer can still acknowledge it
+- ends a blocked spell: a lane removed while `blocked_human` is set to `idle`, so archived time isn't counted as blocked
 - keeps the lane, its escalations and its history
 
 If an agent publishes to the same lane id again, the lane comes back with its history.

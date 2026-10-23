@@ -22,6 +22,25 @@ export class ConflictError extends Error {}
 
 export const EXPORT_DATASETS = ['escalations', 'positions', 'lanes', 'groups', 'events'] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
+
+/** Fixed column order per dataset, so a CSV's header never depends on whether it has rows. */
+export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
+  escalations: [
+    'id', 'lane_id', 'lane_name', 'group_id', 'group_name', 'ticket', 'ticket_url', 'question', 'context',
+    'recommendation', 'recommended_option', 'cost', 'alternatives', 'options', 'blocking', 'state', 'created_by',
+    'created_at', 'decided_by', 'decided_at', 'decision', 'decision_note', 'followed_recommendation',
+    'acknowledged_at', 'resolution', 'closed_at', 'seconds_to_decision', 'seconds_to_acknowledge', 'seconds_open',
+    'positions_agree', 'positions_disagree', 'positions_neutral', 'links',
+  ],
+  positions: ['escalation_id', 'lane_id', 'question', 'agent', 'stance', 'note', 'at'],
+  lanes: [
+    'id', 'name', 'group_id', 'group_name', 'status', 'ticket', 'ticket_url', 'activity', 'last_published_by',
+    'created_at', 'updated_at', 'status_since', 'blocked_seconds_total', 'blocked_since', 'escalations_total',
+    'escalations_open', 'links', 'archived_at',
+  ],
+  groups: ['id', 'name', 'ticket', 'ticket_url', 'links', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
+  events: ['id', 'lane_id', 'at', 'kind', 'message', 'actor'],
+};
 export interface ExportFilter {
   from?: string;
   to?: string;
@@ -254,18 +273,22 @@ export class Store {
     return r ? this.groupFromRow(r) : null;
   }
 
-  /** Must run inside a transaction. Returns true when something changed. */
+  /**
+   * Must run inside a transaction. Publishing to an archived group brings it
+   * back; returns true in that case so callers re-emit its lanes, which clients
+   * have been showing as ungrouped.
+   */
   private writeGroup(id: string, patch: GroupPatch, actor: string | null, at: string): boolean {
-    // Publishing to an archived group brings it back.
-    this.db.prepare('UPDATE groups SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL').run(id);
+    const restored =
+      this.db.prepare('UPDATE groups SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL').run(id).changes > 0;
     const existing = this.getGroup(id);
     if (!existing) {
       this.db
         .prepare('INSERT INTO groups (id, name, ticket, links, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(id, patch.name ?? id, patch.ticket ?? null, JSON.stringify(patch.links ?? []), actor, at, at);
-      return true;
+      return false;
     }
-    if (patch.name === undefined && patch.ticket === undefined && patch.links === undefined) return false;
+    if (patch.name === undefined && patch.ticket === undefined && patch.links === undefined) return restored;
     this.db
       .prepare('UPDATE groups SET name = ?, ticket = ?, links = ?, agent = ?, updated_at = ? WHERE id = ?')
       .run(
@@ -276,15 +299,23 @@ export class Store {
         at,
         id,
       );
-    return true;
+    return restored;
+  }
+
+  /** Re-sends a restored group's lanes, which clients have been showing as ungrouped. */
+  private emitGroupLanes(groupId: string, exceptLaneId?: string) {
+    for (const lane of this.listLanes()) {
+      if (lane.group === groupId && lane.id !== exceptLaneId) this.emit({ type: 'lane', lane });
+    }
   }
 
   upsertGroup(id: string, patch: GroupPatch, actor: string | null): Group {
-    const group = this.tx(() => {
-      this.writeGroup(id, patch, actor, this.now().toISOString());
-      return this.getGroup(id)!;
+    const { group, restored } = this.tx(() => {
+      const restored = this.writeGroup(id, patch, actor, this.now().toISOString());
+      return { group: this.getGroup(id)!, restored };
     });
     this.emit({ type: 'group', group });
+    if (restored) this.emitGroupLanes(id);
     return group;
   }
 
@@ -350,6 +381,12 @@ export class Store {
     return r ? this.laneFromRow(r) : null;
   }
 
+  /** Any lane, archived or not, for steps that must still work after a lane is removed. */
+  private laneIncludingArchived(id: string): { lane: Lane; archived: boolean } | null {
+    const r = this.db.prepare(`${Store.LANE_SELECT} WHERE l.id = ?`).get(id) as Row | undefined;
+    return r ? { lane: this.laneFromRow(r), archived: r.archived_at != null } : null;
+  }
+
   /** Must run inside a transaction: publishing to an archived lane brings it back, history intact. */
   private restoreLane(id: string, actor: string | null, at: string) {
     const res = this.db.prepare('UPDATE lanes SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL').run(id);
@@ -365,13 +402,14 @@ export class Store {
   upsertLane(id: string, patch: LanePatch, actor: string | null): Lane {
     if (patch.status && !LANE_STATUSES.includes(patch.status)) throw new Error(`Invalid status "${patch.status}"`);
     let createdGroup: Group | null = null;
+    let groupRestored = false;
     let previous: LaneStatus | null = null;
     const lane = this.tx(() => {
       const at = this.now().toISOString();
       this.restoreLane(id, actor, at);
       previous = this.getLane(id)?.status ?? null;
       if (patch.group && !this.getGroup(patch.group)) {
-        this.writeGroup(patch.group, {}, actor, at);
+        groupRestored = this.writeGroup(patch.group, {}, actor, at);
         createdGroup = this.getGroup(patch.group);
       }
       const existing = this.getLane(id);
@@ -404,6 +442,7 @@ export class Store {
       return this.requireLane(id);
     });
     if (createdGroup) this.emit({ type: 'group', group: createdGroup });
+    if (groupRestored && patch.group) this.emitGroupLanes(patch.group, id);
     this.emit({ type: 'lane', lane, statusChanged: previous !== lane.status });
     return lane;
   }
@@ -457,15 +496,22 @@ export class Store {
    */
   deleteLane(id: string, actor: string | null = null) {
     const withdrawn = this.tx(() => {
-      if (!this.getLane(id)) throw new NotFoundError(`Lane "${id}" not found`);
+      const lane = this.getLane(id);
+      if (!lane) throw new NotFoundError(`Lane "${id}" not found`);
       const at = this.now().toISOString();
-      const pending = this.listEscalations({ laneId: id }).map((e) => e.id);
+      // Only unanswered questions are withdrawn. Decided ones keep their answer and
+      // can still be acknowledged by an agent that's acting on it.
+      const pending = this.listEscalations({ laneId: id, states: ['open'] }).map((e) => e.id);
+      const resolution = `Lane removed${actor ? ` by ${actor}` : ''}`;
       this.db
         .prepare(
           `UPDATE escalations SET state = 'withdrawn', resolution = COALESCE(resolution, ?), updated_at = ?
-           WHERE lane_id = ? AND state IN ('open', 'decided')`,
+           WHERE lane_id = ? AND state = 'open'`,
         )
-        .run(`Lane removed${actor ? ` by ${actor}` : ''}`, at, id);
+        .run(resolution, at, id);
+      for (let i = 0; i < pending.length; i++) this.addEvent(id, at, 'escalation', `Escalation closed: ${resolution}`, actor);
+      // End any blocked spell now, so archived time isn't counted as blocked.
+      if (lane.status === 'blocked_human') this.applyLaneUpdate(lane, { status: 'idle' }, actor, at);
       this.db.prepare('UPDATE lanes SET archived_at = ?, updated_at = ? WHERE id = ?').run(at, at, id);
       this.addEvent(id, at, 'status', 'Lane removed', actor);
       return pending.map((eid) => this.requireEscalation(eid));
@@ -702,19 +748,23 @@ export class Store {
       const at = this.now().toISOString();
       const message = apply(at);
       this.addEvent(current.laneId, at, 'escalation', message, actor);
-      const lane = this.requireLane(current.laneId);
+      const found = this.laneIncludingArchived(current.laneId);
+      if (!found) throw new NotFoundError(`Lane "${current.laneId}" not found`);
+      const { lane, archived } = found;
       const unblocked =
+        !archived &&
         mayUnblock &&
         current.state === 'open' &&
         current.blocking &&
         lane.status === 'blocked_human' &&
         this.openBlockingCount(lane.id) === 0;
       if (unblocked) this.applyLaneUpdate(lane, { status: 'awaiting_agent' }, null, at);
-      return { escalation: this.requireEscalation(id), lane: this.requireLane(current.laneId), unblocked };
+      return { escalation: this.requireEscalation(id), lane: archived ? null : this.requireLane(current.laneId), unblocked };
     });
     this.emit({ type: 'escalation', escalation });
-    // Emitted either way: the lane's open-escalation count changed.
-    this.emit({ type: 'lane', lane, statusChanged: unblocked });
+    // Emitted either way (the open-escalation count changed), except for archived lanes,
+    // which clients don't show.
+    if (lane) this.emit({ type: 'lane', lane, statusChanged: unblocked });
     return escalation;
   }
 
@@ -771,20 +821,46 @@ export class Store {
    * always complete.
    */
   exportRows(dataset: ExportDataset, filter: ExportFilter = {}): Record<string, unknown>[] {
+    return this.exportPage(dataset, filter, 0, -1).rows;
+  }
+
+  /**
+   * One keyset page of export rows: rows after row id `after`, at most `limit`
+   * (-1 = all). `last` is the row id to continue from, null when done. Big
+   * exports page through this and yield to the event loop between pages.
+   */
+  exportPage(
+    dataset: ExportDataset,
+    filter: ExportFilter,
+    after: number,
+    limit: number,
+  ): { rows: Record<string, unknown>[]; last: number | null } {
+    type Out = Record<string, unknown>;
+    const page = (raw: Row[], map: (r: Row) => Out | Out[]): { rows: Out[]; last: number | null } => ({
+      rows: raw.flatMap((r): Out[] => {
+        const mapped = map(r);
+        return Array.isArray(mapped) ? mapped : [mapped];
+      }),
+      last: limit > 0 && raw.length === limit ? Number(raw[raw.length - 1]._rid) : null,
+    });
     const nowMs = this.now().getTime();
     const seconds = (from: unknown, to: unknown) =>
       typeof from === 'string' && typeof to === 'string' ? Math.round((Date.parse(to) - Date.parse(from)) / 1000) : null;
-    const range = (col: string) => {
-      const where: string[] = [];
-      const params: string[] = [];
-      if (filter.from) (where.push(`${col} >= ?`), params.push(filter.from));
-      if (filter.to) (where.push(`${col} < ?`), params.push(filter.to));
-      if (filter.laneId) (where.push('lane_id = ?'), params.push(filter.laneId));
-      return { sql: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+    /** WHERE clause: keyset position, optional time range on `timeCol`, optional lane. */
+    const where = (ridCol: string, laneCol: string, timeCol?: string) => {
+      const parts = [`${ridCol} > ?`];
+      const params: (string | number)[] = [after];
+      if (timeCol && filter.from) (parts.push(`${timeCol} >= ?`), params.push(filter.from));
+      if (timeCol && filter.to) (parts.push(`${timeCol} < ?`), params.push(filter.to));
+      if (filter.laneId) (parts.push(`${laneCol} = ?`), params.push(filter.laneId));
+      return { sql: `WHERE ${parts.join(' AND ')} ORDER BY ${ridCol} LIMIT ?`, params: [...params, limit] };
     };
 
     if (dataset === 'groups') {
-      return (this.db.prepare('SELECT * FROM groups ORDER BY created_at').all() as Row[]).map((r) => ({
+      const raw = this.db
+        .prepare('SELECT rowid AS _rid, * FROM groups WHERE rowid > ? ORDER BY rowid LIMIT ?')
+        .all(after, limit) as Row[];
+      return page(raw, (r) => ({
         id: r.id,
         name: r.name,
         ticket: r.ticket,
@@ -798,16 +874,16 @@ export class Store {
     }
 
     if (dataset === 'lanes') {
-      const rows = this.db
+      const w = where('l.rowid', 'l.id');
+      const raw = this.db
         .prepare(
-          `SELECT l.*, g.name AS group_name,
+          `SELECT l.rowid AS _rid, l.*, g.name AS group_name,
              (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id) AS escalations_total,
              (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open') AS escalations_open
-           FROM lanes l LEFT JOIN groups g ON g.id = l.group_id
-           ${filter.laneId ? 'WHERE l.id = ?' : ''} ORDER BY l.created_at`,
+           FROM lanes l LEFT JOIN groups g ON g.id = l.group_id ${w.sql}`,
         )
-        .all(...(filter.laneId ? [filter.laneId] : [])) as Row[];
-      return rows.map((r) => ({
+        .all(...w.params) as Row[];
+      return page(raw, (r) => ({
         id: r.id,
         name: r.name,
         group_id: r.group_id,
@@ -821,7 +897,9 @@ export class Store {
         updated_at: r.updated_at,
         status_since: r.status_since,
         blocked_seconds_total: Math.round(
-          (Number(r.blocked_total_ms) + (r.blocked_since ? nowMs - Date.parse(r.blocked_since as string) : 0)) / 1000,
+          (Number(r.blocked_total_ms) +
+            (r.blocked_since && !r.archived_at ? nowMs - Date.parse(r.blocked_since as string) : 0)) /
+            1000,
         ),
         blocked_since: r.blocked_since,
         escalations_total: r.escalations_total,
@@ -832,8 +910,9 @@ export class Store {
     }
 
     if (dataset === 'events') {
-      const { sql, params } = range('at');
-      return (this.db.prepare(`SELECT * FROM lane_events ${sql} ORDER BY id`).all(...params) as Row[]).map((r) => ({
+      const w = where('id', 'lane_id', 'at');
+      const raw = this.db.prepare(`SELECT id AS _rid, * FROM lane_events ${w.sql}`).all(...w.params) as Row[];
+      return page(raw, (r) => ({
         id: r.id,
         lane_id: r.lane_id,
         at: r.at,
@@ -843,30 +922,36 @@ export class Store {
       }));
     }
 
-    const { sql, params } = range('e.created_at');
-    const escalations = this.db
-      .prepare(
-        `SELECT e.*, l.name AS lane_name, l.group_id AS group_id, g.name AS group_name
-         FROM escalations e JOIN lanes l ON l.id = e.lane_id LEFT JOIN groups g ON g.id = l.group_id
-         ${sql.replace('lane_id', 'e.lane_id')} ORDER BY e.created_at, e.rowid`,
-      )
-      .all(...params) as Row[];
-
     if (dataset === 'positions') {
-      return escalations.flatMap((e) =>
-        (JSON.parse(e.positions as string) as Position[]).map((p) => ({
-          escalation_id: e.id,
-          lane_id: e.lane_id,
-          question: e.question,
-          agent: p.agent,
-          stance: p.stance,
-          note: p.note,
-          at: p.at,
-        })),
+      // Filtered by when each position was taken; only the columns needed are read.
+      const w = where('rowid', 'lane_id');
+      const raw = this.db
+        .prepare(`SELECT rowid AS _rid, id, lane_id, question, positions FROM escalations ${w.sql}`)
+        .all(...w.params) as Row[];
+      return page(raw, (e) =>
+        (JSON.parse(e.positions as string) as Position[])
+          .filter((p) => (!filter.from || p.at >= filter.from) && (!filter.to || p.at < filter.to))
+          .map((p) => ({
+            escalation_id: e.id,
+            lane_id: e.lane_id,
+            question: e.question,
+            agent: p.agent,
+            stance: p.stance,
+            note: p.note,
+            at: p.at,
+          })),
       );
     }
 
-    return escalations.map((e) => {
+    const w = where('e.rowid', 'e.lane_id', 'e.created_at');
+    const raw = this.db
+      .prepare(
+        `SELECT e.rowid AS _rid, e.*, l.name AS lane_name, l.group_id AS group_id, g.name AS group_name
+         FROM escalations e JOIN lanes l ON l.id = e.lane_id LEFT JOIN groups g ON g.id = l.group_id ${w.sql}`,
+      )
+      .all(...w.params) as Row[];
+
+    return page(raw, (e) => {
       const positions = JSON.parse(e.positions as string) as Position[];
       const count = (stance: Stance) => positions.filter((p) => p.stance === stance).length;
       const closedAt = e.state === 'acknowledged' ? e.acknowledged_at : e.state === 'withdrawn' ? e.updated_at : null;

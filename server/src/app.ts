@@ -9,7 +9,7 @@ import type { Config } from './config.ts';
 import { log } from './log.ts';
 import { mcpHandler } from './mcp.ts';
 import * as s from './schemas.ts';
-import { datasetCsv, exportZip } from './export.ts';
+import { datasetCsvAsync, datasetRowsAsync, exportZip } from './export.ts';
 import { ConflictError, EXPORT_DATASETS, NotFoundError, type ExportDataset, type Store } from './store.ts';
 import { LANE_STATUSES, type EscalationState, type PublicConfig, type StreamEvent } from './types.ts';
 
@@ -288,9 +288,20 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
     return { from: q.from, to: q.to, laneId: q.lane };
   };
   const stamp = () => new Date().toISOString().slice(0, 10);
+  // Building an export reads everything; one at a time keeps the server responsive.
+  let exporting = false;
+  const oneAtATime = (_req: Request, res: Response, next: NextFunction) => {
+    if (exporting) {
+      res.status(429).set('retry-after', '5').json({ error: 'An export is already running; try again shortly' });
+      return;
+    }
+    exporting = true;
+    res.on('close', () => (exporting = false));
+    next();
+  };
 
-  app.get('/api/export', any, (req, res) => {
-    const body = exportZip(store, exportFilterOf(req), new Date());
+  app.get('/api/export', any, oneAtATime, h(async (req, res) => {
+    const body = await exportZip(store, exportFilterOf(req), new Date());
     res
       .set({
         'content-type': 'application/zip',
@@ -298,9 +309,9 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
         'cache-control': 'no-store',
       })
       .send(body);
-  });
+  }));
 
-  app.get('/api/export/:file', any, (req, res) => {
+  app.get('/api/export/:file', any, oneAtATime, h(async (req, res) => {
     const match = /^([a-z]+)\.(csv|json)$/.exec(String(req.params.file));
     const dataset = match?.[1] as ExportDataset | undefined;
     if (!match || !dataset || !EXPORT_DATASETS.includes(dataset)) {
@@ -309,7 +320,7 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
     const filter = exportFilterOf(req);
     res.set('cache-control', 'no-store');
     if (match[2] === 'json') {
-      res.json(store.exportRows(dataset, filter));
+      res.json(await datasetRowsAsync(store, dataset, filter));
       return;
     }
     res
@@ -317,8 +328,8 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
         'content-type': 'text/csv; charset=utf-8',
         'content-disposition': `attachment; filename="lanesignal-${dataset}-${stamp()}.csv"`,
       })
-      .send(datasetCsv(store, dataset, filter));
-  });
+      .send(await datasetCsvAsync(store, dataset, filter));
+  }));
 
   // ---- push ----
 

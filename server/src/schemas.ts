@@ -88,24 +88,36 @@ export const personInput = z.object({
 
 export const passwordReset = z.object({ email: z.email(), password });
 
-/** A date (2026-10-01, taken as 00:00 UTC) or a full ISO timestamp. */
+/**
+ * A date (2026-10-01, taken as 00:00 UTC) or an ISO timestamp with a zone
+ * (Z or ±hh:mm), so nothing depends on the server's local time zone.
+ */
 const instant = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/, 'use YYYY-MM-DD or an ISO timestamp')
+  .regex(
+    /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/,
+    'use YYYY-MM-DD or an ISO timestamp with a zone, e.g. 2026-10-01T09:00:00Z',
+  )
   .transform((v, ctx) => {
     const ms = Date.parse(v.length === 10 ? `${v}T00:00:00Z` : v);
-    if (Number.isNaN(ms)) {
+    // Reject impossible dates (2026-02-30) instead of letting them roll over.
+    const sameDay = v.length !== 10 || new Date(ms).toISOString().slice(0, 10) === v;
+    if (Number.isNaN(ms) || !sameDay) {
       ctx.addIssue({ code: 'custom', message: 'not a valid date' });
       return z.NEVER;
     }
     return new Date(ms).toISOString();
   });
 
-export const exportFilter = z.object({
-  from: instant.optional(),
-  to: instant.optional(),
-  lane: z.string().max(100).optional(),
-});
+export const exportFilter = z
+  .object({
+    from: instant.optional(),
+    to: instant.optional(),
+    lane: z.string().max(100).optional(),
+  })
+  // Unknown parameters (e.g. a misspelt filter) are errors, not silently ignored.
+  .strict()
+  .refine((f) => !f.from || !f.to || f.from < f.to, { message: '`from` must be before `to`', path: ['from'] });
 
 export const pushRegistration = z.object({
   token: z.string().min(10).max(4096),

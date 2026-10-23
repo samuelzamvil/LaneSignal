@@ -1,5 +1,6 @@
-import { crc32, deflateRawSync } from 'node:zlib';
-import { EXPORT_DATASETS, type ExportDataset, type ExportFilter, type Store } from './store.ts';
+import { promisify } from 'node:util';
+import { crc32, deflateRaw } from 'node:zlib';
+import { EXPORT_COLUMNS, EXPORT_DATASETS, type ExportDataset, type ExportFilter, type Store } from './store.ts';
 
 /**
  * RFC 4180 CSV. Text that a spreadsheet would treat as a formula (= + - @,
@@ -17,35 +18,67 @@ export function toCsv(rows: Record<string, unknown>[], columns?: string[]): stri
   return `${lines.join('\r\n')}\r\n`;
 }
 
-/** Column order for empty exports, so every CSV always has a header row. */
-const columnsFor = (dataset: ExportDataset, rows: Record<string, unknown>[]) =>
-  rows[0] ? Object.keys(rows[0]) : EMPTY_COLUMNS[dataset];
-
-const EMPTY_COLUMNS: Record<ExportDataset, string[]> = {
-  escalations: ['id', 'lane_id', 'lane_name', 'group_id', 'group_name', 'question', 'state', 'created_at', 'decided_at', 'decision'],
-  positions: ['escalation_id', 'lane_id', 'question', 'agent', 'stance', 'note', 'at'],
-  lanes: ['id', 'name', 'group_id', 'group_name', 'status', 'created_at', 'updated_at', 'archived_at'],
-  groups: ['id', 'name', 'ticket', 'created_at', 'updated_at', 'archived_at'],
-  events: ['id', 'lane_id', 'at', 'kind', 'message', 'actor'],
-};
-
 export function datasetCsv(store: Store, dataset: ExportDataset, filter: ExportFilter) {
-  const rows = store.exportRows(dataset, filter);
-  return toCsv(rows, columnsFor(dataset, rows));
+  return toCsv(store.exportRows(dataset, filter), [...EXPORT_COLUMNS[dataset]]);
 }
 
-/** All datasets as CSVs plus a README, zipped. */
-export function exportZip(store: Store, filter: ExportFilter, generatedAt: Date) {
-  const files: { name: string; data: Buffer }[] = EXPORT_DATASETS.map((d) => ({
-    name: `${d}.csv`,
-    data: Buffer.from(datasetCsv(store, d, filter), 'utf8'),
-  }));
+const PAGE = 1000;
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * Walks a dataset in keyset pages, yielding to the event loop between pages so
+ * a large export doesn't stall SSE streams, long-polls and other requests.
+ */
+async function eachPage(
+  store: Store,
+  dataset: ExportDataset,
+  filter: ExportFilter,
+  onRows: (rows: Record<string, unknown>[]) => void,
+) {
+  let after = 0;
+  for (;;) {
+    const { rows, last } = store.exportPage(dataset, filter, after, PAGE);
+    onRows(rows);
+    if (last === null) return;
+    after = last;
+    await yieldToEventLoop();
+  }
+}
+
+/** The dataset as CSV, built page by page. */
+export async function datasetCsvAsync(store: Store, dataset: ExportDataset, filter: ExportFilter) {
+  const columns = [...EXPORT_COLUMNS[dataset]];
+  const parts: string[] = [toCsv([], columns)];
+  await eachPage(store, dataset, filter, (rows) => {
+    if (rows.length) parts.push(toCsv(rows, columns).slice(parts[0].length));
+  });
+  return parts.join('');
+}
+
+/** The dataset as an array, built page by page. */
+export async function datasetRowsAsync(store: Store, dataset: ExportDataset, filter: ExportFilter) {
+  const out: Record<string, unknown>[] = [];
+  await eachPage(store, dataset, filter, (rows) => out.push(...rows));
+  return out;
+}
+
+const deflate = promisify(deflateRaw);
+
+/** All datasets as CSVs plus a README, zipped. Compression runs off the event loop. */
+export async function exportZip(store: Store, filter: ExportFilter, generatedAt: Date) {
+  const files: { name: string; data: Buffer }[] = [];
+  for (const d of EXPORT_DATASETS) {
+    files.push({ name: `${d}.csv`, data: Buffer.from(await datasetCsvAsync(store, d, filter), 'utf8') });
+  }
   files.push({
     name: 'README.txt',
     data: Buffer.from(
       [
         `LaneSignal export, generated ${generatedAt.toISOString()}`,
-        filter.from || filter.to ? `Escalations, positions and events from ${filter.from ?? 'the start'} to ${filter.to ?? 'now'}.` : 'Everything, including archived lanes and groups.',
+        filter.from || filter.to
+          ? `Escalations, positions and events from ${filter.from ?? 'the start'} to ${filter.to ?? 'now'} (lanes and groups complete).`
+          : 'All escalations, positions and events.',
+        filter.laneId ? `Only lane "${filter.laneId}" (groups complete).` : 'Includes archived lanes and groups.',
         '',
         'escalations.csv  one row per escalation, with decision timings and position counts',
         'positions.csv    one row per agent position on an escalation',
@@ -59,11 +92,14 @@ export function exportZip(store: Store, filter: ExportFilter, generatedAt: Date)
       'utf8',
     ),
   });
-  return zip(files, generatedAt);
+  return zip(
+    await Promise.all(files.map(async (f) => ({ ...f, compressed: await deflate(f.data) }))),
+    generatedAt,
+  );
 }
 
 /** Minimal ZIP writer (deflate), enough for a handful of text files. */
-function zip(files: { name: string; data: Buffer }[], date: Date): Buffer {
+function zip(files: { name: string; data: Buffer; compressed: Buffer }[], date: Date): Buffer {
   const dosTime = (date.getUTCHours() << 11) | (date.getUTCMinutes() << 5) | Math.floor(date.getUTCSeconds() / 2);
   const dosDate = ((date.getUTCFullYear() - 1980) << 9) | ((date.getUTCMonth() + 1) << 5) | date.getUTCDate();
   const locals: Buffer[] = [];
@@ -71,7 +107,7 @@ function zip(files: { name: string; data: Buffer }[], date: Date): Buffer {
   let offset = 0;
   for (const f of files) {
     const name = Buffer.from(f.name, 'utf8');
-    const compressed = deflateRawSync(f.data);
+    const compressed = f.compressed;
     const crc = crc32(f.data);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
