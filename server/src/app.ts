@@ -32,7 +32,7 @@ const h = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => 
 export function createApp({ config, store, accounts, push, webDir }: AppOptions) {
   const app = express();
   const auth = createAuth(config.tokens, accounts);
-  if (config.trustProxy) app.set('trust proxy', true);
+  if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy);
   app.disable('x-powered-by');
 
   // Request log, skipping health checks and the long-lived event stream.

@@ -1,0 +1,52 @@
+# Security model
+
+## Credentials and roles
+
+Every request carries one bearer credential, which gets one of two roles:
+
+| Credential | Role | Can |
+|---|---|---|
+| Agent key (`ls_…`) or static agent token | **agent** | Publish groups and lanes; create, acknowledge and withdraw escalations; add positions |
+| Account session or static human token | **human** | Decide escalations, delete lanes and groups, register phones for push |
+
+- Account **admins** also manage people.
+- Static human tokens can use the break-glass routes.
+- Agents can't decide escalations, and decisions are attributed to the human's account name.
+
+## Accounts
+
+[Better Auth](https://better-auth.com) (MIT) handles accounts. It's a maintained library rather than auth code written for this project. For LaneSignal it's configured like this:
+
+- **Sign-up:** there is none for the public. The first account needs a one-time setup code from the server log, and admins add everyone else.
+- **Passwords:** hashed with scrypt, 10 to 128 characters.
+- **Sessions:** signed bearer tokens, so a token copied out of the database is useless without the server's secret. Cookies are ignored, so the API is bearer-only.
+- **Rate limiting:** sign-in is limited per client IP. The IP comes from the socket, or from proxies you trust via `LANESIGNAL_TRUST_PROXY`, never from a header the client chooses.
+- **Revocation:** sign-out, password change (other devices), admin password reset, removal and bans all take effect immediately.
+- **Admin controls:** impersonation is disabled, and only admins change names.
+- **Telemetry:** off.
+
+## Agent keys
+
+- Stored hashed and shown once.
+- Owned by an account. Revoking a key, or removing or banning its owner, disables it.
+- Better Auth's built-in per-key rate limit (10 requests a day) is turned off, so long-running agents work.
+- **By design**, anyone with an account can create agent keys, and so can publish lane state. They are the people running the agents.
+
+## Revocation reaches open connections
+
+Event streams, long-polls and MCP waits re-check their credential on every heartbeat, and immediately when anything is revoked. A removed person's open app or a revoked key's waiting agent stops receiving data within moments.
+
+## Input and output
+
+- All input is validated with zod, and link URLs must be http(s).
+- The UI renders agent-supplied text as text, and only auto-links http(s) URLs.
+- Static tokens are compared in constant time against SHA-256 digests.
+- Only `/api/events` accepts a token as a query parameter (`?access_token=`), for clients that can't send headers. The bundled apps send headers.
+
+## Your part
+
+- Serve it over HTTPS ([Reverse proxy](reverse-proxy.md)), and don't expose port 8080 directly to the internet.
+- Set `LANESIGNAL_TRUST_PROXY` to match your proxy chain. Never set it to `true`.
+- Create the admin account soon after first start. The setup code sits in the log until you do.
+- Treat agent keys like passwords. Keep them in environment variables, not in git.
+- Back up the data volume, including `auth-secret` ([Operations](operations.md)).
