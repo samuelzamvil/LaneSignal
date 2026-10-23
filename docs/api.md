@@ -57,7 +57,7 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `GET /api/lanes` | any | |
 | `GET /api/lanes/:id` | any | Lane, its recent escalations and the last 100 activity entries |
 | `PUT /api/lanes/:id` | agent | Create or update `{name?, group?, status?, ticket?, activity?, links?}` |
-| `DELETE /api/lanes/:id` | human | Archives the lane and withdraws its unresolved escalations. Its history stays for export, and republishing restores it |
+| `DELETE /api/lanes/:id` | human | Archives the lane and withdraws its unanswered escalations; decided ones keep their answer. Its history stays for export, and republishing restores it |
 | `GET /api/escalations?state=open,decided&lane=<id>` | any | Defaults to unresolved (open and decided) |
 | `POST /api/escalations` | agent | See the [fields](concepts.md#escalations). `blocking: false` for FYI questions |
 | `GET /api/escalations/:id?wait=<s>` | any | `wait` (up to 300) holds the request until it's no longer open |
@@ -65,7 +65,7 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `POST /api/escalations/:id/decide` | human | `{decision, note?}` |
 | `POST /api/escalations/:id/ack` | agent | `{note?}` |
 | `POST /api/escalations/:id/withdraw` | any | `{note?}` |
-| `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=` filter. See [Export](export.md) |
+| `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=` filter. One export at a time (`429` while another runs). See [Export](export.md) |
 | `GET /api/export/<dataset>.csv` / `.json` | any | `escalations`, `positions`, `lanes`, `groups` or `events`. Same filters |
 | `POST /api/push/register`, `/unregister` | human | Used by the Android app |
 | `POST /api/admin/people` | static human token | Break-glass: add a person `{email, name, password, admin?}` |
