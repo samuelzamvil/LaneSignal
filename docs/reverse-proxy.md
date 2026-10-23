@@ -7,14 +7,19 @@ LaneSignal speaks plain HTTP on port 8080. Put HTTPS in front of it whenever it'
 1. **`LANESIGNAL_PUBLIC_URL`** is the URL people use, such as `https://lanesignal.example.com`. Sign-in trusts this origin, and notification links point at it.
 2. **`LANESIGNAL_TRUST_PROXY`** tells LaneSignal how far to trust `X-Forwarded-For` when it works out the client's IP. Sign-in rate limiting is per client IP, so this matters.
 
+   **Rule:** trust a proxy only when the proxy is the *only* way to reach LaneSignal. If clients can still reach the published port directly, any trust setting lets them write their own `X-Forwarded-For` and pick their IP.
+
    | Setup | Value |
    |---|---|
-   | One reverse proxy in front (Caddy, nginx, Traefik, NPM, `tailscale serve`) | `1` |
-   | Two proxies, e.g. Cloudflare → Caddy | `2` |
-   | Proxies only on known addresses | `loopback` or `10.0.0.0/8, 172.16.0.0/12` |
-   | Clients connect straight to LaneSignal | `false` (default) |
+   | Clients connect straight to the port (the default Dockge stack) | `false` (default) |
+   | One proxy on the host (Caddy, nginx, `tailscale serve`), with the port bound to `127.0.0.1` | `1` |
+   | One containerised proxy (Nginx Proxy Manager, Traefik, Caddy) on a shared Docker network, with no `ports:` | `1` |
+   | Two proxies, e.g. Cloudflare → Caddy, with Caddy set to trust Cloudflare's ranges (`trusted_proxies`) so it passes the client IP on | `2` |
+   | Only specific proxy addresses, e.g. the proxy container's network | `172.18.0.0/16` (an address or subnet list) |
 
-   Never use `true`. It trusts any `X-Forwarded-For` a client sends, so anyone can spoof their IP and get around the sign-in limit.
+   Never use `true`. It trusts any `X-Forwarded-For` a client sends, so the server logs a warning if you set it. An invalid value stops startup with a message.
+
+   With the wrong setting the limit either stops working, or everyone shares the proxy's IP and five bad attempts lock everyone out for a minute.
 3. **Long requests:**
    - `/api/events` is a long-lived Server-Sent Events stream.
    - Agents long-poll for decisions for up to 300s, and nothing is sent while they wait.
@@ -55,7 +60,7 @@ server {
 
 ## Nginx Proxy Manager (common with Dockge)
 
-1. Add a proxy host for your domain that forwards to `lanesignal:8080`, if both are on a shared Docker network (see the commented `networks` block in the stack), or to `<host>:8080`.
+1. Put LaneSignal on NPM's Docker network: in the stack, remove `ports:` and uncomment the `networks` lines, using NPM's network name. Then add a proxy host for your domain that forwards to `lanesignal:8080`. NPM runs in a container, so it can't reach a port bound to the host's `127.0.0.1`. If you forward to `<host>:8080` instead, the port stays open on your LAN; in that case keep `LANESIGNAL_TRUST_PROXY=false`.
 2. Enable *Websockets Support*, which also helps streaming, and request an SSL certificate.
 3. Under *Advanced*, add:
 
@@ -68,13 +73,13 @@ server {
 
 ## Tailscale
 
-If only you and your devices need it, `tailscale serve` gives HTTPS on your tailnet with no open ports:
+If only you and your devices need it, `tailscale serve` gives HTTPS on your tailnet. In the stack, bind the port to localhost (`"127.0.0.1:8080:8080"`) so nothing else on the LAN can reach it, then:
 
 ```bash
 tailscale serve --bg --https=443 http://127.0.0.1:8080
 ```
 
-Then set `LANESIGNAL_PUBLIC_URL=https://<machine>.<tailnet>.ts.net` and `LANESIGNAL_TRUST_PROXY=1`. Phones on the tailnet can use the Android app against that URL.
+Set `LANESIGNAL_PUBLIC_URL=https://<machine>.<tailnet>.ts.net` and `LANESIGNAL_TRUST_PROXY=1`. Phones on the tailnet can use the Android app against that URL.
 
 ## Checking it
 

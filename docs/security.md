@@ -20,7 +20,7 @@ Every request carries one bearer credential, which gets one of two roles:
 - **Sign-up:** there is none for the public. The first account needs a one-time setup code from the server log, and admins add everyone else.
 - **Passwords:** hashed with scrypt, 10 to 128 characters.
 - **Sessions:** signed bearer tokens, so a token copied out of the database is useless without the server's secret. Cookies are ignored, so the API is bearer-only.
-- **Rate limiting:** sign-in is limited per client IP. The IP comes from the socket, or from proxies you trust via `LANESIGNAL_TRUST_PROXY`, never from a header the client chooses.
+- **Rate limiting:** sign-in is limited per client IP. The IP comes from the socket, or from `X-Forwarded-For` as far as `LANESIGNAL_TRUST_PROXY` allows. That's only trustworthy when your proxy is the only way in ([Reverse proxy](reverse-proxy.md)). Better Auth's own client-IP headers are never read from the request.
 - **Revocation:** sign-out, password change (other devices), admin password reset, removal and bans all take effect immediately.
 - **Admin controls:** impersonation is disabled, and only admins change names.
 - **Telemetry:** off.
@@ -34,7 +34,7 @@ Every request carries one bearer credential, which gets one of two roles:
 
 ## Revocation reaches open connections
 
-Event streams, long-polls and MCP waits re-check their credential on every heartbeat, and immediately when anything is revoked. A removed person's open app or a revoked key's waiting agent stops receiving data within moments.
+Event streams, long-polls and MCP waits stop as soon as their credential is revoked: sign-out, key revocation, password change or reset, ban, or removal. Event streams also re-check on every 25s heartbeat. A removed person's open app stops receiving data at once, and a revoked key's waiting agent gets an error straight away.
 
 ## Input and output
 
@@ -46,7 +46,7 @@ Event streams, long-polls and MCP waits re-check their credential on every heart
 ## Your part
 
 - Serve it over HTTPS ([Reverse proxy](reverse-proxy.md)), and don't expose port 8080 directly to the internet.
-- Set `LANESIGNAL_TRUST_PROXY` to match your proxy chain. Never set it to `true`.
+- Set `LANESIGNAL_TRUST_PROXY` to match your proxy chain, and only trust a proxy that is the sole way in. Never set it to `true`.
 - Create the admin account soon after first start. The setup code sits in the log until you do.
 - Treat agent keys like passwords. Keep them in environment variables, not in git.
 - Back up the data volume, including `auth-secret` ([Operations](operations.md)).

@@ -4,7 +4,7 @@ import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
-import { createAuth, principalOf, stillValidOf } from './auth.ts';
+import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import type { Config } from './config.ts';
 import { log } from './log.ts';
 import { mcpHandler } from './mcp.ts';
@@ -236,9 +236,19 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
       const wait = Math.min(Math.max(Number(req.query.wait ?? 0) || 0, 0), 300);
       const abort = new AbortController();
       res.on('close', () => abort.abort());
-      const escalation = await store.waitForDecision(String(req.params.id), wait * 1000, abort.signal);
-      // The credential may have been revoked while we waited.
-      if (wait > 0 && !(await stillValidOf(res)())) {
+      // A revoked credential ends the wait at once instead of after `wait` seconds.
+      let revoked = false;
+      const unwatch = watchRevocationOf(res)(() => {
+        revoked = true;
+        abort.abort();
+      });
+      let escalation;
+      try {
+        escalation = await store.waitForDecision(String(req.params.id), wait * 1000, abort.signal);
+      } finally {
+        unwatch();
+      }
+      if (revoked || (wait > 0 && !(await stillValidOf(res)()))) {
         res.status(401).json({ error: 'unauthorized' });
         return;
       }
@@ -298,21 +308,16 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
     // Close the stream as soon as its credential stops being valid: checked on every heartbeat
     // and immediately whenever sessions or keys are revoked.
     const stillValid = stillValidOf(res);
-    const recheck = () => {
-      void stillValid().then((ok) => {
-        if (!ok) res.end();
-      });
-    };
     const heartbeat = setInterval(() => {
       res.write(': ping\n\n');
-      recheck();
+      void stillValid().then((ok) => ok || res.end());
     }, 25_000);
     store.events.on('change', send);
-    accounts.revocations.on('revoked', recheck);
+    const unwatch = watchRevocationOf(res)(() => res.end());
     req.on('close', () => {
       clearInterval(heartbeat);
       store.events.off('change', send);
-      accounts.revocations.off('revoked', recheck);
+      unwatch();
     });
   });
 

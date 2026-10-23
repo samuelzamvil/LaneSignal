@@ -17,7 +17,7 @@ If the GHCR package is private, run `docker login ghcr.io` first (see [Install w
 
 ## Building from source
 
-The repository's [`docker-compose.yml`](../docker-compose.yml) builds the image locally. It binds to `127.0.0.1` only, expecting a reverse proxy in front.
+The repository's [`docker-compose.yml`](../docker-compose.yml) builds the image locally. It binds to `127.0.0.1` only, expecting a reverse proxy on the host, so `LANESIGNAL_TRUST_PROXY` defaults to `1`. Set it to `false` in `.env` if you expose the port another way.
 
 ```bash
 git clone https://github.com/samuelzamvil/LaneSignal && cd LaneSignal
@@ -41,7 +41,7 @@ You need Node.js 22.13 or later (`node:sqlite` is built in):
 
 ```bash
 npm ci && npm run build
-LANESIGNAL_DATA_DIR=./data PORT=8080 npm start -w server
+LANESIGNAL_DATA_DIR=$PWD/data PORT=8080 npm start -w server     # data/ is git-ignored
 ```
 
 The server serves the compiled web app from `web/dist`.
