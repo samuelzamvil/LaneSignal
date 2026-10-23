@@ -20,6 +20,24 @@ export class NotFoundError extends Error {}
 const MAX_POSITIONS = 20;
 export class ConflictError extends Error {}
 
+/** Lane letters: 0 -> A, 25 -> Z, 26 -> AA, like spreadsheet columns. */
+export function letterOf(index: number): string {
+  let n = index + 1;
+  let out = '';
+  while (n > 0) {
+    n -= 1;
+    out = String.fromCharCode(65 + (n % 26)) + out;
+    n = Math.floor(n / 26);
+  }
+  return out;
+}
+
+function indexOfLetter(letters: string): number {
+  let n = 0;
+  for (const c of letters.toUpperCase()) n = n * 26 + (c.charCodeAt(0) - 64);
+  return n - 1;
+}
+
 /** How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker. */
 const WAIT_GRACE_MS = 30_000;
 
@@ -49,7 +67,7 @@ export interface WaitResult {
    */
   closed: Escalation[];
   /** Still waiting on a human. */
-  open: { id: string; ref: number; laneId: string; question: string }[];
+  open: { id: string; ref: string; laneId: string; question: string }[];
   /** Server time of this result; pass it as `since` on the next wait. */
   checkedAt: string;
 }
@@ -122,7 +140,7 @@ export interface StoreOptions {
   waitGraceMs?: number;
 }
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 type Row = Record<string, unknown>;
 
@@ -195,7 +213,7 @@ export class Store {
         `);
       }
       if (version < 5) {
-        // Short escalation numbers (#42) that humans and agents can say to each other, and
+        // A global escalation number (now only an internal ordering key; v6 adds codes like A12), and
         // the account a push token belongs to, so removed people stop getting notifications.
         this.db.exec(`
           ALTER TABLE escalations ADD COLUMN ref INTEGER;
@@ -210,10 +228,52 @@ export class Store {
           UPDATE push_tokens SET legacy = 1;
         `);
       }
+      if (version < 6) this.migrateV6();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
     });
+  }
+
+  /**
+   * Escalation codes like "A12": a letter per active lane, numbered per letter.
+   * Lanes that are active or still have unresolved escalations get letters in
+   * creation order; earlier escalations of finished lanes get letters past
+   * those, so every code stays unique.
+   */
+  private migrateV6() {
+    this.db.exec(`
+      ALTER TABLE lanes ADD COLUMN letter_index INTEGER;
+      CREATE UNIQUE INDEX lanes_letter ON lanes(letter_index) WHERE letter_index IS NOT NULL;
+      ALTER TABLE escalations ADD COLUMN letter_index INTEGER;
+      ALTER TABLE escalations ADD COLUMN seq INTEGER;
+      CREATE UNIQUE INDEX escalations_code ON escalations(letter_index, seq) WHERE letter_index IS NOT NULL;
+    `);
+    const lanes = this.db
+      .prepare(
+        `SELECT l.id, (l.archived_at IS NULL AND l.status <> 'completed') AS active,
+           (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state IN ('open', 'decided')) AS unresolved
+         FROM lanes l ORDER BY l.rowid`,
+      )
+      .all() as Row[];
+    const letters = new Map<string, number>();
+    let next = 0;
+    for (const l of lanes) {
+      if (Number(l.active) || Number(l.unresolved)) {
+        letters.set(l.id as string, next);
+        this.db.prepare('UPDATE lanes SET letter_index = ? WHERE id = ?').run(next++, l.id as string);
+      }
+    }
+    const seqs = new Map<number, number>();
+    const rows = this.db.prepare('SELECT rowid AS rid, lane_id FROM escalations ORDER BY rowid').all() as Row[];
+    for (const e of rows) {
+      const laneId = e.lane_id as string;
+      if (!letters.has(laneId)) letters.set(laneId, next++);
+      const index = letters.get(laneId)!;
+      const seq = (seqs.get(index) ?? 0) + 1;
+      seqs.set(index, seq);
+      this.db.prepare('UPDATE escalations SET letter_index = ?, seq = ? WHERE rowid = ?').run(index, seq, Number(e.rid));
+    }
   }
 
   private hasColumn(table: string, column: string) {
@@ -402,6 +462,7 @@ export class Store {
     const ticket = (r.ticket as string | null) ?? null;
     return {
       id: r.id as string,
+      letter: r.letter_index == null ? null : letterOf(Number(r.letter_index)),
       name: r.name as string,
       // A lane in an archived group shows as ungrouped; the raw group_id is kept for exports.
       group: r.group_archived ? null : ((r.group_id as string | null) ?? null),
@@ -453,6 +514,36 @@ export class Store {
     if (res.changes > 0) this.addEvent(id, at, 'status', 'Lane restored', actor);
   }
 
+  /**
+   * Must run inside a transaction. A lane holds a letter while it's active
+   * (not completed or removed) or still has unresolved escalations; then the
+   * letter is freed for the next lane. `hold` assigns one regardless, for a
+   * lane that's about to get an escalation.
+   */
+  private syncLetter(laneId: string, hold = false) {
+    const r = this.db
+      .prepare(
+        `SELECT letter_index, (archived_at IS NULL AND status <> 'completed') AS active,
+           (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = lanes.id AND e.state IN ('open', 'decided')) AS unresolved
+         FROM lanes WHERE id = ?`,
+      )
+      .get(laneId) as Row | undefined;
+    if (!r) return;
+    const needs = hold || Number(r.active) === 1 || Number(r.unresolved) > 0;
+    if (needs && r.letter_index == null) {
+      const used = new Set(
+        (this.db.prepare('SELECT letter_index FROM lanes WHERE letter_index IS NOT NULL').all() as Row[]).map((x) =>
+          Number(x.letter_index),
+        ),
+      );
+      let index = 0;
+      while (used.has(index)) index++;
+      this.db.prepare('UPDATE lanes SET letter_index = ? WHERE id = ?').run(index, laneId);
+    } else if (!needs && r.letter_index != null) {
+      this.db.prepare('UPDATE lanes SET letter_index = NULL WHERE id = ?').run(laneId);
+    }
+  }
+
   private requireLane(id: string): Lane {
     const lane = this.getLane(id);
     if (!lane) throw new NotFoundError(`Lane "${id}" not found`);
@@ -499,6 +590,7 @@ export class Store {
       } else {
         this.applyLaneUpdate(existing, patch, actor, at);
       }
+      this.syncLetter(id);
       return this.requireLane(id);
     });
     if (createdGroup) this.emit({ type: 'group', group: createdGroup });
@@ -574,6 +666,7 @@ export class Store {
       if (lane.status === 'blocked_human') this.applyLaneUpdate(lane, { status: 'idle' }, actor, at);
       this.db.prepare('UPDATE lanes SET archived_at = ?, updated_at = ? WHERE id = ?').run(at, at, id);
       this.addEvent(id, at, 'status', 'Lane removed', actor);
+      this.syncLetter(id);
       return pending.map((eid) => this.requireEscalation(eid));
     });
     for (const escalation of withdrawn) this.emit({ type: 'escalation', escalation });
@@ -615,7 +708,7 @@ export class Store {
   private escalationFromRow(r: Row): Escalation {
     return {
       id: r.id as string,
-      ref: Number(r.ref),
+      ref: r.letter_index == null ? String(r.ref) : `${letterOf(Number(r.letter_index))}${Number(r.seq)}`,
       laneId: r.lane_id as string,
       question: r.question as string,
       context: (r.context as string | null) ?? null,
@@ -663,13 +756,21 @@ export class Store {
       .map((r) => this.escalationFromRow(r));
   }
 
-  /** By id, or by its short number: "42" or "#42". */
+  /**
+   * By id, or by its code: "A12" (case-insensitive, an optional leading # is ignored).
+   * Plain numbers ("42", "#42") are the global numbers used before lane codes, still accepted.
+   */
   getEscalation(id: string): Escalation | null {
-    const ref = /^#?(\d{1,15})$/.exec(id.trim());
+    const code = /^#?([A-Za-z]{1,4})(\d{1,9})$/.exec(id.trim());
+    const legacy = /^#?(\d{1,15})$/.exec(id.trim());
     const r = (
-      ref
-        ? this.db.prepare('SELECT * FROM escalations WHERE ref = ?').get(Number(ref[1]))
-        : this.db.prepare('SELECT * FROM escalations WHERE id = ?').get(id)
+      code
+        ? this.db
+            .prepare('SELECT * FROM escalations WHERE letter_index = ? AND seq = ?')
+            .get(indexOfLetter(code[1]), Number(code[2]))
+        : legacy
+          ? this.db.prepare('SELECT * FROM escalations WHERE ref = ?').get(Number(legacy[1]))
+          : this.db.prepare('SELECT * FROM escalations WHERE id = ?').get(id)
     ) as Row | undefined;
     return r ? this.escalationFromRow(r) : null;
   }
@@ -705,15 +806,23 @@ export class Store {
       }
       const id = randomUUID();
       const ref = Number((this.db.prepare('SELECT COALESCE(MAX(ref), 0) + 1 AS n FROM escalations').get() as Row).n);
+      this.syncLetter(input.laneId, true);
+      const letterIndex = Number((this.db.prepare('SELECT letter_index FROM lanes WHERE id = ?').get(input.laneId) as Row).letter_index);
+      const seq = Number(
+        (this.db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM escalations WHERE letter_index = ?').get(letterIndex) as Row).n,
+      );
+      const code = `${letterOf(letterIndex)}${seq}`;
       this.db
         .prepare(
-          `INSERT INTO escalations (id, ref, lane_id, question, context, recommendation, recommended_option, cost,
+          `INSERT INTO escalations (id, ref, letter_index, seq, lane_id, question, context, recommendation, recommended_option, cost,
              alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
         )
         .run(
           id,
           ref,
+          letterIndex,
+          seq,
           input.laneId,
           input.question,
           input.context ?? null,
@@ -732,7 +841,7 @@ export class Store {
           at,
           at,
         );
-      this.addEvent(input.laneId, at, 'escalation', `Escalated #${ref}: ${input.question}`, actor);
+      this.addEvent(input.laneId, at, 'escalation', `Escalated ${code}: ${input.question}`, actor);
       const blocks = input.blocking !== false && lane.status !== 'blocked_human';
       if (blocks) {
         this.applyLaneUpdate(lane, { status: 'blocked_human' }, actor, at);
@@ -811,7 +920,7 @@ export class Store {
               `UPDATE escalations SET state = 'acknowledged', acknowledged_at = ?, resolution = COALESCE(?, resolution), updated_at = ? WHERE id = ?`,
             )
             .run(at, note, at, eid);
-          return `Decision #${current.ref} acknowledged`;
+          return `Decision ${current.ref} acknowledged`;
         },
         actor,
         false,
@@ -866,11 +975,13 @@ export class Store {
     const { escalation, lane, unblocked } = this.tx(() => {
       const current = this.requireEscalation(id);
       if (!from.includes(current.state)) {
-        throw new ConflictError(`Escalation #${current.ref} is ${current.state}; expected ${from.join(' or ')}`);
+        throw new ConflictError(`Escalation ${current.ref} is ${current.state}; expected ${from.join(' or ')}`);
       }
       const at = this.now().toISOString();
       const message = apply(at, current.id);
       this.addEvent(current.laneId, at, 'escalation', message, actor);
+      // A finished lane gives its letter back once nothing is left for anyone to answer or pick up.
+      this.syncLetter(current.laneId);
       const found = this.laneIncludingArchived(current.laneId);
       if (!found) throw new NotFoundError(`Lane "${current.laneId}" not found`);
       const { lane, archived } = found;
@@ -895,7 +1006,7 @@ export class Store {
   addPosition(id: string, position: { agent: string; stance: Stance; note?: string | null }, actor: string): Escalation {
     const escalation = this.tx(() => {
       const current = this.requireEscalation(id);
-      if (current.state !== 'open') throw new ConflictError(`Escalation #${current.ref} is ${current.state}; positions close once decided`);
+      if (current.state !== 'open') throw new ConflictError(`Escalation ${current.ref} is ${current.state}; positions close once decided`);
       const at = this.now().toISOString();
       const positions = current.positions.filter((p) => p.agent !== position.agent);
       if (positions.length >= MAX_POSITIONS) throw new ConflictError(`At most ${MAX_POSITIONS} agents can take a position`);
@@ -1008,9 +1119,12 @@ export class Store {
         for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
       }
     }
-    const all = [...byId.values()].sort((a, b) => a.ref - b.ref);
+    // Creation order; the internal global number breaks ties within a millisecond.
+    const seqOf = (e: Escalation) => Number((this.db.prepare('SELECT ref FROM escalations WHERE id = ?').get(e.id) as Row).ref);
+    const byAge = (a: Escalation, b: Escalation) => a.createdAt.localeCompare(b.createdAt) || seqOf(a) - seqOf(b);
+    const all = [...byId.values()].sort(byAge);
     const decided = all.filter((e) => e.state === 'decided');
-    const closed = [...closedById.values()].sort((a, b) => a.ref - b.ref);
+    const closed = [...closedById.values()].sort(byAge);
     const open = all
       .filter((e) => e.state === 'open')
       .map((e) => ({ id: e.id, ref: e.ref, laneId: e.laneId, question: e.question }));
@@ -1179,14 +1293,14 @@ export class Store {
       // Filtered by when each position was taken; only the columns needed are read.
       const w = where('rowid', 'lane_id');
       const raw = this.db
-        .prepare(`SELECT rowid AS _rid, id, ref, lane_id, question, positions FROM escalations ${w.sql}`)
+        .prepare(`SELECT rowid AS _rid, id, ref, letter_index, seq, lane_id, question, positions FROM escalations ${w.sql}`)
         .all(...w.params) as Row[];
       return page(raw, (e) =>
         (JSON.parse(e.positions as string) as Position[])
           .filter((p) => (!filter.from || p.at >= filter.from) && (!filter.to || p.at < filter.to))
           .map((p) => ({
             escalation_id: e.id,
-            escalation_ref: e.ref,
+            escalation_ref: this.codeOf(e),
             lane_id: e.lane_id,
             question: e.question,
             agent: p.agent,
@@ -1211,7 +1325,7 @@ export class Store {
       const closedAt = e.state === 'acknowledged' ? e.acknowledged_at : e.state === 'withdrawn' ? e.updated_at : null;
       return {
         id: e.id,
-        ref: e.ref,
+        ref: this.codeOf(e),
         lane_id: e.lane_id,
         lane_name: e.lane_name,
         group_id: e.group_id,
@@ -1247,6 +1361,10 @@ export class Store {
         links: e.links,
       };
     });
+  }
+
+  private codeOf(r: Row) {
+    return r.letter_index == null ? String(r.ref) : `${letterOf(Number(r.letter_index))}${Number(r.seq)}`;
   }
 
   // ---- push tokens -------------------------------------------------------

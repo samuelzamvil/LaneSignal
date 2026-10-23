@@ -131,7 +131,7 @@ export const pushRegistration = z.object({
   platform: z.enum(['android', 'ios', 'web']).default('android'),
 });
 
-/** Escalation ids or short numbers ("42" or "#42"). */
+/** Escalation ids or codes ("A12"). */
 const idList = z.array(z.string().min(1).max(100)).max(100);
 
 /** Longest single wait. The server sends keepalive bytes while it waits, so proxies don't cut it off. */
