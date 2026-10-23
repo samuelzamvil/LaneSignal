@@ -159,10 +159,41 @@ export interface Principal {
   admin?: boolean;
 }
 
+export type RequirementStatus = 'active' | 'superseded' | 'retired';
+
+/**
+ * A product decision made by the owner, kept so it can be found later without
+ * digging through tickets. Agents record them; the decision is always a human's.
+ */
+export interface Requirement {
+  /** "R14": global, never reused. */
+  id: string;
+  /** Group (train/epic) it belongs to; null for product-wide requirements. */
+  group: string | null;
+  /** One normative statement, e.g. "Payout jobs retry at most 5 times." */
+  requirement: string;
+  /** Why, and where the decision was made. */
+  justification: string;
+  /** 1-3 specific kebab-case tags naming a capability. */
+  tags: string[];
+  status: RequirementStatus;
+  /** Set when superseded: the requirement that replaced this one. */
+  supersededBy: string | null;
+  /** The person who made the decision. */
+  decidedBy: string;
+  /** Code of the escalation the decision came from, if any (e.g. "A12"). */
+  sourceEscalation: string | null;
+  /** Who recorded it (agent key or person). */
+  recordedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type StreamEvent =
   | { type: 'group'; group: Group }
   | { type: 'group_deleted'; id: string }
   /** `statusChanged` is set when this event is the lane's status transition (drives notifications). */
   | { type: 'lane'; lane: Lane; statusChanged?: boolean }
   | { type: 'lane_deleted'; id: string }
-  | { type: 'escalation'; escalation: Escalation };
+  | { type: 'escalation'; escalation: Escalation }
+  | { type: 'requirement'; requirement: Requirement };

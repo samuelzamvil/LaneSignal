@@ -17,11 +17,12 @@ import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { useLiveData, useNow } from './live.ts';
 import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
+import { RequirementsPane } from './requirements.tsx';
 import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection } from './settings.tsx';
 
 // ---- routing (hash based, so it works from file-less Capacitor URLs and push deep links) ----
 
-type View = 'inbox' | 'lanes' | 'settings';
+type View = 'inbox' | 'lanes' | 'reqs' | 'settings';
 interface Route {
   view: View;
   laneId?: string;
@@ -32,7 +33,7 @@ function parseRoute(hash: string): Route {
   const [, a, b] = hash.replace(/^#/, '').split('/');
   if (a === 'lane' && b) return { view: 'lanes', laneId: decodeURIComponent(b) };
   if (a === 'esc' && b) return { view: 'inbox', escId: b };
-  if (a === 'lanes' || a === 'settings') return { view: a };
+  if (a === 'lanes' || a === 'reqs' || a === 'settings') return { view: a };
   return { view: 'inbox' };
 }
 
@@ -480,6 +481,14 @@ function Dashboard({
         <a href="#/" className="brand">
           <img src="/icon.svg" alt="" width={24} height={24} /> {config.name}
         </a>
+        <nav className="topnav" aria-label="Views">
+          <a href="#/lanes" className={route.view === 'lanes' || route.view === 'inbox' ? 'on' : ''}>
+            Lanes
+          </a>
+          <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
+            Requirements
+          </a>
+        </nav>
         <span className={`link-dot ${live.link}`} title={live.link} aria-label={`connection ${live.link}`} />
         <a href="#/settings" className="settings-link" aria-label="Settings">
           ⚙
@@ -492,7 +501,19 @@ function Dashboard({
       )}
       <main className="panes">
         {inbox}
-        {route.view === 'settings' ? settings : lanePane}
+        {route.view === 'settings' ? (
+          settings
+        ) : route.view === 'reqs' ? (
+          <RequirementsPane
+            client={client}
+            groups={live.groups}
+            groupLabel={config.groupLabel}
+            canEdit={me?.role === 'human'}
+            version={live.requirementsVersion}
+          />
+        ) : (
+          lanePane
+        )}
       </main>
       <nav className="tabbar">
         <a href="#/" className={route.view === 'inbox' ? 'on' : ''}>
@@ -501,6 +522,9 @@ function Dashboard({
         </a>
         <a href="#/lanes" className={route.view === 'lanes' ? 'on' : ''}>
           <span className="icon">☰</span>Lanes
+        </a>
+        <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
+          <span className="icon">§</span>Requirements
         </a>
         <a href="#/settings" className={route.view === 'settings' ? 'on' : ''}>
           <span className="icon">⚙</span>Settings

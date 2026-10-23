@@ -74,4 +74,12 @@ done
 
 Set `LANESIGNAL_SINCE` to the last result's `checkedAt` when you start the loop again. Each request waits up to 24 hours. The loop retries through network errors and server restarts, gives up after about 10 minutes of the server being unreachable, stops with an error if the key or group is rejected, and prints the same JSON as `wait_for_decisions`. Then handle the decisions as in step 3.
 
+### Product requirements (optional: keep, change or drop this part)
+
+The owner's product decisions live in LaneSignal's [requirements](requirements.md).
+
+- Before escalating a product or scope question, call `find_requirements` (with your `group_id`). If a requirement answers it, follow it and cite its id (e.g. "per R14") instead of asking again.
+- When the owner decides something that sets product direction, record it with `record_requirement`: one decision per requirement, citing the escalation (`source_escalation: "A12"`) or the person (`decided_by`). If `similar` shows the same decision already exists, don't record it twice. If the owner changed an earlier decision, use `supersede_requirement`.
+- Never record your own design choices as requirements.
+
 Don't escalate routine progress. Escalations page a human's phone.

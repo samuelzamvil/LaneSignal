@@ -13,7 +13,14 @@ import { LANE_STATUSES, type Principal } from './types.ts';
 
 const json = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
 /** Field names as the tools spell them, for validation messages. */
-const SNAKE: Record<string, string> = { laneId: 'lane_id', recommendedOption: 'recommended_option', groupId: 'group_id' };
+const SNAKE: Record<string, string> = {
+  laneId: 'lane_id',
+  recommendedOption: 'recommended_option',
+  groupId: 'group_id',
+  group: 'group_id',
+  sourceEscalation: 'source_escalation',
+  decidedBy: 'decided_by',
+};
 
 const fail = (err: unknown) => {
   if (err instanceof ZodError) {
@@ -189,8 +196,9 @@ function buildServer(
       description:
         'Export LaneSignal data for analysis, including closed escalations and archived lanes. Datasets: ' +
         'escalations (one row each, with decision timings and position counts), positions (agent stances), ' +
-        'lanes, groups, events (status changes and escalation history). `from`/`to` (YYYY-MM-DD or ISO) filter ' +
-        'escalations, positions and events. Results come in pages (default 100 rows, and cut short to stay under ' +
+        'lanes, groups, events (status changes and escalation history), requirements (the owner\'s product decisions). ' +
+        '`from`/`to` (YYYY-MM-DD or ISO) filter ' +
+        'escalations, positions, events and requirements (by creation time). Results come in pages (default 100 rows, and cut short to stay under ' +
         'about 60 KB); the first line says which rows you got and the offset for the next page. For everything at ' +
         'once as files, the HTTP API serves a zip at GET /api/export.',
       inputSchema: {
@@ -226,6 +234,137 @@ function buildServer(
             { type: 'text' as const, text: body },
           ],
         };
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  // ---- requirements: the owner's product decisions, for every role ----
+
+  const REQ_ID_HELP = 'Requirement id, e.g. "R14".';
+  const requirementFields = {
+    requirement: s.requirementInput.shape.requirement.describe(
+      'One normative statement of what the product must (not) do, e.g. "Payout jobs retry at most 5 times, then go to the dead-letter queue."',
+    ),
+    justification: s.requirementInput.shape.justification.describe(
+      'Why the owner decided it, and where (escalation, ticket, conversation), so nobody has to investigate later.',
+    ),
+    tags: s.requirementInput.shape.tags.describe(
+      '1-3 specific kebab-case tags naming the capability, e.g. "payout-retries". Broad tags like "backend" are rejected. ' +
+        'Reuse existing tags (list_requirement_tags) rather than inventing synonyms.',
+    ),
+    group_id: s.groupId
+      .nullable()
+      .optional()
+      .describe('The train/epic it belongs to; omit for a product-wide requirement.'),
+    source_escalation: z
+      .string()
+      .optional()
+      .describe('The answered escalation the owner decided this in (e.g. "A12"); its decider is recorded.'),
+    decided_by: z
+      .string()
+      .max(100)
+      .optional()
+      .describe('Without an escalation: the person who decided, e.g. "Sam (Remote Control, 2026-10-23)".'),
+  };
+  const toInput = (a: {
+    requirement: string;
+    justification: string;
+    tags: string[];
+    group_id?: string | null;
+    source_escalation?: string;
+    decided_by?: string;
+  }) =>
+    s.requirementInput.parse({
+      requirement: a.requirement,
+      justification: a.justification,
+      tags: a.tags,
+      group: a.group_id,
+      sourceEscalation: a.source_escalation,
+      decidedBy: a.decided_by ?? (who.role === 'human' && !a.source_escalation ? who.name : undefined),
+    });
+
+  server.registerTool(
+    'find_requirements',
+    {
+      description:
+        'Search the product requirements: decisions the owner already made, with why. Check here before escalating a ' +
+        'product or scope question; if a requirement answers it, follow it and cite its id instead of asking again. ' +
+        '`query` is free text (best matches first); `tags` must all match; `group_id` limits to that train/epic plus ' +
+        'product-wide requirements. Active ones only unless you set `statuses`.',
+      inputSchema: {
+        query: z.string().max(500).optional(),
+        tags: z.array(s.requirementTag).max(5).optional(),
+        group_id: s.groupId.optional(),
+        statuses: z.array(z.enum(['active', 'superseded', 'retired'])).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ query, tags, group_id, statuses, limit }) => {
+      try {
+        return json(store.findRequirements({ query, tags, group: group_id, statuses, limit: limit ?? 20 }));
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_requirement',
+    {
+      description: 'Read one requirement, including what superseded it if it is no longer active.',
+      inputSchema: { id: z.string().describe(REQ_ID_HELP) },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ id }) => {
+      const found = store.getRequirement(id);
+      return found ? json(found) : fail(new NotFoundError(`Requirement "${id}" not found`));
+    },
+  );
+
+  server.registerTool(
+    'list_requirement_tags',
+    {
+      description: 'Tags in use on active requirements, with counts, so you reuse them instead of inventing near-synonyms.',
+      inputSchema: { group_id: s.groupId.optional() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ group_id }) => json(store.requirementTags(group_id)),
+  );
+
+  server.registerTool(
+    'record_requirement',
+    {
+      description:
+        'Record a product decision the owner (a human) made, so it can be found later without digging through tickets. ' +
+        'Only record decisions a person made: cite the answered escalation (`source_escalation`) or name who decided ' +
+        '(`decided_by`). Never record your own design choices as requirements. One decision per requirement. ' +
+        'The result lists `similar` active requirements: if one is the same decision, it was a duplicate; if the owner ' +
+        'changed their mind, use supersede_requirement on the old one instead.',
+      inputSchema: requirementFields,
+    },
+    async (args) => {
+      try {
+        return json(store.recordRequirement(toInput(args), who.name, who.role === 'human'));
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'supersede_requirement',
+    {
+      description:
+        'The owner changed a decision: record the new requirement and mark the old one superseded (it stays, so the ' +
+        'history of why is kept). Same fields as record_requirement; `group_id` defaults to the old one\'s.',
+      inputSchema: { id: z.string().describe(REQ_ID_HELP), ...requirementFields },
+    },
+    async ({ id, ...args }) => {
+      try {
+        return json(store.supersedeRequirement(id, toInput(args), who.name, who.role === 'human'));
       } catch (err) {
         return fail(err);
       }
