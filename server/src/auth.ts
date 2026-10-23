@@ -10,7 +10,7 @@ const digest = (s: string) => createHash('sha256').update(s).digest();
  * Bearer credentials, checked in order: static tokens from config, then
  * account-owned agent keys and account sessions.
  */
-export function createAuth(tokens: TokenEntry[], accounts: Pick<Accounts, 'identify'>) {
+export function createAuth(tokens: TokenEntry[], accounts: Pick<Accounts, 'identify' | 'revocations'>) {
   const entries = tokens.map((t) => ({
     // Config-file human tokens belong to whoever runs the server, so they may manage accounts.
     principal: { name: t.name, role: t.role, admin: t.role === 'human' } as Principal,
@@ -53,7 +53,14 @@ export function createAuth(tokens: TokenEntry[], accounts: Pick<Accounts, 'ident
       res.locals.principal = principal;
       // Long-lived requests (SSE, long-polls) re-check the credential while they stay open.
       const token = tokenFrom(req);
-      res.locals.stillValid = async () => (await identify(token)) !== null;
+      const stillValid = async () => (await identify(token)) !== null;
+      res.locals.stillValid = stillValid;
+      // Calls onInvalid as soon as a revocation (sign-out, key delete, ban, removal...) invalidates this credential.
+      res.locals.watchRevocation = (onInvalid: () => void) => {
+        const check = () => void stillValid().then((ok) => ok || onInvalid());
+        accounts.revocations.on('revoked', check);
+        return () => accounts.revocations.off('revoked', check);
+      };
       next();
     };
   }
@@ -63,3 +70,5 @@ export function createAuth(tokens: TokenEntry[], accounts: Pick<Accounts, 'ident
 
 export const principalOf = (res: Response) => res.locals.principal as Principal;
 export const stillValidOf = (res: Response) => res.locals.stillValid as () => Promise<boolean>;
+/** Subscribe to revocation of this request's credential; returns an unsubscribe function. */
+export const watchRevocationOf = (res: Response) => res.locals.watchRevocation as (onInvalid: () => void) => () => void;

@@ -1,0 +1,52 @@
+# LaneSignal stack for Dockge (also works with plain `docker compose`).
+#
+# In Dockge: + Compose → name it "lanesignal" → paste this file → paste
+# .env.example into the .env editor (adjust it) → Deploy.
+# Dockge keeps both files in /opt/stacks/lanesignal/.
+#
+# First start: open the app and create the admin account with the setup code
+# from the stack's log (Dockge → lanesignal → terminal/logs, look for "setupCode").
+# Full guide: docs/install-dockge.md
+
+services:
+  lanesignal:
+    # Published by CI from main. Pin a build with :sha-<commit> if you prefer.
+    # GHCR packages start private: either `docker login ghcr.io` on the host
+    # or make the package public in its GitHub settings.
+    image: ghcr.io/samuelzamvil/lanesignal:main
+    restart: unless-stopped
+    ports:
+      # Reachable on the LAN at http://<host>:8080 (keep LANESIGNAL_TRUST_PROXY=false).
+      # Proxy installed on this host (Caddy, nginx, tailscaled): bind to localhost
+      # instead, "127.0.0.1:${LANESIGNAL_PORT:-8080}:8080", and set TRUST_PROXY=1.
+      - "${LANESIGNAL_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      # Named volume: Docker creates it owned by the container's user, so it
+      # works without chown. Holds the database, auth secret and setup code.
+      - lanesignal-data:/data
+      # Bind-mount alternative (data visible in the stack folder). Create it
+      # first with: mkdir data && sudo chown 1000:1000 data
+      # - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # The image has its own HEALTHCHECK (GET /healthz); Dockge shows it.
+
+    # Containerised reverse proxy (Nginx Proxy Manager, Traefik, Caddy) on a shared
+    # Docker network: remove the `ports:` block, uncomment the next line and the
+    # top-level `networks:` below, set LANESIGNAL_TRUST_PROXY=1, and point the proxy
+    # at http://lanesignal:8080. "proxy" must be the name of the proxy's existing
+    # network (`docker network ls`; create one with `docker network create proxy`).
+    # networks: [proxy]
+
+volumes:
+  lanesignal-data:
+
+# networks:
+#   proxy:
+#     external: true
