@@ -40,6 +40,9 @@ export interface EscalationInput {
   context?: string | null;
   recommendation?: string | null;
   recommendedOption?: string | null;
+  cost?: string | null;
+  alternatives?: string[];
+  ticket?: string | null;
   positions?: { agent: string; stance: Stance; note?: string | null }[];
   options?: string[];
   links?: Link[];
@@ -54,7 +57,7 @@ export interface StoreOptions {
   now?: () => Date;
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 type Row = Record<string, unknown>;
 
@@ -92,6 +95,23 @@ export class Store {
     const row = this.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as Row | undefined;
     const version = row ? Number(row.value) : 0;
     if (version >= SCHEMA_VERSION) return;
+    this.tx(() => {
+      if (version < 1) this.migrateV1();
+      if (version < 2) {
+        // Escalation fields: its own ticket/PR reference, cost of the recommendation, alternatives.
+        this.db.exec(`
+          ALTER TABLE escalations ADD COLUMN ticket TEXT;
+          ALTER TABLE escalations ADD COLUMN cost TEXT;
+          ALTER TABLE escalations ADD COLUMN alternatives TEXT NOT NULL DEFAULT '[]';
+        `);
+      }
+      this.db
+        .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .run(String(SCHEMA_VERSION));
+    });
+  }
+
+  private migrateV1() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS groups (
         id TEXT PRIMARY KEY,
@@ -156,9 +176,6 @@ export class Store {
         created_at TEXT NOT NULL
       );
     `);
-    this.db
-      .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-      .run(String(SCHEMA_VERSION));
   }
 
   private tx<T>(fn: () => T): T {
@@ -414,6 +431,10 @@ export class Store {
       context: (r.context as string | null) ?? null,
       recommendation: (r.recommendation as string | null) ?? null,
       recommendedOption: (r.recommended_option as string | null) ?? null,
+      cost: (r.cost as string | null) ?? null,
+      alternatives: JSON.parse(r.alternatives as string) as string[],
+      ticket: (r.ticket as string | null) ?? null,
+      ticketUrl: r.ticket ? this.resolveTicketUrl(r.ticket as string) : null,
       positions: JSON.parse(r.positions as string) as Position[],
       options: JSON.parse(r.options as string) as string[],
       links: JSON.parse(r.links as string) as Link[],
@@ -473,9 +494,9 @@ export class Store {
       const id = randomUUID();
       this.db
         .prepare(
-          `INSERT INTO escalations (id, lane_id, question, context, recommendation, recommended_option, positions,
-             options, links, state, created_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+          `INSERT INTO escalations (id, lane_id, question, context, recommendation, recommended_option, cost,
+             alternatives, ticket, positions, options, links, state, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
         )
         .run(
           id,
@@ -484,6 +505,9 @@ export class Store {
           input.context ?? null,
           input.recommendation ?? null,
           input.recommendedOption ?? null,
+          input.cost ?? null,
+          JSON.stringify(input.alternatives ?? []),
+          input.ticket ?? null,
           JSON.stringify(
             (input.positions ?? []).map((p) => ({ agent: p.agent, stance: p.stance, note: p.note ?? null, at })),
           ),

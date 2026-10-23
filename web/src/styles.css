@@ -977,3 +977,49 @@ textarea {
 .group-head .links {
   margin-top: 6px;
 }
+
+/* ---- escalation batches, cost, alternatives ---- */
+
+.seq {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--danger);
+}
+
+.esc-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 0.85rem;
+}
+
+.esc-nav button {
+  min-height: 40px;
+  padding: 0 12px;
+}
+
+.cost {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
+}
+
+.cost h5 {
+  margin: 0 0 4px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--warn);
+}
+
+.alternatives {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.alternatives li + li {
+  margin-top: 8px;
+}

@@ -28,32 +28,60 @@ await call('PUT', '/api/groups/train-42', {
 
 const lanes = [
   ['auth-rework', { name: 'Auth rework', group: 'payments-epic', status: 'active', ticket: 'redmine:4812', activity: 'Migrating session store to Redis-compatible adapter; 14/22 call sites done', links: [{ label: 'PR #311', url: 'https://github.com/example/app/pull/311', kind: 'pr' }] }],
-  ['billing-export', { name: 'Billing CSV export', group: 'payments-epic', status: 'awaiting_agent', ticket: 'redmine:4790', activity: 'Waiting for schema lane to publish migration 0042' }],
-  ['schema-migrations', { name: 'Schema migrations', group: 'payments-epic', ticket: 'redmine:4791', activity: 'Migration 0042 drafted; needs decision on legacy column' }],
+  ['billing-export', { name: 'Billing CSV export', group: 'payments-epic', status: 'awaiting_agent', ticket: 'redmine:4790', activity: 'Waiting for production wiring to land the job queue' }],
+  ['prod-wiring', { name: 'Production wiring', group: 'payments-epic', ticket: 'gh:921', activity: 'Plan #921 reviewed; four decisions needed before implementation' }],
   ['e2e-stabilize', { name: 'E2E stabilization', group: 'train-42', status: 'pending_ci', ticket: 'gh:902', activity: 'Waiting on integration suite (shard 3/4)', links: [{ label: 'CI run', url: 'https://github.com/example/app/actions/runs/1', kind: 'ci' }, { label: 'PR #905', url: 'https://github.com/example/app/pull/905', kind: 'pr' }] }],
   ['changelog', { name: 'Changelog & notes', group: 'train-42', status: 'idle', ticket: 'gh:903', activity: 'Drafted; waiting for train cut' }],
   ['docs-refresh', { name: 'Docs refresh', group: 'train-42', status: 'completed', ticket: 'gh:870', activity: 'Merged' }],
 ];
 for (const [id, patch] of lanes) await call('PUT', `/api/lanes/${id}`, patch);
 
-const esc = await call('POST', '/api/escalations', {
-  laneId: 'schema-migrations',
-  context:
-    'Migration 0042 cleans up the users table for the auth rework. users.legacy_role has had no reads in 90 days ' +
-    '(query log: https://grafana.example.com/d/abc). Two internal reports still SELECT * from users.\n' +
-    'Rollback after dropping requires a restore from the nightly backup.',
-  question: 'Drop users.legacy_role in migration 0042?',
-  recommendation: 'Drop it now. The auth rework is simpler without it, and SELECT * reports tolerate a missing column.',
-  options: ['Drop it', 'Keep for one more release', 'Rename to _deprecated'],
-  recommendedOption: 'Drop it',
-  positions: [{ agent: 'auth-rework', stance: 'agree', note: 'Unblocks 6 call sites in the session adapter.' }],
-  links: [{ label: 'Migration 0042', url: 'https://github.com/example/app/pull/318', kind: 'pr' }],
-});
-await call('POST', `/api/escalations/${esc.id}/positions`, {
-  agent: 'billing-export',
-  stance: 'disagree',
-  note: 'The billing CSV job reads legacy_role via a raw query that the log sampling misses. Rename first.',
-});
+// A lane with a batch of questions from one plan.
+const reviewer = { agent: 'plan-reviewer', stance: 'agree' };
+const wiring = [
+  {
+    question: 'May #921 add the @google-cloud/tasks package (Google\'s official Cloud Tasks client, Apache-2.0)?',
+    context:
+      'The production wiring has to put background jobs, like claims sync and renewal runs, onto Google Cloud Tasks. ' +
+      'Today only a test fake exists. This package is Google\'s own client for it, and the repository needs your ' +
+      'approval for any new dependency.',
+    recommendation: 'Yes. It\'s the standard client, and its licence is compatible.',
+    cost: 'A bigger dependency tree and container image, and a little more memory per running service.',
+    alternatives: [
+      'Hand-write the Cloud Tasks REST calls ourselves: no new package, but more code of our own to maintain and get right (authentication, retries).',
+    ],
+    options: ['Approve', 'Hand-write the REST calls'],
+    recommendedOption: 'Approve',
+    positions: [{ ...reviewer, note: 'Approve, with the plan\'s checks on the exact version\'s licence and its retry and deadline settings.' }],
+  },
+  {
+    question: 'One Cloud Tasks queue per job type, or a single shared queue?',
+    context: 'Claims sync is bursty; renewal runs are a nightly batch. Separate queues let each have its own rate limit.',
+    recommendation: 'One queue per job type.',
+    cost: 'Two more queues to provision and monitor in each environment.',
+    alternatives: ['A single shared queue: simpler setup, but a claims-sync burst can delay renewals.'],
+    options: ['Per job type', 'Single queue'],
+    recommendedOption: 'Per job type',
+    positions: [{ ...reviewer }],
+  },
+  {
+    question: 'Is a 10-minute dispatch deadline acceptable for renewal runs?',
+    context: 'The longest renewal run in staging took 6m40s. Cloud Tasks allows up to 30 minutes for HTTP targets.',
+    recommendation: 'Yes, 10 minutes, with an alert when a run passes 8.',
+    options: ['10 minutes', '30 minutes'],
+    recommendedOption: '10 minutes',
+  },
+  {
+    question: 'Should failed claims-sync tasks retry 5 times with exponential backoff?',
+    context: 'Upstream claims API outages usually last under 15 minutes. Five retries starting at 30s cover about 16 minutes.',
+    recommendation: 'Yes, 5 retries, then park in a dead-letter table for manual replay.',
+    cost: 'A new dead-letter table and a replay script.',
+    options: ['5 retries + dead-letter', 'Unlimited retries'],
+    recommendedOption: '5 retries + dead-letter',
+    positions: [{ agent: 'billing-export', stance: 'disagree', note: 'Billing needs the sync within the hour; prefer 8 retries.' }],
+  },
+];
+for (const q of wiring) await call('POST', '/api/escalations', { laneId: 'prod-wiring', ticket: 'gh:921', ...q });
 await call('POST', '/api/escalations', {
   laneId: 'e2e-stabilize',
   context: 'checkout.e2e.ts failed 2 of the last 10 runs on main; unrelated to train 42 changes.',

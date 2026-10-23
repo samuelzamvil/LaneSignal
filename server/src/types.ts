@@ -90,6 +90,13 @@ export interface Escalation {
   recommendation: string | null;
   /** Which of `options` the recommendation corresponds to, if any. */
   recommendedOption: string | null;
+  /** What following the recommendation costs (dependencies, time, risk...). */
+  cost: string | null;
+  /** Other paths considered, each with its tradeoff. */
+  alternatives: string[];
+  /** What the question is about, e.g. the plan or PR "gh:921"; the lane's own ticket may differ. */
+  ticket: string | null;
+  ticketUrl: string | null;
   /** Agreement/disagreement from agents, one entry per agent. */
   positions: Position[];
   /** Suggested answers rendered as one-tap buttons. */

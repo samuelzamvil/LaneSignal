@@ -155,7 +155,7 @@ function EscHead({
         {lane?.name ?? esc.laneId}
       </a>
       {(group || lane?.group) && <span className="tag">{group?.name ?? lane?.group}</span>}
-      {lane && <TicketLink lane={lane} />}
+      {esc.ticket ? <TicketLink lane={esc} /> : lane && <TicketLink lane={lane} />}
       <span className="when" title={absolute(esc.createdAt)}>
         {ago(esc.createdAt, now)}
       </span>
@@ -170,12 +170,15 @@ export function EscalationCard({
   group,
   now,
   client,
+  seq,
 }: {
   esc: Escalation;
   lane: Lane | undefined;
   group: Group | undefined;
   now: number;
   client: Client;
+  /** Position among the lane's open escalations, when it has more than one. */
+  seq?: { index: number; total: number };
 }) {
   const open = () => (location.hash = `#/esc/${esc.id}`);
   return (
@@ -187,6 +190,11 @@ export function EscalationCard({
       onKeyDown={(e) => e.target === e.currentTarget && e.key === 'Enter' && open()}
     >
       <EscHead esc={esc} lane={lane} group={group} now={now} />
+      {seq && (
+        <p className="seq">
+          Question {seq.index + 1} of {seq.total} from this lane
+        </p>
+      )}
       <h3>{esc.question}</h3>
       {esc.state === 'decided' ? (
         <>
@@ -227,6 +235,7 @@ export function EscalationDetail({
   client,
   lanes,
   groups,
+  laneOpenIds,
   version,
   now,
   onClose,
@@ -235,6 +244,8 @@ export function EscalationDetail({
   client: Client;
   lanes: Map<string, Lane>;
   groups: Map<string, Group>;
+  /** Open escalation ids of this escalation's lane, oldest first. */
+  laneOpenIds: string[];
   /** Changes whenever the escalation changes, to trigger a refetch. */
   version: string;
   now: number;
@@ -253,6 +264,26 @@ export function EscalationDetail({
       cancelled = true;
     };
   }, [client, id, version]);
+
+  // Step through a lane's batch of questions without going back to the inbox.
+  const idx = laneOpenIds.indexOf(id);
+  const prev = idx > 0 ? laneOpenIds[idx - 1] : undefined;
+  const next = idx >= 0 ? laneOpenIds[idx + 1] : laneOpenIds[0];
+  const go = (target: string) => location.replace(`#/esc/${target}`);
+  const nav =
+    prev || next ? (
+      <nav className="esc-nav" aria-label="Other questions from this lane">
+        <button className="ghost" disabled={!prev} onClick={() => prev && go(prev)}>
+          ← Previous
+        </button>
+        <span className="muted">
+          {idx >= 0 ? `Question ${idx + 1} of ${laneOpenIds.length}` : `${laneOpenIds.length} more open from this lane`}
+        </span>
+        <button className={idx < 0 ? 'primary' : 'ghost'} disabled={!next} onClick={() => next && go(next)}>
+          Next →
+        </button>
+      </nav>
+    ) : null;
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
@@ -276,6 +307,7 @@ export function EscalationDetail({
             <p className="byline">
               Raised by {esc.createdBy} · {absolute(esc.createdAt)}
             </p>
+            {nav}
 
             {esc.context && (
               <section className="esc-section">
@@ -289,7 +321,7 @@ export function EscalationDetail({
               <p className="question-text">{esc.question}</p>
             </section>
 
-            {(esc.recommendation || esc.recommendedOption) && (
+            {(esc.recommendation || esc.recommendedOption || esc.cost) && (
               <section className="esc-section recommendation">
                 <h4>Recommendation</h4>
                 {esc.recommendedOption && (
@@ -298,6 +330,25 @@ export function EscalationDetail({
                   </p>
                 )}
                 {esc.recommendation && <RichText text={esc.recommendation} />}
+                {esc.cost && (
+                  <div className="cost">
+                    <h5>Cost</h5>
+                    <RichText text={esc.cost} />
+                  </div>
+                )}
+              </section>
+            )}
+
+            {esc.alternatives.length > 0 && (
+              <section className="esc-section">
+                <h4>{esc.alternatives.length > 1 ? 'Alternatives' : 'Alternative'}</h4>
+                <ul className="alternatives">
+                  {esc.alternatives.map((a, i) => (
+                    <li key={i}>
+                      <RichText text={a} />
+                    </li>
+                  ))}
+                </ul>
               </section>
             )}
 
@@ -359,6 +410,7 @@ export function EscalationDetail({
                 )}
               </section>
             )}
+            {nav}
           </div>
         )}
       </section>

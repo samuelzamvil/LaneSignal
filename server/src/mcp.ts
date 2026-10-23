@@ -117,10 +117,13 @@ function buildServer(store: Store, who: Principal) {
       {
         description:
           'Ask the humans for a decision. Shows prominently on the dashboard and sends a push notification. ' +
-          'Structure: `context` (what a human needs to know, without opening your session), `question` (the decision, ' +
-          'phrased as a question), `recommendation` (what you would do and why), and `positions` (other agents\' ' +
-          'agreement/disagreement with the recommendation, if already known). Provide short `options` for one-tap answers ' +
-          'and set `recommended_option` to the one you recommend. By default marks the lane blocked_human. ' +
+          'Structure: `question` (the decision, phrased as a question), `context` (what a human needs to know, without ' +
+          'opening your session), `recommendation` (what you would do and why), `cost` (what the recommendation costs), ' +
+          '`alternatives` (other paths, each with its tradeoff), and `positions` (other agents\' agreement/disagreement ' +
+          'with the recommendation, e.g. a reviewer). Set `ticket` to what the question is about (e.g. "gh:921") when it ' +
+          'differs from the lane ticket. Provide short `options` for one-tap answers and set `recommended_option` to the ' +
+          'one you recommend. A lane may have several open escalations; raise one per decision. ' +
+          'By default marks the lane blocked_human until all are decided. ' +
           'Then wait with get_escalation(wait_seconds) and acknowledge_escalation once you act on the decision.',
         inputSchema: {
           lane_id: s.laneId,
@@ -128,6 +131,9 @@ function buildServer(store: Store, who: Principal) {
           context: s.escalationFields.context,
           recommendation: s.escalationFields.recommendation,
           recommended_option: s.escalationFields.recommendedOption,
+          cost: s.escalationFields.cost,
+          alternatives: s.escalationFields.alternatives,
+          ticket: s.escalationFields.ticket,
           positions: s.escalationFields.positions,
           options: s.escalationFields.options,
           links: s.escalationFields.links,
