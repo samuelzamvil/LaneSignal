@@ -19,6 +19,7 @@ import { useLiveData, useNow } from './live.ts';
 import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { RequirementsPane } from './requirements.tsx';
+import { Toaster } from './toast.tsx';
 import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection, ProjectsSection } from './settings.tsx';
 
 // ---- routing (hash based, so it works from file-less Capacitor URLs and push deep links) ----
@@ -206,6 +207,20 @@ function Dashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, config]);
 
+  // Escape closes an open sheet (desktop).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      // Escape while typing an answer shouldn't throw the draft away.
+      if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select')) return;
+      const r = parseRoute(location.hash);
+      if (r.escId) closeTo('#/');
+      else if (r.laneId) closeTo('#/lanes');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   // Android hardware back button: close sheets first, then leave the app.
   useEffect(() => {
     if (!isNative) return;
@@ -290,8 +305,17 @@ function Dashboard({
     return (
       <main className="login">
         <form onSubmit={(e) => (e.preventDefault(), onSignOut(client))}>
-          <h1>Token rejected</h1>
-          <p>The server no longer accepts this token.</p>
+          {conn.kind === 'token' ? (
+            <>
+              <h1>Token rejected</h1>
+              <p>The server no longer accepts this token.</p>
+            </>
+          ) : (
+            <>
+              <h1>You were signed out</h1>
+              <p>Your session ended (signed out elsewhere, a password change, or an admin). Sign in again to continue.</p>
+            </>
+          )}
           <button className="primary">Sign in again</button>
         </form>
       </main>
@@ -363,7 +387,17 @@ function Dashboard({
       <h2>
         Needs you <span className={`count${open.length ? ' hot' : ''}`}>{open.length}</span>
       </h2>
-      {open.length === 0 && blockedLanes.length === 0 && <p className="empty">No decisions waiting. 🎉</p>}
+      {open.length === 0 && blockedLanes.length === 0 && (
+        isLive && live.projects.length === 0 ? (
+          <p className="empty">You're not in any project yet. Ask a project admin to add you.</p>
+        ) : isLive && live.lanes.size === 0 ? (
+          <p className="empty">
+            Nothing here yet. Next: <a href="#/settings">Settings → Keys</a> to connect your first overseer.
+          </p>
+        ) : (
+          <p className="empty">Nothing needs you. 🎉</p>
+        )
+      )}
       {open.map((e) => (
         <EscalationCard
           key={e.id}
@@ -375,6 +409,7 @@ function Dashboard({
           client={client}
           staleMinutes={config.staleMinutes}
           showProject={showProject}
+          decisions={config.decisions}
         />
       ))}
       {blockedLanes.length > 0 && (
@@ -408,6 +443,7 @@ function Dashboard({
               client={client}
               staleMinutes={config.staleMinutes}
               showProject={showProject}
+              decisions={config.decisions}
             />
           ))}
         </>
@@ -425,6 +461,7 @@ function Dashboard({
               client={client}
               staleMinutes={config.staleMinutes}
               showProject={showProject}
+              decisions={config.decisions}
             />
           ))}
         </>
@@ -534,7 +571,7 @@ function Dashboard({
             : !pushSupported
               ? 'Not included in this build'
               : config.push.fcm
-                ? 'Enabled for human decisions'
+                ? 'Enabled for alerts'
                 : 'Server has no FCM credentials'}
           {config.push.ntfy && ' · ntfy enabled on server'}
         </dd>
@@ -544,14 +581,21 @@ function Dashboard({
       <ProjectsSection client={client} me={me} projects={live.projects} onChanged={live.refresh} />
       {me?.userId ? (
         <>
-          <AgentKeysSection client={client} serverUrl={conn.server || location.origin} now={now} projects={live.projects} />
+          <AgentKeysSection
+            client={client}
+            serverUrl={conn.server || location.origin}
+            now={now}
+            projects={live.projects}
+            decisions={config.decisions}
+            requirements={config.requirements}
+          />
           {me.admin && <PeopleSection client={client} me={me} />}
           <PasswordSection client={client} onNewSession={onNewSession} />
         </>
       ) : (
         <p className="hint">Sign in with an account to manage agent keys and people.</p>
       )}
-      <ExportSection client={client} serverUrl={conn.server || location.origin} />
+      <ExportSection client={client} serverUrl={conn.server || location.origin} requirements={config.requirements} />
       <button className="ghost danger" onClick={() => onSignOut(client)}>
         Sign out
       </button>
@@ -583,25 +627,35 @@ function Dashboard({
           <a href="#/lanes" className={route.view === 'lanes' || route.view === 'inbox' ? 'on' : ''}>
             Lanes
           </a>
-          <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
-            Requirements
-          </a>
+          {config.requirements && (
+            <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
+              Requirements
+            </a>
+          )}
         </nav>
         <span className={`link-dot ${live.link}`} title={live.link} aria-label={`connection ${live.link}`} />
         <a href="#/settings" className="settings-link" aria-label="Settings">
           ⚙
         </a>
       </header>
+      {live.link === 'offline' && (
+        <div className="offline-bar" role="status">
+          Offline{live.syncedAt ? ` · showing data from ${new Date(live.syncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''} ·
+          reconnecting…
+        </div>
+      )}
+      <Toaster />
       {open.length > 0 && route.view !== 'inbox' && (
         <a className="alert-banner" href="#/">
-          ⚑ {open.length} decision{open.length > 1 ? 's' : ''} waiting
+          ⚑ {open.length} {config.decisions ? 'decision' : 'alert'}
+          {open.length > 1 ? 's' : ''} waiting
         </a>
       )}
       <main className="panes">
         {inbox}
         {route.view === 'settings' ? (
           settings
-        ) : route.view === 'reqs' ? (
+        ) : route.view === 'reqs' && config.requirements ? (
           <RequirementsPane
             client={client}
             groups={live.groups}
@@ -623,9 +677,11 @@ function Dashboard({
         <a href="#/lanes" className={route.view === 'lanes' ? 'on' : ''}>
           <span className="icon">☰</span>Lanes
         </a>
-        <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
-          <span className="icon">§</span>Requirements
-        </a>
+        {config.requirements && (
+          <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
+            <span className="icon">§</span>Requirements
+          </a>
+        )}
         <a href="#/settings" className={route.view === 'settings' ? 'on' : ''}>
           <span className="icon">⚙</span>Settings
         </a>
@@ -638,6 +694,7 @@ function Dashboard({
           groups={live.groups}
           laneOpenIds={escLaneKey ? (openByLane.get(escLaneKey) ?? []).map((e) => e.id) : []}
           showProject={multiProject}
+          decisions={config.decisions}
           currentId={routeEsc?.id}
           version={escVersion}
           now={now}

@@ -51,7 +51,11 @@ export async function createAccounts(config: Config, dbPath: string) {
   revocations.setMaxListeners(0);
   const revoked = () => revocations.emit('revoked');
   /** Fires when a person is removed or banned, so their phones stop getting push. */
-  const people = new EventEmitter<{ gone: [userId: string, name: string | null, removed: boolean] }>();
+  const people = new EventEmitter<{
+    gone: [userId: string, name: string | null, removed: boolean];
+    /** Fires when an account is created (setup, an admin adding someone). */
+    added: [userId: string, admin: boolean];
+  }>();
 
   const options = {
     database: db,
@@ -79,6 +83,11 @@ export async function createAccounts(config: Config, dbPath: string) {
     telemetry: { enabled: false },
     databaseHooks: {
       user: {
+        create: {
+          after: async (user) => {
+            people.emit('added', user.id, isAdminRole((user as { role?: unknown }).role));
+          },
+        },
         delete: {
           // Keys reference their owner loosely (no foreign key); remove them with the account.
           after: async (user) => {
@@ -200,12 +209,13 @@ export async function createAccounts(config: Config, dbPath: string) {
     userActive: ownerActive,
     /** Every account, for picking project members. */
     listUsers: () =>
-      (db.prepare('SELECT id, name, email, role FROM user ORDER BY name').all() as {
+      (db.prepare('SELECT id, name, email, role, banned FROM user ORDER BY name').all() as {
         id: string;
         name: string;
         email: string;
         role: string | null;
-      }[]).map((u) => ({ id: u.id, name: u.name, email: u.email, admin: isAdminRole(u.role) })),
+        banned: number | null;
+      }[]).map((u) => ({ id: u.id, name: u.name, email: u.email, admin: isAdminRole(u.role), banned: !!u.banned })),
     isAdmin: (userId: string) => {
       const row = db.prepare('SELECT role FROM user WHERE id = ?').get(userId) as { role: string | null } | undefined;
       return !!row && isAdminRole(row.role);

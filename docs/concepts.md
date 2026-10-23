@@ -53,15 +53,15 @@ An escalation is a question for humans, attached to a lane. Only `question` is r
 | Field | Meaning |
 |---|---|
 | `ref` | Set by the server: a code like **A12** (the lane's letter and a number) that people and agents can use to refer to the escalation. Every tool and endpoint accepts it in place of the id |
-| `context` | What a human needs to know to answer without opening the agent's session |
+| `context` | What you need to know to decide; the inbox card shows its first lines |
 | `question` | The decision being asked for. It's also the headline |
 | `recommendation` | What the agent would do and why |
 | `recommendedOption` | Which of `options` is the recommended one; it gets a "Recommended" badge |
 | `cost` | What following the recommendation costs: dependencies, time, risk |
 | `alternatives` | Other paths considered, one per entry, each with its tradeoff |
 | `ticket` | What the question is about, such as the plan `gh:921`, when it differs from the lane's ticket |
-| `options` | Up to 10 short answers, shown as one-tap buttons |
-| `positions` | Other agents' views on the recommendation: `{agent, stance: agree / disagree / neutral, note}`, one per agent, added at creation or later |
+| `options` | Up to 10 short answers (one-tap buttons when answering on the dashboard is on) |
+| `positions` | Other agents' views on the recommendation: `{agent, stance: agree / disagree / neutral, note}`, one per agent |
 | `links` | Anything else worth opening |
 
 ### Many questions per lane
@@ -71,29 +71,43 @@ A lane can have any number of open escalations. A plan with four questions raise
 - The inbox lists them together, in order, as "Question 1 of 4 from this lane".
 - The detail view has **Previous** and **Next** for stepping through them.
 
-### Lifecycle
+### Lifecycle (default: alerts)
+
+By default LaneSignal only **alerts** (`LANESIGNAL_DECISIONS=false`):
+
+```
+open ──(the agent dismisses it, saying what was decided)──► dismissed
+```
+
+1. The agent raises the escalation. Your phone is notified, and the lane shows as blocked.
+2. You answer **in the agent's own session** (e.g. Remote Control), quoting the code ("A12: drop it"). The conversation and the decision stay in one place; the alert card links to the session when the overseer published it.
+3. The agent dismisses the alert with a justification ("Sam: drop it, in session") and usually its next status. The justification is the record on the dashboard and in exports.
+
+- The dashboard is read-only, apart from **Dismiss** for a stale alert whose session ended. A lane whose alert a person dismisses shows as waiting on its agent (`awaiting_agent`) until the agent publishes again.
+- Only the agent that raised an alert (any key of the same account) dismisses it, so an overseer can't close another's by reusing a code.
+- Raising the same question again on the same lane while it's still open (ignoring spacing and case) returns the existing escalation, so agent retries don't create duplicates.
+- A lane stays **blocked** while any of its blocking escalations is open, whatever status its agent publishes. Dismissing the last one puts the lane back to `active`, unless the agent says otherwise.
+
+### Answering on the dashboard (optional)
+
+With `LANESIGNAL_DECISIONS=true`, people can also answer on the dashboard, and agents wait for the answer:
 
 ```
 open ──(human decides)──► decided ──(agent acknowledges)──► acknowledged
-  └──────(agent or human withdraws: answered elsewhere / moot)──────► withdrawn
+  └──────(dismissed: answered in the session / moot)──────► dismissed
 ```
 
-- Decided escalations stay on the dashboard under *Decided · awaiting agent* until the agent acknowledges. One that waits longer than `LANESIGNAL_STALE_MINUTES` is flagged.
-- If two humans answer at once, the second gets `409 Conflict`.
-- **Change decision** (in the detail view) replaces the answer until the agent acknowledges, e.g. after a mis-tap. Agents acknowledge before acting, and the acknowledgement returns the final answer.
-- Raising the same question again on the same lane while it's still open returns the existing escalation, so agent retries don't create duplicates.
-- **Withdraw** is for questions that were answered elsewhere, for example in Remote Control, or that stopped mattering.
+- Escalations get one-tap answer buttons. Decided ones stay under *Decided · awaiting agent* until the agent acknowledges; one that waits longer than `LANESIGNAL_STALE_MINUTES` is flagged.
+- If two humans answer at once, the second gets `409 Conflict`. **Change decision** replaces the answer until the agent acknowledges, e.g. after a mis-tap. Agents acknowledge before acting, and the acknowledgement returns the final answer.
+- Only the agent that raised an escalation acknowledges it; a person can on its behalf.
+- When a lane's last open blocking escalation is decided, the lane moves to `awaiting_agent`, which stops the blocked timer while the agent picks up the answer.
+- While an agent waits for answers on a lane, the lane shows **agent waiting**. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting.
 
 ### Blocking
 
 - An escalation is **blocking** by default: creating it sets the lane to `blocked_human`.
-- `blocking: false` marks an FYI question that never holds the lane blocked. FYIs are listed separately in the inbox, aren't counted in the "Needs you" badge, don't make a lane look urgent, and notify quietly.
-- When a lane's **last open blocking** escalation is decided (or withdrawn while still open), the lane moves to `awaiting_agent`. That stops the blocked timer while the agent picks up the answer.
-- Acknowledging changes the lane's status only if the agent passes `status` with it. Nothing else changes a lane the agent set to `blocked_human` itself. The agent publishes what it does next.
-
-### Agent waiting
-
-While an agent waits for answers on a lane, the lane shows **agent waiting**, and an open escalation says whether your answer reaches an agent right away. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting, and after a server restart until the agent waits again.
+- `blocking: false` marks an FYI that never holds the lane blocked. FYIs are listed separately in the inbox, aren't counted in the "Needs you" badge, don't make a lane look urgent, and notify quietly.
+- Nothing else changes a lane the agent set to `blocked_human` itself. The agent publishes what it does next.
 
 ## Tickets
 
@@ -109,4 +123,4 @@ LaneSignal links to tickets but never syncs or edits them.
 
 ## Notifications
 
-By default, push notifications go out only when an escalation is **created**: urgent for blocking questions, quiet for FYIs. The title carries its code (`Decision needed A12 · …`). Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).
+By default, push notifications go out only when an escalation is **created**: urgent for blocking questions, quiet for FYIs. The title carries its code (`Needs you A12 · …`). Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).

@@ -40,21 +40,21 @@ Any client that supports Streamable HTTP with custom headers works. Point it at 
 ## 3. Install the skill (how to use LaneSignal)
 
 LaneSignal ships a Claude Code skill that teaches agents **how** to use the tools:
-- publishing state, and structuring an escalation
-- waiting for answers across all its lanes, including waits of many hours
-- acting on decisions, and recovering after a restart
-- finding and recording the owner's requirements
+- publishing state, and structuring an alert (escalation)
+- dismissing it once you've answered in the session, and recovering after a restart
+- finding and recording the owner's requirements (when they're on)
+- waiting for and acknowledging decisions (only when answering on the dashboard is on)
 
-Claude Code loads it whenever an agent works with LaneSignal. Your LaneSignal server hands it out:
+Claude Code loads it whenever an agent works with LaneSignal. Your LaneSignal server hands it out, matching its [features](configuration.md#features):
 
 ```bash
 mkdir -p .claude/skills/lanesignal
 curl -fsS https://lanesignal.example.com/api/skill -o .claude/skills/lanesignal/SKILL.md
 ```
 
-Use `~/.claude/skills/lanesignal/` instead to install it for every project on that machine. The source is [`skills/lanesignal/SKILL.md`](../skills/lanesignal/SKILL.md); re-run the command after upgrading LaneSignal.
+Use `~/.claude/skills/lanesignal/` instead to install it for every project on that machine. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, plus `requirements.md` and `decisions.md`, which the server appends when those features are on. Re-run the command after upgrading LaneSignal or changing its features.
 
-For long waits, the skill runs the HTTP wait in the background. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
+With answering on the dashboard on, the skill runs long waits in the background over HTTP. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
 
 ## 4. Set your policy (when to use it)
 
@@ -62,7 +62,9 @@ The skill covers how; **when** is yours to decide. Paste the [policy template](a
 
 ## Tools
 
-Which tools a client sees depends on its credential: agent keys get the agent tools, and personal keys (or human sessions) get the human ones. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
+Which tools a client sees depends on its credential (agent keys get the agent tools, personal keys and human sessions the human ones) and on the server's [features](configuration.md#features): the waiting and answering tools exist only with `LANESIGNAL_DECISIONS=true`, the requirement tools only with `LANESIGNAL_REQUIREMENTS` on (the default).
+
+Results are compact JSON with empty fields left out. Escalations come back in brief (code, question, state, and the decision or justification once there is one), lanes as where they stand (status, letter, counts), and `update_lane` and `update_group` don't echo what you sent. `get_escalation` has an escalation in full. Tools that take a group accept `group_id` and `group` alike. Unknown groups and lanes are errors, so a typo never looks like an empty result or creates a lane nobody waits on. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
 
 Every tool takes an optional `project` (id or key). A key bound to one [project](projects.md) never needs it. A key that reaches several must pass it to write, and its listings cover all its projects.
 
@@ -70,22 +72,24 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 |---|---|---|
 | `list_projects` | any | The projects the credential reaches (id, key, name) |
 | `update_group` | agent | Name the epic/train, set its ticket, link the overseer's Remote Control session |
-| `update_lane` | agent | Create or update a lane: status, group, ticket, activity, links. Omitted fields stay unchanged |
+| `update_lane` | agent | Create or update a lane: status, group, ticket, activity, links. Omitted fields stay unchanged. The group must be registered with `update_group` first. While a blocking escalation is open, the lane stays `blocked_human` |
 | `remove_lane` | agent | Take a finished lane off the dashboard (archived; open questions withdrawn; history kept) |
-| `create_escalation` | agent | Ask humans a question (see the [fields](concepts.md#escalations)). The same open question on the same lane returns the existing one (`duplicate: true`), so retries are safe |
-| `add_position` | agent | Agree, disagree or stay neutral on an open escalation's recommendation, with a reason |
-| `wait_for_decisions` | any | Wait on a group, lanes or escalations; returns as soon as one is decided. `wait_seconds` up to 3600 |
-| `get_escalation` | any | Read one escalation. `wait_seconds` (up to 300) waits until it's answered |
-| `acknowledge_escalation` | agent | Call as soon as a decision arrives: closes the escalation and returns the final decision. `status` and `activity` publish the lane's next state in the same call. Repeating it is safe |
-| `withdraw_escalation` | agent | Close it without a dashboard answer: answered in Remote Control, or moot |
-| `list_lanes` / `list_groups` / `list_escalations` | any | Read state |
+| `create_escalation` | agent | Alert the owner (see the [fields](concepts.md#escalations)). The lane must be published first. The same open question on the same lane (ignoring spacing and case) returns the existing one (`duplicate: true`), so retries are safe. Returns the escalation in brief |
+| `dismiss_escalation` | agent | Close an alert once it's dealt with (the owner answered in the session, or it's moot), with a required `justification` saying what was decided. `status` and `activity` publish the lane's next state. Only the agent that raised it can dismiss it |
+| `get_escalation` | any | Read one escalation in full |
+| `add_position` | agent | Decisions on: agree, disagree or stay neutral on an open escalation's recommendation, with a reason |
+| `wait_for_decisions` | any | Decisions on: wait on a group, lanes or escalations; returns as soon as one is decided. `wait_seconds` up to 3600 |
+| `acknowledge_escalation` | agent | Decisions on: closes a decided escalation and returns the final decision; `status` and `activity` publish the lane's next state. Only the agent that raised it can acknowledge it |
+| `list_lanes` / `list_groups` / `list_escalations` | any | Read state. `list_escalations` returns escalations in brief, filtered by `group_id` or `lane_id`, latest 50 by default (`limit` up to 500) |
 | `find_requirements` / `get_requirement` / `list_requirement_tags` | any | Search the owner's product decisions before asking again. See [Requirements](requirements.md) |
 | `record_requirement` / `supersede_requirement` | any | Record a decision the owner made (citing the escalation or the person), or replace one they changed. `all_projects: true` for decisions that cover every project |
-| `export_data` | any | All data for analysis (escalations, positions, lanes, groups, history) as CSV or JSON, paged. See [Export](export.md) |
-| `decide_escalation` | human | Answer from your own Claude session. `change: true` corrects a decision the agent hasn't acknowledged yet |
-| `withdraw_escalation` | human | Dismiss an escalation that no longer needs an answer |
+| `export_data` | human | All data for analysis (escalations, positions, lanes, groups, history) as CSV or JSON, paged. See [Export](export.md) |
+| `decide_escalation` | human | Decisions on: answer from your own Claude session. `change: true` corrects a decision the agent hasn't acknowledged yet |
+| `dismiss_escalation` | human | Dismiss an alert that no longer needs an answer, e.g. its session ended |
 
-## Waiting for decisions
+## Waiting for decisions (answering on the dashboard only)
+
+This section applies only with `LANESIGNAL_DECISIONS=true`. By default you answer in the agent's session and nothing waits.
 
 Answers can take minutes or a day. An overseer waits on its whole group with one call:
 

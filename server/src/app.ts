@@ -1,10 +1,10 @@
 import { EventEmitter } from 'node:events';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
-import { accessFor, pub, q, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, briefWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import type { Config } from './config.ts';
@@ -123,13 +123,24 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   );
 
   // The agent skill: public (no secrets in it), so installing is one curl.
+  /**
+   * The skill, as this server is configured: the core (alerts) plus the requirements and answering
+   * sections when those are on, which sit next to SKILL.md.
+   */
   app.get('/api/skill', (_req, res) => {
     if (!skillFile || !existsSync(skillFile)) {
       res.status(404).json({ error: 'skill not bundled with this server' });
       return;
     }
-    // dotfiles: allow, so a configured path under a dot-directory (~/.config/...) still works.
-    res.set('cache-control', 'no-cache').sendFile(skillFile, { dotfiles: 'allow', headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+    const part = (name: string) => {
+      const file = path.join(path.dirname(skillFile), name);
+      return existsSync(file) ? `\n${readFileSync(file, 'utf8')}` : '';
+    };
+    const text =
+      readFileSync(skillFile, 'utf8') +
+      (config.requirements ? part('requirements.md') : '') +
+      (config.decisions ? part('decisions.md') : '');
+    res.set({ 'cache-control': 'no-cache', 'content-type': 'text/markdown; charset=utf-8' }).send(text);
   });
 
   app.get('/healthz', (_req, res) => {
@@ -149,8 +160,26 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   const acc = (res: Response): Access => (res.locals.access ??= accessFor(store, principalOf(res)));
   const projectQuery = (req: Request) => (typeof req.query.project === 'string' ? req.query.project : undefined);
   /** Fires when project memberships change, so open event streams reconnect with what they may now see. */
+  /** Routes for answering in LaneSignal, off unless LANESIGNAL_DECISIONS is set. */
+  const decisionsOnly = (_req: Request, _res: Response, next: NextFunction) => {
+    if (config.decisions) return next();
+    throw new NotFoundError(
+      "Answering in LaneSignal is off on this server (LANESIGNAL_DECISIONS): people answer in the agent's session, and the agent dismisses the alert",
+    );
+  };
+  const requirementsOnly = (_req: Request, _res: Response, next: NextFunction) => {
+    if (config.requirements) return next();
+    throw new NotFoundError('Requirements are off on this server (LANESIGNAL_REQUIREMENTS)');
+  };
   const membershipChanges = new EventEmitter<{ changed: [] }>();
   membershipChanges.setMaxListeners(0);
+  // On a one-project server a new person joins it, so they don't sign in to an empty dashboard.
+  // With several projects, an admin chooses (Settings → Projects).
+  // Account admins see every project anyway, so they aren't made members (which would outlast a demotion).
+  accounts.people.on('added', (userId, admin) => {
+    const projects = store.listProjects();
+    if (projects.length === 1 && !admin) store.setMember(projects[0].id, userId, 'member');
+  });
   /** Similar requirements are only those the caller may see. */
   const pubRecord = (a: Access, r: RecordResult) => ({
     ...r,
@@ -201,6 +230,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       ticketSystems: Object.keys(config.ticketTemplates),
       staleMinutes: config.staleMinutes,
       push,
+      decisions: config.decisions,
+      requirements: config.requirements,
     };
     res.json(body);
   });
@@ -268,6 +299,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       .projectMembers(project)
       .filter((m) => users.has(m.userId))
       .map((m) => ({ ...m, name: users.get(m.userId)!.name, email: users.get(m.userId)!.email }));
+    // Instance admins see every project without being members: list them too, so members know who to ask.
+    for (const u of users.values()) {
+      if (u.admin && !u.banned && !members.some((m) => m.userId === u.id)) {
+        const notify = store.notifyChoice(project, u.id) ?? true;
+        members.push({ userId: u.id, name: u.name, email: u.email, role: 'admin', notify, instanceAdmin: true });
+      }
+    }
     res.json(members);
   });
 
@@ -309,13 +347,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   });
 
   app.put('/api/groups/:id', agent, (req, res) => {
-    const project = acc(res).pick(projectQuery(req));
     const id = parse(s.groupId, req.params.id);
+    const project = acc(res).pick(projectQuery(req), { group: id });
     res.json(pub.group(store.upsertGroup(q(project, id), parse(s.groupPatch, req.body), principalOf(res).name)));
   });
 
   app.delete('/api/groups/:id', human, (req, res) => {
-    const project = acc(res).pick(projectQuery(req));
+    const project = acc(res).pick(projectQuery(req), { group: String(req.params.id) });
     store.deleteGroup(q(project, String(req.params.id)), principalOf(res).name);
     res.sendStatus(204);
   });
@@ -333,7 +371,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   });
 
   app.get('/api/lanes/:id', any, (req, res) => {
-    const project = acc(res).pick(projectQuery(req));
+    const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
     const lane = store.getLane(q(project, String(req.params.id)));
     if (!lane) throw new NotFoundError('Lane not found');
     res.json({
@@ -346,14 +384,15 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   });
 
   app.put('/api/lanes/:id', agent, (req, res) => {
-    const project = acc(res).pick(projectQuery(req));
     const id = parse(s.laneId, req.params.id);
+    const group = typeof req.body?.group === 'string' ? req.body.group : undefined;
+    const project = acc(res).pick(projectQuery(req), { lane: id, group });
     res.json(pub.lane(store.upsertLane(q(project, id), lanePatchOf(project, req.body), principalOf(res).name)));
   });
 
   // Humans remove lanes from the dashboard; overseers remove lanes whose work is over.
   app.delete('/api/lanes/:id', any, (req, res) => {
-    const project = acc(res).pick(projectQuery(req));
+    const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
     store.deleteLane(q(project, String(req.params.id)), principalOf(res).name);
     res.sendStatus(204);
   });
@@ -369,7 +408,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       store
         .listEscalations({
           states,
-          laneId: lane ? q(a.pick(projectQuery(req)), lane) : undefined,
+          laneId: lane ? q(a.pick(projectQuery(req), { lane }), lane) : undefined,
           projects: a.scope(projectQuery(req)),
         })
         .map(pub.escalation),
@@ -378,9 +417,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
 
   /** 201 when created; 200 with `duplicate: true` when the same open question already exists (a retry). */
   app.post('/api/escalations', agent, (req, res) => {
-    const project = acc(res).pick(projectQuery(req));
     const input = parse(s.escalationInput, req.body);
-    const escalation = store.createEscalation({ ...input, laneId: q(project, input.laneId) }, principalOf(res).name);
+    const project = acc(res).pick(projectQuery(req), { lane: input.laneId });
+    const escalation = store.createEscalation({ ...input, laneId: q(project, input.laneId) }, principalOf(res).name, ownerOf(principalOf(res)));
     res.status(escalation.duplicate ? 200 : 201).json(pub.escalation(escalation));
   });
 
@@ -393,6 +432,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   app.get(
     '/api/wait',
     any,
+    decisionsOnly,
     h(async (req, res) => {
       const query = parse(s.waitQuery, req.query);
       const scope = waitScopeFor(
@@ -403,7 +443,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
-        res.json(pub.wait(now));
+        res.json(briefWait(pub.wait(now)));
         return;
       }
       const abort = new AbortController();
@@ -423,7 +463,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;
-        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : pub.wait(result, visible)));
+        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : briefWait(pub.wait(result, visible))));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));
       } finally {
@@ -439,7 +479,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     any,
     h(async (req, res) => {
       const target = acc(res).escalation(String(req.params.id), projectQuery(req));
-      const wait = Math.min(Math.max(Number(req.query.wait ?? 0) || 0, 0), 300);
+      const wait = config.decisions ? Math.min(Math.max(Number(req.query.wait ?? 0) || 0, 0), 300) : 0;
       const abort = new AbortController();
       res.on('close', () => abort.abort());
       // A revoked credential ends the wait at once instead of after `wait` seconds.
@@ -468,7 +508,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   const escalationOf = (req: Request, res: Response) => acc(res).escalation(String(req.params.id), projectQuery(req)).id;
 
   /** Agents record agreement/disagreement with the recommendation. */
-  app.post('/api/escalations/:id/positions', agent, (req, res) => {
+  app.post('/api/escalations/:id/positions', agent, decisionsOnly, (req, res) => {
     const body = parse(s.position, req.body);
     res.json(
       pub.escalation(
@@ -477,7 +517,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     );
   });
 
-  app.post('/api/escalations/:id/decide', human, (req, res) => {
+  app.post('/api/escalations/:id/decide', human, decisionsOnly, (req, res) => {
     const body = parse(s.decision, req.body);
     res.json(
       pub.escalation(
@@ -487,11 +527,14 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   });
 
   /** Repeating an acknowledgement returns the same result. `status`/`activity` publish the lane's next state. */
-  app.post('/api/escalations/:id/ack', agent, (req, res) => {
+  /** The agent that raised it, or a person on its behalf. */
+  app.post('/api/escalations/:id/ack', any, decisionsOnly, (req, res) => {
     const body = parse(s.acknowledgement, req.body ?? {});
+    const target = acc(res).escalation(String(req.params.id), projectQuery(req));
+    requireRaiser(store, acc(res), target, 'acknowledge');
     res.json(
       pub.escalation(
-        store.acknowledgeEscalation(escalationOf(req, res), body.note ?? null, principalOf(res).name, {
+        store.acknowledgeEscalation(target.id, body.note ?? null, principalOf(res).name, {
           status: body.status,
           activity: body.activity,
         }),
@@ -499,19 +542,39 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     );
   });
 
-  // Agents withdraw (answered elsewhere / moot); humans may dismiss stale ones.
+  /**
+   * Agents dismiss an alert once it's dealt with (answered in their session, or moot), saying why;
+   * people may dismiss stale ones. `status`/`activity` publish the lane's next state.
+   */
   app.post('/api/escalations/:id/withdraw', any, (req, res) => {
-    const body = parse(s.resolution, req.body ?? {});
-    res.json(pub.escalation(store.withdrawEscalation(escalationOf(req, res), body.note ?? null, principalOf(res).name)));
+    const body = parse(s.acknowledgement, req.body ?? {});
+    const target = acc(res).escalation(String(req.params.id), projectQuery(req));
+    requireRaiser(store, acc(res), target, 'dismiss');
+    const p = principalOf(res);
+    if (p.role === 'agent' && !body.note?.trim()) {
+      throw new ValidationError('Say why in `note`: what was decided and where (e.g. "Sam: drop it, in the session")');
+    }
+    res.json(
+      pub.escalation(
+        store.dismissEscalation(
+          target.id,
+          body.note?.trim() || null,
+          p.name,
+          { status: body.status, activity: body.activity ?? undefined },
+          p.role === 'agent',
+        ),
+      ),
+    );
   });
 
   // ---- requirements (owner decisions about the product) ----
 
-  app.get('/api/requirements', any, (req, res) => {
+  app.get('/api/requirements', any, requirementsOnly, (req, res) => {
     const query = parse(s.requirementQuery, req.query);
     const a = acc(res);
     const projects = a.scope(query.project);
-    const group = query.group ? q(a.pick(query.project), query.group) : undefined;
+    const group = query.group ? q(a.pick(query.project, { group: query.group }), query.group) : undefined;
+    if (group && !store.groupExists(group)) throw new NotFoundError(`Group "${query.group}" not found`);
     res.json(
       store
         .findRequirements({ query: query.q, tags: query.tag, group, projects, statuses: query.status, limit: query.limit })
@@ -519,9 +582,11 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     );
   });
 
-  app.get('/api/requirements/tags', any, (req, res) => {
+  app.get('/api/requirements/tags', any, requirementsOnly, (req, res) => {
     const a = acc(res);
-    const group = typeof req.query.group === 'string' ? q(a.pick(projectQuery(req)), parse(s.groupId, req.query.group)) : undefined;
+    const raw = typeof req.query.group === 'string' ? parse(s.groupId, req.query.group) : undefined;
+    const group = raw ? q(a.pick(projectQuery(req), { group: raw }), raw) : undefined;
+    if (group && !store.groupExists(group)) throw new NotFoundError(`Group "${raw}" not found`);
     res.json(store.requirementTags(group, a.scope(projectQuery(req))));
   });
 
@@ -534,36 +599,44 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     return found;
   };
 
-  app.get('/api/requirements/:id', any, (req, res) => {
+  app.get('/api/requirements/:id', any, requirementsOnly, (req, res) => {
     res.json(pub.requirement(visibleRequirement(res, String(req.params.id))));
   });
 
   const requirementBody = (req: Request, res: Response, current?: Requirement) =>
     requirementInputFor(acc(res), parse(s.requirementInput, req.body), projectQuery(req), current);
 
-  app.post('/api/requirements', any, (req, res) => {
-    const result = store.recordRequirement(requirementBody(req, res), principalOf(res).name, principalOf(res).role === 'human');
-    res.status(201).json(pubRecord(acc(res), result));
+  app.post('/api/requirements', any, requirementsOnly, (req, res) => {
+    const p = principalOf(res);
+    const result = store.recordRequirement(requirementBody(req, res), p.name, p.role === 'human', ownerOf(p));
+    res.status(result.duplicate ? 200 : 201).json(pubRecord(acc(res), result));
   });
 
-  app.post('/api/requirements/:id/supersede', any, (req, res) => {
+  app.post('/api/requirements/:id/supersede', any, requirementsOnly, (req, res) => {
     const current = visibleRequirement(res, String(req.params.id));
     const result = store.supersedeRequirement(
       current.id,
       requirementBody(req, res, current),
       principalOf(res).name,
       principalOf(res).role === 'human',
+      ownerOf(principalOf(res)),
     );
     res.status(201).json(pubRecord(acc(res), result));
   });
 
-  app.patch('/api/requirements/:id', human, (req, res) => {
+  app.patch('/api/requirements/:id', human, requirementsOnly, (req, res) => {
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
     res.json(pub.requirement(store.editRequirement(current.id, parse(s.requirementEdit, req.body))));
   });
 
-  app.post('/api/requirements/:id/retire', human, (req, res) => {
+  app.post('/api/requirements/:id/restore', human, requirementsOnly, (req, res) => {
+    const current = visibleRequirement(res, String(req.params.id));
+    acc(res).requireWritable(current);
+    res.json(pub.requirement(store.restoreRequirement(current.id)));
+  });
+
+  app.post('/api/requirements/:id/retire', human, requirementsOnly, (req, res) => {
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
     res.json(pub.requirement(store.retireRequirement(current.id)));
@@ -577,11 +650,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     return {
       from: query.from,
       to: query.to,
-      laneId: query.lane ? q(a.pick(query.project), query.lane) : undefined,
+      laneId: query.lane ? q(a.pick(query.project, { lane: query.lane }), query.lane) : undefined,
       projects: a.scope(query.project),
     };
   };
   const stamp = () => new Date().toISOString().slice(0, 10);
+  const datasets = EXPORT_DATASETS.filter((d) => d !== 'requirements' || config.requirements);
   // Building an export reads everything; one at a time keeps the server responsive.
   let exporting = false;
   const oneAtATime = (_req: Request, res: Response, next: NextFunction) => {
@@ -595,7 +669,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   };
 
   app.get('/api/export', any, oneAtATime, h(async (req, res) => {
-    const body = await exportZip(store, exportFilterOf(req, res), new Date());
+    const body = await exportZip(store, exportFilterOf(req, res), new Date(), datasets);
     res
       .set({
         'content-type': 'application/zip',
@@ -608,8 +682,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   app.get('/api/export/:file', any, oneAtATime, h(async (req, res) => {
     const match = /^([a-z]+)\.(csv|json)$/.exec(String(req.params.file));
     const dataset = match?.[1] as ExportDataset | undefined;
-    if (!match || !dataset || !EXPORT_DATASETS.includes(dataset)) {
-      throw new NotFoundError(`Unknown export; use one of ${EXPORT_DATASETS.map((d) => `${d}.csv`).join(', ')} (or .json)`);
+    if (!match || !dataset || !datasets.includes(dataset)) {
+      throw new NotFoundError(`Unknown export; use one of ${datasets.map((d) => `${d}.csv`).join(', ')} (or .json)`);
     }
     const filter = exportFilterOf(req, res);
     res.set('cache-control', 'no-store');
@@ -677,7 +751,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
 
   // ---- MCP ----
 
-  app.post('/mcp', any, mcpHandler(store));
+  app.post('/mcp', any, mcpHandler(store, { decisions: config.decisions, requirements: config.requirements }));
   app.all('/mcp', (_req, res) => {
     res.status(405).set('allow', 'POST').json({ error: 'Stateless MCP endpoint: use POST' });
   });
@@ -690,7 +764,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
 
   if (webDir && existsSync(path.join(webDir, 'index.html'))) {
     app.use(express.static(webDir, { index: false, maxAge: '1h' }));
-    app.get('/{*splat}', (_req, res) => {
+    app.get('/{*splat}', (req, res) => {
+      // A mistyped API URL ("//api/wait", "/mcp/api/wait") must fail loudly, not answer 200 with the app.
+      if (/\/(api|mcp)(\/|$)/.test(req.path)) {
+        res.status(404).json({ error: `not found: ${req.path} (the API lives at /api/…, under the server's base URL)` });
+        return;
+      }
       res.setHeader('cache-control', 'no-cache');
       res.sendFile(path.join(webDir, 'index.html'));
     });

@@ -2,6 +2,15 @@
 
 Every setting can be an environment variable. Most can also go in an optional JSON file (`LANESIGNAL_CONFIG`, default `/config/lanesignal.json`; see [`config/lanesignal.example.json`](../config/lanesignal.example.json)). Environment variables win over the file. Invalid numbers stop the server at startup with a message naming the variable.
 
+## Features
+
+Set these in the stack's environment (Compose / `.env`); there's no switch in the app.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `LANESIGNAL_DECISIONS` | `false` | Answering in LaneSignal. Off (the default), LaneSignal only **alerts**: you answer in the agent's own session (e.g. Remote Control), so the conversation and the decision stay in one place, and the agent dismisses the alert with a justification. The dashboard is read-only apart from dismissing stale alerts. `true` adds decision buttons on the dashboard, and the agent tools to wait for and acknowledge decisions. See [Lanes, groups and escalations](concepts.md#escalations) |
+| `LANESIGNAL_REQUIREMENTS` | `true` | The [requirements](requirements.md) register: a durable, searchable record of the owner's decisions outside the repository. `false` removes its tools, page, API and export |
+
 ## Server
 
 | Env var | JSON key | Default | Notes |

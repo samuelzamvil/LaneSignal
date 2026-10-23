@@ -19,6 +19,8 @@ export async function startServer(env: Record<string, string> = {}) {
     LANESIGNAL_HUMAN_TOKENS: `alice:${ALICE}`,
     LANESIGNAL_AUTH_SECRET: 'test-secret-0123456789-0123456789-0123',
     LANESIGNAL_TICKET_TEMPLATES: 'gh=https://github.com/o/r/issues/{id}',
+    // Most suites cover answering in LaneSignal (opt-in); alerts.test.ts covers the default.
+    LANESIGNAL_DECISIONS: 'true',
     ...env,
   });
   const store = new Store({
@@ -49,6 +51,19 @@ export async function startServer(env: Record<string, string> = {}) {
       json = text;
     }
     return { status: res.status, body: json, headers: res.headers };
+  }
+
+  /**
+   * Publishes a lane (as an agent must before escalating on it), leaving an existing one as is.
+   * With `group`, registers the group first.
+   */
+  async function publish(laneId: string, opts: { token?: string; project?: string; group?: string } = {}) {
+    const token = opts.token ?? AGENT;
+    const qs = opts.project ? `?project=${encodeURIComponent(opts.project)}` : '';
+    if (opts.group) await call('PUT', `/api/groups/${encodeURIComponent(opts.group)}${qs}`, token, {});
+    if (!opts.group && (await call('GET', `/api/lanes/${encodeURIComponent(laneId)}${qs}`, token)).status === 200) return;
+    const res = await call('PUT', `/api/lanes/${encodeURIComponent(laneId)}${qs}`, token, opts.group ? { group: opts.group } : {});
+    if (res.status !== 200) throw new Error(`publishing lane ${laneId}: ${res.status} ${JSON.stringify(res.body)}`);
   }
 
   /** One MCP tools/call; returns the parsed JSON of the first text block, or the error text. */
@@ -86,6 +101,7 @@ export async function startServer(env: Record<string, string> = {}) {
     config,
     call,
     tool,
+    publish,
     close() {
       server.closeAllConnections();
       server.close();

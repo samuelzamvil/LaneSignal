@@ -10,6 +10,7 @@ import {
   type ProjectRole,
 } from './api.ts';
 import { absolute, ago } from './format.ts';
+import { policyFor } from './policy.ts';
 
 function useAsync<T>(load: () => Promise<T>) {
   const [data, setData] = useState<T | null>(null);
@@ -24,6 +25,45 @@ function useAsync<T>(load: () => Promise<T>) {
 }
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** Copies text, also where the async clipboard API is missing (plain http on a LAN). */
+async function copyText(text: string) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  try {
+    if (!document.execCommand('copy')) throw new Error('copy refused');
+  } finally {
+    area.remove();
+  }
+}
+
+/** A value to copy, with a button that says whether it worked. */
+function CopyBlock({ label, text }: { label: string; text: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  useEffect(() => {
+    if (state === 'idle') return;
+    const t = setTimeout(() => setState('idle'), 2000);
+    return () => clearTimeout(t);
+  }, [state]);
+  return (
+    <div className="copy-block">
+      <pre className="secret">{text}</pre>
+      <button
+        type="button"
+        className="ghost"
+        aria-label={`Copy ${label.toLowerCase()}`}
+        onClick={() => copyText(text).then(() => setState('copied'), () => setState('failed'))}
+      >
+        {state === 'copied' ? 'Copied ✓' : state === 'failed' ? 'Select it and copy by hand' : `Copy ${label.toLowerCase()}`}
+      </button>
+    </div>
+  );
+}
 
 export function PasswordSection({ client, onNewSession }: { client: Client; onNewSession: (token: string) => void }) {
   const [current, setCurrent] = useState('');
@@ -62,11 +102,17 @@ export function AgentKeysSection({
   serverUrl,
   now,
   projects,
+  decisions,
+  requirements,
 }: {
   client: Client;
   serverUrl: string;
   now: number;
   projects: ProjectAccess[];
+  /** The requirements register is on: the starter policy keeps its Requirements part. */
+  requirements: boolean;
+  /** Answering in LaneSignal is on: agents also need the environment for the skill's long waits. */
+  decisions: boolean;
 }) {
   const load = useCallback(() => client.listKeys(), [client]);
   const { data: keys, error, reload } = useAsync(load);
@@ -74,7 +120,7 @@ export function AgentKeysSection({
   const [role, setRole] = useState<'agent' | 'human'>('agent');
   /** '' = every project the owner can see. */
   const [project, setProject] = useState('');
-  const [created, setCreated] = useState<{ name: string; key: string; role: 'agent' | 'human' } | null>(null);
+  const [created, setCreated] = useState<{ name: string; key: string; role: 'agent' | 'human'; project: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -84,7 +130,7 @@ export function AgentKeysSection({
     setActionError(null);
     try {
       const k = await client.createKey(name.trim(), role, role === 'agent' && project ? project : undefined);
-      setCreated({ name: name.trim(), key: k.key, role });
+      setCreated({ name: name.trim(), key: k.key, role, project: role === 'agent' ? project : '' });
       setName('');
       reload();
     } catch (err) {
@@ -108,14 +154,30 @@ export function AgentKeysSection({
     ? `claude mcp add --transport http lanesignal ${serverUrl}/mcp --header "Authorization: Bearer ${created.key}"`
     : '';
   const skillCommand = `mkdir -p .claude/skills/lanesignal && curl -fsS ${serverUrl}/api/skill -o .claude/skills/lanesignal/SKILL.md`;
+  // An unbound key that reaches several projects passes `project`.
+  const needsProject = !!created && !created.project && projects.length > 1;
+  const envBlock = created
+    ? JSON.stringify(
+        {
+          env: {
+            LANESIGNAL_URL: serverUrl,
+            LANESIGNAL_KEY: created.key,
+            LANESIGNAL_GROUP: '<group-id>',
+            ...(needsProject ? { LANESIGNAL_PROJECT: '<project-id>' } : {}),
+          },
+        },
+        null,
+        2,
+      )
+    : '';
 
   return (
     <section className="settings-block">
       <h3>Keys</h3>
       <p className="hint">
         Give each overseer its own <strong>agent key</strong>; the key name is shown as the agent on its lanes. A{' '}
-        <strong>personal key</strong> is for your own Claude session: it answers escalations as you (decisions show your
-        name) but can't publish lanes. Keys belong to your account and stop working if you revoke them or your account is
+        <strong>personal key</strong> is for your own Claude session: it reads lanes and alerts and acts as you (what it
+        does shows your name), but can't publish lanes. Keys belong to your account and stop working if you revoke them or your account is
         removed.
       </p>
       <form onSubmit={create} className="inline-form">
@@ -149,31 +211,29 @@ export function AgentKeysSection({
           <p>
             <strong>{created.name}</strong>: copy this key now. It won't be shown again.
           </p>
-          <code className="secret">{created.key}</code>
-          <p className="hint">Add it to Claude Code:</p>
-          <code className="secret">{mcpCommand}</code>
+          <CopyBlock label="Key" text={created.key} />
+          <p className="hint">1. Add it to Claude Code (run in the project):</p>
+          <CopyBlock label="Command" text={mcpCommand} />
           {created.role === 'agent' && (
             <>
-              <p className="hint">Then install the skill that teaches agents how to use LaneSignal (run in the project):</p>
-              <code className="secret">{skillCommand}</code>
-              <p className="hint">
-                For long waits the skill also needs <code>LANESIGNAL_URL</code>, <code>LANESIGNAL_KEY</code> and{' '}
-                <code>LANESIGNAL_GROUP</code> in the agent's environment (see Connecting agents in the docs).
-              </p>
+              <p className="hint">2. Install the skill that teaches agents how to use LaneSignal:</p>
+              <CopyBlock label="Skill command" text={skillCommand} />
+              {decisions && (
+                <>
+                  <p className="hint">
+                    For long waits, put this in the project's <code>.claude/settings.local.json</code> (not committed: it
+                    holds the key), with your group id:
+                  </p>
+                  <CopyBlock label="Settings" text={envBlock} />
+                </>
+              )}
+              <details>
+                <summary className="hint">3. Tell the overseer when to use LaneSignal: a starter policy for its CLAUDE.md</summary>
+                <CopyBlock label="Policy" text={policyFor('', needsProject ? '<project-id>' : null, requirements)} />
+              </details>
             </>
           )}
           <div className="actions">
-            <button className="ghost" onClick={() => void navigator.clipboard?.writeText(created.key)}>
-              Copy key
-            </button>
-            <button className="ghost" onClick={() => void navigator.clipboard?.writeText(mcpCommand)}>
-              Copy command
-            </button>
-            {created.role === 'agent' && (
-              <button className="ghost" onClick={() => void navigator.clipboard?.writeText(skillCommand)}>
-                Copy skill command
-              </button>
-            )}
             <button className="ghost" onClick={() => setCreated(null)}>
               Done
             </button>
@@ -237,10 +297,15 @@ function ProjectMembers({ client, project, me }: { client: Client; project: Proj
         {members?.map((m) => (
           <li key={m.userId}>
             <div>
-              <strong>{m.name}</strong> {m.role === 'admin' && <span className="tag">admin</span>}
+              <strong>{m.name}</strong>{' '}
+              {m.instanceAdmin ? (
+                <span className="tag" title="Account admins see every project">instance admin</span>
+              ) : (
+                m.role === 'admin' && <span className="tag">admin</span>
+              )}
               <div className="muted small">{m.email}</div>
             </div>
-            {admin && (
+            {admin && !m.instanceAdmin && (
               <div className="actions">
                 <select
                   value={m.role}
@@ -494,7 +559,7 @@ export function PeopleSection({ client, me }: { client: Client; me: Principal })
 const DATASETS = ['escalations', 'positions', 'lanes', 'groups', 'events', 'requirements'] as const;
 
 /** Everything (including closed escalations and removed lanes) as CSV for analysis. */
-export function ExportSection({ client, serverUrl }: { client: Client; serverUrl: string }) {
+export function ExportSection({ client, serverUrl, requirements }: { client: Client; serverUrl: string; requirements: boolean }) {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -541,7 +606,7 @@ export function ExportSection({ client, serverUrl }: { client: Client; serverUrl
             Download everything (.zip)
           </button>
           <div className="dataset-links">
-            {DATASETS.map((d) => (
+            {DATASETS.filter((d) => d !== 'requirements' || requirements).map((d) => (
               <button key={d} className="ghost" disabled={busy} onClick={() => void get(`/api/export/${d}.csv`, `${d}.csv`)}>
                 {d}.csv
               </button>

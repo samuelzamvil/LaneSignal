@@ -23,6 +23,7 @@ before(async () => {
     LANESIGNAL_AUTH_SECRET: 'test-secret-0123456789-0123456789-0123',
     // Room for this file's legitimate sign-ins (one client IP); the last test exhausts it.
     LANESIGNAL_SIGNIN_RATE_MAX: '12',
+    LANESIGNAL_DECISIONS: 'true',
   });
   const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
   const accounts = await createAccounts(config, ':memory:');
@@ -278,6 +279,7 @@ describe('accounts', () => {
 
   test('revoking a key closes its open event stream and fails its in-flight long-poll', async () => {
     const key = (await call('POST', '/api/auth/api-key/create', adminToken, { name: 'streamer' })).body.key;
+    await call('PUT', '/api/lanes/stream-lane', key, {});
     const esc = (await call('POST', '/api/escalations', key, { laneId: 'stream-lane', question: 'Q?' })).body;
     const ctrl = new AbortController();
     const stream = await fetch(`${base}/api/events?access_token=${key}`, { signal: ctrl.signal });
