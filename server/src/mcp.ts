@@ -149,8 +149,9 @@ function buildServer(
     {
       description:
         'Wait for human answers across your group, some lanes, or specific escalations, and return as soon as ' +
-        'any of them needs you. Returns `decided` (answered, not yet acknowledged: act on each), `closed` (named ' +
-        'escalations withdrawn or already acknowledged, e.g. a human removed the lane), and `open` (still waiting). ' +
+        'any of them needs you. Returns `decided` (answered, not yet acknowledged: act on each), `closed` ' +
+        '(withdrawn by someone else, e.g. "Lane removed by …": stop work on that lane; or named ones already ' +
+        'acknowledged), `open` (still waiting) and `checkedAt` (pass it as `since` next time). ' +
         '`ready` is false only when the wait ran out with nothing new; call again. Returns at once if something is ' +
         'already decided or nothing is open. Decisions can take hours: loop on this tool, or for long waits in ' +
         'Claude Code run the HTTP version (GET /api/wait) as a background shell command so your session stays free. ' +
@@ -160,12 +161,16 @@ function buildServer(
         lane_ids: z.array(s.laneId).max(100).optional(),
         ids: z.array(z.string()).max(100).optional().describe('Escalation ids or short numbers.'),
         wait_seconds: z.number().int().min(0).max(3600).optional(),
+        since: z
+          .string()
+          .optional()
+          .describe('Pass the previous result\'s `checkedAt` so withdrawals between calls are still reported.'),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ group_id, lane_ids, ids, wait_seconds }, extra) => {
+    async ({ group_id, lane_ids, ids, wait_seconds, since }, extra) => {
       try {
-        const scope = s.waitScope.parse({ groupId: group_id, laneIds: lane_ids, ids });
+        const scope = { ...s.waitScope.parse({ groupId: group_id, laneIds: lane_ids, ids, since }), viewer: who.name };
         const timeout = wait_seconds ?? 300;
         const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
           store.waitForDecisions(scope, timeout * 1000, signal),

@@ -59,6 +59,7 @@ test('upgrades a schema v1 database without losing escalations', () => {
       ALTER TABLE groups DROP COLUMN archived_at;
       DROP INDEX escalations_ref;
       ALTER TABLE escalations DROP COLUMN ref;
+      ALTER TABLE escalations DROP COLUMN withdrawn_by;
       ALTER TABLE push_tokens DROP COLUMN user_id;
       UPDATE meta SET value = '1' WHERE key = 'schema_version';
     `);
@@ -365,3 +366,17 @@ test('export date filters are UTC-only and strict', async () => {
     assert.equal(exportFilter.safeParse(bad).success, false, JSON.stringify(bad));
   }
 });
+
+test('a removed person\'s phones are dropped, including tokens registered before accounts were recorded', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  store.addPushToken('new-token-0000', 'android', 'Carol', 'u-carol');
+  store.addPushToken('old-token-0000', 'android', 'Carol');
+  store.addPushToken('other-token-000', 'android', 'Dan', 'u-dan');
+  store.removePushTokensOf('u-carol', 'Carol');
+  assert.deepEqual(
+    store.listPushTokens().map((t) => t.token),
+    ['other-token-000'],
+  );
+  store.close();
+});
+

@@ -242,7 +242,10 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
     any,
     h(async (req, res) => {
       const q = parse(s.waitQuery, req.query);
-      const scope = parse(s.waitScope, { ids: q.ids, laneIds: q.lane, groupId: q.group });
+      const scope = {
+        ...parse(s.waitScope, { ids: q.ids, laneIds: q.lane, groupId: q.group, since: q.since }),
+        viewer: principalOf(res).name,
+      };
       const now = store.decisionsFor(scope);
       const timeout = q.timeout ?? 300;
       if (now.ready || timeout === 0) {

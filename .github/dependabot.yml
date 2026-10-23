@@ -8,6 +8,10 @@ updates:
     groups:
       npm:
         patterns: ['*']
+    ignore:
+      # Types follow the Node major the image runs.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:

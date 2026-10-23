@@ -61,6 +61,8 @@ jobs:
 
   android:
     needs: test
+    # The weekly run only refreshes the server image.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     env:
       LANESIGNAL_VERSION_CODE: ${{ github.run_number }}

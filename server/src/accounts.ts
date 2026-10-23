@@ -50,6 +50,8 @@ export async function createAccounts(config: Config, dbPath: string) {
   const revocations = new EventEmitter<{ revoked: [] }>();
   revocations.setMaxListeners(0);
   const revoked = () => revocations.emit('revoked');
+  /** Fires when a person is removed or banned, so their phones stop getting push. */
+  const people = new EventEmitter<{ gone: [userId: string, name: string | null] }>();
 
   const options = {
     database: db,
@@ -82,6 +84,7 @@ export async function createAccounts(config: Config, dbPath: string) {
           after: async (user) => {
             db.prepare('DELETE FROM apikey WHERE referenceId = ?').run(user.id);
             revoked();
+            people.emit('gone', user.id, user.name ?? null);
           },
         },
       },
@@ -114,6 +117,11 @@ export async function createAccounts(config: Config, dbPath: string) {
         // An admin password reset signs the person out everywhere.
         if (ctx.path === '/admin/set-user-password' && typeof ctx.body?.userId === 'string') {
           await ctx.context.internalAdapter.deleteUserSessions(ctx.body.userId);
+        }
+        // Only once the ban went through (a refused call ends up here too, with an error).
+        if (ctx.path === '/admin/ban-user' && typeof ctx.body?.userId === 'string' && !(ctx.context.returned instanceof Error)) {
+          const row = db.prepare('SELECT name FROM user WHERE id = ?').get(ctx.body.userId) as { name: string } | undefined;
+          people.emit('gone', ctx.body.userId, row?.name ?? null);
         }
         if (REVOKING_PATHS.has(ctx.path)) revoked();
       }),
@@ -178,6 +186,7 @@ export async function createAccounts(config: Config, dbPath: string) {
   return {
     auth,
     revocations,
+    people,
 
     needsSetup: () => userCount() === 0,
     /** Whether an account still exists and isn't banned (push tokens of removed people are skipped). */

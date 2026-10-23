@@ -10,6 +10,8 @@ import { loadConfig } from '../src/config.ts';
 import { Store } from '../src/store.ts';
 
 let base = '';
+/** People reported as removed or banned (their push tokens get dropped). */
+const gone: string[] = [];
 let close: () => void;
 let setupCode = '';
 
@@ -24,6 +26,7 @@ before(async () => {
   });
   const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
   const accounts = await createAccounts(config, ':memory:');
+  accounts.people.on('gone', (_id, name) => gone.push(name ?? '?'));
   setupCode = accounts.setupCode!;
   const server = createApp({ config, store, accounts, push: { fcm: false, ntfy: false } }).listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -171,6 +174,7 @@ describe('accounts', () => {
     assert.equal((await call('GET', '/api/lanes', key)).status, 200);
     const removed = await call('POST', '/api/auth/admin/remove-user', adminToken, { userId: carol.body.user.id });
     assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    assert.ok(gone.includes('Carol'), 'removal is reported');
     assert.equal((await call('GET', '/api/lanes', key)).status, 401);
     assert.equal((await call('GET', '/api/me', carolToken)).status, 401);
   });
@@ -185,6 +189,7 @@ describe('accounts', () => {
     const key = (await call('POST', '/api/auth/api-key/create', danToken, { name: 'dan-bot' })).body.key;
     assert.equal((await call('GET', '/api/lanes', key)).status, 200);
     assert.equal((await call('POST', '/api/auth/admin/ban-user', adminToken, { userId: dan.body.user.id })).status, 200);
+    assert.ok(gone.includes('Dan'), 'a ban is reported');
     assert.equal((await call('GET', '/api/lanes', key)).status, 401);
     assert.equal((await call('GET', '/api/me', danToken)).status, 401);
   });

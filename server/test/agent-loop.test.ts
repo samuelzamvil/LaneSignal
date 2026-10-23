@@ -119,7 +119,7 @@ describe('changing a decision', () => {
     assert.equal(ack.value.decision, 'B');
     assert.equal((await decide(e.id, 'A', { change: true })).status, 409);
     const events = (await srv.call('GET', '/api/lanes/change', ALICE)).body.events.map((x: any) => x.message);
-    assert.ok(events.includes('Decision changed by alice: B'));
+    assert.ok(events.includes('Decision changed by alice: B (was A by alice)'));
   });
 
   test('change: true on an open escalation is a normal decision', async () => {
@@ -161,7 +161,8 @@ describe('waiting on many escalations', () => {
     await decide(open.id, 'yes');
     await srv.tool(AGENT, 'acknowledge_escalation', { id: open.id });
     const empty = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'wait-group', wait_seconds: 30 })).value;
-    assert.deepEqual(empty, { ready: true, decided: [], closed: [], open: [] });
+    assert.deepEqual({ ...empty, checkedAt: undefined }, { ready: true, decided: [], closed: [], open: [], checkedAt: undefined });
+    assert.ok(Date.parse(empty.checkedAt));
   });
 
   test('times out with ready: false when nothing changes', async () => {
@@ -181,21 +182,61 @@ describe('waiting on many escalations', () => {
     assert.equal(res.closed[0].state, 'withdrawn');
   });
 
-  test('scope is required, unknown ids are errors', async () => {
+  test('a group wait reports a lane a human removed, but not the agent\'s own withdrawals', async () => {
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'g-a', group: 'removals' });
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'g-b', group: 'removals' });
+    const a = await ask('g-a', 'A?');
+    const b = await ask('g-b', 'B?');
+    const own = await ask('g-b', 'Mine to withdraw?');
+    const t0 = Date.now();
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'removals', wait_seconds: 30 });
+    await sleep(150);
+    await srv.tool(AGENT, 'withdraw_escalation', { id: own.id, resolution: 'moot' });
+    await sleep(100);
+    await srv.call('DELETE', '/api/lanes/g-a', ALICE);
+    const res = (await waiting).value;
+    assert.ok(Date.now() - t0 < 5000);
+    assert.equal(res.ready, true);
+    assert.deepEqual(res.closed.map((e: any) => e.id), [a.id]);
+    assert.match(res.closed[0].resolution, /Lane removed by alice/);
+    assert.deepEqual(res.open.map((e: any) => e.id), [b.id]);
+  });
+
+  test('since catches withdrawals that happened between two waits', async () => {
+    const before = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'removals', wait_seconds: 0 })).value;
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'g-c', group: 'removals' });
+    await ask('g-c', 'C?');
+    await srv.call('DELETE', '/api/lanes/g-c', ALICE);
+    const later = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'removals', since: before.checkedAt, wait_seconds: 5 })).value;
+    assert.equal(later.ready, true);
+    assert.deepEqual(later.closed.map((e: any) => e.laneId), ['g-c']);
+    const http = await srv.call('GET', `/api/wait?group=removals&since=${encodeURIComponent(before.checkedAt)}&timeout=5`, AGENT);
+    assert.deepEqual(http.body.closed.map((e: any) => e.laneId), ['g-c']);
+  });
+
+  test('scope is required; unknown groups, lanes and ids are errors', async () => {
     assert.equal((await srv.tool(AGENT, 'wait_for_decisions', {})).isError, true);
     assert.equal((await srv.tool(AGENT, 'wait_for_decisions', { ids: ['#99999'] })).isError, true);
+    const typo = await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'wait-gruop' });
+    assert.equal(typo.isError, true);
+    assert.match(typo.text, /Group "wait-gruop" not found/);
     assert.equal((await srv.call('GET', '/api/wait', AGENT)).status, 400);
     assert.equal((await srv.call('GET', '/api/wait?ids=99999', AGENT)).status, 404);
+    assert.equal((await srv.call('GET', '/api/wait?group=nope', AGENT)).status, 404);
+    assert.equal((await srv.call('GET', '/api/wait?lane=nope', AGENT)).status, 404);
     assert.equal((await srv.call('GET', '/api/wait?group=g&bogus=1', AGENT)).status, 400);
     assert.equal((await srv.call('GET', '/api/wait?group=g&timeout=100000', AGENT)).status, 400);
+    assert.equal((await srv.call('GET', '/api/wait?group=wait-group&since=yesterday', AGENT)).status, 400);
   });
 });
 
 describe('the HTTP wait for long waits', () => {
   test('answers at once with JSON when something is ready', async () => {
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'empty-lane' });
     const res = await srv.call('GET', '/api/wait?lane=empty-lane&timeout=60', AGENT);
     assert.equal(res.status, 200);
-    assert.deepEqual(res.body, { ready: true, decided: [], closed: [], open: [] });
+    assert.equal(res.body.ready, true);
+    assert.deepEqual(res.body.open, []);
   });
 
   test('sends headers and keepalive bytes at once, then the JSON when decided', async () => {
@@ -230,6 +271,21 @@ describe('whether an agent is listening', () => {
     // The test server's grace period is 50ms.
     await sleep(200);
     assert.equal((await srv.call('GET', '/api/lanes/listening', ALICE)).body.lane.agentWaiting, false);
+  });
+
+  test('a lane that gets a question during a group wait is marked too', async () => {
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'join-1', group: 'joining' });
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'join-2', group: 'joining' });
+    const first = await ask('join-1', 'First?');
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'joining', wait_seconds: 30 });
+    await sleep(150);
+    const second = await ask('join-2', 'Second?');
+    await sleep(50);
+    assert.equal((await srv.call('GET', '/api/lanes/join-2', ALICE)).body.lane.agentWaiting, true);
+    await decide(second.id, 'ok');
+    const res = (await waiting).value;
+    assert.deepEqual(res.decided.map((e: any) => e.id), [second.id]);
+    await decide(first.id, 'ok');
   });
 
   test('FYI escalations are counted apart from blocking ones', async () => {

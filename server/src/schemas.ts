@@ -77,34 +77,6 @@ export const acknowledgement = resolution.extend({
   activity: z.string().max(2000).nullable().optional(),
 });
 
-/** Escalation ids or short numbers ("42" or "#42"). */
-const idList = z.array(z.string().min(1).max(100)).max(100);
-
-/** Longest single wait. The server sends keepalive bytes while it waits, so proxies don't cut it off. */
-export const MAX_WAIT_SECONDS = 86_400;
-
-export const waitScope = z
-  .object({
-    ids: idList.optional(),
-    laneIds: z.array(laneId).max(100).optional(),
-    groupId: groupId.optional(),
-  })
-  .refine((w) => w.ids?.length || w.laneIds?.length || w.groupId, {
-    message: 'give a group, lanes, or escalation ids to wait on',
-  });
-
-const csv = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v);
-
-/** GET /api/wait query: ?group=&lane=a,b&ids=1,2&timeout=seconds */
-export const waitQuery = z
-  .object({
-    group: groupId.optional(),
-    lane: z.preprocess(csv, z.array(laneId).max(100)).optional(),
-    ids: z.preprocess(csv, idList).optional(),
-    timeout: z.coerce.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
-  })
-  .strict();
-
 const password = z.string().min(10).max(128);
 
 export const setupInput = z.object({
@@ -158,3 +130,33 @@ export const pushRegistration = z.object({
   token: z.string().min(10).max(4096),
   platform: z.enum(['android', 'ios', 'web']).default('android'),
 });
+
+/** Escalation ids or short numbers ("42" or "#42"). */
+const idList = z.array(z.string().min(1).max(100)).max(100);
+
+/** Longest single wait. The server sends keepalive bytes while it waits, so proxies don't cut it off. */
+export const MAX_WAIT_SECONDS = 86_400;
+
+export const waitScope = z
+  .object({
+    ids: idList.optional(),
+    laneIds: z.array(laneId).max(100).optional(),
+    groupId: groupId.optional(),
+    since: instant.optional(),
+  })
+  .refine((w) => w.ids?.length || w.laneIds?.length || w.groupId, {
+    message: 'give a group, lanes, or escalation ids to wait on',
+  });
+
+const csv = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v);
+
+/** GET /api/wait query: ?group=&lane=a,b&ids=1,2&timeout=seconds&since=iso */
+export const waitQuery = z
+  .object({
+    group: groupId.optional(),
+    lane: z.preprocess(csv, z.array(laneId).max(100)).optional(),
+    ids: z.preprocess(csv, idList).optional(),
+    timeout: z.coerce.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
+    since: z.string().max(40).optional(),
+  })
+  .strict();

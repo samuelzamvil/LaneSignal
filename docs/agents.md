@@ -70,10 +70,12 @@ Which tools a client sees depends on its credential: agent keys get the agent to
 
 Answers can take minutes or a day. An overseer waits on its whole group with one call:
 
-- `wait_for_decisions` with `group_id` returns as soon as any escalation in the group is decided, or straight away if one already is. Its result lists `decided` (act on these), `closed` (escalations named by id that were withdrawn, e.g. because a human removed the lane) and `open`.
+- `wait_for_decisions` with `group_id` returns as soon as any escalation in the group is decided, or straight away if one already is. Its result lists `decided` (act on these), `closed` (withdrawn by someone else, e.g. because a human removed the lane) and `open`.
 - `ready: false` means the wait ran out with nothing new; call again. Decided escalations stay decided until acknowledged, so a dropped call or a server restart loses nothing: call again.
 - While an agent waits, its lanes show **agent waiting** on the dashboard. A person answering at hour 20 can see whether the answer reaches someone now.
-- During a wait the server sends a notification every 20 seconds (progress, if the client asked for it), so proxies and clients see that the call is alive.
+- During a wait the server sends a notification every 20 seconds (progress, if the client asked for it), so proxies and clients see that the call is alive. Clients that cut calls off after a fixed time (the MCP SDK's default is 60 seconds unless progress resets it) should pass a `wait_seconds` below that and call again.
+- Pass the previous result's `checkedAt` as `since`, so a lane removed between two calls is still reported.
+- An unknown `group_id` or lane is an error, so a typo doesn't look like "nothing to wait for".
 
 **Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. For waits that may last hours, the [agent instructions](agent-instructions.md) run the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
 

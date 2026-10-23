@@ -19,6 +19,7 @@ const store = new Store({
 });
 const accounts = await createAccounts(config, path.join(config.dataDir, 'lanesignal.db'));
 const push = startNotifier(config, store, accounts.userActive);
+accounts.people.on('gone', (userId, name) => store.removePushTokensOf(userId, name));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(process.env.LANESIGNAL_WEB_DIR ?? path.resolve(here, '../../web/dist'));
