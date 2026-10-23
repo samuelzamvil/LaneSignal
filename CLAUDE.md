@@ -9,6 +9,6 @@
 
 ## Project
 
-- `server/`: Node 22 + Express 5 + `node:sqlite`, Better Auth accounts, MCP at `POST /mcp`. Tests: `cd server && npm test`.
-- `web/`: React + Vite, shared with the Capacitor Android app in `android/`.
+- `server/`: Node 22 + Express 5 + `node:sqlite`, Better Auth accounts, MCP at `POST /mcp`. Tests: `npm test` from the repo root.
+- `web/`: React + Vite, shared with the Capacitor Android app (`web/capacitor.config.ts`).
 - `docs/`: the wiki. Update it alongside behaviour changes.
