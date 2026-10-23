@@ -18,7 +18,9 @@ Everything the MCP tools do is also available over plain HTTP, for scripts, CI j
 URL=https://lanesignal.example.com
 KEY=ls_…
 
-# publish lane state (creates the lane on first call)
+# register the group once per session, then publish lane state (creates the lane on first call)
+curl -X PUT $URL/api/groups/payments-epic -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"name":"Payments epic"}'
 curl -X PUT $URL/api/lanes/auth-rework -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"name":"Auth rework","group":"payments-epic","status":"pending_ci","ticket":"redmine:4812",
        "activity":"Waiting on CI for PR #311",
@@ -56,7 +58,7 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `GET /api/projects` | any | Projects the credential reaches, with your `role` and `notify` setting |
 | `POST /api/projects` | instance admin | `{id, key, name}`. The creator becomes its admin |
 | `PATCH /api/projects/:id` | project admin | `{name?, key?}` |
-| `GET /api/projects/:id/members` | human | `[{userId, name, email, role, notify}]` |
+| `GET /api/projects/:id/members` | human | `[{userId, name, email, role, notify, instanceAdmin?}]`. Account admins are listed too (`instanceAdmin: true`): they see every project |
 | `PUT /api/projects/:id/members/:userId` | project admin | `{role: "admin" \| "member"}`: add a person or change their role |
 | `DELETE /api/projects/:id/members/:userId` | project admin | Remove a member |
 | `PUT /api/projects/:id/notifications` | person | `{enabled}`: push for this project on your own devices |
@@ -67,25 +69,26 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `DELETE /api/groups/:id` | human | Archives it. Its lanes show as ungrouped, and exports keep the link |
 | `GET /api/lanes` | any | |
 | `GET /api/lanes/:id` | any | Lane, its recent escalations and the last 100 activity entries |
-| `PUT /api/lanes/:id` | agent | Create or update `{name?, group?, status?, ticket?, activity?, links?}` |
+| `PUT /api/lanes/:id` | agent | Create or update `{name?, group?, status?, ticket?, activity?, links?}`. The group must be registered first (`404` otherwise, so a typo can't create a stray group). While a blocking escalation is open the lane stays `blocked_human` |
 | `DELETE /api/lanes/:id` | any | Archives the lane and withdraws its unanswered escalations; decided ones keep their answer. Its history stays for export, and republishing restores it |
 | `GET /api/escalations?state=open,decided&lane=<id>` | any | Defaults to unresolved (open and decided) |
-| `POST /api/escalations` | agent | See the [fields](concepts.md#escalations). `blocking: false` for FYI questions. `201` when created; `200` with `duplicate: true` when the same question is already open on that lane |
+| `POST /api/escalations` | agent | See the [fields](concepts.md#escalations). `blocking: false` for FYI questions. The lane must be published first (`404` otherwise). `201` when created; `200` with `duplicate: true` when the same question (ignoring spacing and case) is already open on that lane |
 | `GET /api/escalations/:id?wait=<s>` | any | `wait` (up to 300) holds the request until it's no longer open |
-| `GET /api/wait?group=&lane=a,b&ids=1,2&timeout=<s>` | any | Waits until something in scope needs the agent; give at least one of `group`, `lane`, `ids`. Returns `{ready, decided, closed, open, removedLanes, checkedAt}` ([details](agents.md#waiting-for-decisions)); pass `checkedAt` back as `since`. Unknown groups, lanes or ids are `404`. `timeout` defaults to 300, max 86400. If it has to wait, it sends `200` at once and a space every 20s until the JSON follows, so proxies keep it open |
+| `GET /api/wait?group=&lane=a,b&ids=1,2&timeout=<s>` | any | Waits until something in scope needs the agent; give at least one of `group`, `lane`, `ids`. Returns `{ready, decided, closed, open, removedLanes, checkedAt}` ([details](agents.md#waiting-for-decisions)), with escalations in brief (no context; `GET /api/escalations/:id` has everything); pass `checkedAt` back as `since`. Unknown groups, lanes or ids are `404`. `timeout` defaults to 300, max 86400. If it has to wait, it sends `200` at once and a space every 20s until the JSON follows, so proxies keep it open |
 | `POST /api/escalations/:id/positions` | agent | `{stance, note?, agent?}`. Open escalations only; at most 20 agents |
 | `POST /api/escalations/:id/decide` | human | `{decision, note?, change?}`. A second decision is `409`, unless `change: true` and the agent hasn't acknowledged yet |
-| `POST /api/escalations/:id/ack` | agent | `{note?, status?, activity?}`. Returns the escalation with the final decision; `status`/`activity` update the lane. Repeating it returns the same result |
+| `POST /api/escalations/:id/ack` | any | `{note?, status?, activity?}`. Only the agent that raised it, or a person, can acknowledge (`403` for other agents). Returns the escalation with the final decision; `status`/`activity` update the lane. Repeating it returns the same result |
 | `POST /api/escalations/:id/withdraw` | any | `{note?}` |
 | `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=&project=` filter. One export at a time (`429` while another runs). See [Export](export.md) |
 | `GET /api/export/<dataset>.csv` / `.json` | any | `escalations`, `positions`, `lanes`, `groups`, `events` or `requirements`. Same filters |
 | `GET /api/requirements?q=&tag=a,b&group=&status=active,superseded&limit=` | any | Search [requirements](requirements.md). Active only by default; `q` is free text, or an id like `R14`. Includes requirements for all projects |
 | `GET /api/requirements/tags?group=` | any | Tags in use, with counts |
 | `GET /api/requirements/:id` | any | One requirement |
-| `POST /api/requirements` | any | `{requirement, justification, tags, group?, sourceEscalation?, decidedBy?, allProjects?}`. `allProjects: true` makes it apply to every project. Agents must give `sourceEscalation` or `decidedBy`; a person recording one is the decider by default. Returns `{requirement, similar, warnings}` |
+| `POST /api/requirements` | any | `{requirement, justification, tags, group?, sourceEscalation?, decidedBy?, allProjects?}`. Citing an escalation that an active requirement already cites returns that one with `duplicate: true`. `allProjects: true` makes it apply to every project. Agents must give `sourceEscalation` or `decidedBy`; a person recording one is the decider by default. Returns `{requirement, similar, warnings}` |
 | `POST /api/requirements/:id/supersede` | any | Same body; marks the old one superseded |
 | `PATCH /api/requirements/:id` | human | Fix `requirement`, `justification` or `tags` wording |
 | `POST /api/requirements/:id/retire` | human | It no longer applies; nothing replaces it |
+| `POST /api/requirements/:id/restore` | human | Undo a retire |
 | `POST /api/push/register`, `/unregister` | human | Used by the Android app |
 | `POST /api/admin/people` | static human token | Break-glass: add a person `{email, name, password, admin?}` |
 | `POST /api/admin/people/password` | static human token | Break-glass: `{email, password}`, which also signs them out |

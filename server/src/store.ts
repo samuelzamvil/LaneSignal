@@ -54,6 +54,8 @@ export interface RecordResult {
   similar: Requirement[];
   /** Advice, e.g. a tag already on most requirements. */
   warnings: string[];
+  /** True when an active requirement already cites the same escalation: that one is returned, nothing new is stored. */
+  duplicate?: boolean;
 }
 
 /** Lane letters: 0 -> A, 25 -> Z, 26 -> AA, like spreadsheet columns. */
@@ -556,6 +558,21 @@ export class Store {
     ).map((r) => this.groupFromRow(r));
   }
 
+  /** Whether the group exists, archived or not (publishing to an archived one restores it). */
+  groupExists(id: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(id);
+  }
+
+  /** Ids of the group's lanes, removed ones included (their escalations still belong to the group). */
+  listLanesIncludingArchived(groupId: string): string[] {
+    return (this.db.prepare('SELECT id FROM lanes WHERE group_id = ?').all(groupId) as Row[]).map((r) => r.id as string);
+  }
+
+  /** Whether the lane exists, archived or not (publishing to a removed one restores it). */
+  laneExists(id: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM lanes WHERE id = ?').get(id);
+  }
+
   getGroup(id: string): Group | null {
     const r = this.db.prepare('SELECT * FROM groups WHERE id = ? AND archived_at IS NULL').get(id) as Row | undefined;
     return r ? this.groupFromRow(r) : null;
@@ -731,6 +748,10 @@ export class Store {
     projectOf(id);
     if (patch.group && projectOf(patch.group) !== projectOf(id)) throw new Error('internal: a lane\'s group must be in its project');
     if (patch.status && !LANE_STATUSES.includes(patch.status)) throw new Error(`Invalid status "${patch.status}"`);
+    // A typo would otherwise put a lane in a new group nobody waits on.
+    if (patch.group && !this.groupExists(patch.group)) {
+      throw new NotFoundError(`Group "${localId(patch.group)}" not found: register it first (update_group, or PUT /api/groups/:id)`);
+    }
     let createdGroup: Group | null = null;
     let groupRestored = false;
     let previous: LaneStatus | null = null;
@@ -780,7 +801,9 @@ export class Store {
 
   /** Must run inside a transaction. */
   private applyLaneUpdate(existing: Lane, patch: LanePatch, actor: string | null, at: string) {
-    const status = patch.status ?? existing.status;
+    // A lane stays blocked while a blocking question is still open, so the dashboard keeps showing it.
+    const stillBlocked = existing.status === 'blocked_human' && this.openBlockingCount(existing.id) > 0;
+    const status = stillBlocked ? 'blocked_human' : (patch.status ?? existing.status);
     let statusSince = existing.statusSince;
     let blockedSince = existing.blockedSince;
     let blockedTotalMs = existing.blockedTotalMs;
@@ -981,23 +1004,24 @@ export class Store {
    */
   createEscalation(input: EscalationInput, actor: string): Escalation & { duplicate?: boolean } {
     projectOf(input.laneId);
-    const existing = this.db
-      .prepare("SELECT id FROM escalations WHERE lane_id = ? AND question = ? AND created_by = ? AND state = 'open'")
-      .get(input.laneId, input.question, actor) as Row | undefined;
+    // A typo would otherwise create a new lane outside the group, which the overseer's wait never sees.
+    if (!this.laneExists(input.laneId)) {
+      throw new NotFoundError(
+        `Lane "${localId(input.laneId)}" not found: publish it first (update_lane with its group, or PUT /api/lanes/:id)`,
+      );
+    }
+    // The same question again (ignoring spacing and case) is a retry.
+    const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
+    const existing = (
+      this.db
+        .prepare("SELECT id, question FROM escalations WHERE lane_id = ? AND created_by = ? AND state = 'open'")
+        .all(input.laneId, actor) as Row[]
+    ).find((r) => norm(r.question as string) === norm(input.question));
     if (existing) return { ...this.requireEscalation(existing.id as string), duplicate: true };
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
       this.restoreLane(input.laneId, actor, at);
-      let lane = this.getLane(input.laneId);
-      if (!lane) {
-        // Agents may escalate before ever publishing lane state.
-        this.db
-          .prepare(
-            `INSERT INTO lanes (id, name, status, agent, created_at, updated_at, status_since) VALUES (?, ?, 'active', ?, ?, ?, ?)`,
-          )
-          .run(input.laneId, localId(input.laneId), actor, at, at, at);
-        lane = this.requireLane(input.laneId);
-      }
+      const lane = this.requireLane(input.laneId);
       const id = randomUUID();
       const ref = Number((this.db.prepare('SELECT COALESCE(MAX(ref), 0) + 1 AS n FROM escalations').get() as Row).n);
       this.syncLetter(input.laneId, true);
@@ -1986,11 +2010,21 @@ export class Store {
     const total = Number(
       (this.db.prepare(`SELECT COUNT(*) AS n FROM requirements r WHERE r.status = 'active'${p.sql}`).get(...p.params) as Row).n,
     );
-    if (total < 10) return [];
     const counts = new Map(this.requirementTags(undefined, projects).map((t) => [t.tag, t.count]));
-    return tags
-      .filter((t) => (counts.get(t) ?? 0) / total > 0.4)
-      .map((t) => `Tag "${t}" is on ${counts.get(t)} of ${total} active requirements; a narrower tag would find this faster.`);
+    // "payout-retry" next to an existing "payout-retries" splits searches in two.
+    const forms = (t: string) =>
+      new Set([t + 's', t + 'es', t.replace(/y$/, 'ies'), t.replace(/ies$/, 'y'), t.replace(/es$/, ''), t.replace(/s$/, '')]);
+    const near = tags.flatMap((t) => {
+      const other = [...counts.keys()].find((c) => c !== t && !tags.includes(c) && forms(t).has(c));
+      return other ? [`Tag "${t}" is close to the existing tag "${other}"; use that one if it means the same.`] : [];
+    });
+    if (total < 10) return near;
+    return [
+      ...near,
+      ...tags
+        .filter((t) => (counts.get(t) ?? 0) / total > 0.4)
+        .map((t) => `Tag "${t}" is on ${counts.get(t)} of ${total} active requirements; a narrower tag would find this faster.`),
+    ];
   }
 
   /** Must run inside a transaction. */
@@ -2013,6 +2047,13 @@ export class Store {
 
   /** Records an owner decision. Returns it with similar active requirements, so duplicates get noticed. */
   recordRequirement(input: RequirementInput, actor: string, actorIsHuman = false): RecordResult {
+    // One escalation, one decision: recording it again (a retry, or a second agent) returns the first.
+    if (input.sourceEscalation && !input.decidedBy) {
+      const same = this.db
+        .prepare("SELECT num FROM requirements WHERE source_escalation_id = ? AND status = 'active' AND project_id IS ?")
+        .get(input.sourceEscalation, input.project ?? null) as Row | undefined;
+      if (same) return { requirement: this.requireRequirement(String(same.num)), similar: [], warnings: [], duplicate: true };
+    }
     const requirement = this.tx(() => {
       const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString());
       return this.requireRequirement(String(num));
@@ -2073,6 +2114,20 @@ export class Store {
   }
 
   /** Withdraws a requirement with no replacement (the decision no longer applies). */
+  /** Undoes a retire (e.g. a mis-tap): the requirement is active again. */
+  restoreRequirement(id: string): Requirement {
+    const requirement = this.tx(() => {
+      const current = this.requireRequirement(id);
+      if (current.status !== 'retired') throw new ConflictError(`${current.id} is ${current.status}; only retired requirements can be restored`);
+      this.db
+        .prepare("UPDATE requirements SET status = 'active', updated_at = ? WHERE num = ?")
+        .run(this.now().toISOString(), this.requirementNum(current.id)!);
+      return this.requireRequirement(current.id);
+    });
+    this.emit({ type: 'requirement', requirement });
+    return requirement;
+  }
+
   retireRequirement(id: string): Requirement {
     const requirement = this.tx(() => {
       const current = this.requireRequirement(id);

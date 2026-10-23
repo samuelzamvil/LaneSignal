@@ -51,13 +51,21 @@ describe('several projects', () => {
     assert.equal((await srv.call('POST', '/api/projects', ALICE, { id: 'Bad Id', key: 'B', name: 'x' })).status, 400);
   });
 
-  test('a credential that reaches several projects must name one to write', async () => {
-    const res = await srv.call('PUT', '/api/lanes/auth', AGENT, { status: 'active' });
+  test('a credential that reaches several projects names one only where an id is new or ambiguous', async () => {
+    // An overseer that was running before the second project appeared keeps working.
+    const existing = await srv.call('PUT', '/api/lanes/auth', AGENT, { status: 'active' });
+    assert.equal(existing.status, 200, JSON.stringify(existing.body));
+    assert.equal(existing.body.project, 'default');
+    const res = await srv.call('PUT', '/api/lanes/brand-new', AGENT, { status: 'active' });
     assert.equal(res.status, 400);
     assert.match(res.body.error, /Say which project: (MAIN, SH|SH, MAIN)/);
     // By id or by key.
     assert.equal((await srv.call('PUT', '/api/lanes/auth?project=sh', AGENT, { status: 'idle' })).status, 200);
     assert.equal((await srv.call('PUT', '/api/lanes/auth?project=default', AGENT, { status: 'active' })).status, 200);
+    // Now "auth" is in both: ambiguous again.
+    const both = await srv.call('PUT', '/api/lanes/auth', AGENT, { status: 'active' });
+    assert.equal(both.status, 400);
+    assert.match(both.body.error, /Say which project/);
   });
 
   test('lane ids and codes are per project; KEY-A1 names one across projects', async () => {
@@ -77,11 +85,10 @@ describe('several projects', () => {
   });
 
   test('people see only the projects they belong to', async () => {
-    // New people belong to no project until an admin adds them.
-    assert.deepEqual((await srv.call('GET', '/api/projects', people.Pat.token)).body, []);
-    assert.equal((await srv.call('PUT', `/api/projects/default/members/${people.Pat.id}`, ALICE, { role: 'member' })).status, 204);
+    // Pat and Quinn were added while there was one project, so they joined it.
     assert.deepEqual((await srv.call('GET', '/api/projects', people.Pat.token)).body.map((p: any) => p.id), ['default']);
-    // Quinn is in no project yet.
+    assert.equal((await srv.call('DELETE', `/api/projects/default/members/${people.Quinn.id}`, ALICE)).status, 204);
+    // Quinn is in no project now.
     assert.deepEqual((await srv.call('GET', '/api/projects', people.Quinn.token)).body, []);
     assert.deepEqual((await srv.call('GET', '/api/snapshot', people.Quinn.token)).body.lanes, []);
     // Alice (config token) admits Quinn to the shop as a member.

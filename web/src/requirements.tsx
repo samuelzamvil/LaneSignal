@@ -132,6 +132,13 @@ function RequirementCard({
               </button>
             </div>
           )}
+          {canEdit && req.status === 'retired' && (
+            <div className="actions">
+              <button className="ghost" onClick={() => client.restoreRequirement(req.id).catch((e: Error) => setError(e.message))}>
+                Restore
+              </button>
+            </div>
+          )}
           {error && <p className="error">{error}</p>}
         </>
       )}

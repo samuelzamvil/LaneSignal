@@ -8,6 +8,7 @@ before(async () => {
   srv = await startServer();
   await srv.tool(AGENT, 'update_group', { group_id: 'payments', name: 'Payments train' });
   await srv.tool(AGENT, 'update_group', { group_id: 'search', name: 'Search train' });
+  await srv.publish('pay-1');
 });
 after(() => srv.close());
 

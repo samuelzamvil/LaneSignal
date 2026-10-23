@@ -11,8 +11,10 @@ before(async () => {
 });
 after(() => srv.close());
 
-const ask = async (lane: string, question: string, extra: Record<string, unknown> = {}) =>
-  (await srv.tool(AGENT, 'create_escalation', { lane_id: lane, question, ...extra })).value;
+const ask = async (lane: string, question: string, extra: Record<string, unknown> = {}) => {
+  await srv.publish(lane);
+  return (await srv.tool(AGENT, 'create_escalation', { lane_id: lane, question, ...extra })).value;
+};
 const decide = (id: string, decision: string, extra: Record<string, unknown> = {}) =>
   srv.call('POST', `/api/escalations/${encodeURIComponent(id)}/decide`, ALICE, { decision, ...extra });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -57,6 +59,7 @@ describe('escalation codes', () => {
 
 describe('safe retries', () => {
   test('raising the same open question again returns the first one', async () => {
+    await srv.publish('retry');
     const first = await srv.call('POST', '/api/escalations', AGENT, { laneId: 'retry', question: 'Same?' });
     const again = await srv.call('POST', '/api/escalations', AGENT, { laneId: 'retry', question: 'Same?' });
     assert.equal(first.status, 201);
@@ -153,8 +156,8 @@ describe('changing a decision', () => {
 
 describe('waiting on many escalations', () => {
   test('a group wait wakes on the first decision and lists what is still open', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'w-1', group: 'wait-group' });
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'w-2', group: 'wait-group' });
+    await srv.publish('w-1', { group: 'wait-group' });
+    await srv.publish('w-2', { group: 'wait-group' });
     const a = await ask('w-1', 'A?');
     const b = await ask('w-2', 'B?');
     const t0 = Date.now();
@@ -199,8 +202,8 @@ describe('waiting on many escalations', () => {
   });
 
   test('a group wait reports a lane a human removed, but not the agent\'s own withdrawals', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'g-a', group: 'removals' });
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'g-b', group: 'removals' });
+    await srv.publish('g-a', { group: 'removals' });
+    await srv.publish('g-b', { group: 'removals' });
     const a = await ask('g-a', 'A?');
     const b = await ask('g-b', 'B?');
     const own = await ask('g-b', 'Mine to withdraw?');
@@ -219,11 +222,11 @@ describe('waiting on many escalations', () => {
   });
 
   test('a lane removed with nothing open is reported too, but not the agent\'s own removals', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'quiet-1', group: 'quiet' });
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'quiet-2', group: 'quiet' });
+    await srv.publish('quiet-1', { group: 'quiet' });
+    await srv.publish('quiet-2', { group: 'quiet' });
     await ask('quiet-2', 'Keeps the wait open?');
     const start = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'quiet', wait_seconds: 0 })).value;
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'quiet-3', group: 'quiet' });
+    await srv.publish('quiet-3', { group: 'quiet' });
     await srv.tool(AGENT, 'remove_lane', { lane_id: 'quiet-3' });
     const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'quiet', since: start.checkedAt, wait_seconds: 30 });
     await sleep(150);
@@ -235,7 +238,7 @@ describe('waiting on many escalations', () => {
 
   test('since catches withdrawals that happened between two waits', async () => {
     const before = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'removals', wait_seconds: 0 })).value;
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'g-c', group: 'removals' });
+    await srv.publish('g-c', { group: 'removals' });
     await ask('g-c', 'C?');
     await srv.call('DELETE', '/api/lanes/g-c', ALICE);
     const later = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'removals', since: before.checkedAt, wait_seconds: 5 })).value;
@@ -305,8 +308,8 @@ describe('whether an agent is listening', () => {
   });
 
   test('a lane that gets a question during a group wait is marked too', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'join-1', group: 'joining' });
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'join-2', group: 'joining' });
+    await srv.publish('join-1', { group: 'joining' });
+    await srv.publish('join-2', { group: 'joining' });
     const first = await ask('join-1', 'First?');
     const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'joining', wait_seconds: 30 });
     await sleep(150);

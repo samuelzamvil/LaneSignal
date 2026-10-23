@@ -8,7 +8,7 @@ One LaneSignal server can run several independent **projects**, such as one per 
 
 Requirements are global: ids (`R14`) are unique across the server. Each requirement either belongs to one project or applies to **all projects** ("all our apps store money as integers").
 
-A server starts with one project, **Main** (id `default`, key `MAIN`). Data from before projects existed lives there. While there's only one project, nothing changes: nobody has to name it, and the web app doesn't mention projects at all.
+A server starts with one project, **Main** (id `default`, key `MAIN`). Data from before projects existed lives there. While there's only one project, nothing changes: nobody has to name it, and the web app shows no project switcher (Settings lists the one project).
 
 ## A project
 
@@ -28,7 +28,8 @@ A server starts with one project, **Main** (id `default`, key `MAIN`). Data from
 | Agent key | its owner's projects, or the one project the key is bound to | — |
 
 - Another project's data is invisible, not just read-only: its lanes, escalations, requirements, events and exports don't exist for you.
-- New people belong to no project until a project admin adds them.
+- On a server with one project, new people join it. With several, new people belong to no project until a project admin adds them, and their inbox says so.
+- Member lists include the account admins (marked *instance admin*), who see every project without being members.
 - A project **admin** can rename the project, change its key, add people, change their role and remove them. A **member** sees the project and answers its escalations. There are no finer permissions.
 - Only instance admins (account admins and static human tokens) create projects. The creator becomes the new project's admin.
 - When an account is removed, its memberships go with it.
@@ -53,7 +54,8 @@ When creating an agent key with access to several projects, choose **All my proj
 
 - **`project` parameter:** every MCP tool takes an optional `project` (id or key), and every HTTP endpoint takes `?project=`.
 - **Leaving it out:** when it's left out, the request acts on the key's bound project, or the caller's only project.
-  - A credential that reaches several projects must name one to write (publish a lane, raise an escalation). Otherwise the request fails with `Say which project: MAIN, SH`.
+  - A credential that reaches several projects doesn't need it for an existing lane or group: the id is looked up in its projects. So overseers that were running before a second project appeared keep working.
+  - A new id, or one that exists in several of its projects, needs `project`. Otherwise the request fails with `Say which project: MAIN, SH`.
   - Listings without `project` cover every project the caller can see.
 - **`project` field:** lanes, groups, escalations and requirements carry a `project` field. Escalations also carry `projectKey`.
 - **Escalation codes:** a code names one escalation across projects with its key: `SH-A1`, `SH·A1` or `SH:A1`. A bare `A1` works with `project`, or when only one of your projects has an `A1`; otherwise the error lists the keyed codes to choose from.

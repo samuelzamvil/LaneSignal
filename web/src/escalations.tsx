@@ -3,6 +3,7 @@ import type { Client, Escalation, Group, Lane, Position } from './api.ts';
 import { Links, RichText, TicketLink } from './components.tsx';
 import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
+import { toast } from './toast.tsx';
 
 /** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
 export function isCodeOf(e: Escalation, code: string) {
@@ -145,7 +146,14 @@ function DecisionForm({
           <button
             className="primary"
             disabled={!decision || busy}
-            onClick={() => run(async () => (await client.decide(esc.id, decision, note, change), onDone?.()))}
+            onClick={() =>
+              run(async () => {
+                await client.decide(esc.id, decision, note, change);
+                // The card disappears at once; say what was sent, with a way back to fix a mis-tap.
+                toast({ text: `Sent “${decision}” to ${esc.ref}`, action: { label: 'Change', href: `#/esc/${esc.id}` } });
+                onDone?.();
+              })
+            }
           >
             {busy ? 'Sending…' : change ? 'Change decision' : 'Send decision'}
           </button>
@@ -247,6 +255,7 @@ export function EscalationCard({
         </p>
       )}
       <h3>{esc.question}</h3>
+      {esc.state === 'open' && esc.context && <p className="context-line">{esc.context}</p>}
       {esc.state === 'decided' ? (
         <>
           <p className="decision">
@@ -490,9 +499,21 @@ export function EscalationDetail({
                 {esc.state === 'decided' && (
                   <>
                     <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
-                    <button className="ghost" onClick={() => setChanging(true)}>
-                      Change decision
-                    </button>
+                    <div className="actions">
+                      <button className="ghost" onClick={() => setChanging(true)}>
+                        Change decision
+                      </button>
+                      {/* For an answer no agent will pick up (its session ended): clear it from the list. */}
+                      <button
+                        className="ghost danger"
+                        onClick={() => {
+                          const why = prompt('Close this without the agent picking it up? Optional reason:');
+                          if (why !== null) client.withdraw(esc.id, why).catch((e: Error) => setError(e.message));
+                        }}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
                   </>
                 )}
                 {esc.resolution && (

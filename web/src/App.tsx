@@ -19,6 +19,7 @@ import { useLiveData, useNow } from './live.ts';
 import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { RequirementsPane } from './requirements.tsx';
+import { Toaster } from './toast.tsx';
 import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection, ProjectsSection } from './settings.tsx';
 
 // ---- routing (hash based, so it works from file-less Capacitor URLs and push deep links) ----
@@ -206,6 +207,18 @@ function Dashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, config]);
 
+  // Escape closes an open sheet (desktop).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const r = parseRoute(location.hash);
+      if (r.escId) closeTo('#/');
+      else if (r.laneId) closeTo('#/lanes');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   // Android hardware back button: close sheets first, then leave the app.
   useEffect(() => {
     if (!isNative) return;
@@ -290,8 +303,17 @@ function Dashboard({
     return (
       <main className="login">
         <form onSubmit={(e) => (e.preventDefault(), onSignOut(client))}>
-          <h1>Token rejected</h1>
-          <p>The server no longer accepts this token.</p>
+          {conn.kind === 'token' ? (
+            <>
+              <h1>Token rejected</h1>
+              <p>The server no longer accepts this token.</p>
+            </>
+          ) : (
+            <>
+              <h1>You were signed out</h1>
+              <p>Your session ended (signed out elsewhere, a password change, or an admin). Sign in again to continue.</p>
+            </>
+          )}
           <button className="primary">Sign in again</button>
         </form>
       </main>
@@ -363,7 +385,17 @@ function Dashboard({
       <h2>
         Needs you <span className={`count${open.length ? ' hot' : ''}`}>{open.length}</span>
       </h2>
-      {open.length === 0 && blockedLanes.length === 0 && <p className="empty">No decisions waiting. 🎉</p>}
+      {open.length === 0 && blockedLanes.length === 0 && (
+        isLive && live.projects.length === 0 ? (
+          <p className="empty">You're not in any project yet. Ask a project admin to add you.</p>
+        ) : isLive && live.lanes.size === 0 ? (
+          <p className="empty">
+            Nothing here yet. Next: <a href="#/settings">Settings → Keys</a> to connect your first overseer.
+          </p>
+        ) : (
+          <p className="empty">No decisions waiting. 🎉</p>
+        )
+      )}
       {open.map((e) => (
         <EscalationCard
           key={e.id}
@@ -592,6 +624,13 @@ function Dashboard({
           ⚙
         </a>
       </header>
+      {live.link === 'offline' && (
+        <div className="offline-bar" role="status">
+          Offline{live.syncedAt ? ` · showing data from ${new Date(live.syncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''} ·
+          reconnecting…
+        </div>
+      )}
+      <Toaster />
       {open.length > 0 && route.view !== 'inbox' && (
         <a className="alert-banner" href="#/">
           ⚑ {open.length} decision{open.length > 1 ? 's' : ''} waiting

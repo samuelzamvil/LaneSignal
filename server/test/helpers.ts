@@ -51,6 +51,19 @@ export async function startServer(env: Record<string, string> = {}) {
     return { status: res.status, body: json, headers: res.headers };
   }
 
+  /**
+   * Publishes a lane (as an agent must before escalating on it), leaving an existing one as is.
+   * With `group`, registers the group first.
+   */
+  async function publish(laneId: string, opts: { token?: string; project?: string; group?: string } = {}) {
+    const token = opts.token ?? AGENT;
+    const qs = opts.project ? `?project=${encodeURIComponent(opts.project)}` : '';
+    if (opts.group) await call('PUT', `/api/groups/${encodeURIComponent(opts.group)}${qs}`, token, {});
+    if (!opts.group && (await call('GET', `/api/lanes/${encodeURIComponent(laneId)}${qs}`, token)).status === 200) return;
+    const res = await call('PUT', `/api/lanes/${encodeURIComponent(laneId)}${qs}`, token, opts.group ? { group: opts.group } : {});
+    if (res.status !== 200) throw new Error(`publishing lane ${laneId}: ${res.status} ${JSON.stringify(res.body)}`);
+  }
+
   /** One MCP tools/call; returns the parsed JSON of the first text block, or the error text. */
   async function tool(token: string, name: string, args: Record<string, unknown>) {
     const res = await fetch(`${base}/mcp`, {
@@ -86,6 +99,7 @@ export async function startServer(env: Record<string, string> = {}) {
     config,
     call,
     tool,
+    publish,
     close() {
       server.closeAllConnections();
       server.close();

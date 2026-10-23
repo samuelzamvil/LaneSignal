@@ -51,7 +51,11 @@ export async function createAccounts(config: Config, dbPath: string) {
   revocations.setMaxListeners(0);
   const revoked = () => revocations.emit('revoked');
   /** Fires when a person is removed or banned, so their phones stop getting push. */
-  const people = new EventEmitter<{ gone: [userId: string, name: string | null, removed: boolean] }>();
+  const people = new EventEmitter<{
+    gone: [userId: string, name: string | null, removed: boolean];
+    /** Fires when an account is created (setup, an admin adding someone). */
+    added: [userId: string, admin: boolean];
+  }>();
 
   const options = {
     database: db,
@@ -79,6 +83,11 @@ export async function createAccounts(config: Config, dbPath: string) {
     telemetry: { enabled: false },
     databaseHooks: {
       user: {
+        create: {
+          after: async (user) => {
+            people.emit('added', user.id, isAdminRole((user as { role?: unknown }).role));
+          },
+        },
         delete: {
           // Keys reference their owner loosely (no foreign key); remove them with the account.
           after: async (user) => {

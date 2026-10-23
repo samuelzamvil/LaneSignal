@@ -4,7 +4,7 @@ import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sd
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Request, Response } from 'express';
 import { z, ZodError } from 'zod';
-import { accessFor, pub, q, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, brief, briefWait, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import { log } from './log.ts';
 import * as s from './schemas.ts';
@@ -12,7 +12,9 @@ import { toCsv } from './export.ts';
 import { ConflictError, EXPORT_COLUMNS, EXPORT_DATASETS, NotFoundError, type RecordResult, type Store } from './store.ts';
 import { LANE_STATUSES, type Requirement } from './types.ts';
 
-const json = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
+// Compact JSON: agents pay for every character.
+const json = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] });
+
 /** Field names as the tools spell them, for validation messages. */
 const SNAKE: Record<string, string> = {
   laneId: 'lane_id',
@@ -86,15 +88,22 @@ async function cancellable<T>(
   }
 }
 
+/** Some tools historically say `group`, others `group_id`: both work everywhere. */
+const GROUP_FILTER = z.string().max(64).optional().describe('Group (epic/train) id.');
+const GROUP_ALIAS = z.string().max(64).optional().describe('Same as group_id.');
+
 const ID_HELP = 'Escalation id, or its code such as "A12" (or "LS-A12" to name the project too).';
 
 /** Every tool takes it; only keys and people with several projects need it. */
 const PROJECT = {
+  project: z.string().max(40).optional().describe('Project id or key, if your key reaches several. Omitted: all of them.'),
+};
+const PROJECT_WRITE = {
   project: z
     .string()
     .max(40)
     .optional()
-    .describe('Project id or key. Only needed when your credential reaches several projects; lists default to all of them.'),
+    .describe('Project id or key, if your key reaches several and the id is new or in more than one.'),
 };
 
 /** Builds an MCP server whose tools act as the authenticated principal, within the projects it may see. */
@@ -106,17 +115,25 @@ function buildServer(
 ) {
   const who = a.principal;
   const listJson = <T>(items: T[]) => json(items);
+  /** A group filter must name a real group: an empty result would read as "your lanes were removed". */
+  const checkGroup = (group: string | undefined, project?: string) => {
+    if (group && !a.scope(project).some((p) => store.groupExists(q(p, group)))) {
+      throw new NotFoundError(`Group "${group}" not found (list_groups shows the ids)`);
+    }
+    return group;
+  };
   const server = new McpServer({ name: 'lanesignal', version: '0.1.0' }, { capabilities: { logging: {} } });
 
   server.registerTool(
     'list_lanes',
     {
       description: 'List lanes with status, ticket, activity and open escalation counts, optionally for one group.',
-      inputSchema: { status: z.enum(LANE_STATUSES).optional(), group: z.string().optional(), ...PROJECT },
+      inputSchema: { status: z.enum(LANE_STATUSES).optional(), group_id: GROUP_FILTER, group: GROUP_ALIAS, ...PROJECT },
       annotations: { readOnlyHint: true },
     },
-    async ({ status, group, project }) => {
+    async ({ status, group_id, group: alias, project }) => {
       try {
+        const group = checkGroup(group_id ?? alias, project);
         return listJson(
           store
             .listLanes(a.scope(project))
@@ -159,18 +176,32 @@ function buildServer(
   server.registerTool(
     'list_escalations',
     {
-      description: 'List escalations. Defaults to unresolved ones (open and decided-but-unacknowledged).',
+      description:
+        'List escalations, newest last, in brief (get_escalation has everything). Defaults to unresolved ones (open and ' +
+        'decided-but-unacknowledged) and the latest 50 (`limit` up to 500).',
       inputSchema: {
+        group_id: GROUP_FILTER,
+        group: GROUP_ALIAS,
         lane_id: z.string().optional(),
         states: z.array(z.enum(['open', 'decided', 'acknowledged', 'withdrawn'])).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
         ...PROJECT,
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ lane_id, states, project }) => {
+    async ({ group_id, group: alias, lane_id, states, limit, project }) => {
       try {
-        const laneId = lane_id ? q(a.pick(project), lane_id) : undefined;
-        return listJson(store.listEscalations({ laneId, states, projects: a.scope(project) }).map(pub.escalation));
+        const group = checkGroup(group_id ?? alias, project);
+        const laneId = lane_id ? q(a.pick(project, { lane: lane_id }), lane_id) : undefined;
+        const groupId = group ? q(a.pick(project, { group }), group) : undefined;
+        const lanesInGroup = groupId ? new Set(store.listLanesIncludingArchived(groupId)) : null;
+        return listJson(
+          store
+            .listEscalations({ laneId, states, projects: a.scope(project), limit: lanesInGroup ? undefined : (limit ?? 50) })
+            .filter((e) => !lanesInGroup || lanesInGroup.has(e.laneId))
+            .slice(-(limit ?? 50))
+            .map((e) => brief(pub.escalation(e))),
+        );
       } catch (err) {
         return fail(err);
       }
@@ -218,6 +249,7 @@ function buildServer(
         'Default wait 300s; up to 3600s if your MCP client allows calls that long.',
       inputSchema: {
         group_id: s.groupId.optional().describe('Wait on every lane in this group (your epic/train).'),
+        group: s.groupId.optional().describe('Same as group_id.'),
         lane_ids: z.array(s.laneId).max(100).optional(),
         ids: z.array(z.string()).max(100).optional().describe('Escalation ids or codes such as "A12".'),
         wait_seconds: z.number().int().min(0).max(3600).optional(),
@@ -229,15 +261,15 @@ function buildServer(
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ group_id, lane_ids, ids, wait_seconds, since, project }, extra) => {
+    async ({ group_id, group, lane_ids, ids, wait_seconds, since, project }, extra) => {
       try {
-        const scope = waitScopeFor(a, s.waitScope.parse({ groupId: group_id, laneIds: lane_ids, ids, since }), project);
+        const scope = waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project);
         const timeout = wait_seconds ?? 300;
         const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
           store.waitForDecisions(scope, timeout * 1000, signal),
         );
         if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
-        return json(pub.wait(value, timeout ? accessFor(store, a.principal).projects : undefined));
+        return json(briefWait(pub.wait(value, timeout ? accessFor(store, a.principal).projects : undefined)));
       } catch (err) {
         return fail(err);
       }
@@ -273,7 +305,7 @@ function buildServer(
         const rows = store.exportRows(dataset, {
           from: f.from,
           to: f.to,
-          laneId: f.lane ? q(a.pick(project), f.lane) : undefined,
+          laneId: f.lane ? q(a.pick(project, { lane: f.lane }), f.lane) : undefined,
           projects: a.scope(project),
         });
         const start = offset ?? 0;
@@ -318,6 +350,7 @@ function buildServer(
       .nullable()
       .optional()
       .describe('The train/epic it belongs to; omit for a requirement covering the whole project.'),
+    group: s.groupId.nullable().optional().describe('Same as group_id.'),
     all_projects: z
       .boolean()
       .optional()
@@ -338,6 +371,7 @@ function buildServer(
       justification: string;
       tags: string[];
       group_id?: string | null;
+      group?: string | null;
       source_escalation?: string;
       decided_by?: string;
       all_projects?: boolean;
@@ -351,7 +385,7 @@ function buildServer(
         requirement: args.requirement,
         justification: args.justification,
         tags: args.tags,
-        group: args.group_id,
+        group: args.group_id !== undefined ? args.group_id : args.group,
         sourceEscalation: args.source_escalation,
         decidedBy: args.decided_by,
         allProjects: args.all_projects,
@@ -387,15 +421,17 @@ function buildServer(
         query: z.string().max(500).optional(),
         tags: z.array(s.requirementTag).max(5).optional(),
         group_id: s.groupId.optional(),
+        group: GROUP_ALIAS,
         statuses: z.array(z.enum(['active', 'superseded', 'retired'])).optional(),
         limit: z.number().int().min(1).max(100).optional(),
         ...PROJECT,
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ query, tags, group_id, statuses, limit, project }) => {
+    async ({ query, tags, group_id: gid, group: alias, statuses, limit, project }) => {
       try {
-        const group = group_id ? q(a.pick(project), group_id) : undefined;
+        const group_id = checkGroup(gid ?? alias, project);
+        const group = group_id ? q(a.pick(project, { group: group_id }), group_id) : undefined;
         return listJson(
           store
             .findRequirements({ query, tags, group, projects: a.scope(project), statuses, limit: limit ?? 20 })
@@ -427,12 +463,15 @@ function buildServer(
     'list_requirement_tags',
     {
       description: 'Tags in use on active requirements, with counts, so you reuse them instead of inventing near-synonyms.',
-      inputSchema: { group_id: s.groupId.optional(), ...PROJECT },
+      inputSchema: { group_id: s.groupId.optional(), group: GROUP_ALIAS, ...PROJECT },
       annotations: { readOnlyHint: true },
     },
-    async ({ group_id, project }) => {
+    async ({ group_id: gid, group: alias, project }) => {
       try {
-        return listJson(store.requirementTags(group_id ? q(a.pick(project), group_id) : undefined, a.scope(project)));
+        const group_id = checkGroup(gid ?? alias, project);
+        return listJson(
+          store.requirementTags(group_id ? q(a.pick(project, { group: group_id }), group_id) : undefined, a.scope(project)),
+        );
       } catch (err) {
         return fail(err);
       }
@@ -446,9 +485,11 @@ function buildServer(
         'Record a product decision the owner (a human) made, so it can be found later without digging through tickets. ' +
         'Only record decisions a person made: cite the answered escalation (`source_escalation`) or name who decided ' +
         '(`decided_by`). Never record your own design choices as requirements. One decision per requirement. ' +
-        'The result lists `similar` active requirements: if one is the same decision, it was a duplicate; if the owner ' +
+        'Search first (find_requirements with the decision\'s words) so you don\'t record it twice. Recording the same ' +
+        'source_escalation again returns the existing requirement (`duplicate: true`). The result lists `similar` active ' +
+        'requirements: if one is the same decision, tell a human (only people retire requirements); if the owner ' +
         'changed their mind, use supersede_requirement on the old one instead.',
-      inputSchema: { ...requirementFields, ...PROJECT },
+      inputSchema: { ...requirementFields, ...PROJECT_WRITE },
     },
     async (args) => {
       try {
@@ -465,7 +506,7 @@ function buildServer(
       description:
         'The owner changed a decision: record the new requirement and mark the old one superseded (it stays, so the ' +
         'history of why is kept). Same fields as record_requirement; its scope (project, group) defaults to the old one\'s.',
-      inputSchema: { id: z.string().describe(REQ_ID_HELP), ...requirementFields, ...PROJECT },
+      inputSchema: { id: z.string().describe(REQ_ID_HELP), ...requirementFields, ...PROJECT_WRITE },
     },
     async ({ id, ...args }) => {
       try {
@@ -485,11 +526,11 @@ function buildServer(
           'Overseers: describe the group (epic/train) whose lanes you run. One overseer session owns one group; ' +
           'name it after the epic or train, set `ticket` to its ticket, and put your Remote Control session in `links` ' +
           'with kind "session" so humans can reach you. Lanes join a group via update_lane(group).',
-        inputSchema: { group_id: s.groupId, ...s.groupPatch.shape, ...PROJECT },
+        inputSchema: { group_id: s.groupId, ...s.groupPatch.shape, ...PROJECT_WRITE },
       },
       async ({ group_id, project, ...patch }) => {
         try {
-          return json(pub.group(store.upsertGroup(q(a.pick(project), group_id), patch, who.name)));
+          return json(pub.group(store.upsertGroup(q(a.pick(project, { group: group_id }), group_id), patch, who.name)));
         } catch (err) {
           return fail(err);
         }
@@ -501,14 +542,16 @@ function buildServer(
       {
         description:
           `Publish this lane's current state. Creates the lane on first call; omitted fields are unchanged. ${STATUS_HELP} ` +
-          'Set `group` to the id of the epic/train group (your overseer) the lane belongs to. ' +
+          'Set `group` (or `group_id`) to the id of your epic/train group, registered first with update_group. ' +
+          'While a blocking escalation is open the lane stays blocked_human whatever status you send. ' +
           'Ticket refs look like "redmine:1234", "gh:42" or a plain id for the default system. ' +
           'Call this on meaningful state changes, not on a timer.',
-        inputSchema: { lane_id: s.laneId, ...s.lanePatch.shape, ...PROJECT },
+        inputSchema: { lane_id: s.laneId, ...s.lanePatch.shape, group_id: s.lanePatch.shape.group, ...PROJECT_WRITE },
       },
-      async ({ lane_id, project, ...patch }) => {
+      async ({ lane_id, project, group_id, ...rest }) => {
         try {
-          const pr = a.pick(project);
+          const patch = { ...rest, group: rest.group !== undefined ? rest.group : group_id };
+          const pr = a.pick(project, { lane: lane_id, group: patch.group ?? undefined });
           const qualified = { ...patch, group: patch.group ? q(pr, patch.group) : patch.group };
           return json(pub.lane(store.upsertLane(q(pr, lane_id), qualified, who.name)));
         } catch (err) {
@@ -524,11 +567,11 @@ function buildServer(
           'Take a lane off the dashboard when its work stream is over (use update_lane status "completed" to show ' +
           'it as done instead). Its unanswered escalations are withdrawn, decided ones can still be acknowledged, ' +
           'and its history stays for export. Publishing to the same lane id later brings it back.',
-        inputSchema: { lane_id: s.laneId, ...PROJECT },
+        inputSchema: { lane_id: s.laneId, ...PROJECT_WRITE },
       },
       async ({ lane_id, project }) => {
         try {
-          store.deleteLane(q(a.pick(project), lane_id), who.name);
+          store.deleteLane(q(a.pick(project, { lane: lane_id }), lane_id), who.name);
           return { content: [{ type: 'text' as const, text: `Lane "${lane_id}" removed` }] };
         } catch (err) {
           return fail(err);
@@ -549,8 +592,9 @@ function buildServer(
           'one you recommend. A lane may have several open escalations; raise one per decision. ' +
           'By default marks the lane blocked_human until all are decided; set `blocking: false` for FYI questions ' +
           'you can keep working around. Each escalation gets a code (`ref`, e.g. "A12": the lane\'s letter and a number) ' +
-          'that you and the humans can use to refer to it, including in this server\'s tools. Retrying the same question on the same ' +
-          'lane while it is open returns the existing escalation (`duplicate: true`). ' +
+          'that you and the humans can use to refer to it, including in this server\'s tools. The lane must exist (update_lane ' +
+          'first). Retrying the same question on the same lane while it is open returns the existing escalation unchanged ' +
+          '(`duplicate: true`; new context in the retry is not saved). Returns the escalation in brief. ' +
           'Then wait with wait_for_decisions and call acknowledge_escalation as soon as one is decided.',
         inputSchema: {
           lane_id: s.laneId,
@@ -565,13 +609,14 @@ function buildServer(
           options: s.escalationFields.options,
           links: s.escalationFields.links,
           blocking: s.escalationFields.blocking,
-          ...PROJECT,
+          ...PROJECT_WRITE,
         },
       },
       async ({ lane_id, recommended_option, project, ...rest }) => {
         try {
           const input = s.escalationInput.parse({ laneId: lane_id, recommendedOption: recommended_option, ...rest });
-          return json(pub.escalation(store.createEscalation({ ...input, laneId: q(a.pick(project), input.laneId) }, who.name)));
+          const pr = a.pick(project, { lane: input.laneId });
+          return json(brief(pub.escalation(store.createEscalation({ ...input, laneId: q(pr, input.laneId) }, who.name))));
         } catch (err) {
           return fail(err);
         }
@@ -589,7 +634,7 @@ function buildServer(
       async ({ id, agent, project, ...rest }) => {
         try {
           const target = a.escalation(id, project).id;
-          return json(pub.escalation(store.addPosition(target, { ...rest, agent: agent ?? who.name }, who.name)));
+          return json(brief(pub.escalation(store.addPosition(target, { ...rest, agent: agent ?? who.name }, who.name))));
         } catch (err) {
           return fail(err);
         }
@@ -603,7 +648,8 @@ function buildServer(
           'Call as soon as an escalation is decided, before acting: it closes the escalation and returns the final ' +
           '`decision` and `decisionNote` to act on (a human may correct a mis-tap until you acknowledge). ' +
           'Pass `status` and `activity` to publish what the lane does next in the same call; otherwise the lane ' +
-          'keeps its current status (usually awaiting_agent). Repeating it returns the same result.',
+          'keeps its current status (usually awaiting_agent). Repeating it returns the same result. Only the agent that ' +
+          'raised the escalation (or a person) can acknowledge it.',
         inputSchema: {
           id: z.string().describe(ID_HELP),
           note: z.string().max(5000).optional(),
@@ -614,8 +660,9 @@ function buildServer(
       },
       async ({ id, note, status, activity, project }) => {
         try {
-          const target = a.escalation(id, project).id;
-          return json(pub.escalation(store.acknowledgeEscalation(target, note ?? null, who.name, { status, activity })));
+          const target = a.escalation(id, project);
+          requireRaiser(a, target);
+          return json(brief(pub.escalation(store.acknowledgeEscalation(target.id, note ?? null, who.name, { status, activity }))));
         } catch (err) {
           return fail(err);
         }
@@ -631,7 +678,7 @@ function buildServer(
       },
       async ({ id, resolution, project }) => {
         try {
-          return json(pub.escalation(store.withdrawEscalation(a.escalation(id, project).id, resolution ?? null, who.name)));
+          return json(brief(pub.escalation(store.withdrawEscalation(a.escalation(id, project).id, resolution ?? null, who.name))));
         } catch (err) {
           return fail(err);
         }

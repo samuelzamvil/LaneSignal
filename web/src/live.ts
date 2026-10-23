@@ -27,6 +27,8 @@ export interface LiveData {
   /** Bumps on every requirement change and on each (re)connect, so the requirements view refetches. */
   requirementsVersion: number;
   lastEvent: StreamEvent | null;
+  /** When the data was last known to be current (ms), for the offline notice. */
+  syncedAt: number | null;
   /** Reconnect and re-snapshot, e.g. after changing projects or memberships. */
   refresh: () => void;
 }
@@ -51,6 +53,7 @@ export function useLiveData(client: Client): LiveData {
     version: 0,
     requirementsVersion: 0,
     lastEvent: null,
+    syncedAt: null,
     refresh: () => kick.current(),
   });
   const kick = useRef<() => void>(() => {});
@@ -95,6 +98,7 @@ export function useLiveData(client: Client): LiveData {
                     ...base,
                     projects: snap.projects,
                     link: 'live',
+                    syncedAt: Date.now(),
                     version: s.version + 1,
                     requirementsVersion: s.requirementsVersion + 1,
                   }));
@@ -115,9 +119,13 @@ export function useLiveData(client: Client): LiveData {
                   version: s.version + 1,
                   requirementsVersion: s.requirementsVersion + (e.type === 'requirement' ? 1 : 0),
                   lastEvent: e,
+                  syncedAt: Date.now(),
                 }));
             },
-            onActivity: alive,
+            onActivity: () => {
+              alive();
+              setState((s) => (s.link === 'live' ? { ...s, syncedAt: Date.now() } : s));
+            },
           },
           conn.signal,
         );
@@ -172,9 +180,16 @@ export function useLiveData(client: Client): LiveData {
       else if (hiddenAt && Date.now() - hiddenAt > 20_000) kick.current();
     };
     document.addEventListener('visibilitychange', onVisible);
+    // The browser knows about a lost network long before the stream times out.
+    const onOffline = () => setState((s) => ({ ...s, link: s.link === 'unauthorized' ? s.link : 'offline' }));
+    const onOnline = () => kick.current();
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('online', onOnline);
     const resume = isNative ? CapApp.addListener('resume', () => kick.current()) : null;
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('online', onOnline);
       void resume?.then((h) => h.remove());
     };
   }, []);

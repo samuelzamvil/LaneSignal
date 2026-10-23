@@ -5,15 +5,16 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { Store } from '../src/store.ts';
+import { esc as escalate, lane as publishLane } from './publish.ts';
 
 const resolveTicketUrl = (t: string) => `https://tickets.example/${t.replace(/^gh:/, '')}`;
 
 test('a lane can hold several open escalations and stays blocked until all are decided', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  store.upsertLane('default/wiring', { status: 'active', ticket: 'gh:900' }, 'bot');
+  publishLane(store, 'default/wiring', { status: 'active', ticket: 'gh:900' }, 'bot');
   const questions = ['Add @google-cloud/tasks?', 'Use one queue per job type?', 'Set a 10 min deadline?', 'Retry 5x?'];
   const escs = questions.map((q) =>
-    store.createEscalation(
+    escalate(store, 
       {
         laneId: 'default/wiring',
         question: q,
@@ -45,7 +46,7 @@ test('upgrades a schema v1 database without losing escalations', () => {
   const file = path.join(dir, 'db.sqlite');
   try {
     let store = new Store({ path: file, resolveTicketUrl });
-    const esc = store.createEscalation({ laneId: 'default/old-lane', question: 'Still here?' }, 'bot');
+    const esc = escalate(store, { laneId: 'default/old-lane', question: 'Still here?' }, 'bot');
     store.close();
 
     // Roll the file back to the v1 layout.
@@ -126,8 +127,8 @@ test('refuses a pre-release database instead of failing on every write', () => {
 
 test('FYI (non-blocking) escalations do not keep a lane blocked', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  const blocking = store.createEscalation({ laneId: 'default/l', question: 'Blocking?' }, 'bot');
-  store.createEscalation({ laneId: 'default/l', question: 'FYI?', blocking: false }, 'bot');
+  const blocking = escalate(store, { laneId: 'default/l', question: 'Blocking?' }, 'bot');
+  escalate(store, { laneId: 'default/l', question: 'FYI?', blocking: false }, 'bot');
   assert.equal(store.getLane('default/l')?.status, 'blocked_human');
   store.decideEscalation(blocking.id, 'yes', null, 'alice');
   assert.equal(store.getLane('default/l')?.status, 'awaiting_agent');
@@ -137,11 +138,11 @@ test('FYI (non-blocking) escalations do not keep a lane blocked', () => {
 
 test('acknowledging or withdrawing never unblocks a lane the agent blocked itself', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  const e1 = store.createEscalation({ laneId: 'default/l', question: 'One?' }, 'bot');
-  const e2 = store.createEscalation({ laneId: 'default/l', question: 'Two?', blocking: false }, 'bot');
+  const e1 = escalate(store, { laneId: 'default/l', question: 'One?' }, 'bot');
+  const e2 = escalate(store, { laneId: 'default/l', question: 'Two?', blocking: false }, 'bot');
   store.decideEscalation(e1.id, 'yes', null, 'alice');
   store.decideEscalation(e2.id, 'yes', null, 'alice');
-  store.upsertLane('default/l', { status: 'blocked_human', activity: 'waiting for creds rotation' }, 'bot');
+  publishLane(store, 'default/l', { status: 'blocked_human', activity: 'waiting for creds rotation' }, 'bot');
   store.acknowledgeEscalation(e1.id, null, 'bot');
   store.withdrawEscalation(e2.id, 'moot', 'bot');
   assert.equal(store.getLane('default/l')?.status, 'blocked_human');
@@ -150,7 +151,7 @@ test('acknowledging or withdrawing never unblocks a lane the agent blocked itsel
 
 test('lane history returns the newest escalations, oldest first', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  for (let i = 0; i < 60; i++) store.createEscalation({ laneId: 'default/l', question: `q${i}`, blocking: false }, 'bot');
+  for (let i = 0; i < 60; i++) escalate(store, { laneId: 'default/l', question: `q${i}`, blocking: false }, 'bot');
   const recent = store.listEscalations({ laneId: 'default/l', limit: 50 });
   assert.equal(recent.length, 50);
   assert.equal(recent[0].question, 'q10');
@@ -160,7 +161,7 @@ test('lane history returns the newest escalations, oldest first', () => {
 
 test('positions are capped per escalation', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  const e = store.createEscalation({ laneId: 'default/l', question: 'Q?' }, 'bot');
+  const e = escalate(store, { laneId: 'default/l', question: 'Q?' }, 'bot');
   for (let i = 0; i < 20; i++) store.addPosition(e.id, { agent: `a${i}`, stance: 'agree' }, 'bot');
   assert.throws(() => store.addPosition(e.id, { agent: 'a20', stance: 'agree' }, 'bot'), /At most 20/);
   // Replacing an existing agent's position still works at the cap.
@@ -170,7 +171,7 @@ test('positions are capped per escalation', () => {
 
 test('removing a lane withdraws its waiting escalation instead of leaving the agent hanging', async () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  const e = store.createEscalation({ laneId: 'default/l', question: 'Q?' }, 'bot');
+  const e = escalate(store, { laneId: 'default/l', question: 'Q?' }, 'bot');
   const waiting = store.waitForDecision(e.id, 5000);
   store.deleteLane('default/l', 'alice');
   const result = await waiting;
@@ -181,11 +182,11 @@ test('removing a lane withdraws its waiting escalation instead of leaving the ag
 
 test('removing a lane archives it: hidden from the dashboard, kept for export, restored on republish', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  store.upsertLane('default/l', { name: 'Lane', group: 'default/g', status: 'active' }, 'bot');
-  const e = store.createEscalation({ laneId: 'default/l', question: 'Q?' }, 'bot');
+  publishLane(store, 'default/l', { name: 'Lane', group: 'default/g', status: 'active' }, 'bot');
+  const e = escalate(store, { laneId: 'default/l', question: 'Q?' }, 'bot');
   store.decideEscalation(e.id, 'yes', null, 'alice');
   store.acknowledgeEscalation(e.id, 'done', 'bot');
-  store.createEscalation({ laneId: 'default/l', question: 'Still open?' }, 'bot');
+  escalate(store, { laneId: 'default/l', question: 'Still open?' }, 'bot');
   store.deleteLane('default/l', 'alice');
 
   assert.equal(store.getLane('default/l'), null);
@@ -202,7 +203,7 @@ test('removing a lane archives it: hidden from the dashboard, kept for export, r
   assert.equal(lanes.length, 1);
   assert.ok(lanes[0].archived_at);
 
-  store.upsertLane('default/l', { status: 'active' }, 'bot');
+  publishLane(store, 'default/l', { status: 'active' }, 'bot');
   assert.equal(store.getLane('default/l')?.name, 'Lane');
   assert.ok(store.laneEvents('default/l').some((ev) => ev.message === 'Lane restored'));
   store.close();
@@ -211,18 +212,18 @@ test('removing a lane archives it: hidden from the dashboard, kept for export, r
 test('removing a group archives it; lanes read as ungrouped but exports keep the group', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
   store.upsertGroup('default/payments', { name: 'Payments epic' }, 'bot');
-  store.upsertLane('default/l', { group: 'default/payments' }, 'bot');
+  publishLane(store, 'default/l', { group: 'default/payments' }, 'bot');
   store.deleteGroup('default/payments', 'alice');
   assert.equal(store.getLane('default/l')?.group, null);
   assert.deepEqual(store.listGroups(), []);
   // An unrelated update must not drop the lane's group association.
-  store.upsertLane('default/l', { activity: 'still going' }, 'bot');
+  publishLane(store, 'default/l', { activity: 'still going' }, 'bot');
   const lane = store.exportRows('lanes')[0];
   assert.equal(lane.group_id, 'payments');
   assert.equal(lane.group_name, 'Payments epic');
   assert.ok(store.exportRows('groups')[0].archived_at);
   // Publishing to the group again brings it back.
-  store.upsertLane('default/l2', { group: 'default/payments' }, 'bot');
+  publishLane(store, 'default/l2', { group: 'default/payments' }, 'bot');
   assert.equal(store.listGroups()[0].name, 'Payments epic');
   store.close();
 });
@@ -230,7 +231,7 @@ test('removing a group archives it; lanes read as ungrouped but exports keep the
 test('only routine activity text is trimmed; status and escalation history is kept', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl, eventRetention: 2 });
   const statuses = ['active', 'pending_ci', 'active', 'pending_ci', 'active'] as const;
-  statuses.forEach((status, i) => store.upsertLane('default/l', { status, activity: `step ${i}` }, 'bot'));
+  statuses.forEach((status, i) => publishLane(store, 'default/l', { status, activity: `step ${i}` }, 'bot'));
   const events = store.exportRows('events');
   assert.equal(events.filter((e) => e.kind === 'activity').length, 2);
   assert.equal(events.filter((e) => e.kind === 'status').length, 5); // created + 4 changes
@@ -240,7 +241,7 @@ test('only routine activity text is trimmed; status and escalation history is ke
 test('escalation export computes timings and recommendation follow-through', () => {
   let now = Date.parse('2026-10-01T10:00:00Z');
   const store = new Store({ path: ':memory:', resolveTicketUrl, now: () => new Date(now) });
-  const e = store.createEscalation(
+  const e = escalate(store, 
     {
       laneId: 'default/l',
       question: 'Merge?',
@@ -320,10 +321,10 @@ test('removing a blocked lane ends its blocked spell; decided answers survive an
   const store = new Store({ path: ':memory:', resolveTicketUrl, now: () => new Date(now) });
   const changes: string[] = [];
   store.events.on('change', (e) => changes.push(e.type === 'lane' ? `lane:${e.lane.id}` : e.type));
-  store.upsertLane('default/a', { status: 'active' }, 'bot');
-  const decided = store.createEscalation({ laneId: 'default/a', question: 'Decided?', blocking: false }, 'bot');
+  publishLane(store, 'default/a', { status: 'active' }, 'bot');
+  const decided = escalate(store, { laneId: 'default/a', question: 'Decided?', blocking: false }, 'bot');
   store.decideEscalation(decided.id, 'yes', null, 'alice');
-  store.createEscalation({ laneId: 'default/a', question: 'Open?' }, 'bot');
+  escalate(store, { laneId: 'default/a', question: 'Open?' }, 'bot');
   now += 60_000;
   store.deleteLane('default/a', 'alice');
   now += 3_600_000;
@@ -342,7 +343,7 @@ test('removing a blocked lane ends its blocked spell; decided answers survive an
   store.acknowledgeEscalation(decided.id, 'done', 'bot');
   assert.deepEqual(changes, ['escalation']);
 
-  store.upsertLane('default/a', { activity: 'back' }, 'bot');
+  publishLane(store, 'default/a', { activity: 'back' }, 'bot');
   assert.equal(store.getLane('default/a')?.status, 'idle');
   assert.equal(store.getLane('default/a')?.blockedTotalMs, 60_000);
   store.close();
@@ -350,8 +351,8 @@ test('removing a blocked lane ends its blocked spell; decided answers survive an
 
 test('restoring an archived group re-sends its lanes so clients regroup them', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  store.upsertLane('default/b', { group: 'default/g2' }, 'bot');
-  store.upsertLane('default/c', { group: 'default/g2' }, 'bot');
+  publishLane(store, 'default/b', { group: 'default/g2' }, 'bot');
+  publishLane(store, 'default/c', { group: 'default/g2' }, 'bot');
   store.deleteGroup('default/g2', 'alice');
   const lanes: string[] = [];
   store.events.on('change', (e) => e.type === 'lane' && lanes.push(`${e.lane.id}:${e.lane.group}`));
@@ -364,8 +365,8 @@ test('every export row has exactly the documented columns, so headers never chan
   const { EXPORT_COLUMNS, EXPORT_DATASETS } = await import('../src/store.ts');
   const { datasetCsv } = await import('../src/export.ts');
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  store.upsertLane('default/l', { group: 'default/g' }, 'bot');
-  store.createEscalation({ laneId: 'default/l', question: 'Q?', positions: [{ agent: 'r', stance: 'agree' }] }, 'bot');
+  publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
+  escalate(store, { laneId: 'default/l', question: 'Q?', positions: [{ agent: 'r', stance: 'agree' }] }, 'bot');
   for (const d of EXPORT_DATASETS) {
     for (const row of store.exportRows(d)) assert.deepEqual(Object.keys(row), [...EXPORT_COLUMNS[d]], d);
     const empty = datasetCsv(store, d, { laneId: 'default/nope' });
@@ -378,7 +379,7 @@ test('every export row has exactly the documented columns, so headers never chan
 test('positions are filtered by when each position was taken', () => {
   let now = Date.parse('2026-10-01T10:00:00Z');
   const store = new Store({ path: ':memory:', resolveTicketUrl, now: () => new Date(now) });
-  const e = store.createEscalation({ laneId: 'default/l', question: 'Q?' }, 'bot');
+  const e = escalate(store, { laneId: 'default/l', question: 'Q?' }, 'bot');
   now = Date.parse('2026-10-05T10:00:00Z');
   store.addPosition(e.id, { agent: 'late', stance: 'agree' }, 'bot');
   assert.equal(store.exportRows('positions', { to: '2026-10-03T00:00:00.000Z' }).length, 0);
@@ -463,45 +464,45 @@ test('tokens registered before the upgrade are matched by name', () => {
 
 test('active lanes get letters, smallest free first; finished lanes give theirs back', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  store.upsertLane('default/one', {}, 'bot');
-  store.upsertLane('default/two', {}, 'bot');
+  publishLane(store, 'default/one', {}, 'bot');
+  publishLane(store, 'default/two', {}, 'bot');
   assert.equal(store.getLane('default/one')?.letter, 'A');
   assert.equal(store.getLane('default/two')?.letter, 'B');
-  const a1 = store.createEscalation({ laneId: 'default/one', question: 'First?' }, 'bot');
-  const b1 = store.createEscalation({ laneId: 'default/two', question: 'Other lane?' }, 'bot');
+  const a1 = escalate(store, { laneId: 'default/one', question: 'First?', blocking: false }, 'bot');
+  const b1 = escalate(store, { laneId: 'default/two', question: 'Other lane?' }, 'bot');
   assert.deepEqual([a1.ref, b1.ref], ['A1', 'B1']);
   // Completing a lane keeps its letter while a question is still unanswered...
-  store.upsertLane('default/one', { status: 'completed' }, 'bot');
+  publishLane(store, 'default/one', { status: 'completed' }, 'bot');
   assert.equal(store.getLane('default/one')?.letter, 'A');
   store.decideEscalation(a1.id, 'yes', null, 'alice');
   assert.equal(store.getLane('default/one')?.letter, 'A', 'decided but not picked up yet');
   store.acknowledgeEscalation(a1.id, null, 'bot');
   assert.equal(store.getLane('default/one')?.letter, null);
   // ...and the next lane takes the free letter; codes keep counting so they never repeat.
-  store.upsertLane('default/three', {}, 'bot');
+  publishLane(store, 'default/three', {}, 'bot');
   assert.equal(store.getLane('default/three')?.letter, 'A');
-  const next = store.createEscalation({ laneId: 'default/three', question: 'Reused letter?' }, 'bot');
+  const next = escalate(store, { laneId: 'default/three', question: 'Reused letter?' }, 'bot');
   assert.equal(next.ref, 'A2');
   assert.equal(store.getEscalation('A1')?.id, a1.id);
   assert.equal(store.getEscalation('#a2')?.id, next.id);
   // A finished lane that gets a new question takes a letter again.
-  const back = store.createEscalation({ laneId: 'default/one', question: 'One more?' }, 'bot');
+  const back = escalate(store, { laneId: 'default/one', question: 'One more?' }, 'bot');
   assert.equal(store.getLane('default/one')?.letter, 'C');
   assert.equal(back.ref, 'C1');
   // Removing a lane frees its letter once nothing is pending.
   store.deleteLane('default/two', 'alice');
   assert.equal(store.listLanes().find((l) => l.id === 'two'), undefined);
-  store.upsertLane('default/four', {}, 'bot');
+  publishLane(store, 'default/four', {}, 'bot');
   assert.equal(store.getLane('default/four')?.letter, 'B');
   store.close();
 });
 
 test('letters go past Z like spreadsheet columns', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  for (let i = 0; i < 28; i++) store.upsertLane(`default/lane-${i}`, {}, 'bot');
+  for (let i = 0; i < 28; i++) publishLane(store, `default/lane-${i}`, {}, 'bot');
   assert.equal(store.getLane('default/lane-25')?.letter, 'Z');
   assert.equal(store.getLane('default/lane-26')?.letter, 'AA');
-  assert.equal(store.createEscalation({ laneId: 'default/lane-27', question: 'Far?' }, 'bot').ref, 'AB1');
+  assert.equal(escalate(store, { laneId: 'default/lane-27', question: 'Far?' }, 'bot').ref, 'AB1');
   assert.equal(store.getEscalation('ab1')?.laneId, 'default/lane-27');
   store.close();
 });
@@ -511,12 +512,12 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
   const file = path.join(dir, 'db.sqlite');
   try {
     let store = new Store({ path: file, resolveTicketUrl });
-    store.upsertLane('default/done', {}, 'bot');
-    const old = store.createEscalation({ laneId: 'default/done', question: 'Old?' }, 'bot');
+    publishLane(store, 'default/done', {}, 'bot');
+    const old = escalate(store, { laneId: 'default/done', question: 'Old?' }, 'bot');
     store.withdrawEscalation(old.id, null, 'bot');
-    store.upsertLane('default/done', { status: 'completed' }, 'bot');
-    store.upsertLane('default/live', {}, 'bot');
-    const open = store.createEscalation({ laneId: 'default/live', question: 'Open?' }, 'bot');
+    publishLane(store, 'default/done', { status: 'completed' }, 'bot');
+    publishLane(store, 'default/live', {}, 'bot');
+    const open = escalate(store, { laneId: 'default/live', question: 'Open?' }, 'bot');
     store.close();
     const db = new DatabaseSync(file);
     db.exec(`
@@ -555,7 +556,7 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
     assert.equal(store.getLane('default/done')?.letter, null);
     assert.equal(store.getEscalation(open.id)?.ref, 'A1');
     assert.equal(store.getEscalation(old.id)?.ref, 'B1');
-    assert.equal(store.createEscalation({ laneId: 'default/live', question: 'New?' }, 'bot').ref, 'A2');
+    assert.equal(escalate(store, { laneId: 'default/live', question: 'New?' }, 'bot').ref, 'A2');
     // Numbers from before the upgrade (#1 was the first escalation) still resolve.
     assert.equal(store.getEscalation('#1')?.id, old.id);
     assert.equal(store.getEscalation('2')?.id, open.id);

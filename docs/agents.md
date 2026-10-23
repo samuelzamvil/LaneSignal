@@ -62,7 +62,9 @@ The skill covers how; **when** is yours to decide. Paste the [policy template](a
 
 ## Tools
 
-Which tools a client sees depends on its credential: agent keys get the agent tools, and personal keys (or human sessions) get the human ones. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
+Which tools a client sees depends on its credential: agent keys get the agent tools, and personal keys (or human sessions) get the human ones.
+
+Results are compact JSON. Creating, waiting on and acknowledging escalations return them in brief (code, question, decision, note, state), not the whole question with its context: `get_escalation` has everything. Tools that take a group accept `group_id` and `group` alike. Unknown groups and lanes are errors, so a typo never looks like an empty result or creates a lane nobody waits on. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
 
 Every tool takes an optional `project` (id or key). A key bound to one [project](projects.md) never needs it. A key that reaches several must pass it to write, and its listings cover all its projects.
 
@@ -70,15 +72,15 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 |---|---|---|
 | `list_projects` | any | The projects the credential reaches (id, key, name) |
 | `update_group` | agent | Name the epic/train, set its ticket, link the overseer's Remote Control session |
-| `update_lane` | agent | Create or update a lane: status, group, ticket, activity, links. Omitted fields stay unchanged |
+| `update_lane` | agent | Create or update a lane: status, group, ticket, activity, links. Omitted fields stay unchanged. The group must be registered with `update_group` first. While a blocking escalation is open, the lane stays `blocked_human` |
 | `remove_lane` | agent | Take a finished lane off the dashboard (archived; open questions withdrawn; history kept) |
-| `create_escalation` | agent | Ask humans a question (see the [fields](concepts.md#escalations)). The same open question on the same lane returns the existing one (`duplicate: true`), so retries are safe |
+| `create_escalation` | agent | Ask humans a question (see the [fields](concepts.md#escalations)). The lane must be published first. The same open question on the same lane (ignoring spacing and case) returns the existing one (`duplicate: true`), so retries are safe. Returns the escalation in brief |
 | `add_position` | agent | Agree, disagree or stay neutral on an open escalation's recommendation, with a reason |
 | `wait_for_decisions` | any | Wait on a group, lanes or escalations; returns as soon as one is decided. `wait_seconds` up to 3600 |
 | `get_escalation` | any | Read one escalation. `wait_seconds` (up to 300) waits until it's answered |
-| `acknowledge_escalation` | agent | Call as soon as a decision arrives: closes the escalation and returns the final decision. `status` and `activity` publish the lane's next state in the same call. Repeating it is safe |
+| `acknowledge_escalation` | agent | Call as soon as a decision arrives: closes the escalation and returns the final decision. `status` and `activity` publish the lane's next state in the same call. Repeating it is safe. Only the agent that raised the escalation can acknowledge it |
 | `withdraw_escalation` | agent | Close it without a dashboard answer: answered in Remote Control, or moot |
-| `list_lanes` / `list_groups` / `list_escalations` | any | Read state |
+| `list_lanes` / `list_groups` / `list_escalations` | any | Read state. `list_escalations` returns escalations in brief, filtered by `group_id` or `lane_id`, latest 50 by default (`limit` up to 500) |
 | `find_requirements` / `get_requirement` / `list_requirement_tags` | any | Search the owner's product decisions before asking again. See [Requirements](requirements.md) |
 | `record_requirement` / `supersede_requirement` | any | Record a decision the owner made (citing the escalation or the person), or replace one they changed. `all_projects: true` for decisions that cover every project |
 | `export_data` | any | All data for analysis (escalations, positions, lanes, groups, history) as CSV or JSON, paged. See [Export](export.md) |

@@ -81,7 +81,10 @@ open ──(human decides)──► decided ──(agent acknowledges)──► 
 - Decided escalations stay on the dashboard under *Decided · awaiting agent* until the agent acknowledges. One that waits longer than `LANESIGNAL_STALE_MINUTES` is flagged.
 - If two humans answer at once, the second gets `409 Conflict`.
 - **Change decision** (in the detail view) replaces the answer until the agent acknowledges, e.g. after a mis-tap. Agents acknowledge before acting, and the acknowledgement returns the final answer.
-- Raising the same question again on the same lane while it's still open returns the existing escalation, so agent retries don't create duplicates.
+- Raising the same question again on the same lane while it's still open (ignoring spacing and case) returns the existing escalation, so agent retries don't create duplicates.
+- A lane stays **blocked** while any of its blocking escalations is open, whatever status its agent publishes, so the dashboard keeps showing that you owe it an answer.
+- Only the agent that raised an escalation acknowledges it, so an overseer can't swallow another's decision by reusing a code. A person can acknowledge on its behalf.
+- A decided escalation whose agent never comes back (its session ended) can be **dismissed** from its detail view.
 - **Withdraw** is for questions that were answered elsewhere, for example in Remote Control, or that stopped mattering.
 
 ### Blocking

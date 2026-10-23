@@ -29,9 +29,10 @@ export interface Access {
   isAdmin(project: string): boolean;
   /**
    * The project a request acts on: the given id or key, or (when omitted) the key's bound
-   * project or the caller's only project. Unknown and inaccessible projects are both 404s.
+   * project, the caller's only project, or the one project of the caller's that has the
+   * named lane or group. Unknown and inaccessible projects are both 404s.
    */
-  pick(project?: string | null): string;
+  pick(project?: string | null, hint?: { lane?: string; group?: string }): string;
   /** A project filter for listings: the given one, or every project the caller can see. */
   scope(project?: string | null): string[];
   /** Finds an escalation by id or code the caller may see (a code needs its project). */
@@ -65,7 +66,12 @@ export function accessFor(store: Store, principal: Principal): Access {
     return found.id;
   };
 
-  const pick = (project?: string | null) => {
+  const ask = (among: string[]) => {
+    const keys = among.map((id) => store.getProject(id)?.key ?? id);
+    return new ValidationError(`Say which project: ${keys.join(', ')} (the "project" parameter, by id or key)`);
+  };
+
+  const pick = (project?: string | null, hint?: { lane?: string; group?: string }) => {
     if (project) return resolve(project);
     if (principal.project) {
       // A key bound to a project its owner can't see (or that doesn't exist) reaches nothing.
@@ -74,8 +80,17 @@ export function accessFor(store: Store, principal: Principal): Access {
     }
     if (visible.length === 1) return visible[0];
     if (!visible.length) throw new NotFoundError('You are not a member of any project yet; ask an admin to add you');
-    const keys = visible.map((id) => store.getProject(id)?.key ?? id);
-    throw new ValidationError(`Say which project: ${keys.join(', ')} (the "project" parameter, by id or key)`);
+    // Several projects: an existing lane or group id names its project, so an overseer that
+    // was running before a second project appeared keeps working without a `project`.
+    const owners = (has: (p: string) => boolean) => visible.filter(has);
+    for (const found of [
+      hint?.lane ? owners((p) => store.laneExists(qualify(p, hint.lane!))) : [],
+      hint?.group ? owners((p) => store.groupExists(qualify(p, hint.group!))) : [],
+    ]) {
+      if (found.length === 1) return found[0];
+      if (found.length > 1) throw ask(found);
+    }
+    throw ask(visible);
   };
 
   return {
@@ -124,7 +139,7 @@ export function waitScopeFor(
   raw: { ids?: string[]; laneIds?: string[]; groupId?: string; since?: string },
   project?: string | null,
 ): WaitScope {
-  const pr = raw.laneIds?.length || raw.groupId ? a.pick(project) : undefined;
+  const pr = raw.laneIds?.length || raw.groupId ? a.pick(project, { group: raw.groupId, lane: raw.laneIds?.[0] }) : undefined;
   return {
     ids: raw.ids?.map((id) => a.escalation(id, project).id),
     laneIds: raw.laneIds?.map((l) => qualify(pr!, l)),
@@ -154,7 +169,9 @@ export function requirementInputFor(
   current?: Requirement,
 ): RequirementInput {
   const keepScope = current !== undefined && body.allProjects === undefined && body.group === undefined && !project;
-  const scopeProject = body.allProjects ? null : keepScope ? current.project : a.pick(project);
+  // Without a project: the group's, or the cited escalation's.
+  const cited = !project && !body.group && body.sourceEscalation && !body.allProjects && !keepScope ? a.escalation(body.sourceEscalation) : null;
+  const scopeProject = body.allProjects ? null : keepScope ? current.project : (cited?.project ?? a.pick(project, { group: body.group ?? undefined }));
   if (current) a.requireWritable(current);
   a.requireWritable({ project: scopeProject });
   const human = a.principal.role === 'human';
@@ -168,7 +185,7 @@ export function requirementInputFor(
     justification: body.justification,
     tags: body.tags,
     project: scopeProject,
-    group: body.group ? qualify(a.pick(project), body.group) : keepScope ? undefined : body.group,
+    group: body.group ? qualify(scopeProject ?? a.pick(project, { group: body.group }), body.group) : keepScope ? undefined : body.group,
     sourceEscalation: source ? source.id : body.sourceEscalation,
     decidedBy: body.decidedBy ?? (human && !body.sourceEscalation ? a.principal.name : null),
   };
@@ -214,3 +231,38 @@ export const pub = {
     }
   },
 };
+
+/**
+ * An escalation as agents need it after asking: what was decided, not the whole question echoed
+ * back (context can run to pages). get_escalation and GET /api/escalations/:id return everything.
+ */
+export const brief = (e: Escalation & { duplicate?: boolean }) => ({
+  id: e.id,
+  ref: e.ref,
+  ...(e.duplicate ? { duplicate: true } : {}),
+  project: e.project,
+  laneId: e.laneId,
+  state: e.state,
+  blocking: e.blocking,
+  question: e.question,
+  decision: e.decision,
+  decisionNote: e.decisionNote,
+  decidedBy: e.decidedBy,
+  resolution: e.resolution,
+  positions: e.positions,
+  createdBy: e.createdBy,
+  createdAt: e.createdAt,
+});
+
+/** A wait result with its escalations in brief. */
+export const briefWait = (w: WaitResult) => ({ ...w, decided: w.decided.map(brief), closed: w.closed.map(brief) });
+
+/**
+ * Only the agent that raised an escalation acknowledges it (or a person, for it): codes repeat across
+ * groups, and another overseer acknowledging by mistake would swallow the decision.
+ */
+export function requireRaiser(a: Access, e: Escalation) {
+  if (a.principal.role === 'agent' && e.createdBy !== a.principal.name) {
+    throw new ForbiddenError(`${e.ref} was raised by ${e.createdBy}; only that agent (or a person) can acknowledge it`);
+  }
+}

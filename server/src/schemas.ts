@@ -146,7 +146,7 @@ export const waitScope = z
     since: instant.optional(),
   })
   .refine((w) => w.ids?.length || w.laneIds?.length || w.groupId, {
-    message: 'give a group, lanes, or escalation ids to wait on',
+    message: 'say what to wait on: group_id (MCP; `group` over HTTP), lane_ids (`lane`) or ids',
   });
 
 const csv = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v);

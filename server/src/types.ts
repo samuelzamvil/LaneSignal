@@ -172,6 +172,8 @@ export interface ProjectMember {
   email: string;
   role: ProjectRole;
   notify: boolean;
+  /** An account admin, who sees every project without being a member. */
+  instanceAdmin?: boolean;
 }
 
 export interface PublicConfig {

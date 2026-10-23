@@ -4,7 +4,8 @@ Product direction tends to get buried in tickets and escalation threads, and fin
 
 - **The decisions are the owner's.** Agents record them, but only decisions a person made: an answered escalation, or something the owner said (e.g. in Remote Control). An agent's own design choices don't belong here. An agent can cite only an escalation it raised, or one from a lane in the same train/epic.
 - **One decision per requirement**, so it can be found, cited and replaced on its own.
-- **Nothing is deleted.** When the owner changes direction, the new requirement *supersedes* the old one, which stays (marked) so the history of why is kept.
+- **Nothing is deleted.** When the owner changes direction, the new requirement *supersedes* the old one, which stays (marked) so the history of why is kept. A requirement retired by mistake can be restored.
+- **No duplicates from one decision.** Recording a requirement that cites an escalation an active requirement already cites returns that requirement (`duplicate: true`) instead of storing a second.
 
 ## A requirement
 
@@ -29,6 +30,7 @@ Tags exist to find things, so they must be specific:
 - Broad tags are rejected: `backend`, `frontend`, `ui`, `ux`, `api`, `misc`, `general`, `feature`, `bug` and similar. Set your own list with `LANESIGNAL_BROAD_TAGS`.
 - Once there are 10+ requirements, recording one with a tag that's already on more than 40% of them returns a warning.
 - `list_requirement_tags` shows the tags in use with counts, so agents reuse them instead of inventing synonyms.
+- A tag that differs from an existing one only by a plural (`payout-retry` next to `payout-retries`) returns a warning.
 
 ## How agents use it
 

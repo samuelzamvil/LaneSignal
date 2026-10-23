@@ -278,6 +278,7 @@ describe('accounts', () => {
 
   test('revoking a key closes its open event stream and fails its in-flight long-poll', async () => {
     const key = (await call('POST', '/api/auth/api-key/create', adminToken, { name: 'streamer' })).body.key;
+    await call('PUT', '/api/lanes/stream-lane', key, {});
     const esc = (await call('POST', '/api/escalations', key, { laneId: 'stream-lane', question: 'Q?' })).body;
     const ctrl = new AbortController();
     const stream = await fetch(`${base}/api/events?access_token=${key}`, { signal: ctrl.signal });

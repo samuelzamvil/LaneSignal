@@ -93,6 +93,10 @@ describe('auth', () => {
 
 describe('lanes', () => {
   test('upsert creates, then patches, resolving ticket urls', async () => {
+    const typo = await call('PUT', '/api/lanes/epic-1', AGENT, { group: 'payments-epc' });
+    assert.equal(typo.status, 404, 'a mistyped group is an error, not a new group');
+    assert.match(typo.body.error, /Group "payments-epc" not found/);
+    assert.equal((await call('PUT', '/api/groups/payments-epic', AGENT, {})).status, 200);
     const created = await call('PUT', '/api/lanes/epic-1', AGENT, {
       name: 'Epic 1',
       group: 'payments-epic',
@@ -113,7 +117,7 @@ describe('lanes', () => {
     assert.equal(patched.body.links.length, 1);
   });
 
-  test('unknown group ids create the group; overseer fills in its metadata', async () => {
+  test('a group registered without a name is named after its id; overseer fills in its metadata', async () => {
     const groups = (await call('GET', '/api/groups', ALICE)).body;
     assert.deepEqual(
       groups.map((g: { id: string; name: string }) => [g.id, g.name]),
@@ -156,6 +160,7 @@ describe('lanes', () => {
   });
 
   test('deleting a group ungroups its lanes', async () => {
+    await call('PUT', '/api/groups/tmp-group', AGENT, {});
     await call('PUT', '/api/lanes/tmp-lane', AGENT, { group: 'tmp-group' });
     assert.equal((await call('DELETE', '/api/groups/tmp-group', ALICE)).status, 204);
     assert.equal((await call('GET', '/api/lanes/tmp-lane', ALICE)).body.lane.group, null);
@@ -193,6 +198,10 @@ describe('escalation lifecycle', () => {
   let id = '';
 
   test('agent creates; lane becomes blocked_human', async () => {
+    const unpublished = await call('POST', '/api/escalations', AGENT, { laneId: 'train-a', question: 'Too early?' });
+    assert.equal(unpublished.status, 404, 'the lane must be published first');
+    assert.match(unpublished.body.error, /Lane "train-a" not found: publish it first/);
+    await call('PUT', '/api/lanes/train-a', AGENT, {});
     const res = await call('POST', '/api/escalations', AGENT, {
       laneId: 'train-a',
       context: 'legacy_role has had no reads for 90 days.',
@@ -342,7 +351,12 @@ describe('mcp', () => {
       name: 'create_escalation',
       arguments: { lane_id: 'mcp-lane', question: 'Merge?', options: ['Merge', 'Wait'], recommended_option: 'Merge' },
     });
-    assert.equal(JSON.parse(created.result.content[0].text).recommendedOption, 'Merge');
+    // Agents get the escalation back in brief: not the whole question echoed.
+    const brief = JSON.parse(created.result.content[0].text);
+    assert.match(brief.ref, /^[A-Z]+\d+$/);
+    assert.equal(brief.state, 'open');
+    assert.equal(brief.recommendedOption, undefined);
+    assert.equal(store.getEscalation(brief.id)?.recommendedOption, 'Merge');
     const bad = await rpc(AGENT, 'tools/call', {
       name: 'create_escalation',
       arguments: { lane_id: 'mcp-lane', question: 'Merge?', options: ['Merge'], recommended_option: 'Nope' },

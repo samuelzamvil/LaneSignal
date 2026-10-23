@@ -248,6 +248,7 @@ describe('real time and export', () => {
           text += decoder.decode(value, { stream: true });
         }
       };
+      await srv.publish('streamed');
       await srv.tool(AGENT, 'create_escalation', { lane_id: 'streamed', question: 'Stream me?' });
       await readUntil('Stream me?');
       assert.match(text, /event: escalation/);
