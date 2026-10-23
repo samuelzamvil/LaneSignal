@@ -23,6 +23,7 @@ LaneSignal is an observability and intervention surface, not an orchestrator. Cl
 
 | Candidate | What it is | Fit | Decision |
 |---|---|---|---|
+| **[Better Auth](https://github.com/better-auth/better-auth)** (MIT) | TypeScript auth library | Runs on our `node:sqlite` database and mounts on Express. Its bearer, admin and API-key plugins cover accounts, people management and account-owned agent keys. | **Adopted** for accounts and agent keys. |
 | **[Agent Inbox](https://github.com/langchain-ai/agent-inbox)** (LangChain) | Next.js UI for LangGraph `interrupt()`s | Has no backend of its own. It reads LangGraph Platform deployments, needs a LangSmith key, and keeps its config in browser localStorage. Its notion of an escalation is tied to LangGraph threads, and it has no lanes, push or Android support. | **Not adopted.** We borrowed its interaction model: an inbox of interrupts with accept/respond actions. |
 | **[Kanbrawl](https://github.com/sinedied/kanbrawl)** (MIT) | Minimal live kanban for agents: Express 5 + MCP SDK (Streamable HTTP) + SSE + a JSON-file store, with a Lit UI | Its architecture is close to what we need. Its data model (tasks in columns), lack of authentication, single-writer JSON file and Lit frontend all needed replacing. Extending it would have meant rewriting nearly everything except the wiring. | **Architecture adopted, code not forked.** The same stack and patterns, with a lane/escalation model, token auth and SQLite. |
 
@@ -36,12 +37,23 @@ docker compose up -d --build
 curl localhost:8080/healthz   # {"ok":true}
 ```
 
-Open `http://localhost:8080` and sign in with a **human** token.
-
-If you set no tokens at all, the server generates one human token and one agent token on first start and stores them in the data volume:
+Open `http://localhost:8080`. On a fresh server the first screen asks you to create the first account, which becomes the admin. It needs the one-time **setup code** the server prints to its log, so reaching the server first isn't enough to claim it:
 
 ```bash
-docker compose exec lanesignal cat /data/generated-tokens.json
+docker compose logs lanesignal | grep setupCode    # or: docker compose exec lanesignal cat /data/setup-code
+```
+
+After that:
+
+- **People:** admins add them under Settings → People. There is no public sign-up.
+- **Agent keys:** each person creates and revokes their own under Settings → Agent keys. Each key belongs to the account that created it, and the Settings screen shows a ready-to-paste `claude mcp add …` command.
+
+**Locked out?** A static human token from the config (`LANESIGNAL_HUMAN_TOKENS`) works as break-glass access:
+
+```bash
+curl -X POST $URL/api/admin/people/password -H "authorization: Bearer $HUMAN_TOKEN" \
+  -H 'content-type: application/json' -d '{"email":"ada@example.com","password":"a new password"}'
+# or add someone: POST /api/admin/people {"email","name","password","admin":true}
 ```
 
 Data lives in the `lanesignal-data` volume (`/data/lanesignal.db`, SQLite in WAL mode). Restarts and image upgrades keep it, and schema migrations run on startup. Configuration can come from environment variables or `config/lanesignal.json`, which is mounted read-only at `/config`.
@@ -103,12 +115,14 @@ LaneSignal never syncs tickets. It only links to them.
 
 ### MCP (recommended)
 
-The endpoint is Streamable HTTP and stateless, at `POST /mcp`, using an **agent** token:
+The endpoint is Streamable HTTP and stateless, at `POST /mcp`, using an **agent key** created under Settings → Agent keys. Keys start with `ls_`.
 
 ```bash
 claude mcp add --transport http lanesignal https://lanesignal.example.com/mcp \
-  --header "Authorization: Bearer $LANESIGNAL_AGENT_TOKEN"
+  --header "Authorization: Bearer ls_…"
 ```
+
+The key's name becomes the agent name shown on lanes, so use one key per overseer (e.g. `payments-overseer`). Revoking the key, or removing or banning its owner, cuts the agent off immediately.
 
 | Tool | Role | Purpose |
 |---|---|---|
@@ -207,8 +221,10 @@ By default, push fires only when an escalation is created. Add `blocked` or `com
 | `PORT` / `HOST` | | `8080` / `0.0.0.0` | |
 | `LANESIGNAL_DATA_DIR` | | `/data` | SQLite and generated tokens |
 | `LANESIGNAL_CONFIG` | | `/config/lanesignal.json` | Optional JSON config file |
-| `LANESIGNAL_HUMAN_TOKENS` | `tokens[]` | | `name:token,…` (≥16 chars each). The former name `LANESIGNAL_OVERSEER_TOKENS` still works |
-| `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | `name:token,…` |
+| `LANESIGNAL_AUTH_SECRET` | | generated | Signs account sessions (≥32 chars). Generated into `/data/auth-secret` when unset |
+| `LANESIGNAL_SIGNIN_RATE_MAX` / `_WINDOW` | | `5` / `60` | Sign-in attempts per client IP per window (seconds). Set `LANESIGNAL_TRUST_PROXY=true` behind a reverse proxy so the real client IP is used |
+| `LANESIGNAL_HUMAN_TOKENS` | `tokens[]` | | Optional static tokens, `name:token,…` (≥16 chars each), for automation or break-glass access. They work beside accounts. The former name `LANESIGNAL_OVERSEER_TOKENS` still works |
+| `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | Optional static agent tokens, `name:token,…`. Prefer account-owned agent keys |
 | `LANESIGNAL_GROUP_LABEL` | `groupLabel` | `Epic` | What groups are called in the UI (Epic, Train, Overseer…) |
 | `LANESIGNAL_TICKET_TEMPLATES` | `ticketTemplates` | | `key=url-with-{id},…` |
 | `LANESIGNAL_TICKET_DEFAULT` | `defaultTicketSystem` | first template | |
@@ -224,10 +240,25 @@ By default, push fires only when an escalation is created. Add `blocked` or `com
 
 ## Security model
 
-- Bearer tokens have two roles:
-  - **agent**: publish lanes, create, acknowledge and withdraw escalations.
-  - **human**: decide escalations, delete lanes and groups, register for push. Overseer *agents* use agent tokens.
-- Tokens are compared in constant time against SHA-256 digests.
+- **Accounts** use [Better Auth](https://better-auth.com) (MIT), adopted as a library rather than built in-house:
+  - email and password (hashed with scrypt), with Better Auth's rate limiting on sign-in
+  - sessions sent as bearer tokens, so the browser and Android app work the same way
+  - no public sign-up: the first account comes from first-run setup (which needs the setup code from the server log), and admins add the rest
+  - session tokens must carry the server's signature; impersonation is disabled; cookies are ignored, so the API is bearer-only
+  - signing out, changing your password (other devices) or an admin password reset revokes sessions
+  - sign-in is rate limited per client IP, taken from the socket or trusted proxies and never from a client-supplied header
+  - only admins change names, so decisions can't be attributed to someone else
+  - telemetry is disabled
+- **Agent keys** (`ls_…`):
+  - stored hashed, shown once
+  - owned by an account; removing or banning the owner disables them
+  - Better Auth's default per-key rate limit is turned off so long-running agents aren't throttled
+  - any signed-in person can create keys, so anyone with an account can publish lane state. That's by design: they run the agents
+- **Revocation is live:** event streams, long-polls and MCP waits re-check their credential. They close as soon as a key is revoked or a person is signed out, removed or banned.
+- Every request carries one bearer credential and gets one of two roles:
+  - **agent** (agent keys and static agent tokens): publish lanes, create, acknowledge and withdraw escalations.
+  - **human** (account sessions and static human tokens): decide escalations, delete lanes and groups, register for push. Account admins and static human tokens can also manage people.
+- Static tokens are compared in constant time against SHA-256 digests.
 - Agents can't decide their own escalations, and humans can't spoof lane state.
 - Link URLs must be `http(s)`, and all input is validated with zod.
 - The SSE endpoint is the only place a token is accepted as a query parameter (`?access_token=`), for clients that can't set headers. The bundled client sends a header.

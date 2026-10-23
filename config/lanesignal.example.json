@@ -9,10 +9,8 @@
   },
   "defaultTicketSystem": "redmine",
   "staleMinutes": 30,
-  "notifyOn": ["escalation"],
-  "fcmServiceAccountFile": "/config/fcm-service-account.json",
-  "tokens": [
-    { "name": "alice", "role": "human", "token": "replace-with-a-long-random-string-1" },
-    { "name": "lane-agents", "role": "agent", "token": "replace-with-a-long-random-string-2" }
-  ]
+  "notifyOn": [
+    "escalation"
+  ],
+  "fcmServiceAccountFile": "/config/fcm-service-account.json"
 }

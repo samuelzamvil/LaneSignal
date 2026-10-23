@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
+import { createAccounts } from '../src/accounts.ts';
 import { createApp } from '../src/app.ts';
 import { loadConfig } from '../src/config.ts';
 import { Store } from '../src/store.ts';
@@ -22,10 +23,12 @@ before(async () => {
     LANESIGNAL_HUMAN_TOKENS: `alice:${ALICE}`,
     // legacy name of the human-token variable
     LANESIGNAL_OVERSEER_TOKENS: `bob:${BOB}`,
+    LANESIGNAL_AUTH_SECRET: 'test-secret-0123456789-0123456789-0123',
     LANESIGNAL_TICKET_TEMPLATES: 'redmine=https://redmine.example/issues/{id},gh=https://github.com/o/r/issues/{id}',
   });
   store = new Store({ path: ':memory:', resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem) });
-  const app = createApp({ config, store, push: { fcm: false, ntfy: false } });
+  const accounts = await createAccounts(config, ':memory:');
+  const app = createApp({ config, store, accounts, push: { fcm: false, ntfy: false } });
   const server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -58,8 +61,29 @@ describe('auth', () => {
 
   test('enforces roles', async () => {
     assert.equal((await call('PUT', '/api/lanes/x', ALICE, { status: 'active' })).status, 403);
-    assert.deepEqual((await call('GET', '/api/me', ALICE)).body, { name: 'alice', role: 'human' });
-    assert.deepEqual((await call('GET', '/api/me', BOB)).body, { name: 'bob', role: 'human' });
+    assert.deepEqual((await call('GET', '/api/me', ALICE)).body, { name: 'alice', role: 'human', admin: true });
+    assert.deepEqual((await call('GET', '/api/me', BOB)).body, { name: 'bob', role: 'human', admin: true });
+  });
+
+  test('first-run setup trusts a static human token instead of the setup code', async () => {
+    const input = { email: 'ops@example.com', name: 'Ops', password: 'correct horse battery' };
+    assert.equal((await call('POST', '/api/setup', null, input)).status, 403);
+    assert.equal((await call('POST', '/api/setup', AGENT, input)).status, 403);
+    assert.equal((await call('POST', '/api/setup', ALICE, input)).status, 201);
+  });
+
+  test('static human tokens can add people and reset passwords (break-glass)', async () => {
+    const add = await call('POST', '/api/admin/people', ALICE, {
+      email: 'new@example.com',
+      name: 'New',
+      password: 'temporary password',
+    });
+    assert.equal(add.status, 201);
+    assert.equal(
+      (await call('POST', '/api/admin/people/password', ALICE, { email: 'new@example.com', password: 'another password' })).status,
+      204,
+    );
+    assert.equal((await call('POST', '/api/admin/people', AGENT, { email: 'x@example.com', name: 'X', password: 'temporary password' })).status, 403);
   });
 
   test('health check is public', async () => {
