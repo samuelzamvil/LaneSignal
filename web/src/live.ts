@@ -1,11 +1,23 @@
 import { App as CapApp } from '@capacitor/app';
 import { useEffect, useRef, useState } from 'react';
-import { ApiError, isNative, type Client, type Escalation, type Group, type Lane, type StreamEvent } from './api.ts';
-import { applyEvent, type Entities } from './merge.ts';
+import {
+  ApiError,
+  isNative,
+  type Client,
+  type Escalation,
+  type Group,
+  type Lane,
+  type ProjectAccess,
+  type StreamEvent,
+} from './api.ts';
+import { applyEvent, keyOf, type Entities } from './merge.ts';
 
 export type LinkState = 'connecting' | 'live' | 'offline' | 'unauthorized';
 
 export interface LiveData {
+  /** Projects the caller can see (refreshed on every (re)connect). */
+  projects: ProjectAccess[];
+  /** Keyed by keyOf(project, id): ids are only unique within a project. */
   groups: Map<string, Group>;
   lanes: Map<string, Lane>;
   escalations: Map<string, Escalation>;
@@ -15,6 +27,8 @@ export interface LiveData {
   /** Bumps on every requirement change and on each (re)connect, so the requirements view refetches. */
   requirementsVersion: number;
   lastEvent: StreamEvent | null;
+  /** Reconnect and re-snapshot, e.g. after changing projects or memberships. */
+  refresh: () => void;
 }
 
 /** The server pings every 25s; a stream silent for longer than this is dead. */
@@ -29,6 +43,7 @@ const STALL_MS = 60_000;
  */
 export function useLiveData(client: Client): LiveData {
   const [state, setState] = useState<LiveData>({
+    projects: [],
     groups: new Map(),
     lanes: new Map(),
     escalations: new Map(),
@@ -36,6 +51,7 @@ export function useLiveData(client: Client): LiveData {
     version: 0,
     requirementsVersion: 0,
     lastEvent: null,
+    refresh: () => kick.current(),
   });
   const kick = useRef<() => void>(() => {});
 
@@ -66,8 +82,8 @@ export function useLiveData(client: Client): LiveData {
                 (snap) => {
                   if (conn.signal.aborted || !pending) return;
                   let base: Entities = {
-                    groups: new Map(snap.groups.map((g) => [g.id, g])),
-                    lanes: new Map(snap.lanes.map((l) => [l.id, l])),
+                    groups: new Map(snap.groups.map((g) => [keyOf(g.project, g.id), g])),
+                    lanes: new Map(snap.lanes.map((l) => [keyOf(l.project, l.id), l])),
                     escalations: new Map(snap.escalations.map((e) => [e.id, e])),
                   };
                   for (const e of pending) base = applyEvent(base, e);
@@ -77,6 +93,7 @@ export function useLiveData(client: Client): LiveData {
                   setState((s) => ({
                     ...s,
                     ...base,
+                    projects: snap.projects,
                     link: 'live',
                     version: s.version + 1,
                     requirementsVersion: s.requirementsVersion + 1,

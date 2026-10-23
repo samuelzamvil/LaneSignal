@@ -2,6 +2,7 @@ import type { Escalation, Lane } from '../src/api.ts';
 
 export const lane = (over: Partial<Lane> = {}): Lane => ({
   id: 'l1',
+  project: 'p',
   letter: 'A',
   name: 'Lane 1',
   group: null,
@@ -25,6 +26,8 @@ export const lane = (over: Partial<Lane> = {}): Lane => ({
 export const escalation = (over: Partial<Escalation> = {}): Escalation => ({
   id: 'e1',
   ref: 'A1',
+  project: 'p',
+  projectKey: 'P',
   laneId: 'l1',
   question: 'Q?',
   context: null,

@@ -53,7 +53,11 @@ export function createAuth(tokens: TokenEntry[], accounts: Pick<Accounts, 'ident
       res.locals.principal = principal;
       // Long-lived requests (SSE, long-polls) re-check the credential while they stay open.
       const token = tokenFrom(req);
-      const stillValid = async () => (await identify(token)) !== null;
+      // An account admin who is demoted loses every project they weren't a member of: treat that as invalid too.
+      const stillValid = async () => {
+        const now = await identify(token);
+        return now !== null && !!now.superuser === !!principal.superuser;
+      };
       res.locals.stillValid = stillValid;
       // Calls onInvalid as soon as a revocation (sign-out, key delete, ban, removal...) invalidates this credential.
       res.locals.watchRevocation = (onInvalid: () => void) => {

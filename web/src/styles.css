@@ -1279,3 +1279,38 @@ textarea {
   width: 100%;
 }
 
+
+/* ---- projects ---- */
+
+.project-switch {
+  max-width: 9rem;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 0.85rem;
+}
+
+.inline-form {
+  flex-wrap: wrap;
+}
+
+.inline-form select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.project-row {
+  align-items: flex-start;
+}
+
+.project-row .grow {
+  flex: 1;
+}
+
+.project-row .check {
+  flex-shrink: 0;
+}
+
+.tag.all-projects {
+  border-color: var(--accent);
+  color: var(--accent);
+}

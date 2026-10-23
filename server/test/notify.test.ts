@@ -42,8 +42,8 @@ test('ntfy gets new escalations only, as UTF-8 JSON, not positions or decisions'
   const { config, store } = setup({ LANESIGNAL_NTFY_URL: `${sink.url}/lanes-topic`, LANESIGNAL_PUBLIC_URL: 'https://ls.example/' });
   assert.deepEqual(startNotifier(config, store), { fcm: false, ntfy: true });
 
-  store.upsertLane('lane-1', { name: 'Auth → OAuth 🚀', status: 'pending_ci' }, 'bot');
-  const esc = store.createEscalation({ laneId: 'lane-1', question: 'Ship it?' }, 'bot');
+  store.upsertLane('default/lane-1', { name: 'Auth → OAuth 🚀', status: 'pending_ci' }, 'bot');
+  const esc = store.createEscalation({ laneId: 'default/lane-1', question: 'Ship it?' }, 'bot');
   await new Promise((r) => setTimeout(r, 5));
   store.addPosition(esc.id, { agent: 'reviewer', stance: 'agree' }, 'bot');
   store.decideEscalation(esc.id, 'yes', null, 'alice');
@@ -66,14 +66,14 @@ test('lane notifications fire once per real status transition', async () => {
   const { config, store } = setup({ LANESIGNAL_NTFY_URL: `${sink.url}/t`, LANESIGNAL_NOTIFY_ON: 'completed' });
   startNotifier(config, store);
 
-  store.upsertLane('done', { status: 'active', group: 'g1' }, 'bot');
-  const esc = store.createEscalation({ laneId: 'done', question: 'Q?', blocking: false }, 'bot');
+  store.upsertLane('default/done', { status: 'active', group: 'default/g1' }, 'bot');
+  const esc = store.createEscalation({ laneId: 'default/done', question: 'Q?', blocking: false }, 'bot');
   store.decideEscalation(esc.id, 'ok', null, 'alice');
-  store.upsertLane('done', { status: 'completed' }, 'bot');
+  store.upsertLane('default/done', { status: 'completed' }, 'bot');
   store.acknowledgeEscalation(esc.id, null, 'bot');
-  store.upsertLane('other', { group: 'g2' }, 'bot');
-  store.deleteGroup('g2');
-  store.upsertLane('done', { activity: 'still completed' }, 'bot');
+  store.upsertLane('default/other', { group: 'default/g2' }, 'bot');
+  store.deleteGroup('default/g2');
+  store.upsertLane('default/done', { activity: 'still completed' }, 'bot');
   await settle();
 
   assert.deepEqual(
@@ -121,7 +121,7 @@ test('an FCM payload error does not unregister devices; a token error does', asy
     store.addPushToken('removed-device-token', 'android', 'carol', 'u-removed');
     store.addPushToken('good-device-token', 'android', 'alice');
     store.addPushToken('gone-device-token', 'android', 'bob');
-    store.createEscalation({ laneId: 'l', question: 'Q?', recommendation: 'x'.repeat(5000) }, 'bot');
+    store.createEscalation({ laneId: 'default/l', question: 'Q?', recommendation: 'x'.repeat(5000) }, 'bot');
     await settle();
     assert.deepEqual(sends.sort(), ['gone-device-token', 'good-device-token']);
     assert.deepEqual(

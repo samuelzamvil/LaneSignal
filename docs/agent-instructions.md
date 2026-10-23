@@ -2,13 +2,15 @@
 
 Agents learn **how** to use LaneSignal from the [skill](agents.md#3-install-the-skill-how-to-use-lanesignal): the tools, escalation structure, waiting, recovery. **When** to use it is your call as the project owner. Paste this into the overseer's `CLAUDE.md` and edit it to taste.
 
-One overseer session runs several lanes for one epic or train, and that epic/train is its *group*. Replace `<group-id>` with a stable id such as `payments-epic`.
+One overseer session runs several lanes for one epic or train, and that epic/train is its *group*. Replace `<group-id>` with a stable id such as `payments-epic`. If the server hosts several [projects](projects.md), either give the overseer a key bound to its project, or keep the project line below and set `<project-id>`.
 
 ---
 
 ## LaneSignal
 
 You oversee group `<group-id>` in LaneSignal. Use the `lanesignal` skill for how to publish, escalate and wait.
+
+Project: `<project-id>` (pass it as `project` on every LaneSignal call; delete this line if the key is bound to one project).
 
 **Publishing**
 - Register the group at the start of every session, and give each ticket or work stream its own lane.

@@ -51,7 +51,7 @@ export async function createAccounts(config: Config, dbPath: string) {
   revocations.setMaxListeners(0);
   const revoked = () => revocations.emit('revoked');
   /** Fires when a person is removed or banned, so their phones stop getting push. */
-  const people = new EventEmitter<{ gone: [userId: string, name: string | null] }>();
+  const people = new EventEmitter<{ gone: [userId: string, name: string | null, removed: boolean] }>();
 
   const options = {
     database: db,
@@ -84,7 +84,7 @@ export async function createAccounts(config: Config, dbPath: string) {
           after: async (user) => {
             db.prepare('DELETE FROM apikey WHERE referenceId = ?').run(user.id);
             revoked();
-            people.emit('gone', user.id, user.name ?? null);
+            people.emit('gone', user.id, user.name ?? null, true);
           },
         },
       },
@@ -102,15 +102,22 @@ export async function createAccounts(config: Config, dbPath: string) {
         if (ctx.path === '/api-key/create' && ctx.body && 'prefix' in ctx.body) {
           throw new APIError('BAD_REQUEST', { message: 'Custom key prefixes are not supported' });
         }
-        // Key metadata only says which role the key acts as.
+        // Key metadata only says which role the key acts as, and optionally the one project an agent key is bound to.
         if ((ctx.path === '/api-key/create' || ctx.path === '/api-key/update') && ctx.body?.metadata !== undefined) {
           const m = ctx.body.metadata as unknown;
+          const meta = (m ?? {}) as { role?: unknown; project?: unknown };
           const ok =
             m === null ||
             (typeof m === 'object' &&
-              Object.keys(m as object).every((k) => k === 'role') &&
-              ['agent', 'human', undefined].includes((m as { role?: string }).role));
-          if (!ok) throw new APIError('BAD_REQUEST', { message: 'Key metadata may only set role to "agent" or "human"' });
+              Object.keys(m as object).every((k) => k === 'role' || k === 'project') &&
+              ['agent', 'human', undefined].includes(meta.role as string | undefined) &&
+              (meta.project === undefined || (typeof meta.project === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(meta.project))) &&
+              !(meta.role === 'human' && meta.project !== undefined));
+          if (!ok) {
+            throw new APIError('BAD_REQUEST', {
+              message: 'Key metadata may only set role ("agent" or "human") and, for agent keys, a project id',
+            });
+          }
         }
       }),
       after: createAuthMiddleware(async (ctx) => {
@@ -121,7 +128,7 @@ export async function createAccounts(config: Config, dbPath: string) {
         // Only once the ban went through (a refused call ends up here too, with an error).
         if (ctx.path === '/admin/ban-user' && typeof ctx.body?.userId === 'string' && !(ctx.context.returned instanceof Error)) {
           const row = db.prepare('SELECT name FROM user WHERE id = ?').get(ctx.body.userId) as { name: string } | undefined;
-          people.emit('gone', ctx.body.userId, row?.name ?? null);
+          people.emit('gone', ctx.body.userId, row?.name ?? null, false);
         }
         if (REVOKING_PATHS.has(ctx.path)) revoked();
       }),
@@ -191,6 +198,18 @@ export async function createAccounts(config: Config, dbPath: string) {
     needsSetup: () => userCount() === 0,
     /** Whether an account still exists and isn't banned (push tokens of removed people are skipped). */
     userActive: ownerActive,
+    /** Every account, for picking project members. */
+    listUsers: () =>
+      (db.prepare('SELECT id, name, email, role FROM user ORDER BY name').all() as {
+        id: string;
+        name: string;
+        email: string;
+        role: string | null;
+      }[]).map((u) => ({ id: u.id, name: u.name, email: u.email, admin: isAdminRole(u.role) })),
+    isAdmin: (userId: string) => {
+      const row = db.prepare('SELECT role FROM user WHERE id = ?').get(userId) as { role: string | null } | undefined;
+      return !!row && isAdminRole(row.role);
+    },
     /** Exposed for tests. */
     get setupCode() {
       return setupCode;
@@ -243,22 +262,29 @@ export async function createAccounts(config: Config, dbPath: string) {
         if (token.startsWith(KEY_PREFIX)) {
           const res = await auth.api.verifyApiKey({ body: { key: token } });
           if (!res.valid || !res.key || !ownerActive(res.key.referenceId)) return null;
-          const meta = res.key.metadata as { role?: string } | null | undefined;
+          const meta = res.key.metadata as { role?: string; project?: string } | null | undefined;
+          const owner = db.prepare('SELECT name, email, role FROM user WHERE id = ?').get(res.key.referenceId) as
+            | { name: string; email: string; role: string | null }
+            | undefined;
+          if (!owner) return null;
           if (meta?.role === 'human') {
             // Acts as its owner: decisions are attributed to the person, not the key.
-            const owner = db.prepare('SELECT name, email, role FROM user WHERE id = ?').get(res.key.referenceId) as
-              | { name: string; email: string; role: string | null }
-              | undefined;
-            if (!owner) return null;
             return {
               name: owner.name || owner.email,
               role: 'human',
               userId: res.key.referenceId,
               email: owner.email,
               admin: false,
+              superuser: isAdminRole(owner.role),
             };
           }
-          return { name: res.key.name ?? 'agent', role: 'agent', userId: res.key.referenceId };
+          return {
+            name: res.key.name ?? 'agent',
+            role: 'agent',
+            userId: res.key.referenceId,
+            superuser: isAdminRole(owner.role),
+            ...(meta?.project ? { project: meta.project } : {}),
+          };
         }
         const session = await auth.api.getSession({ headers: new Headers({ authorization: `Bearer ${token}` }) });
         if (!session) return null;
@@ -268,6 +294,7 @@ export async function createAccounts(config: Config, dbPath: string) {
           userId: session.user.id,
           email: session.user.email,
           admin: isAdminRole(session.user.role),
+          superuser: isAdminRole(session.user.role),
         };
       } catch (err) {
         log.warn('credential check failed', { error: String(err) });

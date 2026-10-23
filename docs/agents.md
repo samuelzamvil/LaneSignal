@@ -54,7 +54,7 @@ curl -fsS https://lanesignal.example.com/api/skill -o .claude/skills/lanesignal/
 
 Use `~/.claude/skills/lanesignal/` instead to install it for every project on that machine. The source is [`skills/lanesignal/SKILL.md`](../skills/lanesignal/SKILL.md); re-run the command after upgrading LaneSignal.
 
-For long waits, the skill runs the HTTP wait in the background. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
+For long waits, the skill runs the HTTP wait in the background. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
 
 ## 4. Set your policy (when to use it)
 
@@ -64,8 +64,11 @@ The skill covers how; **when** is yours to decide. Paste the [policy template](a
 
 Which tools a client sees depends on its credential: agent keys get the agent tools, and personal keys (or human sessions) get the human ones. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
 
+Every tool takes an optional `project` (id or key). A key bound to one [project](projects.md) never needs it. A key that reaches several must pass it to write, and its listings cover all its projects.
+
 | Tool | Who | Purpose |
 |---|---|---|
+| `list_projects` | any | The projects the credential reaches (id, key, name) |
 | `update_group` | agent | Name the epic/train, set its ticket, link the overseer's Remote Control session |
 | `update_lane` | agent | Create or update a lane: status, group, ticket, activity, links. Omitted fields stay unchanged |
 | `remove_lane` | agent | Take a finished lane off the dashboard (archived; open questions withdrawn; history kept) |
@@ -77,7 +80,7 @@ Which tools a client sees depends on its credential: agent keys get the agent to
 | `withdraw_escalation` | agent | Close it without a dashboard answer: answered in Remote Control, or moot |
 | `list_lanes` / `list_groups` / `list_escalations` | any | Read state |
 | `find_requirements` / `get_requirement` / `list_requirement_tags` | any | Search the owner's product decisions before asking again. See [Requirements](requirements.md) |
-| `record_requirement` / `supersede_requirement` | any | Record a decision the owner made (citing the escalation or the person), or replace one they changed |
+| `record_requirement` / `supersede_requirement` | any | Record a decision the owner made (citing the escalation or the person), or replace one they changed. `all_projects: true` for decisions that cover every project |
 | `export_data` | any | All data for analysis (escalations, positions, lanes, groups, history) as CSV or JSON, paged. See [Export](export.md) |
 | `decide_escalation` | human | Answer from your own Claude session. `change: true` corrects a decision the agent hasn't acknowledged yet |
 | `withdraw_escalation` | human | Dismiss an escalation that no longer needs an answer |

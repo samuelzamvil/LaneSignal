@@ -143,9 +143,9 @@ describe('lanes', () => {
 
     const csv = await fetch(`${base}/api/export/escalations.csv`, { headers: { authorization: `Bearer ${AGENT}` } });
     assert.equal(csv.headers.get('content-type'), 'text/csv; charset=utf-8');
-    assert.ok((await csv.text()).startsWith('id,ref,lane_id,lane_name,'));
+    assert.ok((await csv.text()).startsWith('id,ref,project,lane_id,lane_name,'));
     const lanesCsv = await fetch(`${base}/api/export/lanes.csv`, { headers: { authorization: `Bearer ${AGENT}` } });
-    assert.ok((await lanesCsv.text()).includes('epic-1,Epic 1,payments-epic'));
+    assert.ok((await lanesCsv.text()).includes('epic-1,default,Epic 1,payments-epic'));
 
     const json = await call('GET', '/api/export/lanes.json', ALICE);
     assert.ok(json.body.some((l: { id: string }) => l.id === 'epic-1'));
@@ -336,7 +336,7 @@ describe('mcp', () => {
     });
     const lane = JSON.parse(out.result.content[0].text);
     assert.equal(lane.ticketUrl, 'https://github.com/o/r/issues/5');
-    assert.equal(store.getLane('mcp-lane')?.agent, 'bot');
+    assert.equal(store.getLane('default/mcp-lane')?.agent, 'bot');
 
     const created = await rpc(AGENT, 'tools/call', {
       name: 'create_escalation',
@@ -354,9 +354,9 @@ describe('mcp', () => {
     const out = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', limit: 1 } });
     const [summary, body] = out.result.content.map((c: { text: string }) => c.text);
     assert.match(summary, /^lanes: rows 1-1 of \d+; call again with offset 1/);
-    assert.ok(body.startsWith('id,name,group_id,'));
+    assert.ok(body.startsWith('id,project,name,group_id,'));
     const empty = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', offset: 9999 } });
-    assert.ok(empty.result.content[1].text.startsWith('id,name,group_id,'), 'header even when empty');
+    assert.ok(empty.result.content[1].text.startsWith('id,project,name,group_id,'), 'header even when empty');
     const bad = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', from: 'soon' } });
     assert.equal(bad.result.isError, true);
   });

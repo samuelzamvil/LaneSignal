@@ -40,7 +40,7 @@ Its history keeps every status change and escalation step. Routine activity text
 
 ### Lane letters and escalation codes
 
-Each active lane gets a letter, shown on its card: A, B, … Z, then AA, AB. Its escalations are coded with it: **A1**, **A2**, then B1 for lane B, so two overseers' questions never share a code.
+Each active lane gets a letter, shown on its card: A, B, … Z, then AA, AB. Letters and codes are per [project](projects.md); where projects mix, codes carry the project key (**SH·A1**). Its escalations are coded with it: **A1**, **A2**, then B1 for lane B, so two overseers' questions never share a code.
 
 - A lane keeps its letter while it's active, and after that while any of its escalations is unanswered or not yet acknowledged.
 - Once a lane is completed or removed and nothing is pending, its letter goes back to the pool. The next new lane takes the smallest free letter, so letters stay short.

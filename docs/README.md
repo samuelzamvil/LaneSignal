@@ -17,6 +17,7 @@ LaneSignal is a self-hosted dashboard for autonomous coding-agent **lanes** and 
 | Page | For |
 |---|---|
 | [Lanes, groups and escalations](concepts.md) | How the model works: statuses, blocking, batches of questions |
+| [Projects](projects.md) | Several independent apps on one server: members, admins, per-project notifications |
 | [Requirements](requirements.md) | The owner's product decisions: recorded by agents, searchable, never lost |
 | [Connecting agents (MCP)](agents.md) | Wiring Claude Code to LaneSignal, plus the MCP tool list |
 | [Agent policy template](agent-instructions.md) | When agents use LaneSignal: paste into an overseer's `CLAUDE.md` (the [skill](agents.md#3-install-the-skill-how-to-use-lanesignal) covers how) |

@@ -9,7 +9,8 @@ Every request carries one bearer credential, which gets one of two roles:
 | Agent key (`ls_…`) or static agent token | **agent** | Publish groups and lanes; remove lanes; create, acknowledge and withdraw escalations; add positions |
 | Account session, personal key or static human token | **human** | Decide escalations, remove lanes and groups, register phones for push |
 
-- Account **admins** also manage people.
+- Each person sees only the [projects](projects.md) they're a member of; other projects' data is invisible to them and their keys. An agent key can be bound to one project.
+- Project **admins** manage that project's members. Account **admins** manage people, create projects, and see every project as admin.
 - Static human tokens can use the break-glass routes.
 - Agents can't decide escalations, and decisions are attributed to the human's account name.
 
