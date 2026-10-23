@@ -31,10 +31,12 @@ Every request carries one bearer credential, which gets one of two roles:
 - Owned by an account. Revoking a key, or removing or banning its owner, disables it.
 - Better Auth's built-in per-key rate limit (10 requests a day) is turned off, so long-running agents work.
 - **By design**, anyone with an account can create agent keys, and so can publish lane state. They are the people running the agents.
+- **By design**, any agent key can publish to any lane or group, and withdraw any escalation. Overseers on one install are trusted alike; give each overseer its own group and lane ids.
+- **Personal keys** act as their owner for escalation decisions only. They can't publish lanes or manage accounts. Key metadata is limited to this role flag.
 
 ## Revocation reaches open connections
 
-Event streams, long-polls and MCP waits stop as soon as their credential is revoked: sign-out, key revocation, password change or reset, ban, or removal. Event streams also re-check on every 25s heartbeat. A removed person's open app stops receiving data at once, and a revoked key's waiting agent gets an error straight away.
+Event streams, long-polls and MCP waits stop as soon as their credential is revoked: sign-out, key revocation, password change or reset, ban, or removal. Event streams also re-check on every 25s heartbeat. A removed person's open app stops receiving data at once, and a revoked key's waiting agent gets an error straight away. Push notifications skip phones registered by people who were removed or are banned.
 
 ## Input and output
 

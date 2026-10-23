@@ -20,19 +20,53 @@ export class NotFoundError extends Error {}
 const MAX_POSITIONS = 20;
 export class ConflictError extends Error {}
 
+/** How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker. */
+const WAIT_GRACE_MS = 30_000;
+
+/** What `waitForDecisions` watches: explicit escalations, whole lanes, and/or a group's lanes. */
+export interface WaitScope {
+  ids?: string[];
+  laneIds?: string[];
+  groupId?: string;
+  /**
+   * Report escalations in the lanes/group that someone else withdrew at or after
+   * this time (e.g. a human removed the lane). Defaults to when the wait starts;
+   * a loop passes the previous result's `checkedAt` so nothing slips between calls.
+   */
+  since?: string;
+  /** Who is waiting: their own withdrawals aren't reported back to them. */
+  viewer?: string;
+}
+
+export interface WaitResult {
+  /** True when there's something to act on, or nothing left to wait for. */
+  ready: boolean;
+  /** Answered and waiting for the agent's acknowledgement. */
+  decided: Escalation[];
+  /**
+   * Escalations named in `ids` that were closed (withdrawn or already acknowledged), and ones in
+   * the lanes/group that someone else withdrew since `since` ("Lane removed by …" means stop that lane).
+   */
+  closed: Escalation[];
+  /** Still waiting on a human. */
+  open: { id: string; ref: number; laneId: string; question: string }[];
+  /** Server time of this result; pass it as `since` on the next wait. */
+  checkedAt: string;
+}
+
 export const EXPORT_DATASETS = ['escalations', 'positions', 'lanes', 'groups', 'events'] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
 
 /** Fixed column order per dataset, so a CSV's header never depends on whether it has rows. */
 export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
   escalations: [
-    'id', 'lane_id', 'lane_name', 'group_id', 'group_name', 'ticket', 'ticket_url', 'question', 'context',
+    'id', 'ref', 'lane_id', 'lane_name', 'group_id', 'group_name', 'ticket', 'ticket_url', 'question', 'context',
     'recommendation', 'recommended_option', 'cost', 'alternatives', 'options', 'blocking', 'state', 'created_by',
     'created_at', 'decided_by', 'decided_at', 'decision', 'decision_note', 'followed_recommendation',
     'acknowledged_at', 'resolution', 'closed_at', 'seconds_to_decision', 'seconds_to_acknowledge', 'seconds_open',
     'positions_agree', 'positions_disagree', 'positions_neutral', 'links',
   ],
-  positions: ['escalation_id', 'lane_id', 'question', 'agent', 'stance', 'note', 'at'],
+  positions: ['escalation_id', 'escalation_ref', 'lane_id', 'question', 'agent', 'stance', 'note', 'at'],
   lanes: [
     'id', 'name', 'group_id', 'group_name', 'status', 'ticket', 'ticket_url', 'activity', 'last_published_by',
     'created_at', 'updated_at', 'status_since', 'blocked_seconds_total', 'blocked_since', 'escalations_total',
@@ -84,9 +118,11 @@ export interface StoreOptions {
   resolveTicketUrl: (ticket: string) => string | null;
   eventRetention?: number;
   now?: () => Date;
+  /** How long a lane keeps showing "agent waiting" after a wait ends (default 30s). */
+  waitGraceMs?: number;
 }
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 type Row = Record<string, unknown>;
 
@@ -100,17 +136,23 @@ export class Store {
   private resolveTicketUrl: (ticket: string) => string | null;
   private retention: number;
   private now: () => Date;
+  /** Lanes with an agent currently waiting on their escalations (in memory: waits don't survive restarts). */
+  private waiting = new Map<string, number>();
+  private graceTimers = new Set<ReturnType<typeof setTimeout>>();
+  private waitGraceMs: number;
 
   constructor(opts: StoreOptions) {
     this.db = new DatabaseSync(opts.path);
     this.resolveTicketUrl = opts.resolveTicketUrl;
     this.retention = opts.eventRetention ?? 200;
     this.now = opts.now ?? (() => new Date());
+    this.waitGraceMs = opts.waitGraceMs ?? WAIT_GRACE_MS;
     this.events.setMaxListeners(0);
     this.migrate();
   }
 
   close() {
+    for (const t of this.graceTimers) clearTimeout(t);
     this.db.close();
   }
 
@@ -150,6 +192,22 @@ export class Store {
         this.db.exec(`
           ALTER TABLE lanes ADD COLUMN archived_at TEXT;
           ALTER TABLE groups ADD COLUMN archived_at TEXT;
+        `);
+      }
+      if (version < 5) {
+        // Short escalation numbers (#42) that humans and agents can say to each other, and
+        // the account a push token belongs to, so removed people stop getting notifications.
+        this.db.exec(`
+          ALTER TABLE escalations ADD COLUMN ref INTEGER;
+          UPDATE escalations SET ref = n.ref
+            FROM (SELECT rowid AS rid, ROW_NUMBER() OVER (ORDER BY rowid) AS ref FROM escalations) AS n
+            WHERE escalations.rowid = n.rid;
+          CREATE UNIQUE INDEX escalations_ref ON escalations(ref);
+          ALTER TABLE escalations ADD COLUMN withdrawn_by TEXT;
+          ALTER TABLE push_tokens ADD COLUMN user_id TEXT;
+          -- Tokens from before accounts were recorded can only be matched to a person by name.
+          ALTER TABLE push_tokens ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0;
+          UPDATE push_tokens SET legacy = 1;
         `);
       }
       this.db
@@ -359,6 +417,8 @@ export class Store {
       blockedSince: (r.blocked_since as string | null) ?? null,
       blockedTotalMs: Number(r.blocked_total_ms),
       openEscalations: Number(r.open_escalations ?? 0),
+      blockingEscalations: Number(r.open_blocking ?? 0),
+      agentWaiting: (this.waiting.get(r.id as string) ?? 0) > 0,
     };
   }
 
@@ -505,10 +565,10 @@ export class Store {
       const resolution = `Lane removed${actor ? ` by ${actor}` : ''}`;
       this.db
         .prepare(
-          `UPDATE escalations SET state = 'withdrawn', resolution = COALESCE(resolution, ?), updated_at = ?
+          `UPDATE escalations SET state = 'withdrawn', resolution = COALESCE(resolution, ?), withdrawn_by = ?, updated_at = ?
            WHERE lane_id = ? AND state = 'open'`,
         )
-        .run(resolution, at, id);
+        .run(resolution, actor ?? '', at, id);
       for (let i = 0; i < pending.length; i++) this.addEvent(id, at, 'escalation', `Escalation closed: ${resolution}`, actor);
       // End any blocked spell now, so archived time isn't counted as blocked.
       if (lane.status === 'blocked_human') this.applyLaneUpdate(lane, { status: 'idle' }, actor, at);
@@ -555,6 +615,7 @@ export class Store {
   private escalationFromRow(r: Row): Escalation {
     return {
       id: r.id as string,
+      ref: Number(r.ref),
       laneId: r.lane_id as string,
       question: r.question as string,
       context: (r.context as string | null) ?? null,
@@ -602,8 +663,14 @@ export class Store {
       .map((r) => this.escalationFromRow(r));
   }
 
+  /** By id, or by its short number: "42" or "#42". */
   getEscalation(id: string): Escalation | null {
-    const r = this.db.prepare('SELECT * FROM escalations WHERE id = ?').get(id) as Row | undefined;
+    const ref = /^#?(\d{1,15})$/.exec(id.trim());
+    const r = (
+      ref
+        ? this.db.prepare('SELECT * FROM escalations WHERE ref = ?').get(Number(ref[1]))
+        : this.db.prepare('SELECT * FROM escalations WHERE id = ?').get(id)
+    ) as Row | undefined;
     return r ? this.escalationFromRow(r) : null;
   }
 
@@ -613,7 +680,16 @@ export class Store {
     return e;
   }
 
-  createEscalation(input: EscalationInput, actor: string): Escalation {
+  /**
+   * Raising the same question again on the same lane while the first is still
+   * open (e.g. a retried call) returns the existing escalation with
+   * `duplicate: true` instead of creating a second one.
+   */
+  createEscalation(input: EscalationInput, actor: string): Escalation & { duplicate?: boolean } {
+    const existing = this.db
+      .prepare("SELECT id FROM escalations WHERE lane_id = ? AND question = ? AND created_by = ? AND state = 'open'")
+      .get(input.laneId, input.question, actor) as Row | undefined;
+    if (existing) return { ...this.requireEscalation(existing.id as string), duplicate: true };
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
       this.restoreLane(input.laneId, actor, at);
@@ -628,14 +704,16 @@ export class Store {
         lane = this.requireLane(input.laneId);
       }
       const id = randomUUID();
+      const ref = Number((this.db.prepare('SELECT COALESCE(MAX(ref), 0) + 1 AS n FROM escalations').get() as Row).n);
       this.db
         .prepare(
-          `INSERT INTO escalations (id, lane_id, question, context, recommendation, recommended_option, cost,
+          `INSERT INTO escalations (id, ref, lane_id, question, context, recommendation, recommended_option, cost,
              alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
         )
         .run(
           id,
+          ref,
           input.laneId,
           input.question,
           input.context ?? null,
@@ -654,7 +732,7 @@ export class Store {
           at,
           at,
         );
-      this.addEvent(input.laneId, at, 'escalation', `Escalated: ${input.question}`, actor);
+      this.addEvent(input.laneId, at, 'escalation', `Escalated #${ref}: ${input.question}`, actor);
       const blocks = input.blocking !== false && lane.status !== 'blocked_human';
       if (blocks) {
         this.applyLaneUpdate(lane, { status: 'blocked_human' }, actor, at);
@@ -668,16 +746,41 @@ export class Store {
     return escalation;
   }
 
-  decideEscalation(id: string, decision: string, note: string | null, by: string): Escalation {
+  /**
+   * Records the human answer. With `change`, replaces the answer on an
+   * escalation that's decided but not yet acknowledged (a mis-tap); without
+   * it, a second decision is a conflict, so two people can't overwrite each other.
+   */
+  decideEscalation(id: string, decision: string, note: string | null, by: string, change = false): Escalation {
+    if (change) {
+      const current = this.requireEscalation(id);
+      if (current.state === 'acknowledged') {
+        throw new ConflictError('The agent has already acknowledged this decision, so it can no longer be changed');
+      }
+      if (current.state === 'decided') {
+        return this.closeHumanStep(
+          current.id,
+          ['decided'],
+          (at) => {
+            this.db
+              .prepare(`UPDATE escalations SET decision = ?, decision_note = ?, decided_by = ?, decided_at = ?, updated_at = ? WHERE id = ?`)
+              .run(decision, note, by, at, at, current.id);
+            return `Decision changed by ${by}: ${decision} (was ${current.decision} by ${current.decidedBy})`;
+          },
+          by,
+          false,
+        );
+      }
+    }
     return this.closeHumanStep(
       id,
       ['open'],
-      (at) => {
+      (at, eid) => {
         this.db
           .prepare(
             `UPDATE escalations SET state = 'decided', decision = ?, decision_note = ?, decided_by = ?, decided_at = ?, updated_at = ? WHERE id = ?`,
           )
-          .run(decision, note, by, at, at, id);
+          .run(decision, note, by, at, at, eid);
         return `Decided by ${by}: ${decision}`;
       },
       by,
@@ -685,22 +788,42 @@ export class Store {
     );
   }
 
-  /** Acknowledging never changes lane status: the agent publishes what it does next. */
-  acknowledgeEscalation(id: string, note: string | null, actor: string): Escalation {
-    return this.closeHumanStep(
-      id,
-      ['decided'],
-      (at) => {
-        this.db
-          .prepare(
-            `UPDATE escalations SET state = 'acknowledged', acknowledged_at = ?, resolution = COALESCE(?, resolution), updated_at = ? WHERE id = ?`,
-          )
-          .run(at, note, at, id);
-        return 'Decision acknowledged';
-      },
-      actor,
-      false,
-    );
+  /**
+   * Closes a decided escalation; the result carries the decision to act on.
+   * Acknowledging again is a no-op that returns the same result, so retries are
+   * safe. `lane` optionally publishes what the agent does next in the same call;
+   * otherwise lane status is left alone.
+   */
+  acknowledgeEscalation(
+    id: string,
+    note: string | null,
+    actor: string,
+    lane?: Pick<LanePatch, 'status' | 'activity'>,
+  ): Escalation {
+    const current = this.requireEscalation(id);
+    const close = () =>
+      this.closeHumanStep(
+        current.id,
+        ['decided'],
+        (at, eid) => {
+          this.db
+            .prepare(
+              `UPDATE escalations SET state = 'acknowledged', acknowledged_at = ?, resolution = COALESCE(?, resolution), updated_at = ? WHERE id = ?`,
+            )
+            .run(at, note, at, eid);
+          return `Decision #${current.ref} acknowledged`;
+        },
+        actor,
+        false,
+      );
+    // A repeated acknowledgement changes nothing, so a late retry can't roll the lane back.
+    if (current.state === 'acknowledged') return current;
+    const escalation = close();
+    // Only for lanes still on the dashboard: publishing would otherwise restore a removed lane.
+    if (lane && (lane.status || lane.activity !== undefined) && this.getLane(escalation.laneId)) {
+      this.upsertLane(escalation.laneId, lane, actor);
+    }
+    return escalation;
   }
 
   /** Agent (or human) closes an escalation without a dashboard decision, e.g. it was answered in Remote Control. */
@@ -708,10 +831,10 @@ export class Store {
     return this.closeHumanStep(
       id,
       ['open', 'decided'],
-      (at) => {
+      (at, eid) => {
         this.db
-          .prepare(`UPDATE escalations SET state = 'withdrawn', resolution = ?, updated_at = ? WHERE id = ?`)
-          .run(resolution, at, id);
+          .prepare(`UPDATE escalations SET state = 'withdrawn', resolution = ?, withdrawn_by = ?, updated_at = ? WHERE id = ?`)
+          .run(resolution, actor, at, eid);
         return `Escalation closed${resolution ? `: ${resolution}` : ''}`;
       },
       actor,
@@ -736,17 +859,17 @@ export class Store {
   private closeHumanStep(
     id: string,
     from: EscalationState[],
-    apply: (at: string) => string,
+    apply: (at: string, id: string) => string,
     actor: string,
     mayUnblock: boolean,
   ): Escalation {
     const { escalation, lane, unblocked } = this.tx(() => {
       const current = this.requireEscalation(id);
       if (!from.includes(current.state)) {
-        throw new ConflictError(`Escalation is ${current.state}; expected ${from.join(' or ')}`);
+        throw new ConflictError(`Escalation #${current.ref} is ${current.state}; expected ${from.join(' or ')}`);
       }
       const at = this.now().toISOString();
-      const message = apply(at);
+      const message = apply(at, current.id);
       this.addEvent(current.laneId, at, 'escalation', message, actor);
       const found = this.laneIncludingArchived(current.laneId);
       if (!found) throw new NotFoundError(`Lane "${current.laneId}" not found`);
@@ -759,7 +882,7 @@ export class Store {
         lane.status === 'blocked_human' &&
         this.openBlockingCount(lane.id) === 0;
       if (unblocked) this.applyLaneUpdate(lane, { status: 'awaiting_agent' }, null, at);
-      return { escalation: this.requireEscalation(id), lane: archived ? null : this.requireLane(current.laneId), unblocked };
+      return { escalation: this.requireEscalation(current.id), lane: archived ? null : this.requireLane(current.laneId), unblocked };
     });
     this.emit({ type: 'escalation', escalation });
     // Emitted either way (the open-escalation count changed), except for archived lanes,
@@ -772,31 +895,73 @@ export class Store {
   addPosition(id: string, position: { agent: string; stance: Stance; note?: string | null }, actor: string): Escalation {
     const escalation = this.tx(() => {
       const current = this.requireEscalation(id);
-      if (current.state !== 'open') throw new ConflictError(`Escalation is ${current.state}; positions close once decided`);
+      if (current.state !== 'open') throw new ConflictError(`Escalation #${current.ref} is ${current.state}; positions close once decided`);
       const at = this.now().toISOString();
       const positions = current.positions.filter((p) => p.agent !== position.agent);
       if (positions.length >= MAX_POSITIONS) throw new ConflictError(`At most ${MAX_POSITIONS} agents can take a position`);
       positions.push({ agent: position.agent, stance: position.stance, note: position.note ?? null, at });
       this.db
         .prepare('UPDATE escalations SET positions = ?, updated_at = ? WHERE id = ?')
-        .run(JSON.stringify(positions), at, id);
+        .run(JSON.stringify(positions), at, current.id);
       const verb = { agree: 'agrees', disagree: 'disagrees', neutral: 'is neutral' }[position.stance];
       this.addEvent(current.laneId, at, 'escalation', `${position.agent} ${verb}${position.note ? `: ${position.note}` : ''}`, actor);
-      return this.requireEscalation(id);
+      return this.requireEscalation(current.id);
     });
     this.emit({ type: 'escalation', escalation });
     return escalation;
+  }
+
+  // ---- waiting agents ------------------------------------------------------
+
+  /** Marks lanes as having a waiting agent; returns the release function. */
+  private holdWaiting(laneIds: Iterable<string>) {
+    const ids = [...new Set(laneIds)];
+    for (const id of ids) {
+      const n = this.waiting.get(id) ?? 0;
+      this.waiting.set(id, n + 1);
+      if (n === 0) this.emitLaneIfShown(id);
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const timer = setTimeout(() => {
+        this.graceTimers.delete(timer);
+        for (const id of ids) {
+          const n = (this.waiting.get(id) ?? 1) - 1;
+          if (n > 0) this.waiting.set(id, n);
+          else {
+            this.waiting.delete(id);
+            this.emitLaneIfShown(id);
+          }
+        }
+      }, this.waitGraceMs);
+      timer.unref?.();
+      this.graceTimers.add(timer);
+    };
+  }
+
+  private emitLaneIfShown(id: string) {
+    try {
+      const lane = this.getLane(id);
+      if (lane) this.emit({ type: 'lane', lane });
+    } catch {
+      // The database is closing.
+    }
   }
 
   /** Resolves when the escalation leaves `open`, or with the current value on timeout. */
   waitForDecision(id: string, timeoutMs: number, signal?: AbortSignal): Promise<Escalation> {
     const current = this.requireEscalation(id);
     if (current.state !== 'open' || timeoutMs <= 0) return Promise.resolve(current);
+    id = current.id;
+    const release = this.holdWaiting([current.laneId]);
     return new Promise((resolve, reject) => {
       const done = () => {
         clearTimeout(timer);
         this.events.off('change', onChange);
         signal?.removeEventListener('abort', done);
+        release();
         const latest = this.getEscalation(id);
         // The lane (and with it the escalation) was deleted while waiting.
         if (latest) resolve(latest);
@@ -809,6 +974,94 @@ export class Store {
       const timer = setTimeout(done, timeoutMs);
       this.events.on('change', onChange);
       signal?.addEventListener('abort', done);
+    });
+  }
+
+  /** Where things stand for a wait scope right now. Unknown groups and lanes are errors (likely typos). */
+  decisionsFor(scope: WaitScope): WaitResult {
+    const checkedAt = this.now().toISOString();
+    const named = (scope.ids ?? []).map((id) => this.requireEscalation(id));
+    const byId = new Map<string, Escalation>(named.map((e) => [e.id, e]));
+    const laneIds = new Set<string>();
+    for (const id of scope.laneIds ?? []) {
+      if (!this.db.prepare('SELECT 1 FROM lanes WHERE id = ?').get(id)) throw new NotFoundError(`Lane "${id}" not found`);
+      laneIds.add(id);
+    }
+    if (scope.groupId) {
+      if (!this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(scope.groupId)) {
+        throw new NotFoundError(`Group "${scope.groupId}" not found`);
+      }
+      const rows = this.db.prepare('SELECT id FROM lanes WHERE group_id = ?').all(scope.groupId) as Row[];
+      for (const r of rows) laneIds.add(r.id as string);
+    }
+    const closedById = new Map<string, Escalation>();
+    for (const e of named) if (e.state === 'acknowledged' || e.state === 'withdrawn') closedById.set(e.id, e);
+    for (const laneId of laneIds) {
+      for (const e of this.listEscalations({ laneId, states: ['open', 'decided'] })) byId.set(e.id, e);
+      if (scope.since) {
+        const rows = this.db
+          .prepare(
+            `SELECT * FROM escalations WHERE lane_id = ? AND state = 'withdrawn' AND updated_at >= ?
+               AND COALESCE(withdrawn_by, '') <> ?`,
+          )
+          .all(laneId, scope.since, scope.viewer ?? '') as Row[];
+        for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
+      }
+    }
+    const all = [...byId.values()].sort((a, b) => a.ref - b.ref);
+    const decided = all.filter((e) => e.state === 'decided');
+    const closed = [...closedById.values()].sort((a, b) => a.ref - b.ref);
+    const open = all
+      .filter((e) => e.state === 'open')
+      .map((e) => ({ id: e.id, ref: e.ref, laneId: e.laneId, question: e.question }));
+    return { ready: decided.length > 0 || closed.length > 0 || open.length === 0, decided, closed, open, checkedAt };
+  }
+
+  /**
+   * Waits until anything in scope needs the agent: an escalation was decided
+   * (and isn't acknowledged yet), one was closed by someone else, or nothing
+   * is left open. Returns at once if that's already so. While it waits, the
+   * lanes it covers show that an agent is listening, including lanes that get
+   * a new question during the wait.
+   */
+  waitForDecisions(scope: WaitScope, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
+    scope = { ...scope, since: scope.since ?? this.now().toISOString() };
+    const first = this.decisionsFor(scope);
+    if (first.ready || timeoutMs <= 0 || signal?.aborted) return Promise.resolve(first);
+    const held = new Set<string>();
+    const releases: (() => void)[] = [];
+    const hold = (laneIds: Iterable<string>) => {
+      const fresh = [...laneIds].filter((id) => !held.has(id));
+      if (!fresh.length) return;
+      for (const id of fresh) held.add(id);
+      releases.push(this.holdWaiting(fresh));
+    };
+    hold([...first.open.map((e) => e.laneId), ...(scope.laneIds ?? [])]);
+    return new Promise((resolve, reject) => {
+      const finish = () => {
+        clearTimeout(timer);
+        this.events.off('change', onChange);
+        signal?.removeEventListener('abort', finish);
+        for (const release of releases) release();
+        try {
+          resolve(this.decisionsFor(scope));
+        } catch (err) {
+          reject(err);
+        }
+      };
+      const onChange = (e: StreamEvent) => {
+        if (e.type !== 'escalation' && e.type !== 'lane_deleted') return;
+        try {
+          const now = this.decisionsFor(scope);
+          if (now.ready) finish();
+          else hold(now.open.map((o) => o.laneId));
+        } catch {
+          finish();
+        }
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      this.events.on('change', onChange);
+      signal?.addEventListener('abort', finish);
     });
   }
 
@@ -926,13 +1179,14 @@ export class Store {
       // Filtered by when each position was taken; only the columns needed are read.
       const w = where('rowid', 'lane_id');
       const raw = this.db
-        .prepare(`SELECT rowid AS _rid, id, lane_id, question, positions FROM escalations ${w.sql}`)
+        .prepare(`SELECT rowid AS _rid, id, ref, lane_id, question, positions FROM escalations ${w.sql}`)
         .all(...w.params) as Row[];
       return page(raw, (e) =>
         (JSON.parse(e.positions as string) as Position[])
           .filter((p) => (!filter.from || p.at >= filter.from) && (!filter.to || p.at < filter.to))
           .map((p) => ({
             escalation_id: e.id,
+            escalation_ref: e.ref,
             lane_id: e.lane_id,
             question: e.question,
             agent: p.agent,
@@ -957,6 +1211,7 @@ export class Store {
       const closedAt = e.state === 'acknowledged' ? e.acknowledged_at : e.state === 'withdrawn' ? e.updated_at : null;
       return {
         id: e.id,
+        ref: e.ref,
         lane_id: e.lane_id,
         lane_name: e.lane_name,
         group_id: e.group_id,
@@ -996,24 +1251,37 @@ export class Store {
 
   // ---- push tokens -------------------------------------------------------
 
-  addPushToken(token: string, platform: string, owner: string) {
+  /** `userId` is the owning account (absent for static config tokens). */
+  addPushToken(token: string, platform: string, owner: string, userId: string | null = null) {
     this.db
       .prepare(
-        `INSERT INTO push_tokens (token, platform, owner, created_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT(token) DO UPDATE SET owner = excluded.owner, platform = excluded.platform`,
+        `INSERT INTO push_tokens (token, platform, owner, user_id, created_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(token) DO UPDATE SET owner = excluded.owner, platform = excluded.platform, user_id = excluded.user_id`,
       )
-      .run(token, platform, owner, this.now().toISOString());
+      .run(token, platform, owner, userId, this.now().toISOString());
+  }
+
+  /**
+   * Drops a person's phones: tokens registered by their account, and tokens from
+   * before accounts were recorded under their name. Static config tokens' phones
+   * (no account, not legacy) are never matched by name.
+   */
+  removePushTokensOf(userId: string, name: string | null) {
+    this.db
+      .prepare('DELETE FROM push_tokens WHERE user_id = ? OR (legacy = 1 AND user_id IS NULL AND owner = ?)')
+      .run(userId, name ?? '');
   }
 
   removePushToken(token: string) {
     this.db.prepare('DELETE FROM push_tokens WHERE token = ?').run(token);
   }
 
-  listPushTokens(): { token: string; platform: string; owner: string }[] {
-    return this.db.prepare('SELECT token, platform, owner FROM push_tokens').all() as {
+  listPushTokens(): { token: string; platform: string; owner: string; userId: string | null }[] {
+    return this.db.prepare('SELECT token, platform, owner, user_id AS userId FROM push_tokens').all() as {
       token: string;
       platform: string;
       owner: string;
+      userId: string | null;
     }[];
   }
 }

@@ -9,7 +9,8 @@ export const STATUS_META: Record<LaneStatus, { label: string; tone: string; rank
   completed: { label: 'Completed', tone: 'muted', rank: 5 },
 };
 
-export const needsHuman = (l: Lane) => l.status === 'blocked_human' || l.openEscalations > 0;
+/** Blocked, or holding a blocking question. FYI questions alone don't make a lane urgent. */
+export const needsHuman = (l: Lane) => l.status === 'blocked_human' || l.blockingEscalations > 0;
 
 /** Human-required first, then by status rank, then most recently updated. */
 export function compareLanes(a: Lane, b: Lane) {
@@ -38,8 +39,10 @@ export const ago = (iso: string, now: number) => {
 export const blockedMs = (l: Lane, now: number) =>
   l.blockedTotalMs + (l.blockedSince ? now - Date.parse(l.blockedSince) : 0);
 
+/** A working lane that hasn't published in a while, unless its agent is waiting on an answer right now. */
 export const isStale = (l: Lane, now: number, staleMinutes: number) =>
   staleMinutes > 0 &&
+  !l.agentWaiting &&
   (l.status === 'active' || l.status === 'pending_ci' || l.status === 'awaiting_agent') &&
   now - Date.parse(l.updatedAt) > staleMinutes * 60_000;
 

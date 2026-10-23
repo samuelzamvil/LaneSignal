@@ -57,6 +57,11 @@ test('upgrades a schema v1 database without losing escalations', () => {
       ALTER TABLE escalations DROP COLUMN blocking;
       ALTER TABLE lanes DROP COLUMN archived_at;
       ALTER TABLE groups DROP COLUMN archived_at;
+      DROP INDEX escalations_ref;
+      ALTER TABLE escalations DROP COLUMN ref;
+      ALTER TABLE escalations DROP COLUMN withdrawn_by;
+      ALTER TABLE push_tokens DROP COLUMN user_id;
+      ALTER TABLE push_tokens DROP COLUMN legacy;
       UPDATE meta SET value = '1' WHERE key = 'schema_version';
     `);
     db.close();
@@ -67,6 +72,8 @@ test('upgrades a schema v1 database without losing escalations', () => {
     assert.deepEqual(migrated?.alternatives, []);
     assert.equal(migrated?.cost, null);
     assert.equal(migrated?.blocking, true);
+    assert.equal(migrated?.ref, 1);
+    assert.equal(store.getEscalation('#1')?.id, esc.id);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -358,5 +365,44 @@ test('export date filters are UTC-only and strict', async () => {
   assert.equal(exportFilter.parse({ from: '2026-10-01T10:00:00+02:00' }).from, '2026-10-01T08:00:00.000Z');
   for (const bad of [{ from: '2026-10-01T10:00' }, { from: '2026-02-30' }, { lane_id: 'x' }, { from: '2026-10-02', to: '2026-10-01' }]) {
     assert.equal(exportFilter.safeParse(bad).success, false, JSON.stringify(bad));
+  }
+});
+
+test('a removed person\'s phones are dropped, but not a static token\'s that shares the name', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  store.addPushToken('account-token-0', 'android', 'Carol', 'u-carol');
+  store.addPushToken('static-token-00', 'android', 'Carol');
+  store.addPushToken('other-token-000', 'android', 'Dan', 'u-dan');
+  store.removePushTokensOf('u-carol', 'Carol');
+  assert.deepEqual(
+    store.listPushTokens().map((t) => t.token).sort(),
+    ['other-token-000', 'static-token-00'],
+  );
+  store.close();
+});
+
+test('tokens registered before the upgrade are matched by name', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-'));
+  const file = path.join(dir, 'db.sqlite');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      DROP INDEX escalations_ref;
+      ALTER TABLE escalations DROP COLUMN ref;
+      ALTER TABLE escalations DROP COLUMN withdrawn_by;
+      ALTER TABLE push_tokens DROP COLUMN user_id;
+      ALTER TABLE push_tokens DROP COLUMN legacy;
+      INSERT INTO push_tokens (token, platform, owner, created_at) VALUES ('old-carol-token', 'android', 'Carol', 'x');
+      UPDATE meta SET value = '4' WHERE key = 'schema_version';
+    `);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    store.removePushTokensOf('u-carol', 'Carol');
+    assert.deepEqual(store.listPushTokens(), []);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -29,6 +29,8 @@ export interface Config {
   authSecret: string | null;
   /** Sign-in attempts allowed per client IP per window. */
   signInRateLimit: { max: number; windowSeconds: number };
+  /** Days a sign-in lasts without being used; each use (at most daily) extends it. */
+  sessionDays: number;
   /** Display name for lane groups (epic / train / overseer). */
   groupLabel: string;
   /** Ticket system key -> URL template containing {id}. */
@@ -175,6 +177,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       max: int('LANESIGNAL_SIGNIN_RATE_MAX', env.LANESIGNAL_SIGNIN_RATE_MAX, 5, 1, 10_000),
       windowSeconds: int('LANESIGNAL_SIGNIN_RATE_WINDOW', env.LANESIGNAL_SIGNIN_RATE_WINDOW, 60, 1, 86_400),
     },
+    sessionDays: int('LANESIGNAL_SESSION_DAYS', env.LANESIGNAL_SESSION_DAYS, 90, 1, 3650),
     groupLabel: env.LANESIGNAL_GROUP_LABEL ?? file.groupLabel ?? 'Epic',
     ticketTemplates,
     defaultTicketSystem:

@@ -6,6 +6,9 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+  # Weekly rebuild of main, so the published image picks up base-image security fixes.
+  schedule:
+    - cron: '17 4 * * 1'
 
 permissions:
   contents: read
@@ -17,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -58,6 +61,8 @@ jobs:
 
   android:
     needs: test
+    # The weekly run only refreshes the server image.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     env:
       LANESIGNAL_VERSION_CODE: ${{ github.run_number }}
@@ -65,7 +70,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - uses: actions/setup-java@v4
         with:

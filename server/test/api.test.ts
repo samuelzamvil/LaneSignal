@@ -143,7 +143,7 @@ describe('lanes', () => {
 
     const csv = await fetch(`${base}/api/export/escalations.csv`, { headers: { authorization: `Bearer ${AGENT}` } });
     assert.equal(csv.headers.get('content-type'), 'text/csv; charset=utf-8');
-    assert.ok((await csv.text()).startsWith('id,lane_id,lane_name,'));
+    assert.ok((await csv.text()).startsWith('id,ref,lane_id,lane_name,'));
     const lanesCsv = await fetch(`${base}/api/export/lanes.csv`, { headers: { authorization: `Bearer ${AGENT}` } });
     assert.ok((await lanesCsv.text()).includes('epic-1,Epic 1,payments-epic'));
 
@@ -268,7 +268,10 @@ describe('escalation lifecycle', () => {
     assert.equal((await call('POST', `/api/escalations/${id}/ack`, AGENT, { note: 'dropping' })).status, 200);
     const after = (await call('GET', '/api/escalations', ALICE)).body;
     assert.ok(!after.some((e: { id: string }) => e.id === id));
-    assert.equal((await call('POST', `/api/escalations/${id}/ack`, AGENT, {})).status, 409);
+    // Repeating an acknowledgement is a safe no-op.
+    const again = await call('POST', `/api/escalations/${id}/ack`, AGENT, {});
+    assert.equal(again.status, 200);
+    assert.equal(again.body.resolution, 'dropping');
     assert.equal((await call('POST', `/api/escalations/${id}/positions`, AGENT, { stance: 'agree' })).status, 409);
   });
 

@@ -87,8 +87,11 @@ class FcmSender {
   }
 }
 
-/** Subscribes to store changes and sends push notifications for the configured triggers. */
-export function startNotifier(config: Config, store: Store) {
+/**
+ * Subscribes to store changes and sends push notifications for the configured
+ * triggers. `userActive` filters out phones of people who were removed or banned.
+ */
+export function startNotifier(config: Config, store: Store, userActive: (userId: string) => boolean = () => true) {
   let fcm: FcmSender | null = null;
   if (config.fcmServiceAccountFile) {
     try {
@@ -109,6 +112,7 @@ export function startNotifier(config: Config, store: Store) {
         log.warn('cannot read push tokens', { error: String(err) });
       }
       for (const t of tokens) {
+        if (t.userId && !userActive(t.userId)) continue;
         try {
           if (!(await fcm.send(t.token, n))) {
             store.removePushToken(t.token);
@@ -153,16 +157,17 @@ export function startNotifier(config: Config, store: Store) {
     if (e.type === 'escalation' && created && config.notifyOn.has('escalation')) {
       // Later open-state events (agent positions) don't re-notify.
       const lane = store.getLane(e.escalation.laneId);
+      const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? e.escalation.laneId].filter(Boolean).join(' / ');
+      // FYI questions (non-blocking) still notify once, but quietly.
+      const urgent = e.escalation.blocking;
       return {
-        title: `Decision needed · ${[lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? e.escalation.laneId]
-          .filter(Boolean)
-          .join(' / ')}`,
+        title: `${urgent ? 'Decision needed' : 'FYI'} #${e.escalation.ref} · ${where}`,
         body: e.escalation.recommendation
           ? `${e.escalation.question}\nRecommended: ${e.escalation.recommendation}`
           : e.escalation.question,
         data: { escalationId: e.escalation.id, laneId: e.escalation.laneId },
         route: `#/esc/${e.escalation.id}`,
-        urgent: true,
+        urgent,
       };
     }
     if (e.type === 'lane' && e.statusChanged) {

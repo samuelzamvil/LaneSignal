@@ -53,7 +53,8 @@ test('ntfy gets new escalations only, as UTF-8 JSON, not positions or decisions'
   const { path: p, body } = sink.received[0];
   assert.equal(p, '/');
   assert.equal(body.topic, 'lanes-topic');
-  assert.equal(body.title, 'Decision needed · Auth → OAuth 🚀');
+  assert.equal(body.title, `Decision needed #${esc.ref} · Auth → OAuth 🚀`);
+  assert.equal(body.priority, 4);
   assert.equal(body.message, 'Ship it?');
   assert.equal(body.click, `https://ls.example/#/esc/${esc.id}`);
   sink.close();
@@ -115,15 +116,17 @@ test('an FCM payload error does not unregister devices; a token error does', asy
 
   try {
     const { config, store } = setup({ LANESIGNAL_FCM_SERVICE_ACCOUNT_FILE: keyFile });
-    assert.deepEqual(startNotifier(config, store), { fcm: true, ntfy: false });
+    // A removed or banned person's phone is skipped.
+    assert.deepEqual(startNotifier(config, store, (userId) => userId !== 'u-removed'), { fcm: true, ntfy: false });
+    store.addPushToken('removed-device-token', 'android', 'carol', 'u-removed');
     store.addPushToken('good-device-token', 'android', 'alice');
     store.addPushToken('gone-device-token', 'android', 'bob');
     store.createEscalation({ laneId: 'l', question: 'Q?', recommendation: 'x'.repeat(5000) }, 'bot');
     await settle();
-    assert.equal(sends.length, 2);
+    assert.deepEqual(sends.sort(), ['gone-device-token', 'good-device-token']);
     assert.deepEqual(
       store.listPushTokens().map((t) => t.token),
-      ['good-device-token'],
+      ['removed-device-token', 'good-device-token'],
     );
     store.close();
   } finally {
