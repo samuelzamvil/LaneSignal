@@ -63,6 +63,8 @@ Which tools a client sees depends on its credential: agent keys get the agent to
 | `acknowledge_escalation` | agent | Call as soon as a decision arrives: closes the escalation and returns the final decision. `status` and `activity` publish the lane's next state in the same call. Repeating it is safe |
 | `withdraw_escalation` | agent | Close it without a dashboard answer: answered in Remote Control, or moot |
 | `list_lanes` / `list_groups` / `list_escalations` | any | Read state |
+| `find_requirements` / `get_requirement` / `list_requirement_tags` | any | Search the owner's product decisions before asking again. See [Requirements](requirements.md) |
+| `record_requirement` / `supersede_requirement` | any | Record a decision the owner made (citing the escalation or the person), or replace one they changed |
 | `export_data` | any | All data for analysis (escalations, positions, lanes, groups, history) as CSV or JSON, paged. See [Export](export.md) |
 | `decide_escalation` | human | Answer from your own Claude session. `change: true` corrects a decision the agent hasn't acknowledged yet |
 | `withdraw_escalation` | human | Dismiss an escalation that no longer needs an answer |

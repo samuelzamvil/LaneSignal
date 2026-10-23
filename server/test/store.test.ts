@@ -57,6 +57,8 @@ test('upgrades a schema v1 database without losing escalations', () => {
       ALTER TABLE escalations DROP COLUMN blocking;
       ALTER TABLE lanes DROP COLUMN archived_at;
       ALTER TABLE groups DROP COLUMN archived_at;
+      DROP TABLE requirements_fts;
+      DROP TABLE requirements;
       DROP INDEX lanes_letter;
       DROP INDEX escalations_code;
       ALTER TABLE lanes DROP COLUMN letter_index;
@@ -394,6 +396,8 @@ test('tokens registered before the upgrade are matched by name', () => {
     store.close();
     const db = new DatabaseSync(file);
     db.exec(`
+      DROP TABLE requirements_fts;
+      DROP TABLE requirements;
       DROP INDEX lanes_letter;
       DROP INDEX escalations_code;
       ALTER TABLE lanes DROP COLUMN letter_index;
@@ -476,6 +480,8 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
     store.close();
     const db = new DatabaseSync(file);
     db.exec(`
+      DROP TABLE requirements_fts;
+      DROP TABLE requirements;
       DROP INDEX lanes_letter;
       DROP INDEX escalations_code;
       ALTER TABLE lanes DROP COLUMN letter_index;

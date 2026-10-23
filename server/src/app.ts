@@ -10,7 +10,7 @@ import { log } from './log.ts';
 import { mcpHandler } from './mcp.ts';
 import * as s from './schemas.ts';
 import { datasetCsvAsync, datasetRowsAsync, exportZip } from './export.ts';
-import { ConflictError, EXPORT_DATASETS, NotFoundError, type ExportDataset, type Store } from './store.ts';
+import { ConflictError, EXPORT_DATASETS, NotFoundError, ValidationError, type ExportDataset, type Store } from './store.ts';
 import { LANE_STATUSES, type EscalationState, type PublicConfig, type StreamEvent } from './types.ts';
 
 export interface AppOptions {
@@ -60,7 +60,7 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type, mcp-protocol-version');
       res.setHeader('Access-Control-Expose-Headers', 'set-auth-token');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Max-Age', '600');
     }
     if (req.method === 'OPTIONS') {
@@ -339,6 +339,47 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
     res.json(store.withdrawEscalation(String(req.params.id), body.note ?? null, principalOf(res).name));
   });
 
+  // ---- requirements (owner decisions about the product) ----
+
+  app.get('/api/requirements', any, (req, res) => {
+    const q = parse(s.requirementQuery, req.query);
+    res.json(store.findRequirements({ query: q.q, tags: q.tag, group: q.group, statuses: q.status, limit: q.limit }));
+  });
+
+  app.get('/api/requirements/tags', any, (req, res) => {
+    const group = typeof req.query.group === 'string' ? parse(s.groupId, req.query.group) : undefined;
+    res.json(store.requirementTags(group));
+  });
+
+  app.get('/api/requirements/:id', any, (req, res) => {
+    const found = store.getRequirement(String(req.params.id));
+    if (!found) throw new NotFoundError('Requirement not found');
+    res.json(found);
+  });
+
+  /** Agents record owner decisions; a person recording one is the decider unless they say otherwise. */
+  const requirementBody = (req: Request, res: Response) => {
+    const body = parse(s.requirementInput, req.body);
+    const who = principalOf(res);
+    return { ...body, decidedBy: body.decidedBy ?? (who.role === 'human' && !body.sourceEscalation ? who.name : null) };
+  };
+
+  app.post('/api/requirements', any, (req, res) => {
+    res.status(201).json(store.recordRequirement(requirementBody(req, res), principalOf(res).name));
+  });
+
+  app.post('/api/requirements/:id/supersede', any, (req, res) => {
+    res.status(201).json(store.supersedeRequirement(String(req.params.id), requirementBody(req, res), principalOf(res).name));
+  });
+
+  app.patch('/api/requirements/:id', human, (req, res) => {
+    res.json(store.editRequirement(String(req.params.id), parse(s.requirementEdit, req.body)));
+  });
+
+  app.post('/api/requirements/:id/retire', human, (req, res) => {
+    res.json(store.retireRequirement(String(req.params.id)));
+  });
+
   // ---- export (CSV / JSON / zip for analysis) ----
 
   const exportFilterOf = (req: Request) => {
@@ -456,6 +497,8 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
       res.status(400).json({ error: 'invalid request', issues: err.issues });
     } else if (err instanceof NotFoundError) {
       res.status(404).json({ error: err.message });
+    } else if (err instanceof ValidationError) {
+      res.status(400).json({ error: err.message });
     } else if (err instanceof ConflictError) {
       res.status(409).json({ error: err.message });
     } else if (err instanceof SyntaxError) {

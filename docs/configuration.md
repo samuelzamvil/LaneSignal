@@ -23,6 +23,7 @@ Every setting can be an environment variable. Most can also go in an optional JS
 | `LANESIGNAL_SIGNIN_RATE_MAX` | | `5` | Sign-in attempts per client IP per window |
 | `LANESIGNAL_SIGNIN_RATE_WINDOW` | | `60` | Window in seconds |
 | `LANESIGNAL_SESSION_DAYS` | | `90` | Days a sign-in lasts without being used. Each use, at most daily, extends it |
+| `LANESIGNAL_BROAD_TAGS` | | built-in list | Comma-separated requirement tags rejected as too broad (replaces the built-in `backend, frontend, ui, ux, api, misc, …`). Empty allows any |
 | `LANESIGNAL_HUMAN_TOKENS` | `tokens[]` | | Optional static human tokens, `name:token,…` (16+ chars each), for break-glass and scripts. `LANESIGNAL_OVERSEER_TOKENS` is the old name and still works |
 | `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | Optional static agent tokens. Prefer [agent keys](accounts.md#agent-keys) |
 

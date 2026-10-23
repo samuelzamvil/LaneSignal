@@ -11,6 +11,8 @@ import {
   type LaneStatus,
   type Link,
   type Position,
+  type Requirement,
+  type RequirementStatus,
   type Stance,
   type StreamEvent,
 } from './types.ts';
@@ -19,6 +21,34 @@ export class NotFoundError extends Error {}
 
 const MAX_POSITIONS = 20;
 export class ConflictError extends Error {}
+/** Input that's well-formed but not acceptable (e.g. an overbroad tag); a 400. */
+export class ValidationError extends Error {}
+
+/** Tags too broad to help anyone find a requirement; overridable with LANESIGNAL_BROAD_TAGS. */
+export const DEFAULT_BROAD_TAGS = [
+  'backend', 'frontend', 'ui', 'ux', 'api', 'misc', 'general', 'other', 'product', 'feature', 'features',
+  'requirement', 'requirements', 'decision', 'decisions', 'important', 'todo', 'bug', 'bugs', 'code', 'app',
+];
+
+export interface RequirementInput {
+  requirement: string;
+  justification: string;
+  tags: string[];
+  /** Group id; null or absent for product-wide. */
+  group?: string | null;
+  /** Escalation (id or code) the owner decided this in; its decider becomes `decidedBy`. */
+  sourceEscalation?: string | null;
+  /** The person who decided, when there's no escalation (e.g. said in Remote Control). */
+  decidedBy?: string | null;
+}
+
+export interface RecordResult {
+  requirement: Requirement;
+  /** Active requirements that read alike: check these aren't the same decision. */
+  similar: Requirement[];
+  /** Advice, e.g. a tag already on most requirements. */
+  warnings: string[];
+}
 
 /** Lane letters: 0 -> A, 25 -> Z, 26 -> AA, like spreadsheet columns. */
 export function letterOf(index: number): string {
@@ -72,7 +102,7 @@ export interface WaitResult {
   checkedAt: string;
 }
 
-export const EXPORT_DATASETS = ['escalations', 'positions', 'lanes', 'groups', 'events'] as const;
+export const EXPORT_DATASETS = ['escalations', 'positions', 'lanes', 'groups', 'events', 'requirements'] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
 
 /** Fixed column order per dataset, so a CSV's header never depends on whether it has rows. */
@@ -92,6 +122,10 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
   ],
   groups: ['id', 'name', 'ticket', 'ticket_url', 'links', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
   events: ['id', 'lane_id', 'at', 'kind', 'message', 'actor'],
+  requirements: [
+    'id', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'decided_by',
+    'source_escalation', 'recorded_by', 'created_at', 'updated_at',
+  ],
 };
 export interface ExportFilter {
   from?: string;
@@ -138,9 +172,11 @@ export interface StoreOptions {
   now?: () => Date;
   /** How long a lane keeps showing "agent waiting" after a wait ends (default 30s). */
   waitGraceMs?: number;
+  /** Tags rejected as too broad (lowercase). */
+  broadTags?: string[];
 }
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 type Row = Record<string, unknown>;
 
@@ -152,6 +188,7 @@ export class Store {
   readonly events = new EventEmitter<{ change: [StreamEvent] }>();
   private db: DatabaseSync;
   private resolveTicketUrl: (ticket: string) => string | null;
+  private broadTags: Set<string>;
   private retention: number;
   private now: () => Date;
   /** Lanes with an agent currently waiting on their escalations (in memory: waits don't survive restarts). */
@@ -165,6 +202,7 @@ export class Store {
     this.retention = opts.eventRetention ?? 200;
     this.now = opts.now ?? (() => new Date());
     this.waitGraceMs = opts.waitGraceMs ?? WAIT_GRACE_MS;
+    this.broadTags = new Set((opts.broadTags ?? DEFAULT_BROAD_TAGS).map((t) => t.toLowerCase()));
     this.events.setMaxListeners(0);
     this.migrate();
   }
@@ -229,6 +267,39 @@ export class Store {
         `);
       }
       if (version < 6) this.migrateV6();
+      if (version < 7) {
+        // Product requirements: owner decisions, searchable (full-text index kept in step by triggers).
+        this.db.exec(`
+          CREATE TABLE requirements (
+            num INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id TEXT,
+            requirement TEXT NOT NULL,
+            justification TEXT NOT NULL,
+            tags TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL,
+            superseded_by INTEGER,
+            decided_by TEXT NOT NULL,
+            source_escalation_id TEXT,
+            recorded_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+          CREATE INDEX requirements_group ON requirements(group_id, status);
+          CREATE VIRTUAL TABLE requirements_fts USING fts5(
+            requirement, justification, tags, content='requirements', content_rowid='num', tokenize='porter unicode61'
+          );
+          CREATE TRIGGER requirements_ai AFTER INSERT ON requirements BEGIN
+            INSERT INTO requirements_fts(rowid, requirement, justification, tags)
+              VALUES (new.num, new.requirement, new.justification, new.tags);
+          END;
+          CREATE TRIGGER requirements_au AFTER UPDATE ON requirements BEGIN
+            INSERT INTO requirements_fts(requirements_fts, rowid, requirement, justification, tags)
+              VALUES ('delete', old.num, old.requirement, old.justification, old.tags);
+            INSERT INTO requirements_fts(rowid, requirement, justification, tags)
+              VALUES (new.num, new.requirement, new.justification, new.tags);
+          END;
+        `);
+      }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -1223,6 +1294,33 @@ export class Store {
       return { sql: `WHERE ${parts.join(' AND ')} ORDER BY ${ridCol} LIMIT ?`, params: [...params, limit] };
     };
 
+    if (dataset === 'requirements') {
+      const parts = ['num > ?'];
+      const params: (string | number)[] = [after];
+      if (filter.from) (parts.push('created_at >= ?'), params.push(filter.from));
+      if (filter.to) (parts.push('created_at < ?'), params.push(filter.to));
+      const raw = this.db
+        .prepare(`SELECT num AS _rid, * FROM requirements WHERE ${parts.join(' AND ')} ORDER BY num LIMIT ?`)
+        .all(...params, limit) as Row[];
+      return page(raw, (r) => {
+        const req = this.requirementFromRow(r);
+        return {
+          id: req.id,
+          group_id: req.group,
+          requirement: req.requirement,
+          justification: req.justification,
+          tags: req.tags.join(' | '),
+          status: req.status,
+          superseded_by: req.supersededBy,
+          decided_by: req.decidedBy,
+          source_escalation: req.sourceEscalation,
+          recorded_by: req.recordedBy,
+          created_at: req.createdAt,
+          updated_at: req.updatedAt,
+        };
+      });
+    }
+
     if (dataset === 'groups') {
       const raw = this.db
         .prepare('SELECT rowid AS _rid, * FROM groups WHERE rowid > ? ORDER BY rowid LIMIT ?')
@@ -1365,6 +1463,247 @@ export class Store {
 
   private codeOf(r: Row) {
     return r.letter_index == null ? String(r.ref) : `${letterOf(Number(r.letter_index))}${Number(r.seq)}`;
+  }
+
+  // ---- requirements ----------------------------------------------------------
+
+  private requirementFromRow(r: Row): Requirement {
+    const source = r.source_escalation_id ? this.getEscalation(r.source_escalation_id as string) : null;
+    return {
+      id: `R${Number(r.num)}`,
+      group: (r.group_id as string | null) ?? null,
+      requirement: r.requirement as string,
+      justification: r.justification as string,
+      tags: JSON.parse(r.tags as string) as string[],
+      status: r.status as RequirementStatus,
+      supersededBy: r.superseded_by == null ? null : `R${Number(r.superseded_by)}`,
+      decidedBy: r.decided_by as string,
+      sourceEscalation: source?.ref ?? null,
+      recordedBy: r.recorded_by as string,
+      createdAt: r.created_at as string,
+      updatedAt: r.updated_at as string,
+    };
+  }
+
+  /** "R14", "r14" or "14". */
+  private requirementNum(id: string): number | null {
+    const m = /^R?(\d{1,15})$/i.exec(id.trim());
+    return m ? Number(m[1]) : null;
+  }
+
+  getRequirement(id: string): Requirement | null {
+    const num = this.requirementNum(id);
+    if (num === null) return null;
+    const r = this.db.prepare('SELECT * FROM requirements WHERE num = ?').get(num) as Row | undefined;
+    return r ? this.requirementFromRow(r) : null;
+  }
+
+  private requireRequirement(id: string): Requirement {
+    const req = this.getRequirement(id);
+    if (!req) throw new NotFoundError(`Requirement "${id}" not found`);
+    return req;
+  }
+
+  /** Words of free text as an FTS query: any word matches, prefixes included, best matches first. */
+  private ftsQuery(text: string) {
+    const words = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+    return [...new Set(words)]
+      .slice(0, 30)
+      .map((w) => `"${w}"*`)
+      .join(' OR ');
+  }
+
+  /**
+   * Search: `query` is free text (ranked full-text match); `tags` must all be
+   * present; `group` limits to that group plus product-wide ones (unless
+   * `includeProductWide` is false). Active only unless `statuses` says otherwise.
+   */
+  findRequirements(filter: {
+    query?: string;
+    tags?: string[];
+    group?: string;
+    includeProductWide?: boolean;
+    statuses?: RequirementStatus[];
+    limit?: number;
+  } = {}): Requirement[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    const statuses = filter.statuses ?? ['active'];
+    where.push(`r.status IN (${statuses.map(() => '?').join(',')})`);
+    params.push(...statuses);
+    if (filter.group !== undefined) {
+      where.push(filter.includeProductWide === false ? 'r.group_id = ?' : '(r.group_id = ? OR r.group_id IS NULL)');
+      params.push(filter.group);
+    }
+    for (const tag of filter.tags ?? []) {
+      where.push('EXISTS (SELECT 1 FROM json_each(r.tags) WHERE value = ?)');
+      params.push(tag.toLowerCase());
+    }
+    // An id ("R14") finds that requirement, whatever its status.
+    if (filter.query && this.requirementNum(filter.query) !== null && /^r/i.test(filter.query.trim())) {
+      const one = this.getRequirement(filter.query);
+      return one ? [one] : [];
+    }
+    const q = filter.query ? this.ftsQuery(filter.query) : '';
+    const limit = filter.limit ?? 50;
+    const rows = q
+      ? (this.db
+          .prepare(
+            `SELECT r.* FROM requirements_fts f JOIN requirements r ON r.num = f.rowid
+             WHERE requirements_fts MATCH ? AND ${where.join(' AND ')} ORDER BY bm25(requirements_fts) LIMIT ?`,
+          )
+          .all(q, ...params, limit) as Row[])
+      : (this.db
+          .prepare(`SELECT r.* FROM requirements r WHERE ${where.join(' AND ')} ORDER BY r.num DESC LIMIT ?`)
+          .all(...params, limit) as Row[]);
+    return rows.map((r) => this.requirementFromRow(r));
+  }
+
+  /** Tags in use on active requirements, most used first. */
+  requirementTags(group?: string): { tag: string; count: number }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT j.value AS tag, COUNT(*) AS n FROM requirements r, json_each(r.tags) j
+         WHERE r.status = 'active' ${group !== undefined ? 'AND (r.group_id = ? OR r.group_id IS NULL)' : ''}
+         GROUP BY j.value ORDER BY n DESC, j.value`,
+      )
+      .all(...(group !== undefined ? [group] : [])) as Row[];
+    return rows.map((r) => ({ tag: r.tag as string, count: Number(r.n) }));
+  }
+
+  /** Lowercases, de-duplicates and checks tags; throws on overbroad ones. */
+  private cleanTags(tags: string[]): string[] {
+    const clean = [...new Set(tags.map((t) => t.trim().toLowerCase()))];
+    const broad = clean.filter((t) => this.broadTags.has(t));
+    if (broad.length) {
+      throw new ValidationError(
+        `Tag${broad.length > 1 ? 's' : ''} ${broad.map((t) => `"${t}"`).join(', ')} too broad to help anyone find this. ` +
+          'Name the capability instead, e.g. "payout-retries" or "sso-login".',
+      );
+    }
+    return clean;
+  }
+
+  /** Must run inside a transaction. Works out who decided, from the escalation or the given name. */
+  private decisionSource(input: RequirementInput): { decidedBy: string; escalationId: string | null } {
+    if (input.sourceEscalation) {
+      const esc = this.requireEscalation(input.sourceEscalation);
+      if (!esc.decidedBy || (esc.state !== 'decided' && esc.state !== 'acknowledged')) {
+        throw new ConflictError(`Escalation ${esc.ref} hasn't been decided by a person, so it can't be the source`);
+      }
+      return { decidedBy: esc.decidedBy, escalationId: esc.id };
+    }
+    const decidedBy = input.decidedBy?.trim();
+    if (!decidedBy) {
+      throw new ValidationError(
+        'Say whose decision this is: source_escalation (an answered escalation, e.g. "A12") or decided_by (the person, e.g. "Sam").',
+      );
+    }
+    return { decidedBy, escalationId: null };
+  }
+
+  private similarTo(req: Requirement): Requirement[] {
+    const q = this.ftsQuery(req.requirement);
+    if (!q) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT r.* FROM requirements_fts f JOIN requirements r ON r.num = f.rowid
+         WHERE requirements_fts MATCH ? AND r.status = 'active' AND r.num <> ?
+           AND (r.group_id IS ? OR r.group_id IS NULL OR ? IS NULL)
+         ORDER BY bm25(requirements_fts) LIMIT 3`,
+      )
+      .all(q, this.requirementNum(req.id)!, req.group, req.group) as Row[];
+    return rows.map((r) => this.requirementFromRow(r));
+  }
+
+  private tagWarnings(tags: string[]): string[] {
+    const total = Number((this.db.prepare("SELECT COUNT(*) AS n FROM requirements WHERE status = 'active'").get() as Row).n);
+    if (total < 10) return [];
+    const counts = new Map(this.requirementTags().map((t) => [t.tag, t.count]));
+    return tags
+      .filter((t) => (counts.get(t) ?? 0) / total > 0.4)
+      .map((t) => `Tag "${t}" is on ${counts.get(t)} of ${total} active requirements; a narrower tag would find this faster.`);
+  }
+
+  /** Must run inside a transaction. */
+  private insertRequirement(input: RequirementInput, actor: string, at: string): number {
+    if (input.group && !this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(input.group)) {
+      throw new NotFoundError(`Group "${input.group}" not found`);
+    }
+    const tags = this.cleanTags(input.tags);
+    const { decidedBy, escalationId } = this.decisionSource(input);
+    const res = this.db
+      .prepare(
+        `INSERT INTO requirements (group_id, requirement, justification, tags, status, decided_by, source_escalation_id,
+           recorded_by, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+      )
+      .run(input.group ?? null, input.requirement.trim(), input.justification.trim(), JSON.stringify(tags), decidedBy, escalationId, actor, at, at);
+    return Number(res.lastInsertRowid);
+  }
+
+  /** Records an owner decision. Returns it with similar active requirements, so duplicates get noticed. */
+  recordRequirement(input: RequirementInput, actor: string): RecordResult {
+    const requirement = this.tx(() => {
+      const num = this.insertRequirement(input, actor, this.now().toISOString());
+      return this.requireRequirement(String(num));
+    });
+    this.emit({ type: 'requirement', requirement });
+    return { requirement, similar: this.similarTo(requirement), warnings: this.tagWarnings(requirement.tags) };
+  }
+
+  /**
+   * Replaces an active requirement with a new one (the owner changed direction).
+   * The old one stays, marked superseded, so the history of why is kept. Group
+   * defaults to the old one's.
+   */
+  supersedeRequirement(id: string, input: RequirementInput, actor: string): RecordResult {
+    const { requirement, old } = this.tx(() => {
+      const current = this.requireRequirement(id);
+      if (current.status !== 'active') throw new ConflictError(`${current.id} is ${current.status}; only active requirements can be superseded`);
+      const at = this.now().toISOString();
+      const num = this.insertRequirement({ ...input, group: input.group === undefined ? current.group : input.group }, actor, at);
+      this.db
+        .prepare("UPDATE requirements SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE num = ?")
+        .run(num, at, this.requirementNum(current.id)!);
+      return { requirement: this.requireRequirement(String(num)), old: this.requireRequirement(current.id) };
+    });
+    this.emit({ type: 'requirement', requirement: old });
+    this.emit({ type: 'requirement', requirement });
+    return { requirement, similar: this.similarTo(requirement).filter((r) => r.id !== old.id), warnings: this.tagWarnings(requirement.tags) };
+  }
+
+  /** Corrections that keep the meaning (wording, tags). Changing the decision is a supersede. */
+  editRequirement(id: string, patch: { requirement?: string; justification?: string; tags?: string[] }): Requirement {
+    const requirement = this.tx(() => {
+      const current = this.requireRequirement(id);
+      const tags = patch.tags ? this.cleanTags(patch.tags) : current.tags;
+      this.db
+        .prepare('UPDATE requirements SET requirement = ?, justification = ?, tags = ?, updated_at = ? WHERE num = ?')
+        .run(
+          patch.requirement?.trim() ?? current.requirement,
+          patch.justification?.trim() ?? current.justification,
+          JSON.stringify(tags),
+          this.now().toISOString(),
+          this.requirementNum(current.id)!,
+        );
+      return this.requireRequirement(current.id);
+    });
+    this.emit({ type: 'requirement', requirement });
+    return requirement;
+  }
+
+  /** Withdraws a requirement with no replacement (the decision no longer applies). */
+  retireRequirement(id: string): Requirement {
+    const requirement = this.tx(() => {
+      const current = this.requireRequirement(id);
+      if (current.status !== 'active') throw new ConflictError(`${current.id} is already ${current.status}`);
+      this.db
+        .prepare("UPDATE requirements SET status = 'retired', updated_at = ? WHERE num = ?")
+        .run(this.now().toISOString(), this.requirementNum(current.id)!);
+      return this.requireRequirement(current.id);
+    });
+    this.emit({ type: 'requirement', requirement });
+    return requirement;
   }
 
   // ---- push tokens -------------------------------------------------------

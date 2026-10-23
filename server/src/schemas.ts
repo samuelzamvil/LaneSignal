@@ -160,3 +160,46 @@ export const waitQuery = z
     since: z.string().max(40).optional(),
   })
   .strict();
+
+// ---- requirements ----
+
+/** Specific, kebab-case: "payout-retries", not "backend". */
+export const requirementTag = z
+  .string()
+  .min(2)
+  .max(40)
+  .regex(/^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$/, 'tags are kebab-case words, e.g. "payout-retries"');
+
+export const requirementInput = z.object({
+  requirement: z.string().min(1).max(2000),
+  justification: z.string().min(1).max(5000),
+  tags: z.array(requirementTag).min(1).max(3),
+  /** Group (train/epic) id; omit or null for a product-wide requirement. */
+  group: groupId.nullable().optional(),
+  /** Answered escalation the owner decided this in (id or code like "A12"). */
+  sourceEscalation: z.string().min(1).max(100).nullable().optional(),
+  /** Who decided, when there's no escalation, e.g. "Sam (Remote Control, 2026-10-23)". */
+  decidedBy: z.string().min(1).max(100).nullable().optional(),
+});
+
+export const requirementEdit = z
+  .object({
+    requirement: z.string().min(1).max(2000).optional(),
+    justification: z.string().min(1).max(5000).optional(),
+    tags: z.array(requirementTag).min(1).max(3).optional(),
+  })
+  .strict();
+
+const REQUIREMENT_STATUSES = ['active', 'superseded', 'retired'] as const;
+
+/** GET /api/requirements: ?q=&tag=a,b&group=&status=active,superseded&limit= */
+export const requirementQuery = z
+  .object({
+    q: z.string().max(500).optional(),
+    tag: z.preprocess(csv, z.array(requirementTag).max(5)).optional(),
+    group: groupId.optional(),
+    status: z.preprocess(csv, z.array(z.enum(REQUIREMENT_STATUSES)).min(1)).optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+  })
+  .strict();
+

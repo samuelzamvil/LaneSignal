@@ -31,6 +31,8 @@ export interface Config {
   signInRateLimit: { max: number; windowSeconds: number };
   /** Days a sign-in lasts without being used; each use (at most daily) extends it. */
   sessionDays: number;
+  /** Requirement tags rejected as too broad; null for the built-in list. */
+  broadTags: string[] | null;
   /** Display name for lane groups (epic / train / overseer). */
   groupLabel: string;
   /** Ticket system key -> URL template containing {id}. */
@@ -178,6 +180,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       windowSeconds: int('LANESIGNAL_SIGNIN_RATE_WINDOW', env.LANESIGNAL_SIGNIN_RATE_WINDOW, 60, 1, 86_400),
     },
     sessionDays: int('LANESIGNAL_SESSION_DAYS', env.LANESIGNAL_SESSION_DAYS, 90, 1, 3650),
+    broadTags: env.LANESIGNAL_BROAD_TAGS !== undefined ? (list(env.LANESIGNAL_BROAD_TAGS) ?? []) : null,
     groupLabel: env.LANESIGNAL_GROUP_LABEL ?? file.groupLabel ?? 'Epic',
     ticketTemplates,
     defaultTicketSystem:

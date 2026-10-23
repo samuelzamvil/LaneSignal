@@ -69,6 +69,13 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `POST /api/escalations/:id/withdraw` | any | `{note?}` |
 | `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=` filter. One export at a time (`429` while another runs). See [Export](export.md) |
 | `GET /api/export/<dataset>.csv` / `.json` | any | `escalations`, `positions`, `lanes`, `groups` or `events`. Same filters |
+| `GET /api/requirements?q=&tag=a,b&group=&status=active,superseded&limit=` | any | Search [requirements](requirements.md). Active only by default; `q` is free text, or an id like `R14` |
+| `GET /api/requirements/tags?group=` | any | Tags in use, with counts |
+| `GET /api/requirements/:id` | any | One requirement |
+| `POST /api/requirements` | any | `{requirement, justification, tags, group?, sourceEscalation?, decidedBy?}`. Agents must give `sourceEscalation` or `decidedBy`; a person recording one is the decider by default. Returns `{requirement, similar, warnings}` |
+| `POST /api/requirements/:id/supersede` | any | Same body; marks the old one superseded |
+| `PATCH /api/requirements/:id` | human | Fix `requirement`, `justification` or `tags` wording |
+| `POST /api/requirements/:id/retire` | human | It no longer applies; nothing replaces it |
 | `POST /api/push/register`, `/unregister` | human | Used by the Android app |
 | `POST /api/admin/people` | static human token | Break-glass: add a person `{email, name, password, admin?}` |
 | `POST /api/admin/people/password` | static human token | Break-glass: `{email, password}`, which also signs them out |
