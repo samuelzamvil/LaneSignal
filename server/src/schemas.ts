@@ -69,6 +69,12 @@ export const resolution = z.object({
   note: z.string().max(5000).nullable().optional(),
 });
 
+export const setupInput = z.object({
+  email: z.email(),
+  name: z.string().min(1).max(100),
+  password: z.string().min(10).max(200),
+});
+
 export const pushRegistration = z.object({
   token: z.string().min(10).max(4096),
   platform: z.enum(['android', 'ios', 'web']).default('android'),

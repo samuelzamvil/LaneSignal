@@ -1,5 +1,4 @@
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Role } from './types.ts';
 import { log } from './log.ts';
@@ -18,7 +17,10 @@ export interface Config {
   publicUrl: string | null;
   trustProxy: boolean;
   corsOrigins: string[];
+  /** Static tokens from env/config. Optional now that accounts and agent keys exist. */
   tokens: TokenEntry[];
+  /** Signs account sessions; generated into the data dir when unset. */
+  authSecret: string | null;
   /** Display name for lane groups (epic / train / overseer). */
   groupLabel: string;
   /** Ticket system key -> URL template containing {id}. */
@@ -107,7 +109,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // "overseer" was the former name of the human role.
     ...(file.tokens ?? []).map((t) => ({ ...t, role: (t.role as string) === 'overseer' ? ('human' as const) : t.role })),
   ];
-  if (tokens.length === 0) tokens = bootstrapTokens(dataDir);
+  if (tokens.length === 0) tokens = legacyBootstrapTokens(dataDir);
+  if (env.LANESIGNAL_AUTH_SECRET !== undefined && env.LANESIGNAL_AUTH_SECRET.length < 32) {
+    throw new Error('LANESIGNAL_AUTH_SECRET must be at least 32 characters');
+  }
   for (const t of tokens) {
     if (t.token.length < 16) throw new Error(`Token for "${t.name}" is shorter than 16 characters`);
   }
@@ -129,6 +134,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustProxy: env.LANESIGNAL_TRUST_PROXY === 'true',
     corsOrigins: list(env.LANESIGNAL_CORS_ORIGINS) ?? file.corsOrigins ?? DEFAULT_CORS,
     tokens,
+    authSecret: env.LANESIGNAL_AUTH_SECRET ?? null,
     groupLabel: env.LANESIGNAL_GROUP_LABEL ?? file.groupLabel ?? 'Epic',
     ticketTemplates,
     defaultTicketSystem:
@@ -143,23 +149,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 }
 
 /**
- * With no tokens configured, generate one human and one agent token and
- * keep them in the data volume so they survive restarts and upgrades.
+ * Earlier versions generated a token pair into the data volume when none were
+ * configured; keep honouring it so those installs aren't locked out. New
+ * installs use accounts (first-run setup) and account-owned agent keys instead.
  */
-function bootstrapTokens(dataDir: string): TokenEntry[] {
+function legacyBootstrapTokens(dataDir: string): TokenEntry[] {
   const file = path.join(dataDir, 'generated-tokens.json');
-  if (existsSync(file)) {
-    return (JSON.parse(readFileSync(file, 'utf8')) as TokenEntry[]).map((t) => ({
-      ...t,
-      role: (t.role as string) === 'overseer' ? ('human' as const) : t.role,
-    }));
-  }
-  mkdirSync(dataDir, { recursive: true });
-  const tokens: TokenEntry[] = [
-    { name: 'human', role: 'human', token: randomBytes(24).toString('base64url') },
-    { name: 'agent', role: 'agent', token: randomBytes(24).toString('base64url') },
-  ];
-  writeFileSync(file, JSON.stringify(tokens, null, 2), { mode: 0o600 });
-  log.warn('no tokens configured; generated bootstrap tokens', { path: file });
-  return tokens;
+  if (!existsSync(file)) return [];
+  return (JSON.parse(readFileSync(file, 'utf8')) as TokenEntry[]).map((t) => ({
+    ...t,
+    role: (t.role as string) === 'overseer' ? ('human' as const) : t.role,
+  }));
 }

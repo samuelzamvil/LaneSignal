@@ -1027,3 +1027,104 @@ textarea {
 .alternatives li + li {
   margin-top: 8px;
 }
+
+/* ---- settings: account, agent keys, people ---- */
+
+.settings-block {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-block h3 {
+  margin: 0 0 6px;
+}
+
+.settings-block summary {
+  min-height: var(--tap);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.inline-form {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.inline-form input {
+  flex: 1;
+  min-width: 0;
+}
+
+.new-key {
+  margin: 10px 0;
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 2px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+}
+
+.new-key p {
+  margin: 0 0 6px;
+}
+
+.secret {
+  display: block;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.new-key .actions {
+  flex-wrap: wrap;
+}
+
+.rows {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+
+.rows li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.rows li > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.small {
+  font-size: 0.8rem;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+}
+
+.check input {
+  width: 22px;
+  min-height: 22px;
+}
