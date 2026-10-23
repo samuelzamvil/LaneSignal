@@ -292,13 +292,15 @@ describe('agent skill', () => {
     }).then(async (r) => {
       const body = await r.text();
       const line = body.split('\n').find((l) => l.startsWith('data: '));
-      return JSON.parse(line ? line.slice(6) : body).result.tools.map((t: { name: string }) => t.name) as string[];
+      return JSON.parse(line ? line.slice(6) : body).result.tools as { name: string; inputSchema: { properties?: object } }[];
     }));
+    const toolNames = tools.map((t) => t.name);
+    const params = new Set(tools.flatMap((t) => Object.keys(t.inputSchema.properties ?? {})));
     const named = [...new Set(text.match(/`([a-z]+_[a-z_]+)`/g)?.map((m) => m.slice(1, -1)) ?? [])].filter(
-      (n) => /^(update|remove|create|add|wait|get|acknowledge|withdraw|find|record|supersede|list)_/.test(n),
+      (n) => /^(update|remove|create|add|wait|get|acknowledge|withdraw|find|record|supersede|list)_/.test(n) && !params.has(n),
     );
     assert.ok(named.length > 10);
-    for (const name of named) assert.ok(tools.includes(name), `skill names unknown tool ${name}`);
+    for (const name of named) assert.ok(toolNames.includes(name), `skill names unknown tool ${name}`);
   });
 });
 
