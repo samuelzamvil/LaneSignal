@@ -108,7 +108,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       res.status(404).json({ error: 'skill not bundled with this server' });
       return;
     }
-    res.type('text/markdown; charset=utf-8').set('cache-control', 'no-cache').sendFile(skillFile);
+    // dotfiles: allow, so a configured path under a dot-directory (~/.config/...) still works.
+    res.set('cache-control', 'no-cache').sendFile(skillFile, { dotfiles: 'allow', headers: { 'content-type': 'text/markdown; charset=utf-8' } });
   });
 
   app.get('/healthz', (_req, res) => {

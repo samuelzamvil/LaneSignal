@@ -125,6 +125,10 @@ export function AgentKeysSection({ client, serverUrl, now }: { client: Client; s
             <>
               <p className="hint">Then install the skill that teaches agents how to use LaneSignal (run in the project):</p>
               <code className="secret">{skillCommand}</code>
+              <p className="hint">
+                For long waits the skill also needs <code>LANESIGNAL_URL</code>, <code>LANESIGNAL_KEY</code> and{' '}
+                <code>LANESIGNAL_GROUP</code> in the agent's environment (see Connecting agents in the docs).
+              </p>
             </>
           )}
           <div className="actions">
