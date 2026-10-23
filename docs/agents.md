@@ -15,7 +15,9 @@ claude mcp add --transport http lanesignal https://lanesignal.example.com/mcp \
   --header "Authorization: Bearer ls_…"
 ```
 
-Settings shows this command with your key already filled in. Add `--scope project` to share it through the repository's `.mcp.json`. Keep the key itself out of git, for example by using an environment variable in `.mcp.json`:
+Settings shows this command with your key already filled in. It registers the server for you only (local scope).
+
+To share the server through the repository's `.mcp.json`, don't add `--scope project` to that command, because it would write the key itself into a committed file. Write `.mcp.json` with an environment variable instead, and set `LANESIGNAL_KEY` on each machine:
 
 ```json
 {

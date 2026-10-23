@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { principalOf, stillValidOf } from './auth.ts';
+import { principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import { log } from './log.ts';
 import * as s from './schemas.ts';
 import { ConflictError, NotFoundError, type Store } from './store.ts';
@@ -21,7 +21,12 @@ const STATUS_HELP =
   'blocked_human = needs a human decision; idle = nothing to do; completed = done.';
 
 /** Builds an MCP server whose tools act as the authenticated principal. */
-function buildServer(store: Store, who: Principal, stillValid: () => Promise<boolean>) {
+function buildServer(
+  store: Store,
+  who: Principal,
+  stillValid: () => Promise<boolean>,
+  watchRevocation: (onInvalid: () => void) => () => void,
+) {
   const server = new McpServer({ name: 'lanesignal', version: '0.1.0' });
 
   server.registerTool(
@@ -67,9 +72,21 @@ function buildServer(store: Store, who: Principal, stillValid: () => Promise<boo
     },
     async ({ id, wait_seconds }, extra) => {
       try {
-        const escalation = await store.waitForDecision(id, (wait_seconds ?? 0) * 1000, extra.signal);
-        // The key may have been revoked while waiting.
-        if (wait_seconds && !(await stillValid())) return fail(new Error('Credential revoked'));
+        // A revoked key ends the wait at once.
+        const ctrl = new AbortController();
+        extra.signal.addEventListener('abort', () => ctrl.abort());
+        let revoked = false;
+        const unwatch = watchRevocation(() => {
+          revoked = true;
+          ctrl.abort();
+        });
+        let escalation;
+        try {
+          escalation = await store.waitForDecision(id, (wait_seconds ?? 0) * 1000, ctrl.signal);
+        } finally {
+          unwatch();
+        }
+        if (revoked || (wait_seconds && !(await stillValid()))) return fail(new Error('Credential revoked'));
         return json(escalation);
       } catch (err) {
         return fail(err);
@@ -225,7 +242,7 @@ function buildServer(store: Store, who: Principal, stillValid: () => Promise<boo
 /** Stateless Streamable HTTP endpoint: a fresh server + transport per request. */
 export function mcpHandler(store: Store) {
   return async (req: Request, res: Response) => {
-    const server = buildServer(store, principalOf(res), stillValidOf(res));
+    const server = buildServer(store, principalOf(res), stillValidOf(res), watchRevocationOf(res));
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       void transport.close();

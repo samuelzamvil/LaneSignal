@@ -9,7 +9,7 @@ Every setting can be an environment variable. Most can also go in an optional JS
 | `PORT` / `HOST` | | `8080` / `0.0.0.0` | Inside the container; map the host port in Compose |
 | `LANESIGNAL_NAME` | `name` | `LaneSignal` | Title shown in the app |
 | `LANESIGNAL_PUBLIC_URL` | `publicUrl` | | URL people use. Trusted origin for sign-in, and the base for notification links |
-| `LANESIGNAL_TRUST_PROXY` | | `false` | `1` behind one reverse proxy. See [Reverse proxy](reverse-proxy.md) |
+| `LANESIGNAL_TRUST_PROXY` | | `false` | `false`, a hop count (`1` behind one proxy that is the only way in), or addresses/subnets. Never `true`. See [Reverse proxy](reverse-proxy.md) |
 | `LANESIGNAL_CORS_ORIGINS` | `corsOrigins` | Capacitor origins | Comma-separated. The defaults cover the Android app; add an origin only if another web origin hosts the UI |
 | `LANESIGNAL_DATA_DIR` | | `/data` | Database, auth secret and setup code |
 | `LANESIGNAL_CONFIG` | | `/config/lanesignal.json` | Optional JSON file |
@@ -34,7 +34,7 @@ In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "t
 | `LANESIGNAL_GROUP_LABEL` | `groupLabel` | `Epic` | What a group (one overseer's epic/train) is called in the UI |
 | `LANESIGNAL_TICKET_TEMPLATES` | `ticketTemplates` | | `key=url-with-{id},…`, e.g. `redmine=https://redmine/issues/{id},gh=https://github.com/o/r/issues/{id}`. In JSON, an object |
 | `LANESIGNAL_TICKET_DEFAULT` | `defaultTicketSystem` | first template | Used for plain refs like `1234` or `#1234` |
-| `LANESIGNAL_STALE_MINUTES` | `staleMinutes` | `30` | An active lane that hasn't published for this long is flagged stale. `0` turns this off |
+| `LANESIGNAL_STALE_MINUTES` | `staleMinutes` | `30` | A lane that is `active`, `pending_ci` or `awaiting_agent` and hasn't published for this long is flagged stale. `0` turns this off |
 | `LANESIGNAL_EVENT_RETENTION` | `eventRetention` | `200` | Activity entries kept per lane |
 
 ## Notifications

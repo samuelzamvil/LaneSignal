@@ -12,7 +12,7 @@ services:
         required: false
     environment:
       # One reverse proxy in front (Caddy, Traefik, nginx, tailscale serve). See docs/reverse-proxy.md.
-      LANESIGNAL_TRUST_PROXY: "1"
+      LANESIGNAL_TRUST_PROXY: "${LANESIGNAL_TRUST_PROXY:-1}"
     volumes:
       - lanesignal-data:/data
       - ./config:/config:ro

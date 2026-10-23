@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .data/
+data/
 *.log
 .env
 web/android/app/google-services.json

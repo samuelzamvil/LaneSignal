@@ -4,7 +4,7 @@ The Android app is the same React web app wrapped with Capacitor 8, so it has th
 
 ## Getting the APK
 
-CI builds an APK on every push and every merge to `main`:
+CI builds an APK for every pull request and every merge to `main`:
 
 1. Open the repository's **Actions** tab and pick the latest **CI** run on `main`.
 2. Download the **`lanesignal-apk`** artifact (a zip containing `app-debug.apk`).
@@ -16,6 +16,8 @@ To build it yourself you need JDK 21 and the Android SDK (platform 36):
 npm ci
 cd web && npm run android:apk      # → web/android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+For FCM push in a local build, put `google-services.json` in `web/android/app/` and set `VITE_FCM_ENABLED=true` for the build (`VITE_FCM_ENABLED=true npm run android:apk`). CI does both when the secret exists.
 
 ### Signed release builds
 
@@ -57,4 +59,4 @@ With the Dockge stack, add the config mount to `volumes:`:
       - ./config:/config:ro
 ```
 
-Settings in the app shows whether push is available: "Enabled for human decisions", "Not included in this build", or "Server has no FCM credentials".
+Settings shows whether push is available: "Enabled for human decisions", "Not included in this build", or "Server has no FCM credentials". In the browser it shows "Android app only".
