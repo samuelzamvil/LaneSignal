@@ -4,11 +4,14 @@ The Android app is the same React web app wrapped with Capacitor 8, so it has th
 
 ## Getting the APK
 
-CI builds an APK for every pull request and every merge to `main`:
+Download it from the repository's **Releases** page, on the phone:
 
-1. Open the repository's **Actions** tab and pick the latest **CI** run on `main`.
-2. Download the **`lanesignal-apk`** artifact (a zip containing `app-debug.apk`).
-3. On the phone, allow *Install unknown apps* for your browser or file manager, then open the APK.
+- **Latest build (main):** a pre-release that CI replaces on every merge to `main`.
+- **Versions:** pushing a tag like `v0.1.0` publishes a release named after it.
+
+Open the downloaded `lanesignal-<version>.apk` and allow *Install unknown apps* for your browser or file manager when Android asks. The release notes say the same.
+
+Without the signing secrets below, the APK is **unsigned**: not signed with a release key, only with a throwaway debug key per build, so it can only be sideloaded. Android also refuses to install one such build over another, so uninstall the old version before installing a new one, then sign in again. Pull-request builds are only attached to their CI run (Actions → the run → **Artifacts**), not released.
 
 To build it yourself you need JDK 21 and the Android SDK (platform 36):
 
@@ -21,7 +24,7 @@ For FCM push in a local build, put `google-services.json` in `web/android/app/` 
 
 ### Signed release builds
 
-Add these repository secrets and CI also builds `app-release.apk`:
+Add these repository secrets and CI also builds a release-signed APK, which the Releases page then carries instead (and which updates in place):
 
 - `ANDROID_KEYSTORE_BASE64`
 - `ANDROID_KEYSTORE_PASSWORD`
