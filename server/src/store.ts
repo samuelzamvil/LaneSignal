@@ -98,6 +98,8 @@ export interface WaitResult {
   closed: Escalation[];
   /** Still waiting on a human. */
   open: { id: string; ref: string; laneId: string; question: string }[];
+  /** Lanes in scope that someone else took off the dashboard since `since`: stop work on them. */
+  removedLanes: { laneId: string; removedBy: string | null; at: string }[];
   /** Server time of this result; pass it as `since` on the next wait. */
   checkedAt: string;
 }
@@ -1189,7 +1191,19 @@ export class Store {
     }
     const closedById = new Map<string, Escalation>();
     for (const e of named) if (e.state === 'acknowledged' || e.state === 'withdrawn') closedById.set(e.id, e);
+    const removedLanes: WaitResult['removedLanes'] = [];
     for (const laneId of laneIds) {
+      if (scope.since) {
+        // Covers lanes removed with nothing open on them, which leave no withdrawn escalation behind.
+        const removed = this.db
+          .prepare(
+            `SELECT e.at, e.actor FROM lane_events e JOIN lanes l ON l.id = e.lane_id
+             WHERE e.lane_id = ? AND l.archived_at IS NOT NULL AND e.kind = 'status' AND e.message = 'Lane removed'
+               AND e.at >= ? AND COALESCE(e.actor, '') <> ? ORDER BY e.id DESC LIMIT 1`,
+          )
+          .get(laneId, scope.since, scope.viewer ?? '') as Row | undefined;
+        if (removed) removedLanes.push({ laneId, removedBy: (removed.actor as string | null) ?? null, at: removed.at as string });
+      }
       for (const e of this.listEscalations({ laneId, states: ['open', 'decided'] })) byId.set(e.id, e);
       if (scope.since) {
         const rows = this.db
@@ -1210,7 +1224,14 @@ export class Store {
     const open = all
       .filter((e) => e.state === 'open')
       .map((e) => ({ id: e.id, ref: e.ref, laneId: e.laneId, question: e.question }));
-    return { ready: decided.length > 0 || closed.length > 0 || open.length === 0, decided, closed, open, checkedAt };
+    return {
+      ready: decided.length > 0 || closed.length > 0 || removedLanes.length > 0 || open.length === 0,
+      decided,
+      closed,
+      open,
+      removedLanes,
+      checkedAt,
+    };
   }
 
   /**

@@ -34,16 +34,16 @@ docker compose logs lanesignal | grep setupCode
 
 Open `http://<host>:8080` and create the admin account with that one-time setup code. Then:
 
-1. Create an agent key per overseer in **Settings → Agent keys**.
-2. Connect Claude Code with the `claude mcp add …` command Settings shows.
-3. Paste the [agent instructions](docs/agent-instructions.md) into the overseer's `CLAUDE.md`.
+1. Create an agent key per overseer in **Settings → Keys**.
+2. Connect Claude Code with the `claude mcp add …` command Settings shows, and install the agent skill it shows.
+3. Paste the [agent policy template](docs/agent-instructions.md) into the overseer's `CLAUDE.md` and edit it.
 
 ## Documentation
 
 The wiki lives in [`docs/`](docs/README.md):
 
 - **Setup:** [Dockge](docs/install-dockge.md) · [Docker Compose](docs/install-docker.md) · [Accounts and agent keys](docs/accounts.md) · [Reverse proxy](docs/reverse-proxy.md) · [Configuration](docs/configuration.md)
-- **Use:** [Concepts](docs/concepts.md) · [Connecting agents](docs/agents.md) · [Agent instructions](docs/agent-instructions.md) · [HTTP API](docs/api.md) · [Android and push](docs/android.md) · [Export for analysis](docs/export.md)
+- **Use:** [Concepts](docs/concepts.md) · [Connecting agents](docs/agents.md) · [Agent policy](docs/agent-instructions.md) · [Requirements](docs/requirements.md) · [HTTP API](docs/api.md) · [Android and push](docs/android.md) · [Export for analysis](docs/export.md)
 - **Run:** [Operations](docs/operations.md) · [Security](docs/security.md) · [Development](docs/development.md)
 
 ## Build vs. adopt: what was evaluated

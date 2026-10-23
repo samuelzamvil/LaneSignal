@@ -24,7 +24,8 @@ accounts.people.on('gone', (userId, name) => store.removePushTokensOf(userId, na
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(process.env.LANESIGNAL_WEB_DIR ?? path.resolve(here, '../../web/dist'));
-const app = createApp({ config, store, accounts, push, webDir });
+const skillFile = path.resolve(process.env.LANESIGNAL_SKILL_FILE ?? path.resolve(here, '../../skills/lanesignal/SKILL.md'));
+const app = createApp({ config, store, accounts, push, webDir, skillFile });
 
 const server = app.listen(config.port, config.host, (err?: Error) => {
   if (err) {

@@ -177,7 +177,7 @@ describe('waiting on many escalations', () => {
     await decide(open.id, 'yes');
     await srv.tool(AGENT, 'acknowledge_escalation', { id: open.id });
     const empty = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'wait-group', wait_seconds: 30 })).value;
-    assert.deepEqual({ ...empty, checkedAt: undefined }, { ready: true, decided: [], closed: [], open: [], checkedAt: undefined });
+    assert.deepEqual({ ...empty, checkedAt: undefined }, { ready: true, decided: [], closed: [], open: [], removedLanes: [], checkedAt: undefined });
     assert.ok(Date.parse(empty.checkedAt));
   });
 
@@ -216,6 +216,21 @@ describe('waiting on many escalations', () => {
     assert.deepEqual(res.closed.map((e: any) => e.id), [a.id]);
     assert.match(res.closed[0].resolution, /Lane removed by alice/);
     assert.deepEqual(res.open.map((e: any) => e.id), [b.id]);
+  });
+
+  test('a lane removed with nothing open is reported too, but not the agent\'s own removals', async () => {
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'quiet-1', group: 'quiet' });
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'quiet-2', group: 'quiet' });
+    await ask('quiet-2', 'Keeps the wait open?');
+    const start = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'quiet', wait_seconds: 0 })).value;
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'quiet-3', group: 'quiet' });
+    await srv.tool(AGENT, 'remove_lane', { lane_id: 'quiet-3' });
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'quiet', since: start.checkedAt, wait_seconds: 30 });
+    await sleep(150);
+    await srv.call('DELETE', '/api/lanes/quiet-1', ALICE);
+    const res = (await waiting).value;
+    assert.equal(res.ready, true);
+    assert.deepEqual(res.removedLanes.map((l: any) => [l.laneId, l.removedBy]), [['quiet-1', 'alice']]);
   });
 
   test('since catches withdrawals that happened between two waits', async () => {

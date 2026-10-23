@@ -1,4 +1,5 @@
 import type { AddressInfo } from 'node:net';
+import { fileURLToPath } from 'node:url';
 import { createAccounts } from '../src/accounts.ts';
 import { createApp } from '../src/app.ts';
 import { loadConfig } from '../src/config.ts';
@@ -26,7 +27,8 @@ export async function startServer(env: Record<string, string> = {}) {
     waitGraceMs: 50,
   });
   const accounts = await createAccounts(config, ':memory:');
-  const server = createApp({ config, store, accounts, push: { fcm: false, ntfy: false } }).listen(0);
+  const skillFile = fileURLToPath(new URL('../../skills/lanesignal/SKILL.md', import.meta.url));
+  const server = createApp({ config, store, accounts, push: { fcm: false, ntfy: false }, skillFile }).listen(0);
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 

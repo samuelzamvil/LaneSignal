@@ -158,7 +158,8 @@ function buildServer(
         'Wait for human answers across your group, some lanes, or specific escalations, and return as soon as ' +
         'any of them needs you. Returns `decided` (answered, not yet acknowledged: act on each), `closed` ' +
         '(withdrawn by someone else, e.g. "Lane removed by …": the lane was taken off the dashboard, stop work on it; or named ones already ' +
-        'acknowledged), `open` (still waiting) and `checkedAt` (pass it as `since` next time). ' +
+        'acknowledged), `removedLanes` (taken off the dashboard by someone else: stop work on them), `open` (still ' +
+        'waiting) and `checkedAt` (pass it as `since` next time). ' +
         '`ready` is false only when the wait ran out with nothing new; call again. Returns at once if something is ' +
         'already decided or nothing is open. Decisions can take hours: loop on this tool, or for long waits in ' +
         'Claude Code run the HTTP version (GET /api/wait) as a background shell command so your session stays free. ' +

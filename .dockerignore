@@ -6,3 +6,4 @@ web/android
 docs
 *.md
 !README.md
+!skills/**/SKILL.md

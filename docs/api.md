@@ -46,6 +46,7 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | Method and path | Role | Notes |
 |---|---|---|
 | `GET /healthz` | public | `{"ok":true}` when the database answers. Used by the container health check |
+| `GET /api/skill` | public | The Claude Code skill for agents (`SKILL.md`) |
 | `GET /api/setup` | public | `{"needsSetup": bool}` |
 | `POST /api/setup` | public + code | First admin account: `{email, name, password, code}`. The code isn't needed when sending a static human token |
 | `GET /api/me` | any | Who the credential is: `{name, role, admin?, email?, userId?}` |
@@ -62,7 +63,7 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `GET /api/escalations?state=open,decided&lane=<id>` | any | Defaults to unresolved (open and decided) |
 | `POST /api/escalations` | agent | See the [fields](concepts.md#escalations). `blocking: false` for FYI questions. `201` when created; `200` with `duplicate: true` when the same question is already open on that lane |
 | `GET /api/escalations/:id?wait=<s>` | any | `wait` (up to 300) holds the request until it's no longer open |
-| `GET /api/wait?group=&lane=a,b&ids=1,2&timeout=<s>` | any | Waits until something in scope needs the agent; give at least one of `group`, `lane`, `ids`. Returns `{ready, decided, closed, open, checkedAt}` ([details](agents.md#waiting-for-decisions)); pass `checkedAt` back as `since`. Unknown groups, lanes or ids are `404`. `timeout` defaults to 300, max 86400. If it has to wait, it sends `200` at once and a space every 20s until the JSON follows, so proxies keep it open |
+| `GET /api/wait?group=&lane=a,b&ids=1,2&timeout=<s>` | any | Waits until something in scope needs the agent; give at least one of `group`, `lane`, `ids`. Returns `{ready, decided, closed, open, removedLanes, checkedAt}` ([details](agents.md#waiting-for-decisions)); pass `checkedAt` back as `since`. Unknown groups, lanes or ids are `404`. `timeout` defaults to 300, max 86400. If it has to wait, it sends `200` at once and a space every 20s until the JSON follows, so proxies keep it open |
 | `POST /api/escalations/:id/positions` | agent | `{stance, note?, agent?}`. Open escalations only; at most 20 agents |
 | `POST /api/escalations/:id/decide` | human | `{decision, note?, change?}`. A second decision is `409`, unless `change: true` and the agent hasn't acknowledged yet |
 | `POST /api/escalations/:id/ack` | agent | `{note?, status?, activity?}`. Returns the escalation with the final decision; `status`/`activity` update the lane. Repeating it returns the same result |

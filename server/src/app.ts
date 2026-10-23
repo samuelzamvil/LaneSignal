@@ -20,6 +20,8 @@ export interface AppOptions {
   push: { fcm: boolean; ntfy: boolean };
   /** Directory of the compiled web frontend; served when present. */
   webDir?: string;
+  /** The Claude Code skill (SKILL.md) served at /api/skill, when present. */
+  skillFile?: string;
 }
 
 const parse = <T>(schema: ZodType<T>, value: unknown): T => schema.parse(value);
@@ -30,7 +32,7 @@ const h = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => 
   Promise.resolve(fn(req, res)).catch(next);
 };
 
-export function createApp({ config, store, accounts, push, webDir }: AppOptions) {
+export function createApp({ config, store, accounts, push, webDir, skillFile }: AppOptions) {
   const app = express();
   const auth = createAuth(config.tokens, accounts);
   if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy);
@@ -99,6 +101,16 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
       res.status(201).json({ id: user.id, email: user.email, name: user.name });
     }),
   );
+
+  // The agent skill: public (no secrets in it), so installing is one curl.
+  app.get('/api/skill', (_req, res) => {
+    if (!skillFile || !existsSync(skillFile)) {
+      res.status(404).json({ error: 'skill not bundled with this server' });
+      return;
+    }
+    // dotfiles: allow, so a configured path under a dot-directory (~/.config/...) still works.
+    res.set('cache-control', 'no-cache').sendFile(skillFile, { dotfiles: 'allow', headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+  });
 
   app.get('/healthz', (_req, res) => {
     try {

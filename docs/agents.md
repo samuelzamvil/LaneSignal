@@ -37,15 +37,28 @@ To share the server through the repository's `.mcp.json`, don't add `--scope pro
 
 Any client that supports Streamable HTTP with custom headers works. Point it at `https://<host>/mcp` and send the header `Authorization: Bearer ls_…`.
 
-## 3. Tell the overseer how to report
+## 3. Install the skill (how to use LaneSignal)
 
-Paste the [agent instructions snippet](agent-instructions.md) into the overseer's `CLAUDE.md`. It covers:
-
-- registering the group once
-- publishing real state changes rather than heartbeats
-- how to structure an escalation
+LaneSignal ships a Claude Code skill that teaches agents **how** to use the tools:
+- publishing state, and structuring an escalation
 - waiting for answers across all its lanes, including waits of many hours
-- picking up answers after a restart
+- acting on decisions, and recovering after a restart
+- finding and recording the owner's requirements
+
+Claude Code loads it whenever an agent works with LaneSignal. Your LaneSignal server hands it out:
+
+```bash
+mkdir -p .claude/skills/lanesignal
+curl -fsS https://lanesignal.example.com/api/skill -o .claude/skills/lanesignal/SKILL.md
+```
+
+Use `~/.claude/skills/lanesignal/` instead to install it for every project on that machine. The source is [`skills/lanesignal/SKILL.md`](../skills/lanesignal/SKILL.md); re-run the command after upgrading LaneSignal.
+
+For long waits, the skill runs the HTTP wait in the background. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
+
+## 4. Set your policy (when to use it)
+
+The skill covers how; **when** is yours to decide. Paste the [policy template](agent-instructions.md) into the overseer's `CLAUDE.md` and edit it: its group, what deserves an escalation, and whether to record requirements.
 
 ## Tools
 
@@ -73,13 +86,13 @@ Which tools a client sees depends on its credential: agent keys get the agent to
 
 Answers can take minutes or a day. An overseer waits on its whole group with one call:
 
-- `wait_for_decisions` with `group_id` returns as soon as any escalation in the group is decided, or straight away if one already is. Its result lists `decided` (act on these), `closed` (withdrawn by someone else, e.g. because a human removed the lane) and `open`.
+- `wait_for_decisions` with `group_id` returns as soon as any escalation in the group is decided, or straight away if one already is. Its result lists `decided` (act on these), `closed` (withdrawn by someone else, e.g. because a human removed the lane), `removedLanes` (lanes someone else took off the dashboard, even with nothing open) and `open`.
 - `ready: false` means the wait ran out with nothing new; call again. Decided escalations stay decided until acknowledged, so a dropped call or a server restart loses nothing: call again.
 - While an agent waits, its lanes show **agent waiting** on the dashboard. A person answering at hour 20 can see whether the answer reaches someone now.
 - During a wait the server sends a notification every 20 seconds (progress, if the client asked for it), so proxies and clients see that the call is alive. Clients that cut calls off after a fixed time (the MCP SDK's default is 60 seconds unless progress resets it) should pass a `wait_seconds` below that and call again.
 - Pass the previous result's `checkedAt` as `since`, so a lane removed between two calls is still reported.
 - An unknown `group_id` or lane is an error, so a typo doesn't look like "nothing to wait for".
 
-**Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. For waits that may last hours, the [agent instructions](agent-instructions.md) run the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
+**Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. For waits that may last hours, the [skill](#3-install-the-skill-how-to-use-lanesignal) runs the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
 
 If the key is revoked while the agent is waiting, the call fails.

@@ -26,6 +26,7 @@ COPY web/package.json web/
 RUN npm ci --omit=dev --no-audit --no-fund -w server && npm cache clean --force
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/web/dist web/dist
+COPY skills skills
 RUN mkdir -p /data /config && chown node:node /data /config
 USER node
 VOLUME ["/data", "/config"]
