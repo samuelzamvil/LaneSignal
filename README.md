@@ -38,6 +38,9 @@ Open `http://<host>:8080` and create the admin account with that one-time setup 
 1. Create an agent key per overseer in **Settings → Keys**.
 2. Connect Claude Code with the `claude mcp add …` command Settings shows, and install the agent skill it shows.
 3. Paste the [agent policy template](docs/agent-instructions.md) into the overseer's `CLAUDE.md` and edit it.
+4. On your phone, install the Android app from the [Releases page](https://github.com/samuelzamvil/LaneSignal/releases) (unsigned: sideload it; see [Android](docs/android.md)), or use the web app.
+
+Two switches in the stack's environment change what LaneSignal does: `LANESIGNAL_DECISIONS` (answering on the dashboard; off by default) and `LANESIGNAL_REQUIREMENTS` (the requirements register; on). See [Configuration](docs/configuration.md#features).
 
 ## Documentation
 
