@@ -149,3 +149,12 @@ test('rejects invalid numeric configuration at startup', async () => {
   assert.throws(() => loadConfig({ ...base, PORT: '99999' }), /PORT/);
   assert.equal(loadConfig({ ...base, LANESIGNAL_STALE_MINUTES: '0' }).staleMinutes, 0);
 });
+
+test('LANESIGNAL_TRUST_PROXY accepts hop counts and address lists', async () => {
+  const { loadConfig } = await import('../src/config.ts');
+  const base = { LANESIGNAL_CONFIG: '/nonexistent.json', LANESIGNAL_AGENT_TOKENS: 'bot:agent-token-0123456789' };
+  assert.equal(loadConfig(base).trustProxy, false);
+  assert.equal(loadConfig({ ...base, LANESIGNAL_TRUST_PROXY: '1' }).trustProxy, 1);
+  assert.equal(loadConfig({ ...base, LANESIGNAL_TRUST_PROXY: 'true' }).trustProxy, true);
+  assert.equal(loadConfig({ ...base, LANESIGNAL_TRUST_PROXY: 'loopback, 10.0.0.0/8' }).trustProxy, 'loopback, 10.0.0.0/8');
+});

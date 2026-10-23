@@ -4,13 +4,15 @@ services:
     image: lanesignal:latest
     restart: unless-stopped
     ports:
-      # Bind to localhost and put a TLS reverse proxy (Caddy, Traefik, Tailscale serve) in front.
+      # Bind to localhost and put a TLS reverse proxy in front (docs/reverse-proxy.md).
+      # For Dockge or the published image, see deploy/dockge/compose.yaml.
       - "127.0.0.1:${LANESIGNAL_PORT:-8080}:8080"
     env_file:
       - path: .env
         required: false
     environment:
-      LANESIGNAL_TRUST_PROXY: "true"
+      # One reverse proxy in front (Caddy, Traefik, nginx, tailscale serve). See docs/reverse-proxy.md.
+      LANESIGNAL_TRUST_PROXY: "1"
     volumes:
       - lanesignal-data:/data
       - ./config:/config:ro

@@ -15,7 +15,12 @@ export interface Config {
   port: number;
   dataDir: string;
   publicUrl: string | null;
-  trustProxy: boolean;
+  /**
+   * Express "trust proxy": false, a hop count (1 = one reverse proxy in front),
+   * or addresses/subnets ("loopback", "10.0.0.0/8"). `true` trusts every hop,
+   * which lets clients spoof their IP; prefer a hop count.
+   */
+  trustProxy: boolean | number | string;
   corsOrigins: string[];
   /** Static tokens from env/config. Optional now that accounts and agent keys exist. */
   tokens: TokenEntry[];
@@ -92,6 +97,14 @@ function int(name: string, value: string | number | undefined, fallback: number,
   return n;
 }
 
+function parseTrustProxy(v: string | undefined): boolean | number | string {
+  const value = v?.trim();
+  if (!value || value === 'false') return false;
+  if (value === 'true') return true;
+  if (/^\d+$/.test(value)) return Number(value);
+  return value;
+}
+
 const DEFAULT_CORS = ['capacitor://localhost', 'https://localhost', 'http://localhost'];
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -133,7 +146,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: int('PORT', env.PORT, 8080, 1, 65535),
     dataDir,
     publicUrl: env.LANESIGNAL_PUBLIC_URL ?? file.publicUrl ?? null,
-    trustProxy: env.LANESIGNAL_TRUST_PROXY === 'true',
+    trustProxy: parseTrustProxy(env.LANESIGNAL_TRUST_PROXY),
     corsOrigins: list(env.LANESIGNAL_CORS_ORIGINS) ?? file.corsOrigins ?? DEFAULT_CORS,
     tokens,
     authSecret: env.LANESIGNAL_AUTH_SECRET ?? null,
