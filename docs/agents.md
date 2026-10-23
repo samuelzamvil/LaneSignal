@@ -58,6 +58,7 @@ Which tools a client sees depends on its credential: agent keys get the agent to
 | `acknowledge_escalation` | agent | Confirm you received a decision and are acting on it. This closes the escalation |
 | `withdraw_escalation` | agent | Close it without a dashboard answer: answered in Remote Control, or moot |
 | `list_lanes` / `list_groups` / `list_escalations` | any | Read state |
+| `export_data` | any | All data for analysis (escalations, positions, lanes, groups, history) as CSV or JSON, paged. See [Export](export.md) |
 | `decide_escalation` | human | Lets a human's own Claude session answer from the conversation |
 
 ## Waiting for a decision

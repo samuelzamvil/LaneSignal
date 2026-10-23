@@ -21,6 +21,7 @@ LaneSignal is a self-hosted dashboard for autonomous coding-agent **lanes** and 
 | [Agent instructions snippet](agent-instructions.md) | Paste into an overseer's `CLAUDE.md` |
 | [HTTP API](api.md) | REST and SSE endpoints for scripts and non-MCP agents |
 | [Android app and push notifications](android.md) | Installing the APK, FCM, ntfy |
+| [Exporting data for analysis](export.md) | CSV and zip downloads, the MCP export tool, the column reference |
 
 ## Run
 

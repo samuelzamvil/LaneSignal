@@ -20,6 +20,14 @@ export class NotFoundError extends Error {}
 const MAX_POSITIONS = 20;
 export class ConflictError extends Error {}
 
+export const EXPORT_DATASETS = ['escalations', 'positions', 'lanes', 'groups', 'events'] as const;
+export type ExportDataset = (typeof EXPORT_DATASETS)[number];
+export interface ExportFilter {
+  from?: string;
+  to?: string;
+  laneId?: string;
+}
+
 export interface GroupPatch {
   name?: string;
   ticket?: string | null;
@@ -59,7 +67,7 @@ export interface StoreOptions {
   now?: () => Date;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 type Row = Record<string, unknown>;
 
@@ -117,6 +125,13 @@ export class Store {
       if (version < 3) {
         // Whether the escalation holds its lane in blocked_human (FYI questions don't).
         this.db.exec('ALTER TABLE escalations ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1');
+      }
+      if (version < 4) {
+        // Removing a lane or group archives it, so its escalations and history stay available for export.
+        this.db.exec(`
+          ALTER TABLE lanes ADD COLUMN archived_at TEXT;
+          ALTER TABLE groups ADD COLUMN archived_at TEXT;
+        `);
       }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
@@ -227,17 +242,22 @@ export class Store {
     };
   }
 
+  /** Active groups (archived ones are kept for export but hidden). */
   listGroups(): Group[] {
-    return (this.db.prepare('SELECT * FROM groups ORDER BY name').all() as Row[]).map((r) => this.groupFromRow(r));
+    return (this.db.prepare('SELECT * FROM groups WHERE archived_at IS NULL ORDER BY name').all() as Row[]).map((r) =>
+      this.groupFromRow(r),
+    );
   }
 
   getGroup(id: string): Group | null {
-    const r = this.db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Row | undefined;
+    const r = this.db.prepare('SELECT * FROM groups WHERE id = ? AND archived_at IS NULL').get(id) as Row | undefined;
     return r ? this.groupFromRow(r) : null;
   }
 
   /** Must run inside a transaction. Returns true when something changed. */
   private writeGroup(id: string, patch: GroupPatch, actor: string | null, at: string): boolean {
+    // Publishing to an archived group brings it back.
+    this.db.prepare('UPDATE groups SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL').run(id);
     const existing = this.getGroup(id);
     if (!existing) {
       this.db
@@ -268,14 +288,19 @@ export class Store {
     return group;
   }
 
-  /** Lanes in the group become ungrouped. */
-  deleteGroup(id: string) {
+  /**
+   * Archives the group: it disappears from the dashboard and its lanes show as
+   * ungrouped, but lanes keep their group id so exports still attribute them.
+   */
+  deleteGroup(id: string, actor: string | null = null) {
     const lanes = this.tx(() => {
       const affected = this.listLanes()
         .filter((l) => l.group === id)
         .map((l) => l.id);
-      const res = this.db.prepare('DELETE FROM groups WHERE id = ?').run(id);
+      const at = this.now().toISOString();
+      const res = this.db.prepare('UPDATE groups SET archived_at = ? WHERE id = ? AND archived_at IS NULL').run(at, id);
       if (res.changes === 0) throw new NotFoundError(`Group "${id}" not found`);
+      for (const laneId of affected) this.addEvent(laneId, at, 'status', `Group "${id}" removed`, actor);
       return affected.map((laneId) => this.requireLane(laneId));
     });
     this.emit({ type: 'group_deleted', id });
@@ -289,7 +314,8 @@ export class Store {
     return {
       id: r.id as string,
       name: r.name as string,
-      group: (r.group_id as string | null) ?? null,
+      // A lane in an archived group shows as ungrouped; the raw group_id is kept for exports.
+      group: r.group_archived ? null : ((r.group_id as string | null) ?? null),
       status: r.status as LaneStatus,
       ticket,
       ticketUrl: ticket ? this.resolveTicketUrl(ticket) : null,
@@ -308,18 +334,26 @@ export class Store {
   private static LANE_SELECT = `
     SELECT l.*,
       (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open') AS open_escalations,
-      (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open' AND e.blocking = 1) AS open_blocking
+      (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open' AND e.blocking = 1) AS open_blocking,
+      (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived
     FROM lanes l`;
 
+  /** Active lanes (archived ones are kept for export but hidden). */
   listLanes(): Lane[] {
-    return (this.db.prepare(`${Store.LANE_SELECT} ORDER BY l.updated_at DESC`).all() as Row[]).map((r) =>
-      this.laneFromRow(r),
-    );
+    return (
+      this.db.prepare(`${Store.LANE_SELECT} WHERE l.archived_at IS NULL ORDER BY l.updated_at DESC`).all() as Row[]
+    ).map((r) => this.laneFromRow(r));
   }
 
   getLane(id: string): Lane | null {
-    const r = this.db.prepare(`${Store.LANE_SELECT} WHERE l.id = ?`).get(id) as Row | undefined;
+    const r = this.db.prepare(`${Store.LANE_SELECT} WHERE l.id = ? AND l.archived_at IS NULL`).get(id) as Row | undefined;
     return r ? this.laneFromRow(r) : null;
+  }
+
+  /** Must run inside a transaction: publishing to an archived lane brings it back, history intact. */
+  private restoreLane(id: string, actor: string | null, at: string) {
+    const res = this.db.prepare('UPDATE lanes SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL').run(id);
+    if (res.changes > 0) this.addEvent(id, at, 'status', 'Lane restored', actor);
   }
 
   private requireLane(id: string): Lane {
@@ -334,6 +368,7 @@ export class Store {
     let previous: LaneStatus | null = null;
     const lane = this.tx(() => {
       const at = this.now().toISOString();
+      this.restoreLane(id, actor, at);
       previous = this.getLane(id)?.status ?? null;
       if (patch.group && !this.getGroup(patch.group)) {
         this.writeGroup(patch.group, {}, actor, at);
@@ -393,12 +428,15 @@ export class Store {
     }
     this.db
       .prepare(
-        `UPDATE lanes SET name = ?, group_id = ?, status = ?, ticket = ?, activity = ?, links = ?, agent = ?,
+        `UPDATE lanes SET name = ?, group_id = CASE WHEN ? THEN ? ELSE group_id END, status = ?, ticket = ?, activity = ?, links = ?, agent = ?,
            updated_at = ?, status_since = ?, blocked_since = ?, blocked_total_ms = ? WHERE id = ?`,
       )
       .run(
         patch.name ?? existing.name,
-        patch.group !== undefined ? patch.group : existing.group,
+        // Only touch group_id when the patch sets it: a lane in an archived group reads as
+        // ungrouped but keeps its group_id for exports.
+        patch.group !== undefined ? 1 : 0,
+        patch.group ?? null,
         status,
         patch.ticket !== undefined ? patch.ticket : existing.ticket,
         patch.activity !== undefined ? patch.activity : existing.activity,
@@ -412,9 +450,27 @@ export class Store {
       );
   }
 
-  deleteLane(id: string) {
-    const res = this.db.prepare('DELETE FROM lanes WHERE id = ?').run(id);
-    if (res.changes === 0) throw new NotFoundError(`Lane "${id}" not found`);
+  /**
+   * Archives the lane: it leaves the dashboard, its unresolved escalations are
+   * withdrawn, and everything stays in the database for export. Publishing to
+   * the same lane id later restores it.
+   */
+  deleteLane(id: string, actor: string | null = null) {
+    const withdrawn = this.tx(() => {
+      if (!this.getLane(id)) throw new NotFoundError(`Lane "${id}" not found`);
+      const at = this.now().toISOString();
+      const pending = this.listEscalations({ laneId: id }).map((e) => e.id);
+      this.db
+        .prepare(
+          `UPDATE escalations SET state = 'withdrawn', resolution = COALESCE(resolution, ?), updated_at = ?
+           WHERE lane_id = ? AND state IN ('open', 'decided')`,
+        )
+        .run(`Lane removed${actor ? ` by ${actor}` : ''}`, at, id);
+      this.db.prepare('UPDATE lanes SET archived_at = ?, updated_at = ? WHERE id = ?').run(at, at, id);
+      this.addEvent(id, at, 'status', 'Lane removed', actor);
+      return pending.map((eid) => this.requireEscalation(eid));
+    });
+    for (const escalation of withdrawn) this.emit({ type: 'escalation', escalation });
     this.emit({ type: 'lane_deleted', id });
   }
 
@@ -422,12 +478,15 @@ export class Store {
     this.db
       .prepare('INSERT INTO lane_events (lane_id, at, kind, message, actor) VALUES (?, ?, ?, ?, ?)')
       .run(laneId, at, kind, message, actor);
-    this.db
-      .prepare(
-        `DELETE FROM lane_events WHERE lane_id = ? AND id NOT IN
-           (SELECT id FROM lane_events WHERE lane_id = ? ORDER BY id DESC LIMIT ?)`,
-      )
-      .run(laneId, laneId, this.retention);
+    // Only routine activity text is capped; status changes and escalation history are kept for analysis.
+    if (kind === 'activity') {
+      this.db
+        .prepare(
+          `DELETE FROM lane_events WHERE lane_id = ? AND kind = 'activity' AND id NOT IN
+             (SELECT id FROM lane_events WHERE lane_id = ? AND kind = 'activity' ORDER BY id DESC LIMIT ?)`,
+        )
+        .run(laneId, laneId, this.retention);
+    }
   }
 
   laneEvents(laneId: string, limit = 50): LaneEvent[] {
@@ -511,6 +570,7 @@ export class Store {
   createEscalation(input: EscalationInput, actor: string): Escalation {
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
+      this.restoreLane(input.laneId, actor, at);
       let lane = this.getLane(input.laneId);
       if (!lane) {
         // Agents may escalate before ever publishing lane state.
@@ -699,6 +759,153 @@ export class Store {
       const timer = setTimeout(done, timeoutMs);
       this.events.on('change', onChange);
       signal?.addEventListener('abort', done);
+    });
+  }
+
+  // ---- export --------------------------------------------------------------
+
+  /**
+   * Flat rows for analysis, including archived lanes and groups and closed
+   * escalations. `from`/`to` (ISO timestamps) filter escalations and
+   * positions by creation time and events by time; lanes and groups are
+   * always complete.
+   */
+  exportRows(dataset: ExportDataset, filter: ExportFilter = {}): Record<string, unknown>[] {
+    const nowMs = this.now().getTime();
+    const seconds = (from: unknown, to: unknown) =>
+      typeof from === 'string' && typeof to === 'string' ? Math.round((Date.parse(to) - Date.parse(from)) / 1000) : null;
+    const range = (col: string) => {
+      const where: string[] = [];
+      const params: string[] = [];
+      if (filter.from) (where.push(`${col} >= ?`), params.push(filter.from));
+      if (filter.to) (where.push(`${col} < ?`), params.push(filter.to));
+      if (filter.laneId) (where.push('lane_id = ?'), params.push(filter.laneId));
+      return { sql: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+    };
+
+    if (dataset === 'groups') {
+      return (this.db.prepare('SELECT * FROM groups ORDER BY created_at').all() as Row[]).map((r) => ({
+        id: r.id,
+        name: r.name,
+        ticket: r.ticket,
+        ticket_url: r.ticket ? this.resolveTicketUrl(r.ticket as string) : null,
+        links: r.links,
+        last_published_by: r.agent,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+        archived_at: r.archived_at,
+      }));
+    }
+
+    if (dataset === 'lanes') {
+      const rows = this.db
+        .prepare(
+          `SELECT l.*, g.name AS group_name,
+             (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id) AS escalations_total,
+             (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open') AS escalations_open
+           FROM lanes l LEFT JOIN groups g ON g.id = l.group_id
+           ${filter.laneId ? 'WHERE l.id = ?' : ''} ORDER BY l.created_at`,
+        )
+        .all(...(filter.laneId ? [filter.laneId] : [])) as Row[];
+      return rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        group_id: r.group_id,
+        group_name: r.group_name,
+        status: r.status,
+        ticket: r.ticket,
+        ticket_url: r.ticket ? this.resolveTicketUrl(r.ticket as string) : null,
+        activity: r.activity,
+        last_published_by: r.agent,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+        status_since: r.status_since,
+        blocked_seconds_total: Math.round(
+          (Number(r.blocked_total_ms) + (r.blocked_since ? nowMs - Date.parse(r.blocked_since as string) : 0)) / 1000,
+        ),
+        blocked_since: r.blocked_since,
+        escalations_total: r.escalations_total,
+        escalations_open: r.escalations_open,
+        links: r.links,
+        archived_at: r.archived_at,
+      }));
+    }
+
+    if (dataset === 'events') {
+      const { sql, params } = range('at');
+      return (this.db.prepare(`SELECT * FROM lane_events ${sql} ORDER BY id`).all(...params) as Row[]).map((r) => ({
+        id: r.id,
+        lane_id: r.lane_id,
+        at: r.at,
+        kind: r.kind,
+        message: r.message,
+        actor: r.actor,
+      }));
+    }
+
+    const { sql, params } = range('e.created_at');
+    const escalations = this.db
+      .prepare(
+        `SELECT e.*, l.name AS lane_name, l.group_id AS group_id, g.name AS group_name
+         FROM escalations e JOIN lanes l ON l.id = e.lane_id LEFT JOIN groups g ON g.id = l.group_id
+         ${sql.replace('lane_id', 'e.lane_id')} ORDER BY e.created_at, e.rowid`,
+      )
+      .all(...params) as Row[];
+
+    if (dataset === 'positions') {
+      return escalations.flatMap((e) =>
+        (JSON.parse(e.positions as string) as Position[]).map((p) => ({
+          escalation_id: e.id,
+          lane_id: e.lane_id,
+          question: e.question,
+          agent: p.agent,
+          stance: p.stance,
+          note: p.note,
+          at: p.at,
+        })),
+      );
+    }
+
+    return escalations.map((e) => {
+      const positions = JSON.parse(e.positions as string) as Position[];
+      const count = (stance: Stance) => positions.filter((p) => p.stance === stance).length;
+      const closedAt = e.state === 'acknowledged' ? e.acknowledged_at : e.state === 'withdrawn' ? e.updated_at : null;
+      return {
+        id: e.id,
+        lane_id: e.lane_id,
+        lane_name: e.lane_name,
+        group_id: e.group_id,
+        group_name: e.group_name,
+        ticket: e.ticket,
+        ticket_url: e.ticket ? this.resolveTicketUrl(e.ticket as string) : null,
+        question: e.question,
+        context: e.context,
+        recommendation: e.recommendation,
+        recommended_option: e.recommended_option,
+        cost: e.cost,
+        alternatives: (JSON.parse(e.alternatives as string) as string[]).join(' | '),
+        options: (JSON.parse(e.options as string) as string[]).join(' | '),
+        blocking: Number(e.blocking) === 1,
+        state: e.state,
+        created_by: e.created_by,
+        created_at: e.created_at,
+        decided_by: e.decided_by,
+        decided_at: e.decided_at,
+        decision: e.decision,
+        decision_note: e.decision_note,
+        followed_recommendation:
+          e.decision && e.recommended_option ? e.decision === e.recommended_option : null,
+        acknowledged_at: e.acknowledged_at,
+        resolution: e.resolution,
+        closed_at: closedAt,
+        seconds_to_decision: seconds(e.created_at, e.decided_at),
+        seconds_to_acknowledge: seconds(e.decided_at, e.acknowledged_at),
+        seconds_open: seconds(e.created_at, e.decided_at ?? closedAt ?? new Date(nowMs).toISOString()),
+        positions_agree: count('agree'),
+        positions_disagree: count('disagree'),
+        positions_neutral: count('neutral'),
+        links: e.links,
+      };
     });
   }
 

@@ -88,6 +88,25 @@ export const personInput = z.object({
 
 export const passwordReset = z.object({ email: z.email(), password });
 
+/** A date (2026-10-01, taken as 00:00 UTC) or a full ISO timestamp. */
+const instant = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/, 'use YYYY-MM-DD or an ISO timestamp')
+  .transform((v, ctx) => {
+    const ms = Date.parse(v.length === 10 ? `${v}T00:00:00Z` : v);
+    if (Number.isNaN(ms)) {
+      ctx.addIssue({ code: 'custom', message: 'not a valid date' });
+      return z.NEVER;
+    }
+    return new Date(ms).toISOString();
+  });
+
+export const exportFilter = z.object({
+  from: instant.optional(),
+  to: instant.optional(),
+  lane: z.string().max(100).optional(),
+});
+
 export const pushRegistration = z.object({
   token: z.string().min(10).max(4096),
   platform: z.enum(['android', 'ios', 'web']).default('android'),

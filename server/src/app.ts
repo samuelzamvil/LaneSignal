@@ -9,7 +9,8 @@ import type { Config } from './config.ts';
 import { log } from './log.ts';
 import { mcpHandler } from './mcp.ts';
 import * as s from './schemas.ts';
-import { ConflictError, NotFoundError, type Store } from './store.ts';
+import { datasetCsv, exportZip } from './export.ts';
+import { ConflictError, EXPORT_DATASETS, NotFoundError, type ExportDataset, type Store } from './store.ts';
 import { LANE_STATUSES, type EscalationState, type PublicConfig, type StreamEvent } from './types.ts';
 
 export interface AppOptions {
@@ -181,7 +182,7 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
   });
 
   app.delete('/api/groups/:id', human, (req, res) => {
-    store.deleteGroup(String(req.params.id));
+    store.deleteGroup(String(req.params.id), principalOf(res).name);
     res.sendStatus(204);
   });
 
@@ -211,7 +212,7 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
   });
 
   app.delete('/api/lanes/:id', human, (req, res) => {
-    store.deleteLane(String(req.params.id));
+    store.deleteLane(String(req.params.id), principalOf(res).name);
     res.sendStatus(204);
   });
 
@@ -278,6 +279,45 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
   app.post('/api/escalations/:id/withdraw', any, (req, res) => {
     const body = parse(s.resolution, req.body ?? {});
     res.json(store.withdrawEscalation(String(req.params.id), body.note ?? null, principalOf(res).name));
+  });
+
+  // ---- export (CSV / JSON / zip for analysis) ----
+
+  const exportFilterOf = (req: Request) => {
+    const q = parse(s.exportFilter, req.query);
+    return { from: q.from, to: q.to, laneId: q.lane };
+  };
+  const stamp = () => new Date().toISOString().slice(0, 10);
+
+  app.get('/api/export', any, (req, res) => {
+    const body = exportZip(store, exportFilterOf(req), new Date());
+    res
+      .set({
+        'content-type': 'application/zip',
+        'content-disposition': `attachment; filename="lanesignal-export-${stamp()}.zip"`,
+        'cache-control': 'no-store',
+      })
+      .send(body);
+  });
+
+  app.get('/api/export/:file', any, (req, res) => {
+    const match = /^([a-z]+)\.(csv|json)$/.exec(String(req.params.file));
+    const dataset = match?.[1] as ExportDataset | undefined;
+    if (!match || !dataset || !EXPORT_DATASETS.includes(dataset)) {
+      throw new NotFoundError(`Unknown export; use one of ${EXPORT_DATASETS.map((d) => `${d}.csv`).join(', ')} (or .json)`);
+    }
+    const filter = exportFilterOf(req);
+    res.set('cache-control', 'no-store');
+    if (match[2] === 'json') {
+      res.json(store.exportRows(dataset, filter));
+      return;
+    }
+    res
+      .set({
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': `attachment; filename="lanesignal-${dataset}-${stamp()}.csv"`,
+      })
+      .send(datasetCsv(store, dataset, filter));
   });
 
   // ---- push ----
