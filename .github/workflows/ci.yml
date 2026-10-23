@@ -82,6 +82,12 @@ jobs:
           packages: platform-tools platforms;android-36 build-tools;36.0.0
       - run: npm ci
 
+      # A v1.2.3 tag names the version; other builds are 0.1.0-<run number>.
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.1.0-$GITHUB_RUN_NUMBER"; fi
+          echo "LANESIGNAL_VERSION_NAME=$v" >> "$GITHUB_ENV"
+
       # Push notifications need Firebase config. Without the secret the APK
       # still builds and works; it just doesn't register for push.
       - name: Firebase config
@@ -120,3 +126,31 @@ jobs:
             web/android/app/build/outputs/apk/debug/*.apk
             web/android/app/build/outputs/apk/release/*-release.apk
           if-no-files-found: error
+
+  # Publishes the APK to the Releases page: main updates the "latest" pre-release, a v* tag gets its own.
+  # A separate job, so the build above (npm, Gradle) never holds a token that can write to the repo.
+  release:
+    needs: android
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: actions/download-artifact@v7
+        with:
+          name: lanesignal-apk
+          path: apk
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_DIR: apk
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.1.0-$GITHUB_RUN_NUMBER"; fi
+          LANESIGNAL_VERSION_NAME="$v" scripts/release-apk.sh

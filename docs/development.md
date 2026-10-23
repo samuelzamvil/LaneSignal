@@ -36,6 +36,7 @@ LANESIGNAL_URL=http://localhost:8080 LANESIGNAL_TOKEN=ls_… node scripts/seed-d
 - **test:** typecheck, tests and build
 - **docker:** builds the image, and pushes `ghcr.io/<owner>/lanesignal:main` and `:sha-<commit>` from `main`
 - **android:** builds the debug APK, plus a signed release when the secrets exist
+- **release:** publishes that APK to the Releases page from `main` (the rolling "latest" pre-release, only for main's current head) and from `v*` tags (`scripts/release-apk.sh`). It's the only job with write access
 
 ## Design notes
 
