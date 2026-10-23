@@ -72,6 +72,9 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: android-actions/setup-android@v3
+        with:
+          # The default ("tools platform-tools") fails: the legacy "tools" package is gone.
+          packages: platform-tools platforms;android-36 build-tools;36.0.0
       - run: npm ci
 
       # Push notifications need Firebase config. Without the secret the APK
