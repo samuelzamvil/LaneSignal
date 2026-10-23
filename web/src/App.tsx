@@ -102,6 +102,11 @@ export default function App() {
     <Dashboard
       key={conn.server + conn.token}
       conn={conn}
+      onNewSession={(token) => {
+        const next = { ...conn, token };
+        saveConnection(next);
+        setConn(next);
+      }}
       onSignOut={async (client) => {
         await teardownPush(client);
         // End the server-side session too (static access tokens have none).
@@ -114,7 +119,16 @@ export default function App() {
 }
 
 
-function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Client) => void }) {
+function Dashboard({
+  conn,
+  onSignOut,
+  onNewSession,
+}: {
+  conn: Connection;
+  onSignOut: (c: Client) => void;
+  /** Replaces this device's session token (after a password change). */
+  onNewSession: (token: string) => void;
+}) {
   const client = useMemo(() => createClient(conn), [conn]);
   const [config, setConfig] = useState<PublicConfig | null>(null);
   const [me, setMe] = useState<Principal | null>(null);
@@ -421,7 +435,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
         <>
           <AgentKeysSection client={client} serverUrl={conn.server || location.origin} now={now} />
           {me.admin && <PeopleSection client={client} me={me} />}
-          <PasswordSection client={client} />
+          <PasswordSection client={client} onNewSession={onNewSession} />
         </>
       ) : (
         <p className="hint">Sign in with an account to manage agent keys and people.</p>

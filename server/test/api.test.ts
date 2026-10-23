@@ -65,6 +65,27 @@ describe('auth', () => {
     assert.deepEqual((await call('GET', '/api/me', BOB)).body, { name: 'bob', role: 'human', admin: true });
   });
 
+  test('first-run setup trusts a static human token instead of the setup code', async () => {
+    const input = { email: 'ops@example.com', name: 'Ops', password: 'correct horse battery' };
+    assert.equal((await call('POST', '/api/setup', null, input)).status, 403);
+    assert.equal((await call('POST', '/api/setup', AGENT, input)).status, 403);
+    assert.equal((await call('POST', '/api/setup', ALICE, input)).status, 201);
+  });
+
+  test('static human tokens can add people and reset passwords (break-glass)', async () => {
+    const add = await call('POST', '/api/admin/people', ALICE, {
+      email: 'new@example.com',
+      name: 'New',
+      password: 'temporary password',
+    });
+    assert.equal(add.status, 201);
+    assert.equal(
+      (await call('POST', '/api/admin/people/password', ALICE, { email: 'new@example.com', password: 'another password' })).status,
+      204,
+    );
+    assert.equal((await call('POST', '/api/admin/people', AGENT, { email: 'x@example.com', name: 'X', password: 'temporary password' })).status, 403);
+  });
+
   test('health check is public', async () => {
     assert.deepEqual((await call('GET', '/healthz', null)).body, { ok: true });
   });

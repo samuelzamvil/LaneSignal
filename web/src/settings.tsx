@@ -16,7 +16,7 @@ function useAsync<T>(load: () => Promise<T>) {
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-export function PasswordSection({ client }: { client: Client }) {
+export function PasswordSection({ client, onNewSession }: { client: Client; onNewSession: (token: string) => void }) {
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [status, setStatus] = useState<string | null>(null);
@@ -24,10 +24,11 @@ export function PasswordSection({ client }: { client: Client }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     try {
-      await client.changePassword(current, next);
+      const token = await client.changePassword(current, next);
       setStatus('Password changed. Other devices were signed out.');
       setCurrent('');
       setNext('');
+      onNewSession(token);
     } catch (err) {
       setStatus(errorText(err));
     }

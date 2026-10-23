@@ -14,6 +14,7 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [token, setToken] = useState('');
+  const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const base = normalizeServer(server);
@@ -46,7 +47,7 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
         onConnected(c);
         return;
       }
-      if (mode === 'setup') await publicApi.setup(base, { name: name.trim(), email: email.trim(), password });
+      if (mode === 'setup') await publicApi.setup(base, { name: name.trim(), email: email.trim(), password, code: code.trim() });
       const session = await publicApi.signIn(base, email.trim(), password);
       onConnected({ server: base, token: session, kind: 'session' });
     } catch (err) {
@@ -63,7 +64,9 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
         <h1>LaneSignal</h1>
         {mode === 'setup' && (
           <p className="hint">
-            This server has no accounts yet. Create the first one; it becomes the admin who can add everyone else.
+            This server has no accounts yet. Create the first one; it becomes the admin who can add everyone else. The
+            setup code is in the server log (<code>docker compose logs lanesignal</code>) and in{' '}
+            <code>/data/setup-code</code>.
           </p>
         )}
         {(isNative || server) && (
@@ -87,6 +90,12 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
           </label>
         ) : (
           <>
+            {mode === 'setup' && (
+              <label>
+                Setup code
+                <input value={code} onChange={(e) => setCode(e.target.value)} autoCapitalize="off" autoCorrect="off" required />
+              </label>
+            )}
             {mode === 'setup' && (
               <label>
                 Name

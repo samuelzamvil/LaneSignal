@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { principalOf } from './auth.ts';
+import { principalOf, stillValidOf } from './auth.ts';
 import { log } from './log.ts';
 import * as s from './schemas.ts';
 import { ConflictError, NotFoundError, type Store } from './store.ts';
@@ -21,7 +21,7 @@ const STATUS_HELP =
   'blocked_human = needs a human decision; idle = nothing to do; completed = done.';
 
 /** Builds an MCP server whose tools act as the authenticated principal. */
-function buildServer(store: Store, who: Principal) {
+function buildServer(store: Store, who: Principal, stillValid: () => Promise<boolean>) {
   const server = new McpServer({ name: 'lanesignal', version: '0.1.0' });
 
   server.registerTool(
@@ -67,7 +67,10 @@ function buildServer(store: Store, who: Principal) {
     },
     async ({ id, wait_seconds }, extra) => {
       try {
-        return json(await store.waitForDecision(id, (wait_seconds ?? 0) * 1000, extra.signal));
+        const escalation = await store.waitForDecision(id, (wait_seconds ?? 0) * 1000, extra.signal);
+        // The key may have been revoked while waiting.
+        if (wait_seconds && !(await stillValid())) return fail(new Error('Credential revoked'));
+        return json(escalation);
       } catch (err) {
         return fail(err);
       }
@@ -222,7 +225,7 @@ function buildServer(store: Store, who: Principal) {
 /** Stateless Streamable HTTP endpoint: a fresh server + transport per request. */
 export function mcpHandler(store: Store) {
   return async (req: Request, res: Response) => {
-    const server = buildServer(store, principalOf(res));
+    const server = buildServer(store, principalOf(res), stillValidOf(res));
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       void transport.close();

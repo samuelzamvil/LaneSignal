@@ -24,7 +24,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = process.env.LANESIGNAL_WEB_DIR ?? path.resolve(here, '../../web/dist');
 const app = createApp({ config, store, accounts, push, webDir });
 
-const server = app.listen(config.port, config.host, () => {
+const server = app.listen(config.port, config.host, (err?: Error) => {
+  if (err) {
+    log.error('cannot listen', { host: config.host, port: config.port, error: String(err) });
+    process.exit(1);
+  }
   log.info('lanesignal listening', {
     host: config.host,
     port: config.port,

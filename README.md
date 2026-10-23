@@ -37,12 +37,24 @@ docker compose up -d --build
 curl localhost:8080/healthz   # {"ok":true}
 ```
 
-Open `http://localhost:8080`. On a fresh server the first screen asks you to create the first account, which becomes the admin. After that:
+Open `http://localhost:8080`. On a fresh server the first screen asks you to create the first account, which becomes the admin. It needs the one-time **setup code** the server prints to its log, so reaching the server first isn't enough to claim it:
+
+```bash
+docker compose logs lanesignal | grep setupCode    # or: docker compose exec lanesignal cat /data/setup-code
+```
+
+After that:
 
 - **People:** admins add them under Settings → People. There is no public sign-up.
 - **Agent keys:** each person creates and revokes their own under Settings → Agent keys. Each key belongs to the account that created it, and the Settings screen shows a ready-to-paste `claude mcp add …` command.
 
-Create the first account before exposing the server: until then, anyone who can reach it can claim the admin account.
+**Locked out?** A static human token from the config (`LANESIGNAL_HUMAN_TOKENS`) works as break-glass access:
+
+```bash
+curl -X POST $URL/api/admin/people/password -H "authorization: Bearer $HUMAN_TOKEN" \
+  -H 'content-type: application/json' -d '{"email":"ada@example.com","password":"a new password"}'
+# or add someone: POST /api/admin/people {"email","name","password","admin":true}
+```
 
 Data lives in the `lanesignal-data` volume (`/data/lanesignal.db`, SQLite in WAL mode). Restarts and image upgrades keep it, and schema migrations run on startup. Configuration can come from environment variables or `config/lanesignal.json`, which is mounted read-only at `/config`.
 
@@ -210,6 +222,7 @@ By default, push fires only when an escalation is created. Add `blocked` or `com
 | `LANESIGNAL_DATA_DIR` | | `/data` | SQLite and generated tokens |
 | `LANESIGNAL_CONFIG` | | `/config/lanesignal.json` | Optional JSON config file |
 | `LANESIGNAL_AUTH_SECRET` | | generated | Signs account sessions (≥32 chars). Generated into `/data/auth-secret` when unset |
+| `LANESIGNAL_SIGNIN_RATE_MAX` / `_WINDOW` | | `5` / `60` | Sign-in attempts per client IP per window (seconds). Set `LANESIGNAL_TRUST_PROXY=true` behind a reverse proxy so the real client IP is used |
 | `LANESIGNAL_HUMAN_TOKENS` | `tokens[]` | | Optional static tokens, `name:token,…` (≥16 chars each), for automation or break-glass access. They work beside accounts. The former name `LANESIGNAL_OVERSEER_TOKENS` still works |
 | `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | Optional static agent tokens, `name:token,…`. Prefer account-owned agent keys |
 | `LANESIGNAL_GROUP_LABEL` | `groupLabel` | `Epic` | What groups are called in the UI (Epic, Train, Overseer…) |
@@ -230,13 +243,18 @@ By default, push fires only when an escalation is created. Add `blocked` or `com
 - **Accounts** use [Better Auth](https://better-auth.com) (MIT), adopted as a library rather than built in-house:
   - email and password (hashed with scrypt), with Better Auth's rate limiting on sign-in
   - sessions sent as bearer tokens, so the browser and Android app work the same way
-  - no public sign-up: the first account comes from first-run setup, and admins add the rest
-  - signing out, or changing your password, revokes sessions
+  - no public sign-up: the first account comes from first-run setup (which needs the setup code from the server log), and admins add the rest
+  - session tokens must carry the server's signature; impersonation is disabled; cookies are ignored, so the API is bearer-only
+  - signing out, changing your password (other devices) or an admin password reset revokes sessions
+  - sign-in is rate limited per client IP, taken from the socket or trusted proxies and never from a client-supplied header
+  - only admins change names, so decisions can't be attributed to someone else
   - telemetry is disabled
 - **Agent keys** (`ls_…`):
   - stored hashed, shown once
   - owned by an account; removing or banning the owner disables them
   - Better Auth's default per-key rate limit is turned off so long-running agents aren't throttled
+  - any signed-in person can create keys, so anyone with an account can publish lane state. That's by design: they run the agents
+- **Revocation is live:** event streams, long-polls and MCP waits re-check their credential. They close as soon as a key is revoked or a person is signed out, removed or banned.
 - Every request carries one bearer credential and gets one of two roles:
   - **agent** (agent keys and static agent tokens): publish lanes, create, acknowledge and withdraw escalations.
   - **human** (account sessions and static human tokens): decide escalations, delete lanes and groups, register for push. Account admins and static human tokens can also manage people.
