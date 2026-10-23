@@ -134,6 +134,19 @@ export function createClient(conn: Connection) {
       }),
     removePerson: (userId: string) => request<unknown>('POST', '/api/auth/admin/remove-user', { userId }),
 
+    /** Downloads an export (zip or CSV) and hands it to the browser as a file. */
+    async download(path: string, fallbackName: string) {
+      const res = await fetch(base + path, { headers });
+      if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+      const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? fallbackName;
+      const url = URL.createObjectURL(await res.blob());
+      const a = Object.assign(document.createElement('a'), { href: url, download: name });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    },
+
     registerPush: (token: string) => request<void>('POST', '/api/push/register', { token, platform: 'android' }),
     unregisterPush: (token: string) => request<void>('POST', '/api/push/unregister', { token }),
 

@@ -55,6 +55,8 @@ test('upgrades a schema v1 database without losing escalations', () => {
       ALTER TABLE escalations DROP COLUMN cost;
       ALTER TABLE escalations DROP COLUMN alternatives;
       ALTER TABLE escalations DROP COLUMN blocking;
+      ALTER TABLE lanes DROP COLUMN archived_at;
+      ALTER TABLE groups DROP COLUMN archived_at;
       UPDATE meta SET value = '1' WHERE key = 'schema_version';
     `);
     db.close();
@@ -132,13 +134,108 @@ test('positions are capped per escalation', () => {
   store.close();
 });
 
-test('waiting on an escalation whose lane is deleted rejects instead of returning stale state', async () => {
+test('removing a lane withdraws its waiting escalation instead of leaving the agent hanging', async () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
   const e = store.createEscalation({ laneId: 'l', question: 'Q?' }, 'bot');
   const waiting = store.waitForDecision(e.id, 5000);
-  store.deleteLane('l');
-  await assert.rejects(waiting, /no longer exists/);
+  store.deleteLane('l', 'alice');
+  const result = await waiting;
+  assert.equal(result.state, 'withdrawn');
+  assert.equal(result.resolution, 'Lane removed by alice');
   store.close();
+});
+
+test('removing a lane archives it: hidden from the dashboard, kept for export, restored on republish', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  store.upsertLane('l', { name: 'Lane', group: 'g', status: 'active' }, 'bot');
+  const e = store.createEscalation({ laneId: 'l', question: 'Q?' }, 'bot');
+  store.decideEscalation(e.id, 'yes', null, 'alice');
+  store.acknowledgeEscalation(e.id, 'done', 'bot');
+  store.createEscalation({ laneId: 'l', question: 'Still open?' }, 'bot');
+  store.deleteLane('l', 'alice');
+
+  assert.equal(store.getLane('l'), null);
+  assert.deepEqual(store.listLanes(), []);
+  assert.deepEqual(store.listEscalations(), []);
+  assert.deepEqual(
+    store.exportRows('escalations').map((r) => [r.question, r.state]),
+    [
+      ['Q?', 'acknowledged'],
+      ['Still open?', 'withdrawn'],
+    ],
+  );
+  const lanes = store.exportRows('lanes');
+  assert.equal(lanes.length, 1);
+  assert.ok(lanes[0].archived_at);
+
+  store.upsertLane('l', { status: 'active' }, 'bot');
+  assert.equal(store.getLane('l')?.name, 'Lane');
+  assert.ok(store.laneEvents('l').some((ev) => ev.message === 'Lane restored'));
+  store.close();
+});
+
+test('removing a group archives it; lanes read as ungrouped but exports keep the group', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  store.upsertGroup('payments', { name: 'Payments epic' }, 'bot');
+  store.upsertLane('l', { group: 'payments' }, 'bot');
+  store.deleteGroup('payments', 'alice');
+  assert.equal(store.getLane('l')?.group, null);
+  assert.deepEqual(store.listGroups(), []);
+  // An unrelated update must not drop the lane's group association.
+  store.upsertLane('l', { activity: 'still going' }, 'bot');
+  const lane = store.exportRows('lanes')[0];
+  assert.equal(lane.group_id, 'payments');
+  assert.equal(lane.group_name, 'Payments epic');
+  assert.ok(store.exportRows('groups')[0].archived_at);
+  // Publishing to the group again brings it back.
+  store.upsertLane('l2', { group: 'payments' }, 'bot');
+  assert.equal(store.listGroups()[0].name, 'Payments epic');
+  store.close();
+});
+
+test('only routine activity text is trimmed; status and escalation history is kept', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl, eventRetention: 2 });
+  const statuses = ['active', 'pending_ci', 'active', 'pending_ci', 'active'] as const;
+  statuses.forEach((status, i) => store.upsertLane('l', { status, activity: `step ${i}` }, 'bot'));
+  const events = store.exportRows('events');
+  assert.equal(events.filter((e) => e.kind === 'activity').length, 2);
+  assert.equal(events.filter((e) => e.kind === 'status').length, 5); // created + 4 changes
+  store.close();
+});
+
+test('escalation export computes timings and recommendation follow-through', () => {
+  let now = Date.parse('2026-10-01T10:00:00Z');
+  const store = new Store({ path: ':memory:', resolveTicketUrl, now: () => new Date(now) });
+  const e = store.createEscalation(
+    {
+      laneId: 'l',
+      question: 'Merge?',
+      options: ['Merge', 'Wait'],
+      recommendedOption: 'Merge',
+      alternatives: ['Wait a day', 'Split it'],
+      positions: [{ agent: 'rev', stance: 'agree' }],
+    },
+    'bot',
+  );
+  now += 90_000;
+  store.decideEscalation(e.id, 'Merge', null, 'alice');
+  now += 30_000;
+  store.acknowledgeEscalation(e.id, null, 'bot');
+  const [row] = store.exportRows('escalations');
+  assert.equal(row.seconds_to_decision, 90);
+  assert.equal(row.seconds_to_acknowledge, 30);
+  assert.equal(row.followed_recommendation, true);
+  assert.equal(row.alternatives, 'Wait a day | Split it');
+  assert.equal(row.positions_agree, 1);
+  assert.equal(store.exportRows('escalations', { from: '2026-10-02T00:00:00.000Z' }).length, 0);
+  assert.equal(store.exportRows('positions')[0].agent, 'rev');
+  store.close();
+});
+
+test('CSV export escapes quotes and newlines and defuses spreadsheet formulas', async () => {
+  const { toCsv } = await import('../src/export.ts');
+  const csv = toCsv([{ a: 'say "hi"', b: 'line1\nline2', c: '=HYPERLINK("x")', d: 3, e: null }]);
+  assert.equal(csv, 'a,b,c,d,e\r\n"say ""hi""","line1\nline2","\'=HYPERLINK(""x"")",3,\r\n');
 });
 
 test('rejects invalid numeric configuration at startup', async () => {
@@ -181,5 +278,85 @@ test('tokens generated by earlier versions keep working next to configured ones'
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('removing a blocked lane ends its blocked spell; decided answers survive and can be acknowledged', () => {
+  let now = Date.parse('2026-10-01T10:00:00Z');
+  const store = new Store({ path: ':memory:', resolveTicketUrl, now: () => new Date(now) });
+  const changes: string[] = [];
+  store.events.on('change', (e) => changes.push(e.type === 'lane' ? `lane:${e.lane.id}` : e.type));
+  store.upsertLane('a', { status: 'active' }, 'bot');
+  const decided = store.createEscalation({ laneId: 'a', question: 'Decided?', blocking: false }, 'bot');
+  store.decideEscalation(decided.id, 'yes', null, 'alice');
+  store.createEscalation({ laneId: 'a', question: 'Open?' }, 'bot');
+  now += 60_000;
+  store.deleteLane('a', 'alice');
+  now += 3_600_000;
+
+  const lane = store.exportRows('lanes')[0];
+  assert.equal(lane.status, 'idle');
+  assert.equal(lane.blocked_seconds_total, 60);
+  const states = Object.fromEntries(store.exportRows('escalations').map((r) => [r.question, r.state]));
+  assert.deepEqual(states, { 'Decided?': 'decided', 'Open?': 'withdrawn' });
+  assert.ok(
+    store.exportRows('events').some((e) => e.kind === 'escalation' && e.message === 'Escalation closed: Lane removed by alice'),
+  );
+
+  // The agent acting on the earlier answer can still acknowledge it, without the lane reappearing.
+  changes.length = 0;
+  store.acknowledgeEscalation(decided.id, 'done', 'bot');
+  assert.deepEqual(changes, ['escalation']);
+
+  store.upsertLane('a', { activity: 'back' }, 'bot');
+  assert.equal(store.getLane('a')?.status, 'idle');
+  assert.equal(store.getLane('a')?.blockedTotalMs, 60_000);
+  store.close();
+});
+
+test('restoring an archived group re-sends its lanes so clients regroup them', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  store.upsertLane('b', { group: 'g2' }, 'bot');
+  store.upsertLane('c', { group: 'g2' }, 'bot');
+  store.deleteGroup('g2', 'alice');
+  const lanes: string[] = [];
+  store.events.on('change', (e) => e.type === 'lane' && lanes.push(`${e.lane.id}:${e.lane.group}`));
+  store.upsertGroup('g2', { name: 'G2 again' }, 'bot');
+  assert.deepEqual(lanes.sort(), ['b:g2', 'c:g2']);
+  store.close();
+});
+
+test('every export row has exactly the documented columns, so headers never change', async () => {
+  const { EXPORT_COLUMNS, EXPORT_DATASETS } = await import('../src/store.ts');
+  const { datasetCsv } = await import('../src/export.ts');
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  store.upsertLane('l', { group: 'g' }, 'bot');
+  store.createEscalation({ laneId: 'l', question: 'Q?', positions: [{ agent: 'r', stance: 'agree' }] }, 'bot');
+  for (const d of EXPORT_DATASETS) {
+    for (const row of store.exportRows(d)) assert.deepEqual(Object.keys(row), [...EXPORT_COLUMNS[d]], d);
+    const empty = datasetCsv(store, d, { laneId: 'nope' });
+    const full = datasetCsv(store, d, {});
+    assert.equal(empty.split('\r\n')[0], full.split('\r\n')[0], d);
+  }
+  store.close();
+});
+
+test('positions are filtered by when each position was taken', () => {
+  let now = Date.parse('2026-10-01T10:00:00Z');
+  const store = new Store({ path: ':memory:', resolveTicketUrl, now: () => new Date(now) });
+  const e = store.createEscalation({ laneId: 'l', question: 'Q?' }, 'bot');
+  now = Date.parse('2026-10-05T10:00:00Z');
+  store.addPosition(e.id, { agent: 'late', stance: 'agree' }, 'bot');
+  assert.equal(store.exportRows('positions', { to: '2026-10-03T00:00:00.000Z' }).length, 0);
+  assert.equal(store.exportRows('positions', { from: '2026-10-03T00:00:00.000Z' }).length, 1);
+  store.close();
+});
+
+test('export date filters are UTC-only and strict', async () => {
+  const { exportFilter } = await import('../src/schemas.ts');
+  assert.equal(exportFilter.parse({ from: '2026-10-01' }).from, '2026-10-01T00:00:00.000Z');
+  assert.equal(exportFilter.parse({ from: '2026-10-01T10:00:00+02:00' }).from, '2026-10-01T08:00:00.000Z');
+  for (const bad of [{ from: '2026-10-01T10:00' }, { from: '2026-02-30' }, { lane_id: 'x' }, { from: '2026-10-02', to: '2026-10-01' }]) {
+    assert.equal(exportFilter.safeParse(bad).success, false, JSON.stringify(bad));
   }
 });

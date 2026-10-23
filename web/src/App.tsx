@@ -17,7 +17,7 @@ import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { useLiveData, useNow } from './live.ts';
 import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
-import { AgentKeysSection, PasswordSection, PeopleSection } from './settings.tsx';
+import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection } from './settings.tsx';
 
 // ---- routing (hash based, so it works from file-less Capacitor URLs and push deep links) ----
 
@@ -440,6 +440,7 @@ function Dashboard({
       ) : (
         <p className="hint">Sign in with an account to manage agent keys and people.</p>
       )}
+      <ExportSection client={client} serverUrl={conn.server || location.origin} />
       <button className="ghost danger" onClick={() => onSignOut(client)}>
         Sign out
       </button>

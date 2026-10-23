@@ -1128,3 +1128,32 @@ textarea {
   width: 22px;
   min-height: 22px;
 }
+
+/* ---- export ---- */
+
+.date-range {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.date-range label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.dataset-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.dataset-links button {
+  min-height: 40px;
+  font-size: 0.85rem;
+}

@@ -4,7 +4,7 @@
 
 | File | What it is |
 |---|---|
-| `lanesignal.db` (+ `-wal`, `-shm`) | SQLite in WAL mode: groups, lanes, escalations, activity, accounts, sessions, agent keys, push registrations |
+| `lanesignal.db` (+ `-wal`, `-shm`) | SQLite in WAL mode: groups, lanes, escalations, history, accounts, sessions, agent keys, push registrations. Removed lanes and groups are archived here, not deleted. For analysis, use the [export](export.md) rather than reading the file |
 | `auth-secret` | Signs sessions. Generated when `LANESIGNAL_AUTH_SECRET` is unset; losing it signs everyone out |
 | `setup-code` | Exists only until the first account is created |
 | `generated-tokens.json` | Only on installs from before accounts existed. Its tokens still work, alongside any configured ones |
