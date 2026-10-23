@@ -253,7 +253,11 @@ describe('accounts', () => {
 
     const keys = (await call('GET', '/api/auth/api-key/list', adminToken)).body;
     const id = (keys.apiKeys ?? keys).find((k: { name: string }) => k.name === 'streamer').id;
+    const revokedAt = Date.now();
     await call('POST', '/api/auth/api-key/delete', adminToken, { keyId: id });
+    // The long-poll ends right away, not after its 20s wait.
+    assert.equal((await poll).status, 401);
+    assert.ok(Date.now() - revokedAt < 3000, 'long-poll ended promptly');
     await call('POST', `/api/escalations/${esc.id}/decide`, adminToken, { decision: 'yes' });
 
     let text = '';
@@ -264,7 +268,6 @@ describe('accounts', () => {
       text += decoder.decode(value);
     }
     assert.ok(!text.includes('"decided"'), 'no events after revocation');
-    assert.equal((await poll).status, 401);
   });
 
   test('a temporary ban stops keys only until it expires', async () => {
