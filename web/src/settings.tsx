@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { AgentKey, Client, Person, Principal } from './api.ts';
+import { isNative, type AgentKey, type Client, type Person, type Principal } from './api.ts';
 import { absolute, ago } from './format.ts';
 
 function useAsync<T>(load: () => Promise<T>) {
@@ -213,6 +213,69 @@ export function PeopleSection({ client, me }: { client: Client; me: Principal })
         </form>
       </details>
       {notice && <p className="hint">{notice}</p>}
+    </section>
+  );
+}
+
+const DATASETS = ['escalations', 'positions', 'lanes', 'groups', 'events'] as const;
+
+/** Everything (including closed escalations and removed lanes) as CSV for analysis. */
+export function ExportSection({ client, serverUrl }: { client: Client; serverUrl: string }) {
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const query = new URLSearchParams({ ...(from && { from }), ...(to && { to }) }).toString();
+  const suffix = query ? `?${query}` : '';
+
+  async function get(path: string, name: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await client.download(path + suffix, name);
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="settings-block">
+      <h3>Export data</h3>
+      <p className="hint">
+        All escalations (including closed ones), agent positions, lanes, groups and lane history as CSV. Removed lanes
+        and groups are included. The dates filter escalations, positions and history.
+      </p>
+      {isNative ? (
+        <p className="hint">
+          Downloads work from the web app, or with the API: <code>{serverUrl}/api/export</code>
+        </p>
+      ) : (
+        <>
+          <div className="date-range">
+            <label>
+              From
+              <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            </label>
+            <label>
+              To (exclusive)
+              <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            </label>
+          </div>
+          <button className="primary" disabled={busy} onClick={() => void get('/api/export', 'lanesignal-export.zip')}>
+            Download everything (.zip)
+          </button>
+          <div className="dataset-links">
+            {DATASETS.map((d) => (
+              <button key={d} className="ghost" disabled={busy} onClick={() => void get(`/api/export/${d}.csv`, `${d}.csv`)}>
+                {d}.csv
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      {error && <p className="error">{error}</p>}
     </section>
   );
 }

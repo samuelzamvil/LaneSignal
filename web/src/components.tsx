@@ -274,7 +274,7 @@ export function LaneDetail({
               <button
                 className="ghost danger"
                 onClick={() => {
-                  if (confirm(`Remove lane "${data.lane.name}" and its history?`)) {
+                  if (confirm(`Remove "${data.lane.name}" from the dashboard? Its open questions are withdrawn; its history stays available in exports.`)) {
                     client
                       .deleteLane(data.lane.id)
                       .then(onClose)
