@@ -36,7 +36,15 @@ LaneSignal tracks when each lane last published, how long it has been in its cur
 
 Its history keeps every status change and escalation step. Routine activity text is capped at the last `LANESIGNAL_EVENT_RETENTION` entries.
 
-**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md).
+**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md). People remove lanes in the app; overseers remove theirs with `remove_lane` when the work stream is over.
+
+### Lane letters and escalation codes
+
+Each active lane gets a letter, shown on its card: A, B, … Z, then AA, AB. Its escalations are coded with it: **A1**, **A2**, then B1 for lane B, so two overseers' questions never share a code.
+
+- A lane keeps its letter while it's active, and after that while any of its escalations is unanswered or not yet acknowledged.
+- Once a lane is completed or removed and nothing is pending, its letter goes back to the pool. The next new lane takes the smallest free letter, so letters stay short.
+- Numbers keep counting per letter. If A1–A5 belonged to a lane that finished, the next lane to get A starts at **A6**, so a code always means one escalation, in exports too.
 
 ## Escalations
 
@@ -44,7 +52,7 @@ An escalation is a question for humans, attached to a lane. Only `question` is r
 
 | Field | Meaning |
 |---|---|
-| `ref` | Set by the server: a short number, shown as **#42**, that people and agents can use to refer to the escalation. Every tool and endpoint accepts it in place of the id |
+| `ref` | Set by the server: a code like **A12** (the lane's letter and a number) that people and agents can use to refer to the escalation. Every tool and endpoint accepts it in place of the id |
 | `context` | What a human needs to know to answer without opening the agent's session |
 | `question` | The decision being asked for. It's also the headline |
 | `recommendation` | What the agent would do and why |
@@ -101,4 +109,4 @@ LaneSignal links to tickets but never syncs or edits them.
 
 ## Notifications
 
-By default, push notifications go out only when an escalation is **created**: urgent for blocking questions, quiet for FYIs. The title carries its number (`Decision needed #42 · …`). Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).
+By default, push notifications go out only when an escalation is **created**: urgent for blocking questions, quiet for FYIs. The title carries its code (`Decision needed A12 · …`). Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).

@@ -39,6 +39,11 @@ export interface Group {
 
 export interface Lane {
   id: string;
+  /**
+   * Letter while the lane is active or has unresolved escalations (A, B, … Z, AA…); its
+   * escalations are coded with it ("A12"). Freed for another lane once it's done.
+   */
+  letter: string | null;
   name: string;
   /** Id of the group (epic/train/overseer) this lane belongs to. */
   group: string | null;
@@ -85,8 +90,8 @@ export interface Position {
  */
 export interface Escalation {
   id: string;
-  /** Short number for humans and agents to refer to it by ("#42"); accepted wherever an id is. */
-  ref: number;
+  /** Short code for humans and agents to refer to it by: its lane's letter and a number, e.g. "A12". Accepted wherever an id is. */
+  ref: string;
   laneId: string;
   /** The decision being asked for; doubles as the headline. */
   question: string;

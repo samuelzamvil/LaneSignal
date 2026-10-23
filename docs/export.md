@@ -46,7 +46,7 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 | Column | Meaning |
 |---|---|
-| `id`, `ref` | The escalation's id and its short number (#42) |
+| `id`, `ref` | The escalation's id and its code (`A12`) |
 | `lane_id`, `lane_name`, `group_id`, `group_name` | What it belongs to (the group as the lane has it now, even if the group was archived) |
 | `ticket`, `ticket_url` | The escalation's own reference, e.g. the plan PR |
 | `question`, `context`, `recommendation`, `recommended_option`, `cost`, `alternatives`, `options` | The question as asked |
@@ -96,7 +96,7 @@ To rebuild blocked time per lane over a period, pair the status changes in `stat
 
 ## Removing vs keeping
 
-**Removing a lane** in the app:
+**Removing a lane**, in the app or by its overseer (`remove_lane`):
 
 - hides it from the dashboard
 - withdraws its **unanswered** escalations, so waiting agents get an answer ("Lane removed by …"). Each withdrawal is recorded in the history

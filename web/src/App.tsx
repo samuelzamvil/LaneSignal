@@ -209,9 +209,9 @@ function Dashboard({
         ...escalations.filter((e) => e.laneId === route.laneId).map((e) => e.id + e.state),
       ].join('|')
     : '';
-  // The route may name an escalation by its short number (#/esc/42).
+  // The route may name an escalation by its code (#/esc/A12).
   const routeEsc = route.escId
-    ? (live.escalations.get(route.escId) ?? escalations.find((e) => String(e.ref) === route.escId))
+    ? (live.escalations.get(route.escId) ?? escalations.find((e) => e.ref.toLowerCase() === route.escId!.toLowerCase()))
     : undefined;
   // Closed escalations drop out of the live map, which also changes this key.
   const escVersion = route.escId ? (routeEsc?.updatedAt ?? 'closed') : '';

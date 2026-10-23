@@ -211,7 +211,8 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
     res.json(store.upsertLane(id, parse(s.lanePatch, req.body), principalOf(res).name));
   });
 
-  app.delete('/api/lanes/:id', human, (req, res) => {
+  // Humans remove lanes from the dashboard; overseers remove lanes whose work is over.
+  app.delete('/api/lanes/:id', any, (req, res) => {
     store.deleteLane(String(req.params.id), principalOf(res).name);
     res.sendStatus(204);
   });

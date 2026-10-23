@@ -3,7 +3,7 @@
 Everything the MCP tools do is also available over plain HTTP, for scripts, CI jobs and agents without MCP.
 
 - **Auth:** every request (except `/healthz` and `/api/setup`) sends `Authorization: Bearer <credential>`. A credential is an agent key or personal key (`ls_…`), an account session token, or a static config token.
-- **Escalation ids:** wherever a path or field takes an escalation id, the short number works too: `42` or `#42` (URL-encode `#` as `%23`).
+- **Escalation ids:** wherever a path or field takes an escalation id, its code works too, e.g. `A12` (case doesn't matter). Plain numbers from before lane codes (`42`) still resolve.
 - **Errors:** responses are JSON. Errors look like `{"error": "…"}` with a 4xx status:
   - `400` validation (with `issues`)
   - `401` no or invalid credential
@@ -58,7 +58,7 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `GET /api/lanes` | any | |
 | `GET /api/lanes/:id` | any | Lane, its recent escalations and the last 100 activity entries |
 | `PUT /api/lanes/:id` | agent | Create or update `{name?, group?, status?, ticket?, activity?, links?}` |
-| `DELETE /api/lanes/:id` | human | Archives the lane and withdraws its unanswered escalations; decided ones keep their answer. Its history stays for export, and republishing restores it |
+| `DELETE /api/lanes/:id` | any | Archives the lane and withdraws its unanswered escalations; decided ones keep their answer. Its history stays for export, and republishing restores it |
 | `GET /api/escalations?state=open,decided&lane=<id>` | any | Defaults to unresolved (open and decided) |
 | `POST /api/escalations` | agent | See the [fields](concepts.md#escalations). `blocking: false` for FYI questions. `201` when created; `200` with `duplicate: true` when the same question is already open on that lane |
 | `GET /api/escalations/:id?wait=<s>` | any | `wait` (up to 300) holds the request until it's no longer open |
