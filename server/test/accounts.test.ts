@@ -10,6 +10,8 @@ import { loadConfig } from '../src/config.ts';
 import { Store } from '../src/store.ts';
 
 let base = '';
+/** People reported as removed or banned (their push tokens get dropped). */
+const gone: string[] = [];
 let close: () => void;
 let setupCode = '';
 
@@ -24,6 +26,7 @@ before(async () => {
   });
   const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
   const accounts = await createAccounts(config, ':memory:');
+  accounts.people.on('gone', (_id, name) => gone.push(name ?? '?'));
   setupCode = accounts.setupCode!;
   const server = createApp({ config, store, accounts, push: { fcm: false, ntfy: false } }).listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -171,6 +174,7 @@ describe('accounts', () => {
     assert.equal((await call('GET', '/api/lanes', key)).status, 200);
     const removed = await call('POST', '/api/auth/admin/remove-user', adminToken, { userId: carol.body.user.id });
     assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    assert.ok(gone.includes('Carol'), 'removal is reported');
     assert.equal((await call('GET', '/api/lanes', key)).status, 401);
     assert.equal((await call('GET', '/api/me', carolToken)).status, 401);
   });
@@ -185,8 +189,37 @@ describe('accounts', () => {
     const key = (await call('POST', '/api/auth/api-key/create', danToken, { name: 'dan-bot' })).body.key;
     assert.equal((await call('GET', '/api/lanes', key)).status, 200);
     assert.equal((await call('POST', '/api/auth/admin/ban-user', adminToken, { userId: dan.body.user.id })).status, 200);
+    assert.ok(gone.includes('Dan'), 'a ban is reported');
     assert.equal((await call('GET', '/api/lanes', key)).status, 401);
     assert.equal((await call('GET', '/api/me', danToken)).status, 401);
+  });
+
+  test('a personal (human) key answers escalations as its owner, for their own MCP client', async () => {
+    const created = await call('POST', '/api/auth/api-key/create', adminToken, { name: 'ada-claude', metadata: { role: 'human' } });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const key = created.body.key;
+    assert.deepEqual((await call('GET', '/api/me', key)).body, {
+      name: 'Ada',
+      role: 'human',
+      userId: (await call('GET', '/api/me', adminToken)).body.userId,
+      email: 'ada@example.com',
+      admin: false,
+    });
+    const bot = (await call('POST', '/api/auth/api-key/create', adminToken, { name: 'personal-test-bot' })).body.key;
+    const esc = await call('POST', '/api/escalations', bot, { laneId: 'wiring', question: 'Personal key?' });
+    assert.equal(esc.status, 201);
+    const decided = await call('POST', `/api/escalations/${esc.body.id}/decide`, key, { decision: 'yes' });
+    assert.equal(decided.status, 200);
+    assert.equal(decided.body.decidedBy, 'Ada');
+    assert.equal((await call('PUT', '/api/lanes/wiring', key, { status: 'idle' })).status, 403);
+    // It can't manage accounts the way the owner's session can.
+    assert.equal((await call('POST', '/api/admin/people', key, { email: 'z@example.com', name: 'Z', password: 'temporary password' })).status, 403);
+  });
+
+  test('key metadata can only set the role', async () => {
+    for (const metadata of [{ role: 'admin' }, { role: 'human', extra: 1 }, 'human']) {
+      assert.equal((await call('POST', '/api/auth/api-key/create', adminToken, { name: 'x', metadata })).status, 400, JSON.stringify(metadata));
+    }
   });
 
   test('people cannot rename themselves, mint oddly prefixed keys, or impersonate', async () => {

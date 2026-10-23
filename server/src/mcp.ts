@@ -1,7 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Request, Response } from 'express';
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 import { principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import { log } from './log.ts';
 import * as s from './schemas.ts';
@@ -10,7 +12,19 @@ import { ConflictError, EXPORT_COLUMNS, EXPORT_DATASETS, NotFoundError, type Sto
 import { LANE_STATUSES, type Principal } from './types.ts';
 
 const json = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] });
+/** Field names as the tools spell them, for validation messages. */
+const SNAKE: Record<string, string> = { laneId: 'lane_id', recommendedOption: 'recommended_option', groupId: 'group_id' };
+
 const fail = (err: unknown) => {
+  if (err instanceof ZodError) {
+    const text = err.issues
+      .map((i) => {
+        const field = i.path.map((p) => SNAKE[String(p)] ?? String(p)).join('.');
+        return field ? `${field}: ${i.message}` : i.message;
+      })
+      .join('; ');
+    return { isError: true, content: [{ type: 'text' as const, text: `Invalid input: ${text}` }] };
+  }
   if (err instanceof NotFoundError || err instanceof ConflictError || err instanceof Error) {
     return { isError: true, content: [{ type: 'text' as const, text: err.message }] };
   }
@@ -21,6 +35,51 @@ const STATUS_HELP =
   'active = working; pending_ci = waiting on CI; awaiting_agent = waiting on another agent; ' +
   'blocked_human = needs a human decision; idle = nothing to do; completed = done.';
 
+type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+/**
+ * While a tool waits, sends a notification every 20s on the request's stream
+ * (progress when the client asked for it, otherwise a debug log line), so
+ * proxies and clients see the call is alive. Returns the stop function.
+ */
+function keepAlive(extra: Extra) {
+  const token = extra._meta?.progressToken;
+  let n = 0;
+  const timer = setInterval(() => {
+    n += 1;
+    const note =
+      token !== undefined
+        ? { method: 'notifications/progress' as const, params: { progressToken: token, progress: n, message: 'Waiting for a human decision' } }
+        : { method: 'notifications/message' as const, params: { level: 'debug' as const, logger: 'lanesignal', data: 'waiting for a human decision' } };
+    extra.sendNotification(note).catch(() => {});
+  }, 20_000);
+  return () => clearInterval(timer);
+}
+
+/** Ends `fn`'s wait early when the request is cancelled or its credential revoked. */
+async function cancellable<T>(
+  extra: Extra,
+  watchRevocation: (onInvalid: () => void) => () => void,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<{ value: T; revoked: boolean }> {
+  const ctrl = new AbortController();
+  extra.signal.addEventListener('abort', () => ctrl.abort());
+  let revoked = false;
+  const unwatch = watchRevocation(() => {
+    revoked = true;
+    ctrl.abort();
+  });
+  const stop = keepAlive(extra);
+  try {
+    return { value: await fn(ctrl.signal), revoked };
+  } finally {
+    stop();
+    unwatch();
+  }
+}
+
+const ID_HELP = 'Escalation id, or its short number such as "42" or "#42".';
+
 /** Builds an MCP server whose tools act as the authenticated principal. */
 function buildServer(
   store: Store,
@@ -28,7 +87,7 @@ function buildServer(
   stillValid: () => Promise<boolean>,
   watchRevocation: (onInvalid: () => void) => () => void,
 ) {
-  const server = new McpServer({ name: 'lanesignal', version: '0.1.0' });
+  const server = new McpServer({ name: 'lanesignal', version: '0.1.0' }, { capabilities: { logging: {} } });
 
   server.registerTool(
     'list_lanes',
@@ -67,28 +126,57 @@ function buildServer(
     'get_escalation',
     {
       description:
-        'Get one escalation. Pass wait_seconds to block until a human decides (long-poll, max 300) instead of polling repeatedly.',
-      inputSchema: { id: z.string(), wait_seconds: z.number().int().min(0).max(300).optional() },
+        'Get one escalation. Pass wait_seconds to block until a human decides (long-poll, max 300). ' +
+        'To wait on several escalations, lanes or your whole group at once, use wait_for_decisions.',
+      inputSchema: { id: z.string().describe(ID_HELP), wait_seconds: z.number().int().min(0).max(300).optional() },
       annotations: { readOnlyHint: true },
     },
     async ({ id, wait_seconds }, extra) => {
       try {
-        // A revoked key ends the wait at once.
-        const ctrl = new AbortController();
-        extra.signal.addEventListener('abort', () => ctrl.abort());
-        let revoked = false;
-        const unwatch = watchRevocation(() => {
-          revoked = true;
-          ctrl.abort();
-        });
-        let escalation;
-        try {
-          escalation = await store.waitForDecision(id, (wait_seconds ?? 0) * 1000, ctrl.signal);
-        } finally {
-          unwatch();
-        }
+        const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
+          store.waitForDecision(id, (wait_seconds ?? 0) * 1000, signal),
+        );
         if (revoked || (wait_seconds && !(await stillValid()))) return fail(new Error('Credential revoked'));
-        return json(escalation);
+        return json(value);
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'wait_for_decisions',
+    {
+      description:
+        'Wait for human answers across your group, some lanes, or specific escalations, and return as soon as ' +
+        'any of them needs you. Returns `decided` (answered, not yet acknowledged: act on each), `closed` ' +
+        '(withdrawn by someone else, e.g. "Lane removed by …": stop work on that lane; or named ones already ' +
+        'acknowledged), `open` (still waiting) and `checkedAt` (pass it as `since` next time). ' +
+        '`ready` is false only when the wait ran out with nothing new; call again. Returns at once if something is ' +
+        'already decided or nothing is open. Decisions can take hours: loop on this tool, or for long waits in ' +
+        'Claude Code run the HTTP version (GET /api/wait) as a background shell command so your session stays free. ' +
+        'Default wait 300s; up to 3600s if your MCP client allows calls that long.',
+      inputSchema: {
+        group_id: s.groupId.optional().describe('Wait on every lane in this group (your epic/train).'),
+        lane_ids: z.array(s.laneId).max(100).optional(),
+        ids: z.array(z.string()).max(100).optional().describe('Escalation ids or short numbers.'),
+        wait_seconds: z.number().int().min(0).max(3600).optional(),
+        since: z
+          .string()
+          .optional()
+          .describe('Pass the previous result\'s `checkedAt` so withdrawals between calls are still reported.'),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ group_id, lane_ids, ids, wait_seconds, since }, extra) => {
+      try {
+        const scope = { ...s.waitScope.parse({ groupId: group_id, laneIds: lane_ids, ids, since }), viewer: who.name };
+        const timeout = wait_seconds ?? 300;
+        const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
+          store.waitForDecisions(scope, timeout * 1000, signal),
+        );
+        if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
+        return json(value);
       } catch (err) {
         return fail(err);
       }
@@ -193,8 +281,11 @@ function buildServer(
           'with the recommendation, e.g. a reviewer). Set `ticket` to what the question is about (e.g. "gh:921") when it ' +
           'differs from the lane ticket. Provide short `options` for one-tap answers and set `recommended_option` to the ' +
           'one you recommend. A lane may have several open escalations; raise one per decision. ' +
-          'By default marks the lane blocked_human until all are decided. ' +
-          'Then wait with get_escalation(wait_seconds) and acknowledge_escalation once you act on the decision.',
+          'By default marks the lane blocked_human until all are decided; set `blocking: false` for FYI questions ' +
+          'you can keep working around. Each escalation gets a short number (`ref`, shown as #42) that you and the ' +
+          'humans can use to refer to it, including in this server\'s tools. Retrying the same question on the same ' +
+          'lane while it is open returns the existing escalation (`duplicate: true`). ' +
+          'Then wait with wait_for_decisions and call acknowledge_escalation as soon as one is decided.',
         inputSchema: {
           lane_id: s.laneId,
           question: s.escalationFields.question,
@@ -226,7 +317,7 @@ function buildServer(
         description:
           'Record whether you agree or disagree with an open escalation\'s recommendation, with a short reason. ' +
           'One position per agent; calling again replaces yours. Use `agent` to name yourself if you share a token.',
-        inputSchema: { id: z.string(), ...s.position.shape },
+        inputSchema: { id: z.string().describe(ID_HELP), ...s.position.shape },
       },
       async ({ id, agent, ...rest }) => {
         try {
@@ -240,12 +331,21 @@ function buildServer(
     server.registerTool(
       'acknowledge_escalation',
       {
-        description: 'Confirm you received and are acting on a decided escalation. Closes it.',
-        inputSchema: { id: z.string(), note: z.string().max(5000).optional() },
+        description:
+          'Call as soon as an escalation is decided, before acting: it closes the escalation and returns the final ' +
+          '`decision` and `decisionNote` to act on (a human may correct a mis-tap until you acknowledge). ' +
+          'Pass `status` and `activity` to publish what the lane does next in the same call; otherwise the lane ' +
+          'keeps its current status (usually awaiting_agent). Repeating it returns the same result.',
+        inputSchema: {
+          id: z.string().describe(ID_HELP),
+          note: z.string().max(5000).optional(),
+          status: z.enum(LANE_STATUSES).optional(),
+          activity: z.string().max(2000).optional(),
+        },
       },
-      async ({ id, note }) => {
+      async ({ id, note, status, activity }) => {
         try {
-          return json(store.acknowledgeEscalation(id, note ?? null, who.name));
+          return json(store.acknowledgeEscalation(id, note ?? null, who.name, { status, activity }));
         } catch (err) {
           return fail(err);
         }
@@ -257,7 +357,7 @@ function buildServer(
       {
         description:
           'Close an escalation that no longer needs a dashboard decision, e.g. it was answered in Remote Control or became moot.',
-        inputSchema: { id: z.string(), resolution: z.string().max(5000).optional() },
+        inputSchema: { id: z.string().describe(ID_HELP), resolution: z.string().max(5000).optional() },
       },
       async ({ id, resolution }) => {
         try {
@@ -273,12 +373,34 @@ function buildServer(
     server.registerTool(
       'decide_escalation',
       {
-        description: 'Record a human decision on an open escalation.',
-        inputSchema: { id: z.string(), decision: z.string().min(1).max(2000), note: z.string().max(5000).optional() },
+        description:
+          'Record a human decision on an open escalation. With `change: true`, replace the decision on one that is ' +
+          'decided but not yet acknowledged by its agent.',
+        inputSchema: {
+          id: z.string().describe(ID_HELP),
+          decision: z.string().min(1).max(2000),
+          note: z.string().max(5000).optional(),
+          change: z.boolean().optional(),
+        },
       },
-      async ({ id, decision, note }) => {
+      async ({ id, decision, note, change }) => {
         try {
-          return json(store.decideEscalation(id, decision, note ?? null, who.name));
+          return json(store.decideEscalation(id, decision, note ?? null, who.name, change ?? false));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'withdraw_escalation',
+      {
+        description: 'Dismiss an escalation that no longer needs an answer.',
+        inputSchema: { id: z.string().describe(ID_HELP), resolution: z.string().max(5000).optional() },
+      },
+      async ({ id, resolution }) => {
+        try {
+          return json(store.withdrawEscalation(id, resolution ?? null, who.name));
         } catch (err) {
           return fail(err);
         }

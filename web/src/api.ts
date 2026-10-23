@@ -21,6 +21,8 @@ export interface AgentKey {
   start: string | null;
   createdAt: string;
   lastRequest: string | null;
+  /** role "human" marks a personal key that answers escalations as its owner. */
+  metadata?: { role?: string } | null;
 }
 
 export interface Person {
@@ -96,8 +98,9 @@ export function createClient(conn: Connection) {
       ),
     escalation: (id: string) => request<Escalation>('GET', `/api/escalations/${encodeURIComponent(id)}`),
     deleteLane: (id: string) => request<void>('DELETE', `/api/lanes/${encodeURIComponent(id)}`),
-    decide: (id: string, decision: string, note?: string) =>
-      request<Escalation>('POST', `/api/escalations/${id}/decide`, { decision, note: note || null }),
+    /** `change` replaces the answer on a decided escalation the agent hasn't acknowledged. */
+    decide: (id: string, decision: string, note?: string, change = false) =>
+      request<Escalation>('POST', `/api/escalations/${id}/decide`, { decision, note: note || null, ...(change ? { change } : {}) }),
     withdraw: (id: string, note?: string) =>
       request<Escalation>('POST', `/api/escalations/${id}/withdraw`, { note: note || null }),
     signOut: () => request<unknown>('POST', '/api/auth/sign-out', {}),
@@ -119,7 +122,11 @@ export function createClient(conn: Connection) {
       const res = await request<{ apiKeys: AgentKey[] } | AgentKey[]>('GET', '/api/auth/api-key/list');
       return Array.isArray(res) ? res : res.apiKeys;
     },
-    createKey: (name: string) => request<AgentKey & { key: string }>('POST', '/api/auth/api-key/create', { name }),
+    createKey: (name: string, role: 'agent' | 'human' = 'agent') =>
+      request<AgentKey & { key: string }>('POST', '/api/auth/api-key/create', {
+        name,
+        ...(role === 'human' ? { metadata: { role: 'human' } } : {}),
+      }),
     deleteKey: (keyId: string) => request<unknown>('POST', '/api/auth/api-key/delete', { keyId }),
 
     // People (admins only).

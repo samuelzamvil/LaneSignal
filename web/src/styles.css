@@ -413,6 +413,37 @@ textarea {
   color: var(--danger);
 }
 
+.fyi-count {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--info);
+}
+
+.listening {
+  font-size: 0.8rem;
+  color: var(--ok);
+}
+
+.ref {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.agent-presence {
+  font-size: 0.85rem;
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.agent-presence.on {
+  color: var(--ok);
+}
+
+.agent-presence.late {
+  color: var(--warn);
+}
+
 .activity {
   margin: 8px 0 0;
   color: var(--muted);
@@ -531,6 +562,12 @@ textarea {
 
 .esc-card.decided {
   opacity: 0.85;
+}
+
+/* FYI questions: visible, but not alarming. */
+.esc-card.open.fyi {
+  border: 1px solid var(--info);
+  box-shadow: none;
 }
 
 .esc-head {

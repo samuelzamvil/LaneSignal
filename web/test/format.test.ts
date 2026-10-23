@@ -21,8 +21,10 @@ test('lanes needing a human sort first, then by status, then most recent', () =>
   assert.deepEqual(lanes.sort(compareLanes).map((l) => l.id), ['blocked', 'active-new', 'active-old', 'idle']);
 });
 
-test('a lane with an open escalation needs a human', () => {
-  assert.equal(needsHuman(lane({ status: 'awaiting_agent', openEscalations: 1 })), true);
+test('a lane with an open blocking escalation needs a human; FYI questions alone do not', () => {
+  assert.equal(needsHuman(lane({ status: 'awaiting_agent', openEscalations: 1, blockingEscalations: 1 })), true);
+  assert.equal(needsHuman(lane({ status: 'awaiting_agent', openEscalations: 1, blockingEscalations: 0 })), false);
+  assert.equal(needsHuman(lane({ status: 'blocked_human' })), true);
   assert.equal(needsHuman(lane()), false);
 });
 
@@ -38,4 +40,5 @@ test('working lanes go stale after the threshold; idle and blocked lanes do not'
   assert.equal(isStale(lane({ status: 'active' }), now, 120), false);
   assert.equal(isStale(lane({ status: 'idle' }), now, 30), false);
   assert.equal(isStale(lane({ status: 'active' }), now, 0), false);
+  assert.equal(isStale(lane({ status: 'awaiting_agent', agentWaiting: true }), now, 30), false, 'its agent is waiting');
 });

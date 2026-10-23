@@ -44,6 +44,7 @@ An escalation is a question for humans, attached to a lane. Only `question` is r
 
 | Field | Meaning |
 |---|---|
+| `ref` | Set by the server: a short number, shown as **#42**, that people and agents can use to refer to the escalation. Every tool and endpoint accepts it in place of the id |
 | `context` | What a human needs to know to answer without opening the agent's session |
 | `question` | The decision being asked for. It's also the headline |
 | `recommendation` | What the agent would do and why |
@@ -69,16 +70,22 @@ open ──(human decides)──► decided ──(agent acknowledges)──► 
   └──────(agent or human withdraws: answered elsewhere / moot)──────► withdrawn
 ```
 
-- Decided escalations stay on the dashboard under *Decided · awaiting agent* until the agent acknowledges.
+- Decided escalations stay on the dashboard under *Decided · awaiting agent* until the agent acknowledges. One that waits longer than `LANESIGNAL_STALE_MINUTES` is flagged.
 - If two humans answer at once, the second gets `409 Conflict`.
+- **Change decision** (in the detail view) replaces the answer until the agent acknowledges, e.g. after a mis-tap. Agents acknowledge before acting, and the acknowledgement returns the final answer.
+- Raising the same question again on the same lane while it's still open returns the existing escalation, so agent retries don't create duplicates.
 - **Withdraw** is for questions that were answered elsewhere, for example in Remote Control, or that stopped mattering.
 
 ### Blocking
 
 - An escalation is **blocking** by default: creating it sets the lane to `blocked_human`.
-- `blocking: false` marks an FYI question that never holds the lane blocked.
+- `blocking: false` marks an FYI question that never holds the lane blocked. FYIs are listed separately in the inbox, aren't counted in the "Needs you" badge, don't make a lane look urgent, and notify quietly.
 - When a lane's **last open blocking** escalation is decided (or withdrawn while still open), the lane moves to `awaiting_agent`. That stops the blocked timer while the agent picks up the answer.
-- Acknowledging never changes a lane's status. Neither does anything else on a lane the agent set to `blocked_human` itself. The agent publishes what it does next.
+- Acknowledging changes the lane's status only if the agent passes `status` with it. Nothing else changes a lane the agent set to `blocked_human` itself. The agent publishes what it does next.
+
+### Agent waiting
+
+While an agent waits for answers on a lane, the lane shows **agent waiting**, and an open escalation says whether your answer reaches an agent right away. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting, and after a server restart until the agent waits again.
 
 ## Tickets
 
@@ -94,4 +101,4 @@ LaneSignal links to tickets but never syncs or edits them.
 
 ## Notifications
 
-By default, push notifications go out only when an escalation is **created**. Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).
+By default, push notifications go out only when an escalation is **created**: urgent for blocking questions, quiet for FYIs. The title carries its number (`Decision needed #42 · …`). Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).

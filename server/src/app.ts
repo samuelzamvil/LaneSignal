@@ -225,9 +225,58 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
     res.json(store.listEscalations({ states, laneId }));
   });
 
+  /** 201 when created; 200 with `duplicate: true` when the same open question already exists (a retry). */
   app.post('/api/escalations', agent, (req, res) => {
-    res.status(201).json(store.createEscalation(parse(s.escalationInput, req.body), principalOf(res).name));
+    const escalation = store.createEscalation(parse(s.escalationInput, req.body), principalOf(res).name);
+    res.status(escalation.duplicate ? 200 : 201).json(escalation);
   });
+
+  /**
+   * Waits on a group, lanes and/or escalations until something needs the agent
+   * (see Store.waitForDecisions). Up to 24 hours: once it has to wait, it sends
+   * the 200 at once and a space every 20s, so proxies see a live response and
+   * the JSON body (leading whitespace is valid JSON) follows when it's ready.
+   */
+  app.get(
+    '/api/wait',
+    any,
+    h(async (req, res) => {
+      const q = parse(s.waitQuery, req.query);
+      const scope = {
+        ...parse(s.waitScope, { ids: q.ids, laneIds: q.lane, groupId: q.group, since: q.since }),
+        viewer: principalOf(res).name,
+      };
+      const now = store.decisionsFor(scope);
+      const timeout = q.timeout ?? 300;
+      if (now.ready || timeout === 0) {
+        res.json(now);
+        return;
+      }
+      const abort = new AbortController();
+      res.on('close', () => abort.abort());
+      let revoked = false;
+      const unwatch = watchRevocationOf(res)(() => {
+        revoked = true;
+        abort.abort();
+      });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
+      res.write(' ');
+      const stillValid = stillValidOf(res);
+      const keepalive = setInterval(() => {
+        res.write(' ');
+        void stillValid().then((ok) => ok || ((revoked = true), abort.abort()));
+      }, 20_000);
+      try {
+        const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
+        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : result));
+      } catch (err) {
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));
+      } finally {
+        clearInterval(keepalive);
+        unwatch();
+      }
+    }),
+  );
 
   /** `?wait=N` long-polls up to N seconds (max 300) for the escalation to leave `open`. */
   app.get(
@@ -267,12 +316,20 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
 
   app.post('/api/escalations/:id/decide', human, (req, res) => {
     const body = parse(s.decision, req.body);
-    res.json(store.decideEscalation(String(req.params.id), body.decision, body.note ?? null, principalOf(res).name));
+    res.json(
+      store.decideEscalation(String(req.params.id), body.decision, body.note ?? null, principalOf(res).name, body.change ?? false),
+    );
   });
 
+  /** Repeating an acknowledgement returns the same result. `status`/`activity` publish the lane's next state. */
   app.post('/api/escalations/:id/ack', agent, (req, res) => {
-    const body = parse(s.resolution, req.body ?? {});
-    res.json(store.acknowledgeEscalation(String(req.params.id), body.note ?? null, principalOf(res).name));
+    const body = parse(s.acknowledgement, req.body ?? {});
+    res.json(
+      store.acknowledgeEscalation(String(req.params.id), body.note ?? null, principalOf(res).name, {
+        status: body.status,
+        activity: body.activity,
+      }),
+    );
   });
 
   // Agents withdraw (answered elsewhere / moot); humans may dismiss stale ones.
@@ -335,7 +392,7 @@ export function createApp({ config, store, accounts, push, webDir }: AppOptions)
 
   app.post('/api/push/register', human, (req, res) => {
     const body = parse(s.pushRegistration, req.body);
-    store.addPushToken(body.token, body.platform, principalOf(res).name);
+    store.addPushToken(body.token, body.platform, principalOf(res).name, principalOf(res).userId ?? null);
     res.sendStatus(204);
   });
 

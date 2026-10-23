@@ -1,0 +1,29 @@
+# Weekly update PRs, grouped so they arrive as one PR per ecosystem.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ['*']
+    ignore:
+      # Types follow the Node major the image runs.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # Stay on the LTS line; major Node upgrades are a deliberate change.
+      - dependency-name: node
+        update-types: ['version-update:semver-major']

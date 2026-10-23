@@ -83,9 +83,17 @@ export function LaneCard({
       <div className="meta">
         {groupName && <span className="tag">{groupName}</span>}
         <TicketLink lane={lane} />
-        {lane.openEscalations > 0 && (
+        {lane.blockingEscalations > 0 && (
           <span className="esc-count">
-            ⚑ {lane.openEscalations} decision{lane.openEscalations > 1 ? 's' : ''}
+            ⚑ {lane.blockingEscalations} decision{lane.blockingEscalations > 1 ? 's' : ''}
+          </span>
+        )}
+        {lane.openEscalations > lane.blockingEscalations && (
+          <span className="fyi-count">ⓘ {lane.openEscalations - lane.blockingEscalations} FYI</span>
+        )}
+        {lane.agentWaiting && (
+          <span className="listening" title="An agent is waiting on this lane's escalations">
+            ● agent waiting
           </span>
         )}
       </div>

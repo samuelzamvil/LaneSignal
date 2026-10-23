@@ -1,5 +1,5 @@
-# Override to use a registry mirror, e.g. --build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-bookworm-slim
-ARG NODE_IMAGE=node:22-bookworm-slim
+# Override to use a registry mirror, e.g. --build-arg NODE_IMAGE=mirror.gcr.io/library/node:24-bookworm-slim
+ARG NODE_IMAGE=node:24-bookworm-slim
 
 # ---- build: server (tsc) + web (vite) ----
 FROM ${NODE_IMAGE} AS build

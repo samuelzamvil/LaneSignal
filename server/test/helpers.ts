@@ -20,7 +20,11 @@ export async function startServer(env: Record<string, string> = {}) {
     LANESIGNAL_TICKET_TEMPLATES: 'gh=https://github.com/o/r/issues/{id}',
     ...env,
   });
-  const store = new Store({ path: ':memory:', resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem) });
+  const store = new Store({
+    path: ':memory:',
+    resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem),
+    waitGraceMs: 50,
+  });
   const accounts = await createAccounts(config, ':memory:');
   const server = createApp({ config, store, accounts, push: { fcm: false, ntfy: false } }).listen(0);
   await new Promise((r) => server.once('listening', r));

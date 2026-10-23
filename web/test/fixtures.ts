@@ -16,11 +16,14 @@ export const lane = (over: Partial<Lane> = {}): Lane => ({
   blockedSince: null,
   blockedTotalMs: 0,
   openEscalations: 0,
+  blockingEscalations: 0,
+  agentWaiting: false,
   ...over,
 });
 
 export const escalation = (over: Partial<Escalation> = {}): Escalation => ({
   id: 'e1',
+  ref: 1,
   laneId: 'l1',
   question: 'Q?',
   context: null,

@@ -198,7 +198,9 @@ function Dashboard({
     if (e.state !== 'open') continue;
     openByLane.set(e.laneId, [...(openByLane.get(e.laneId) ?? []), e]);
   }
-  const open = [...openByLane.values()].flat();
+  // Counts and badges are for blocking questions; FYI ones are listed separately.
+  const open = [...openByLane.values()].flat().filter((e) => e.blocking);
+  const fyi = [...openByLane.values()].flat().filter((e) => !e.blocking);
   const decided = escalations.filter((e) => e.state === 'decided');
   // Refetch lane detail only when something about that lane changed.
   const laneVersion = route.laneId
@@ -207,14 +209,18 @@ function Dashboard({
         ...escalations.filter((e) => e.laneId === route.laneId).map((e) => e.id + e.state),
       ].join('|')
     : '';
+  // The route may name an escalation by its short number (#/esc/42).
+  const routeEsc = route.escId
+    ? (live.escalations.get(route.escId) ?? escalations.find((e) => String(e.ref) === route.escId))
+    : undefined;
   // Closed escalations drop out of the live map, which also changes this key.
-  const escVersion = route.escId ? (live.escalations.get(route.escId)?.updatedAt ?? 'closed') : '';
+  const escVersion = route.escId ? (routeEsc?.updatedAt ?? 'closed') : '';
   const seqOf = (e: (typeof escalations)[number]) => {
     const siblings = openByLane.get(e.laneId) ?? [];
     return siblings.length > 1 ? { index: siblings.indexOf(e), total: siblings.length } : undefined;
   };
-  const escLaneId = route.escId ? (live.escalations.get(route.escId)?.laneId ?? null) : null;
-  const blockedLanes = lanes.filter((l) => l.status === 'blocked_human' && l.openEscalations === 0);
+  const escLaneId = routeEsc?.laneId ?? null;
+  const blockedLanes = lanes.filter((l) => l.status === 'blocked_human' && l.blockingEscalations === 0);
 
   useEffect(() => {
     document.title = open.length ? `(${open.length}) LaneSignal` : 'LaneSignal';
@@ -294,6 +300,7 @@ function Dashboard({
           group={live.groups.get(live.lanes.get(e.laneId)?.group ?? '')}
           now={now}
           client={client}
+          staleMinutes={config.staleMinutes}
         />
       ))}
       {blockedLanes.length > 0 && (
@@ -301,6 +308,25 @@ function Dashboard({
           <h3 className="subhead">Blocked lanes without an escalation</h3>
           {blockedLanes.map((l) => (
             <LaneCard key={l.id} lane={l} now={now} config={config} groupName={l.group && groupName(l.group)} onOpen={() => navigate(`#/lane/${encodeURIComponent(l.id)}`)} />
+          ))}
+        </>
+      )}
+      {fyi.length > 0 && (
+        <>
+          <h3 className="subhead">
+            FYI · agents keep working <span className="count">{fyi.length}</span>
+          </h3>
+          {fyi.map((e) => (
+            <EscalationCard
+              key={e.id}
+              esc={e}
+              seq={seqOf(e)}
+              lane={live.lanes.get(e.laneId)}
+              group={live.groups.get(live.lanes.get(e.laneId)?.group ?? '')}
+              now={now}
+              client={client}
+              staleMinutes={config.staleMinutes}
+            />
           ))}
         </>
       )}
@@ -315,6 +341,7 @@ function Dashboard({
               group={live.groups.get(live.lanes.get(e.laneId)?.group ?? '')}
               now={now}
               client={client}
+              staleMinutes={config.staleMinutes}
             />
           ))}
         </>
@@ -486,8 +513,10 @@ function Dashboard({
           lanes={live.lanes}
           groups={live.groups}
           laneOpenIds={escLaneId ? (openByLane.get(escLaneId) ?? []).map((e) => e.id) : []}
+          currentId={routeEsc?.id}
           version={escVersion}
           now={now}
+          staleMinutes={config.staleMinutes}
           onClose={() => closeTo('#/')}
         />
       )}
