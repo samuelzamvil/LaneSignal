@@ -13,7 +13,9 @@
     "test": "LOG_LEVEL=warn node --disable-warning=ExperimentalWarning --experimental-strip-types --test test/*.test.ts"
   },
   "dependencies": {
+    "@better-auth/api-key": "^1.7.12",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "better-auth": "^1.7.12",
     "express": "^5.3.0",
     "zod": "^4.6.7"
   },

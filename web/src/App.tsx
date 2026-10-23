@@ -4,7 +4,6 @@ import {
   createClient,
   isNative,
   loadConnection,
-  normalizeServer,
   saveConnection,
   type Client,
   type Connection,
@@ -16,7 +15,9 @@ import { Chips, GroupHeader, LaneCard, LaneDetail } from './components.tsx';
 import { EscalationCard, EscalationDetail } from './escalations.tsx';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { useLiveData, useNow } from './live.ts';
+import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
+import { AgentKeysSection, PasswordSection, PeopleSection } from './settings.tsx';
 
 // ---- routing (hash based, so it works from file-less Capacitor URLs and push deep links) ----
 
@@ -103,6 +104,8 @@ export default function App() {
       conn={conn}
       onSignOut={async (client) => {
         await teardownPush(client);
+        // End the server-side session too (static access tokens have none).
+        if (conn.kind === 'session') await client.signOut().catch(() => {});
         saveConnection(null);
         setConn(null);
       }}
@@ -110,70 +113,6 @@ export default function App() {
   );
 }
 
-function Login({ onConnected }: { onConnected: (c: Connection) => void }) {
-  const [server, setServer] = useState('');
-  const [token, setToken] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    const c = { server: normalizeServer(server), token: token.trim() };
-    try {
-      const me = await createClient(c).me();
-      if (me.role !== 'human') throw new Error('This is an agent token; sign in with a human token.');
-      onConnected(c);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <main className="login">
-      <form onSubmit={submit}>
-        <img src="/icon.svg" alt="" width={56} height={56} />
-        <h1>LaneSignal</h1>
-        {(isNative || server) && (
-          <label>
-            Server URL
-            <input
-              value={server}
-              onChange={(e) => setServer(e.target.value)}
-              placeholder="https://lanesignal.example.com"
-              inputMode="url"
-              autoCapitalize="off"
-              autoCorrect="off"
-              required={isNative}
-            />
-          </label>
-        )}
-        <label>
-          Access token
-          <input
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            autoComplete="current-password"
-            required
-          />
-        </label>
-        {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={busy}>
-          {busy ? 'Connecting…' : 'Connect'}
-        </button>
-        {!isNative && !server && (
-          <button type="button" className="link" onClick={() => setServer('https://')}>
-            Connect to a different server
-          </button>
-        )}
-      </form>
-    </main>
-  );
-}
 
 function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Client) => void }) {
   const client = useMemo(() => createClient(conn), [conn]);
@@ -458,7 +397,10 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
         <dt>Server</dt>
         <dd>{conn.server || location.origin}</dd>
         <dt>Signed in as</dt>
-        <dd>{me ? `${me.name} (${me.role})` : '…'}</dd>
+        <dd>
+          {me ? `${me.name}${me.email ? ` · ${me.email}` : ''}${me.admin ? ' (admin)' : ''}` : '…'}
+          {conn.kind !== 'session' && ' · access token'}
+        </dd>
         <dt>Connection</dt>
         <dd>{live.link}</dd>
         <dt>Push</dt>
@@ -475,6 +417,15 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
         <dt>Ticket systems</dt>
         <dd>{config.ticketSystems.join(', ') || 'none configured'}</dd>
       </dl>
+      {me?.userId ? (
+        <>
+          <AgentKeysSection client={client} serverUrl={conn.server || location.origin} now={now} />
+          {me.admin && <PeopleSection client={client} me={me} />}
+          <PasswordSection client={client} />
+        </>
+      ) : (
+        <p className="hint">Sign in with an account to manage agent keys and people.</p>
+      )}
       <button className="ghost danger" onClick={() => onSignOut(client)}>
         Sign out
       </button>

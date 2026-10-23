@@ -1,8 +1,8 @@
 // Publishes a handful of demo lanes and escalations through the public API.
-// Usage: LANESIGNAL_URL=http://localhost:8080 LANESIGNAL_TOKEN=<agent token> node scripts/seed-demo.mjs
+// Usage: LANESIGNAL_URL=http://localhost:8080 LANESIGNAL_TOKEN=<agent key from Settings, or a static agent token> node scripts/seed-demo.mjs
 const base = process.env.LANESIGNAL_URL ?? 'http://localhost:8080';
 const token = process.env.LANESIGNAL_TOKEN;
-if (!token) throw new Error('LANESIGNAL_TOKEN (agent token) is required');
+if (!token) throw new Error('LANESIGNAL_TOKEN (agent key or token) is required');
 
 async function call(method, path, body) {
   const res = await fetch(base + path, {

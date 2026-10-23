@@ -1,20 +1,33 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
+import type { Accounts } from './accounts.ts';
 import type { TokenEntry } from './config.ts';
 import type { Principal, Role } from './types.ts';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 
-export function createAuth(tokens: TokenEntry[]) {
-  const entries = tokens.map((t) => ({ principal: { name: t.name, role: t.role } as Principal, hash: digest(t.token) }));
+/**
+ * Bearer credentials, checked in order: static tokens from config, then
+ * account-owned agent keys and account sessions.
+ */
+export function createAuth(tokens: TokenEntry[], accounts: Pick<Accounts, 'identify'>) {
+  const entries = tokens.map((t) => ({
+    // Config-file human tokens belong to whoever runs the server, so they may manage accounts.
+    principal: { name: t.name, role: t.role, admin: t.role === 'human' } as Principal,
+    hash: digest(t.token),
+  }));
 
-  function identify(token: string | undefined): Principal | null {
-    if (!token) return null;
+  function staticToken(token: string): Principal | null {
     const hash = digest(token);
     // Compare against every entry so timing doesn't reveal which one matched.
     let match: Principal | null = null;
     for (const e of entries) if (timingSafeEqual(hash, e.hash)) match = e.principal;
     return match;
+  }
+
+  async function identify(token: string | undefined): Promise<Principal | null> {
+    if (!token) return null;
+    return staticToken(token) ?? (await accounts.identify(token));
   }
 
   function tokenFrom(req: Request): string | undefined {
@@ -25,10 +38,10 @@ export function createAuth(tokens: TokenEntry[]) {
     return undefined;
   }
 
-  /** Requires a valid token; optionally restricts to roles. */
+  /** Requires a valid credential; optionally restricts to roles. */
   function require(...roles: Role[]) {
-    return (req: Request, res: Response, next: NextFunction) => {
-      const principal = identify(tokenFrom(req));
+    return async (req: Request, res: Response, next: NextFunction) => {
+      const principal = await identify(tokenFrom(req));
       if (!principal) {
         res.status(401).json({ error: 'unauthorized' });
         return;

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
+import { createAccounts } from '../src/accounts.ts';
 import { createApp } from '../src/app.ts';
 import { loadConfig } from '../src/config.ts';
 import { Store } from '../src/store.ts';
@@ -22,10 +23,12 @@ before(async () => {
     LANESIGNAL_HUMAN_TOKENS: `alice:${ALICE}`,
     // legacy name of the human-token variable
     LANESIGNAL_OVERSEER_TOKENS: `bob:${BOB}`,
+    LANESIGNAL_AUTH_SECRET: 'test-secret-0123456789-0123456789-0123',
     LANESIGNAL_TICKET_TEMPLATES: 'redmine=https://redmine.example/issues/{id},gh=https://github.com/o/r/issues/{id}',
   });
   store = new Store({ path: ':memory:', resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem) });
-  const app = createApp({ config, store, push: { fcm: false, ntfy: false } });
+  const accounts = await createAccounts(config, ':memory:');
+  const app = createApp({ config, store, accounts, push: { fcm: false, ntfy: false } });
   const server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -58,8 +61,8 @@ describe('auth', () => {
 
   test('enforces roles', async () => {
     assert.equal((await call('PUT', '/api/lanes/x', ALICE, { status: 'active' })).status, 403);
-    assert.deepEqual((await call('GET', '/api/me', ALICE)).body, { name: 'alice', role: 'human' });
-    assert.deepEqual((await call('GET', '/api/me', BOB)).body, { name: 'bob', role: 'human' });
+    assert.deepEqual((await call('GET', '/api/me', ALICE)).body, { name: 'alice', role: 'human', admin: true });
+    assert.deepEqual((await call('GET', '/api/me', BOB)).body, { name: 'bob', role: 'human', admin: true });
   });
 
   test('health check is public', async () => {

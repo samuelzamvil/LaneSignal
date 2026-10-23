@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
+import type { Accounts } from './accounts.ts';
 import { createAuth, principalOf } from './auth.ts';
 import type { Config } from './config.ts';
 import { log } from './log.ts';
@@ -13,6 +15,7 @@ import { LANE_STATUSES, type EscalationState, type PublicConfig, type StreamEven
 export interface AppOptions {
   config: Config;
   store: Store;
+  accounts: Accounts;
   push: { fcm: boolean; ntfy: boolean };
   /** Directory of the compiled web frontend; served when present. */
   webDir?: string;
@@ -26,9 +29,9 @@ const h = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => 
   Promise.resolve(fn(req, res)).catch(next);
 };
 
-export function createApp({ config, store, push, webDir }: AppOptions) {
+export function createApp({ config, store, accounts, push, webDir }: AppOptions) {
   const app = express();
-  const auth = createAuth(config.tokens);
+  const auth = createAuth(config.tokens, accounts);
   if (config.trustProxy) app.set('trust proxy', true);
   app.disable('x-powered-by');
 
@@ -55,6 +58,7 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type, mcp-protocol-version');
+      res.setHeader('Access-Control-Expose-Headers', 'set-auth-token');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.setHeader('Access-Control-Max-Age', '600');
     }
@@ -65,7 +69,24 @@ export function createApp({ config, store, push, webDir }: AppOptions) {
     next();
   });
 
+  // Accounts, sessions and agent keys (Better Auth). Mounted before the JSON parser: it reads raw bodies.
+  app.all('/api/auth/{*splat}', toNodeHandler(accounts.auth));
+
   app.use(express.json({ limit: '256kb' }));
+
+  // First-run: with no accounts yet, anyone who can reach the server creates the admin account.
+  app.get('/api/setup', (_req, res) => {
+    res.json({ needsSetup: accounts.needsSetup() });
+  });
+
+  app.post(
+    '/api/setup',
+    h(async (req, res) => {
+      const user = await accounts.setup(parse(s.setupInput, req.body));
+      if (!user) throw new ConflictError('Setup is already complete; sign in instead');
+      res.status(201).json({ id: user.id, email: user.email, name: user.name });
+    }),
+  );
 
   app.get('/healthz', (_req, res) => {
     try {
