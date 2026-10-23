@@ -20,9 +20,9 @@ services:
       # Proxy installed on this host (Caddy, nginx, tailscaled): bind to localhost
       # instead, "127.0.0.1:${LANESIGNAL_PORT:-8080}:8080", and set TRUST_PROXY=1.
       - "${LANESIGNAL_PORT:-8080}:8080"
-    env_file:
-      - path: .env
-        required: false
+    # The stack's .env (from .env.example; it must exist, even if empty). The short form works on
+    # every Compose version; `path:`/`required:` needs Compose 2.24+.
+    env_file: .env
     environment:
       # Features (docs/configuration.md#features). Answering on the dashboard is off: you answer in
       # the agent's session and the agent dismisses the alert. The requirements register is on.
