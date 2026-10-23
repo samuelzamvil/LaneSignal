@@ -173,7 +173,7 @@ export function startNotifier(
       // With several projects, the code carries its project's key: "LS·A12".
       const code = store.listProjects().length > 1 ? `${e.escalation.projectKey}·${e.escalation.ref}` : e.escalation.ref;
       return {
-        title: `${urgent ? 'Decision needed' : 'FYI'} ${code} · ${where}`,
+        title: `${urgent ? 'Needs you' : 'FYI'} ${code} · ${where}`,
         body: e.escalation.recommendation
           ? `${e.escalation.question}\nRecommended: ${e.escalation.recommendation}`
           : e.escalation.question,

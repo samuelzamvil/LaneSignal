@@ -64,7 +64,7 @@ The skill covers how; **when** is yours to decide. Paste the [policy template](a
 
 Which tools a client sees depends on its credential (agent keys get the agent tools, personal keys and human sessions the human ones) and on the server's [features](configuration.md#features): the waiting and answering tools exist only with `LANESIGNAL_DECISIONS=true`, the requirement tools only with `LANESIGNAL_REQUIREMENTS` on (the default).
 
-Results are compact JSON. Creating, dismissing (and, with answering on the dashboard, waiting on and acknowledging) escalations return them in brief (code, question, decision, note, state), not the whole question with its context: `get_escalation` has everything. Tools that take a group accept `group_id` and `group` alike. Unknown groups and lanes are errors, so a typo never looks like an empty result or creates a lane nobody waits on. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
+Results are compact JSON with empty fields left out. Escalations come back in brief (code, question, state, and the decision or justification once there is one), lanes as where they stand (status, letter, counts), and `update_lane` and `update_group` don't echo what you sent. `get_escalation` has an escalation in full. Tools that take a group accept `group_id` and `group` alike. Unknown groups and lanes are errors, so a typo never looks like an empty result or creates a lane nobody waits on. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
 
 Every tool takes an optional `project` (id or key). A key bound to one [project](projects.md) never needs it. A key that reaches several must pass it to write, and its listings cover all its projects.
 
@@ -83,7 +83,7 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 | `list_lanes` / `list_groups` / `list_escalations` | any | Read state. `list_escalations` returns escalations in brief, filtered by `group_id` or `lane_id`, latest 50 by default (`limit` up to 500) |
 | `find_requirements` / `get_requirement` / `list_requirement_tags` | any | Search the owner's product decisions before asking again. See [Requirements](requirements.md) |
 | `record_requirement` / `supersede_requirement` | any | Record a decision the owner made (citing the escalation or the person), or replace one they changed. `all_projects: true` for decisions that cover every project |
-| `export_data` | any | All data for analysis (escalations, positions, lanes, groups, history) as CSV or JSON, paged. See [Export](export.md) |
+| `export_data` | human | All data for analysis (escalations, positions, lanes, groups, history) as CSV or JSON, paged. See [Export](export.md) |
 | `decide_escalation` | human | Decisions on: answer from your own Claude session. `change: true` corrects a decision the agent hasn't acknowledged yet |
 | `dismiss_escalation` | human | Dismiss an alert that no longer needs an answer, e.g. its session ended |
 

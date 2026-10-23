@@ -1027,8 +1027,11 @@ export class Store {
     const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
     const existing = (
       this.db
-        .prepare("SELECT id, question FROM escalations WHERE lane_id = ? AND created_by = ? AND state = 'open'")
-        .all(input.laneId, actor) as Row[]
+        .prepare(
+          `SELECT id, question FROM escalations WHERE lane_id = ? AND state = 'open'
+             AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`,
+        )
+        .all(input.laneId, owner ?? actor) as Row[]
     ).find((r) => norm(r.question as string) === norm(input.question));
     if (existing) return { ...this.requireEscalation(existing.id as string), duplicate: true };
     const { escalation, lane, blocks } = this.tx(() => {
@@ -1197,13 +1200,15 @@ export class Store {
     justification: string | null,
     actor: string,
     lane: Pick<LanePatch, 'status' | 'activity'> = {},
+    /** A person dismissing a stale alert leaves the lane waiting on its agent instead of showing it working. */
+    byAgent = true,
   ): Escalation {
     const before = this.requireEscalation(id);
     const wasBlocked = this.getLane(before.laneId)?.status === 'blocked_human';
     const escalation = this.withdrawEscalation(id, justification, actor);
     const after = this.getLane(escalation.laneId);
     if (!after) return escalation;
-    const status = lane.status ?? (wasBlocked && after.status === 'awaiting_agent' ? 'active' : undefined);
+    const status = lane.status ?? (byAgent && wasBlocked && after.status === 'awaiting_agent' ? 'active' : undefined);
     if (status || lane.activity !== undefined) this.upsertLane(after.id, { status, activity: lane.activity }, actor);
     return escalation;
   }

@@ -103,11 +103,14 @@ export function AgentKeysSection({
   now,
   projects,
   decisions,
+  requirements,
 }: {
   client: Client;
   serverUrl: string;
   now: number;
   projects: ProjectAccess[];
+  /** The requirements register is on: the starter policy keeps its Requirements part. */
+  requirements: boolean;
   /** Answering in LaneSignal is on: agents also need the environment for the skill's long waits. */
   decisions: boolean;
 }) {
@@ -173,8 +176,8 @@ export function AgentKeysSection({
       <h3>Keys</h3>
       <p className="hint">
         Give each overseer its own <strong>agent key</strong>; the key name is shown as the agent on its lanes. A{' '}
-        <strong>personal key</strong> is for your own Claude session: it answers escalations as you (decisions show your
-        name) but can't publish lanes. Keys belong to your account and stop working if you revoke them or your account is
+        <strong>personal key</strong> is for your own Claude session: it reads lanes and alerts and acts as you (what it
+        does shows your name), but can't publish lanes. Keys belong to your account and stop working if you revoke them or your account is
         removed.
       </p>
       <form onSubmit={create} className="inline-form">
@@ -226,7 +229,7 @@ export function AgentKeysSection({
               )}
               <details>
                 <summary className="hint">3. Tell the overseer when to use LaneSignal: a starter policy for its CLAUDE.md</summary>
-                <CopyBlock label="Policy" text={policyFor('', needsProject ? '<project-id>' : null)} />
+                <CopyBlock label="Policy" text={policyFor('', needsProject ? '<project-id>' : null, requirements)} />
               </details>
             </>
           )}

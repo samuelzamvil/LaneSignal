@@ -556,7 +556,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     }
     res.json(
       pub.escalation(
-        store.dismissEscalation(target.id, body.note?.trim() || null, p.name, { status: body.status, activity: body.activity ?? undefined }),
+        store.dismissEscalation(
+          target.id,
+          body.note?.trim() || null,
+          p.name,
+          { status: body.status, activity: body.activity ?? undefined },
+          p.role === 'agent',
+        ),
       ),
     );
   });

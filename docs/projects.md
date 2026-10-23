@@ -70,4 +70,4 @@ A push for a new escalation goes to the people whose devices are registered, if 
 - they can see its project
 - they haven't turned **Notify** off for that project
 
-Account admins who aren't members of a project still get its pushes until they turn them off. With several projects, the title carries the key: `Decision needed SH·A1 · …`.
+Account admins who aren't members of a project still get its pushes until they turn them off. With several projects, the title carries the key: `Needs you SH·A1 · …`.

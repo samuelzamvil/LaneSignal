@@ -103,4 +103,33 @@ describe('alerts', () => {
     assert.equal(res.isError, true);
     assert.match(res.text, /requirement/);
   });
+
+  test("overseers whose keys one person created can't dismiss each other's alerts; a rotated key can", async () => {
+    await srv.call('POST', '/api/admin/people', ALICE, { email: 'owner@example.com', name: 'Owner', password: 'correct horse battery' });
+    const signIn = await fetch(`${srv.base}/api/auth/sign-in/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: srv.base },
+      body: JSON.stringify({ email: 'owner@example.com', password: 'correct horse battery' }),
+    });
+    const session = signIn.headers.get('set-auth-token')!;
+    const key = async (name: string) =>
+      (await srv.call('POST', '/api/auth/api-key/create', session, { name, metadata: { role: 'agent' } })).body.key as string;
+    const payments = await key('payments-overseer');
+    const search = await key('search-overseer');
+    await srv.publish('owned', { token: payments });
+    const a = (await srv.tool(payments, 'create_escalation', { lane_id: 'owned', question: 'Whose?' })).value;
+    const other = await srv.tool(search, 'dismiss_escalation', { id: a.ref, justification: 'not mine' });
+    assert.equal(other.isError, true);
+    assert.match(other.text, /raised by payments-overseer/);
+    const rotated = await key('payments-overseer');
+    const mine = await srv.tool(rotated, 'dismiss_escalation', { id: a.ref, justification: 'Sam: yes (in session)' });
+    assert.equal(mine.isError, false, mine.text);
+  });
+
+  test("a person dismissing a stale alert leaves the lane waiting on its agent, not working", async () => {
+    await alert('Stale?');
+    const open = (await srv.call('GET', '/api/escalations?lane=drop-col', ALICE)).body.find((e: any) => e.question === 'Stale?');
+    assert.equal((await srv.call('POST', `/api/escalations/${open.id}/withdraw`, ALICE, { note: 'session ended' })).status, 200);
+    assert.equal((await lane()).status, 'awaiting_agent');
+  });
 });

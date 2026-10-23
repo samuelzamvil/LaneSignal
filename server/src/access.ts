@@ -249,35 +249,71 @@ export const pub = {
  * An escalation as agents need it after asking: what was decided, not the whole question echoed
  * back (context can run to pages). get_escalation and GET /api/escalations/:id return everything.
  */
-export const brief = (e: Escalation & { duplicate?: boolean }) => ({
-  id: e.id,
-  ref: e.ref,
-  ...(e.duplicate ? { duplicate: true } : {}),
-  project: e.project,
-  projectKey: e.projectKey,
-  laneId: e.laneId,
-  state: e.state,
-  blocking: e.blocking,
-  question: e.question,
-  decision: e.decision,
-  decisionNote: e.decisionNote,
-  decidedBy: e.decidedBy,
-  resolution: e.resolution,
-  positions: e.positions,
-  createdBy: e.createdBy,
-  createdAt: e.createdAt,
-});
+export const brief = (e: Escalation & { duplicate?: boolean }) =>
+  compact({
+    id: e.id,
+    ref: e.ref,
+    duplicate: e.duplicate,
+    projectKey: e.projectKey,
+    laneId: e.laneId,
+    state: e.state,
+    blocking: e.blocking ? undefined : false,
+    question: e.question,
+    decision: e.decision,
+    decisionNote: e.decisionNote,
+    decidedBy: e.decidedBy,
+    resolution: e.resolution,
+    positions: e.positions.length ? e.positions : undefined,
+  });
+
+/** Drops null, undefined and false-y flags an agent would pay for and learn nothing from. */
+export function compact<T extends Record<string, unknown>>(o: T): Partial<T> {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null && v !== undefined)) as Partial<T>;
+}
+
+/** A lane as an agent needs it back after publishing: where it stands, not everything echoed. */
+export const briefLane = (l: Lane, decisions: boolean) =>
+  compact({
+    id: l.id,
+    project: l.project,
+    letter: l.letter,
+    group: l.group,
+    status: l.status,
+    ticket: l.ticket,
+    activity: l.activity,
+    openEscalations: l.openEscalations || undefined,
+    blockingEscalations: l.blockingEscalations || undefined,
+    agentWaiting: decisions && l.agentWaiting ? true : undefined,
+  });
+
+/** A requirement as agents read it: the decision and why, without bookkeeping. */
+export const briefRequirement = (r: Requirement) =>
+  compact({
+    id: r.id,
+    project: r.project ?? 'all',
+    group: r.group,
+    requirement: r.requirement,
+    justification: r.justification,
+    tags: r.tags,
+    status: r.status === 'active' ? undefined : r.status,
+    supersededBy: r.supersededBy,
+    decidedBy: r.decidedBy,
+    sourceEscalation: r.sourceEscalation,
+  });
 
 /** A wait result with its escalations in brief. */
 export const briefWait = (w: WaitResult) => ({ ...w, decided: w.decided.map(brief), closed: w.closed.map(brief) });
 
-/** The identity an escalation records as its raiser: the key's account, or the config token. */
-export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}` : `token:${p.name}`);
+/**
+ * The identity an escalation records as its raiser: the key (its account and name, so overseers whose
+ * keys one person created stay apart, while a rotated key of the same name still matches), or the
+ * config token.
+ */
+export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);
 
 /**
- * Only whoever raised an escalation acknowledges or withdraws it as an agent (any key of the same
- * account, so a rotated key still works), or a person on its behalf: codes repeat across groups, and
- * another overseer closing it by mistake would swallow the decision.
+ * Only the agent that raised an escalation acknowledges or dismisses it (or a person, on its behalf):
+ * codes repeat across groups, and another overseer closing it by mistake would swallow the decision.
  */
 export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss') {
   if (a.principal.role !== 'agent') return;

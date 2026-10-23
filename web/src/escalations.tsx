@@ -581,9 +581,11 @@ export function EscalationDetail({
                   <>
                     <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
                     <div className="actions">
-                      <button className="ghost" onClick={() => setChanging(true)}>
-                        Change decision
-                      </button>
+                      {decisions && (
+                        <button className="ghost" onClick={() => setChanging(true)}>
+                          Change decision
+                        </button>
+                      )}
                       {/* For an answer no agent will pick up (its session ended): clear it from the list. */}
                       <button
                         className="ghost danger"

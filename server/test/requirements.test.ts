@@ -26,8 +26,10 @@ describe('recording owner decisions', () => {
       source_escalation: e.ref,
     });
     assert.equal(res.isError, false, res.text);
-    const req = res.value.requirement;
-    assert.match(req.id, /^R\d+$/);
+    assert.match(res.value.requirement.id, /^R\d+$/);
+    // Agents get it back without bookkeeping; the API has everything.
+    assert.equal(res.value.requirement.recordedBy, undefined);
+    const req = (await srv.call('GET', `/api/requirements/${res.value.requirement.id}`, ALICE)).body;
     assert.equal(req.decidedBy, 'alice');
     assert.equal(req.sourceEscalation, e.ref);
     assert.equal(req.recordedBy, 'overseer');
@@ -44,7 +46,7 @@ describe('recording owner decisions', () => {
       decided_by: 'Sam (Remote Control, 2026-10-23)',
     });
     assert.equal(res.isError, false, res.text);
-    assert.equal(res.value.requirement.group, null, 'product-wide');
+    assert.equal(res.value.requirement.group, undefined, 'product-wide');
     assert.equal(res.value.requirement.decidedBy, 'Sam (Remote Control, 2026-10-23)');
   });
 
@@ -106,7 +108,7 @@ describe('finding requirements', () => {
 
   test('a group search includes product-wide requirements but not other groups', async () => {
     const found = (await srv.tool(AGENT, 'find_requirements', { group_id: 'payments' })).value;
-    const groups = new Set(found.map((r: any) => r.group));
+    const groups = new Set(found.map((r: any) => r.group ?? null));
     assert.ok(groups.has('payments') && groups.has(null));
     assert.ok(!groups.has('search'));
   });
@@ -197,7 +199,7 @@ describe('changing direction', () => {
     const before = (await srv.tool(AGENT, 'get_requirement', { id: old.id })).value;
     assert.equal(before.status, 'superseded');
     assert.equal(before.supersededBy, replacement.id);
-    assert.equal(replacement.group, null, 'keeps the old scope');
+    assert.equal(replacement.group, undefined, 'keeps the old scope (no group)');
     const active = (await srv.call('GET', '/api/requirements?tag=money-amounts', ALICE)).body;
     assert.deepEqual(active.map((r: any) => r.id), [replacement.id]);
     const all = (await srv.call('GET', '/api/requirements?tag=money-amounts&status=active,superseded', ALICE)).body;

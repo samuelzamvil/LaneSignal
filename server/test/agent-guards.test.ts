@@ -46,7 +46,8 @@ describe('typos are errors, not new things nobody waits on', () => {
     assert.deepEqual(a.value.map((l: any) => l.id).sort(), ['pay-1', 'pay-2']);
     assert.deepEqual(b.value, a.value);
     const lane = await srv.tool(AGENT, 'update_lane', { lane_id: 'pay-2', group_id: 'payments', activity: 'via group_id' });
-    assert.equal(lane.value.group, 'payments');
+    assert.equal(lane.isError, false, lane.text);
+    assert.equal((await srv.call('GET', '/api/lanes/pay-2', ALICE)).body.lane.group, 'payments');
     const wait = await srv.tool(AGENT, 'wait_for_decisions', { group: 'payments', wait_seconds: 0 });
     assert.equal(wait.isError, false, wait.text);
     const none = await srv.tool(AGENT, 'wait_for_decisions', { wait_seconds: 0 });

@@ -571,7 +571,7 @@ function Dashboard({
             : !pushSupported
               ? 'Not included in this build'
               : config.push.fcm
-                ? 'Enabled for human decisions'
+                ? 'Enabled for alerts'
                 : 'Server has no FCM credentials'}
           {config.push.ntfy && ' · ntfy enabled on server'}
         </dd>
@@ -587,6 +587,7 @@ function Dashboard({
             now={now}
             projects={live.projects}
             decisions={config.decisions}
+            requirements={config.requirements}
           />
           {me.admin && <PeopleSection client={client} me={me} />}
           <PasswordSection client={client} onNewSession={onNewSession} />

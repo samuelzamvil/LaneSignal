@@ -337,7 +337,7 @@ describe('mcp', () => {
     assert.ok(names.includes('create_escalation'));
     assert.ok(names.includes('add_position'));
     assert.ok(names.includes('update_group'));
-    assert.ok(names.includes('export_data'));
+    assert.ok(!names.includes('export_data'), 'exports are for people, not every agent session');
     assert.ok(!names.includes('decide_escalation'));
 
     const out = await rpc(AGENT, 'tools/call', {
@@ -345,7 +345,8 @@ describe('mcp', () => {
       arguments: { lane_id: 'mcp-lane', status: 'pending_ci', ticket: 'gh:5' },
     });
     const lane = JSON.parse(out.result.content[0].text);
-    assert.equal(lane.ticketUrl, 'https://github.com/o/r/issues/5');
+    assert.deepEqual(Object.keys(lane).sort(), ['id', 'letter', 'project', 'status'], 'where the lane stands, nothing echoed');
+    assert.equal(store.getLane('default/mcp-lane')?.ticketUrl, 'https://github.com/o/r/issues/5');
     assert.equal(store.getLane('default/mcp-lane')?.agent, 'bot');
 
     const created = await rpc(AGENT, 'tools/call', {
@@ -366,13 +367,13 @@ describe('mcp', () => {
   });
 
   test('export_data returns CSV pages', async () => {
-    const out = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', limit: 1 } });
+    const out = await rpc(ALICE, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', limit: 1 } });
     const [summary, body] = out.result.content.map((c: { text: string }) => c.text);
     assert.match(summary, /^lanes: rows 1-1 of \d+; call again with offset 1/);
     assert.ok(body.startsWith('id,project,name,group_id,'));
-    const empty = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', offset: 9999 } });
+    const empty = await rpc(ALICE, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', offset: 9999 } });
     assert.ok(empty.result.content[1].text.startsWith('id,project,name,group_id,'), 'header even when empty');
-    const bad = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', from: 'soon' } });
+    const bad = await rpc(ALICE, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', from: 'soon' } });
     assert.equal(bad.result.isError, true);
   });
 

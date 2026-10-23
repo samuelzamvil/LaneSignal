@@ -12,3 +12,10 @@ test('the project line is kept only for keys that need it', () => {
   assert.match(policyFor('payments-epic', 'shop'), /oversee group `payments-epic`[\s\S]*Project: `shop`/);
   assert.doesNotMatch(policyFor('payments-epic', null), /Project:/);
 });
+
+test('the requirements part is left out when the server has no requirements', () => {
+  assert.match(policyFor('g', null), /\*\*Requirements\*\*/);
+  const without = policyFor('g', null, false);
+  assert.doesNotMatch(without, /requirement/i);
+  assert.match(without, /When I answer/);
+});

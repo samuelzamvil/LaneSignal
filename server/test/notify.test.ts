@@ -54,7 +54,7 @@ test('ntfy gets new escalations only, as UTF-8 JSON, not positions or decisions'
   const { path: p, body } = sink.received[0];
   assert.equal(p, '/');
   assert.equal(body.topic, 'lanes-topic');
-  assert.equal(body.title, `Decision needed ${esc.ref} · Auth → OAuth 🚀`);
+  assert.equal(body.title, `Needs you ${esc.ref} · Auth → OAuth 🚀`);
   assert.equal(body.priority, 4);
   assert.equal(body.message, 'Ship it?');
   assert.equal(body.click, `https://ls.example/#/esc/${esc.id}`);

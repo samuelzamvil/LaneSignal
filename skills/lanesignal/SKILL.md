@@ -70,5 +70,5 @@ The owner answers in this session, usually quoting the code ("A12: drop it").
 ## After a restart
 
 1. Call `update_group` (as at any session start).
-2. Call `list_escalations` with your `group_id`. Dismiss any the owner already answered in this session; the rest are still waiting on them.
+2. Call `list_escalations` with your `group_id`: these alerts are still open. Dismiss the ones whose answer you can see in this conversation; leave the rest (they're still waiting on the owner) and never raise them again.
 3. Call `list_lanes` with your `group_id`. A lane you were running that's missing was removed: stop work on it.

@@ -29,8 +29,14 @@ Don't alert me for routine progress or choices you can reverse cheaply; alerts p
 
 const PROJECT_LINE = /^Project: .*\n\n/m;
 
-/** The template with the group filled in, and the project line kept only when the key needs it. */
-export function policyFor(group: string, project: string | null) {
-  const text = POLICY_TEMPLATE.replace('<group-id>', group || '<group-id>');
-  return project ? text.replace('<project-id>', project) : text.replace(PROJECT_LINE, '');
+const REQUIREMENTS_PART = /\n\*\*Requirements\*\*[\s\S]*$/;
+
+/**
+ * The template with the group filled in, the project line kept only when the key needs it, and the
+ * Requirements part only when the server keeps requirements.
+ */
+export function policyFor(group: string, project: string | null, requirements = true) {
+  let text = POLICY_TEMPLATE.replace('<group-id>', group || '<group-id>');
+  text = project ? text.replace('<project-id>', project) : text.replace(PROJECT_LINE, '');
+  return requirements ? text : text.replace(REQUIREMENTS_PART, '\n').replace(' that no active requirement answers', '');
 }

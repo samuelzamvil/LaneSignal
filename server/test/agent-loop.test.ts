@@ -336,7 +336,7 @@ describe('export filters', () => {
     for (const bad of ['2026-13-01', '2026-02-30', '2026-10-01T25:00:00Z']) {
       assert.equal((await srv.call('GET', `/api/export/escalations.csv?from=${encodeURIComponent(bad)}`, ALICE)).status, 400, bad);
     }
-    const mcp = await srv.tool(AGENT, 'export_data', { dataset: 'escalations', from: '2026-13-01' });
+    const mcp = await srv.tool(ALICE, 'export_data', { dataset: 'escalations', from: '2026-13-01' });
     assert.equal(mcp.isError, true);
     assert.match(mcp.text, /from: not a valid date/);
   });

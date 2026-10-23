@@ -123,4 +123,4 @@ LaneSignal links to tickets but never syncs or edits them.
 
 ## Notifications
 
-By default, push notifications go out only when an escalation is **created**: urgent for blocking questions, quiet for FYIs. The title carries its code (`Decision needed A12 · …`). Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).
+By default, push notifications go out only when an escalation is **created**: urgent for blocking questions, quiet for FYIs. The title carries its code (`Needs you A12 · …`). Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).

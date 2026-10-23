@@ -45,7 +45,7 @@ describe('overseer publishes its group and lanes', () => {
       links: [{ label: 'Overseer', url: 'https://claude.ai/code/session_x', kind: 'session' }],
     });
     assert.equal(group.isError, false, group.text);
-    assert.equal(group.value.ticketUrl, 'https://github.com/o/r/issues/900');
+    assert.deepEqual(group.value, { id: 'payments', project: 'default' }, 'what was sent is not echoed back');
 
     for (const [id, ticket] of [
       ['pay-1', 'gh:901'],
@@ -63,6 +63,7 @@ describe('overseer publishes its group and lanes', () => {
 
     const snap = (await srv.call('GET', '/api/snapshot', ALICE)).body;
     assert.equal(snap.groups.find((g: any) => g.id === 'payments').name, 'Payments train');
+    assert.equal(snap.groups.find((g: any) => g.id === 'payments').ticketUrl, 'https://github.com/o/r/issues/900');
     const lanes = snap.lanes.filter((l: any) => l.group === 'payments');
     assert.deepEqual(lanes.map((l: any) => l.id).sort(), ['pay-1', 'pay-2']);
     assert.ok(lanes.every((l: any) => l.status === 'active' && l.agent === 'overseer'));
@@ -272,7 +273,7 @@ describe('real time and export', () => {
     const rows = (await srv.call('GET', '/api/export/escalations.json', ALICE)).body;
     const states = new Set(rows.map((r: any) => r.state));
     for (const s of ['open', 'decided', 'acknowledged', 'withdrawn']) assert.ok(states.has(s), s);
-    const csv = await srv.tool(AGENT, 'export_data', { dataset: 'escalations' });
+    const csv = await srv.tool(ALICE, 'export_data', { dataset: 'escalations' });
     assert.equal(csv.isError, false);
     assert.ok(csv.content![1].text.startsWith('id,'));
   });
