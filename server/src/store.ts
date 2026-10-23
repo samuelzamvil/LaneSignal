@@ -205,6 +205,9 @@ export class Store {
           CREATE UNIQUE INDEX escalations_ref ON escalations(ref);
           ALTER TABLE escalations ADD COLUMN withdrawn_by TEXT;
           ALTER TABLE push_tokens ADD COLUMN user_id TEXT;
+          -- Tokens from before accounts were recorded can only be matched to a person by name.
+          ALTER TABLE push_tokens ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0;
+          UPDATE push_tokens SET legacy = 1;
         `);
       }
       this.db
@@ -813,9 +816,10 @@ export class Store {
         actor,
         false,
       );
-    const escalation = current.state === 'acknowledged' ? current : close();
-    // Also on a retry, in case the first call failed after closing the escalation. Only for
-    // lanes still on the dashboard: publishing would otherwise restore a removed lane.
+    // A repeated acknowledgement changes nothing, so a late retry can't roll the lane back.
+    if (current.state === 'acknowledged') return current;
+    const escalation = close();
+    // Only for lanes still on the dashboard: publishing would otherwise restore a removed lane.
     if (lane && (lane.status || lane.activity !== undefined) && this.getLane(escalation.laneId)) {
       this.upsertLane(escalation.laneId, lane, actor);
     }
@@ -1257,9 +1261,15 @@ export class Store {
       .run(token, platform, owner, userId, this.now().toISOString());
   }
 
-  /** Drops a person's phones: tokens registered by their account, or (older ones) under their name. */
+  /**
+   * Drops a person's phones: tokens registered by their account, and tokens from
+   * before accounts were recorded under their name. Static config tokens' phones
+   * (no account, not legacy) are never matched by name.
+   */
   removePushTokensOf(userId: string, name: string | null) {
-    this.db.prepare('DELETE FROM push_tokens WHERE user_id = ? OR (user_id IS NULL AND owner = ?)').run(userId, name ?? '');
+    this.db
+      .prepare('DELETE FROM push_tokens WHERE user_id = ? OR (legacy = 1 AND user_id IS NULL AND owner = ?)')
+      .run(userId, name ?? '');
   }
 
   removePushToken(token: string) {

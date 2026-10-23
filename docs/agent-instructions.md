@@ -36,7 +36,9 @@ When you need a human decision you cannot make yourself (destructive or irrevers
    - `decided`: answered. Handle each one (step 3).
    - `closed`: withdrawn by someone else. A resolution of "Lane removed by …" means a human stopped that lane: stop work on it, and don't publish to it again.
    - `open`: still waiting.
-   - `ready: false`: the wait ran out with nothing new. Call it again, passing the result's `checkedAt` as `since` so nothing that happened in between is missed.
+   - `ready: false`: the wait ran out with nothing new. Call it again.
+
+   Always pass the last result's `checkedAt` as `since` on your next wait, including after you've handled a batch of decisions, so a lane removed in between is still reported.
    - `ready: true` with everything empty: nothing in your group is waiting on a human; stop waiting.
 
    Answers can take hours. If the call fails (a timeout, a dropped connection, a server restart), call it again: nothing is lost, because decided escalations wait for you until you acknowledge them. Keep working on unblocked lanes between waits.
@@ -44,20 +46,23 @@ When you need a human decision you cannot make yourself (destructive or irrevers
 4. If another lane's escalation affects your work, call `add_position` with `agree` or `disagree` (or `neutral`) and a one-line reason. Do this only while it is still open.
 5. If the question gets answered another way (for example, in Remote Control), or stops mattering, call `withdraw_escalation` with the reason.
 
-**When you start or restart** (a new session, or after a crash), call `wait_for_decisions` with your `group_id` and `wait_seconds: 0`, and handle anything decided while you were away before you raise new questions.
+**When you start or restart** (a new session, or after a crash), before you raise new questions:
+- Call `wait_for_decisions` with your `group_id` and `wait_seconds: 0`, and handle anything decided while you were away.
+- Call `list_lanes` with your `group`. A lane you were running that's no longer listed was removed by a human: stop work on it and don't publish to it again (publishing brings it back).
 
 **Long waits in Claude Code.** A waiting tool call keeps your session busy, so the human can't talk to you through Remote Control in the meantime. For waits that may take hours, run the HTTP wait as a background shell command instead. Claude Code tells you when it exits, and your session stays free. It needs `LANESIGNAL_URL` (e.g. `https://lanesignal.example.com`) and `LANESIGNAL_KEY` (your agent key) in the session's environment, for example in the `env` block of `.claude/settings.local.json`:
 
 ```bash
 : "${LANESIGNAL_URL:?set LANESIGNAL_URL}" "${LANESIGNAL_KEY:?set LANESIGNAL_KEY}"
-out=$(mktemp); since=""; fails=0
+out=$(mktemp); since="${LANESIGNAL_SINCE:-}"; fails=0
 while :; do
   code=$(curl -sS -o "$out" -w '%{http_code}' -H "Authorization: Bearer $LANESIGNAL_KEY" \
     "$LANESIGNAL_URL/api/wait?group=<group-id>&timeout=86400${since:+&since=$since}")
   case "$code" in
-    200) fails=0
-         grep -q '"ready":true' "$out" && { cat "$out"; echo; break; }
-         since=$(grep -o '"checkedAt":"[^"]*"' "$out" | cut -d'"' -f4) ;;
+    200) grep -q '"ready":true' "$out" && { cat "$out"; echo; break; }
+         # A connection cut mid-wait still reports 200, with only spaces: keep the old since.
+         s=$(grep -o '"checkedAt":"[^"]*"' "$out" | cut -d'"' -f4)
+         [ -n "$s" ] && { since=$s; fails=0; } ;;
     400|401|403|404) cat "$out"; echo; exit 1 ;;
     *) fails=$((fails + 1))
        [ "$fails" -ge 40 ] && { echo "LaneSignal unreachable (last status $code)"; exit 1; } ;;
@@ -66,6 +71,6 @@ while :; do
 done
 ```
 
-Each request waits up to 24 hours. The loop retries through network errors and server restarts, gives up after about 10 minutes of the server being unreachable, stops with an error if the key or group is rejected, and prints the same JSON as `wait_for_decisions`. Then handle the decisions as in step 3.
+Set `LANESIGNAL_SINCE` to the last result's `checkedAt` when you start the loop again. Each request waits up to 24 hours. The loop retries through network errors and server restarts, gives up after about 10 minutes of the server being unreachable, stops with an error if the key or group is rejected, and prints the same JSON as `wait_for_decisions`. Then handle the decisions as in step 3.
 
 Don't escalate routine progress. Escalations page a human's phone.
