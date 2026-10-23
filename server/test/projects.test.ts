@@ -184,3 +184,77 @@ describe('several projects', () => {
     }
   });
 });
+
+describe('review findings', () => {
+  before(async () => {
+    await person('Rae', 'rae@example.com');
+    assert.equal((await srv.call('PUT', `/api/projects/shop/members/${people.Rae.id}`, ALICE, { role: 'member' })).status, 204);
+  });
+
+  test("a key bound to a project its owner can't see reaches nothing", async () => {
+    for (const project of ['default', 'ghost']) {
+      const key = (
+        await srv.call('POST', '/api/auth/api-key/create', people.Rae.token, { name: `bound-${project}`, metadata: { role: 'agent', project } })
+      ).body.key;
+      assert.deepEqual((await srv.call('GET', '/api/projects', key)).body, []);
+      assert.equal((await srv.call('GET', '/api/lanes/auth', key)).status, 404);
+      assert.equal((await srv.call('PUT', '/api/lanes/auth', key, { status: 'idle' })).status, 404);
+      assert.equal((await srv.call('POST', '/api/escalations', key, { laneId: 'auth', question: 'x' })).status, 404);
+      assert.equal((await srv.call('PUT', '/api/groups/ops', key, { name: 'x' })).status, 404);
+    }
+  });
+
+  test('a project id cannot take another project\'s key, and ids win over keys', async () => {
+    assert.equal((await srv.call('POST', '/api/projects', ALICE, { id: 'main', key: 'ZZ', name: 'x' })).status, 409);
+    assert.equal((await srv.call('POST', '/api/projects', ALICE, { id: 'zz', key: 'SHOP', name: 'x' })).status, 409);
+  });
+
+  test('bare codes resolve within your own projects only; ambiguous ones ask for a project', async () => {
+    // Rae sees only the shop, so A1 there is unambiguous even though the main project has an A1.
+    const shopA1 = (await srv.call('GET', '/api/escalations/A1', people.Rae.token)).body;
+    assert.equal(shopA1.project, 'shop');
+    const both = await srv.call('GET', '/api/escalations/A1', ALICE);
+    assert.equal(both.status, 400);
+    assert.match(both.body.error, /several projects/);
+    // An id with the wrong project is not found.
+    assert.equal((await srv.call('GET', `/api/escalations/${shopA1.id}?project=default`, ALICE)).status, 404);
+  });
+
+  test('all-projects requirements: only instance admins write them; others see only what they may in `similar`', async () => {
+    const shopKey = (
+      await srv.call('POST', '/api/auth/api-key/create', people.Rae.token, { name: 'shop-only', metadata: { role: 'agent', project: 'shop' } })
+    ).body.key;
+    const body = { requirement: 'Invoices are exported nightly.', justification: 'x', tags: ['invoice-export'], decidedBy: 'Sam' };
+    assert.equal((await srv.call('POST', '/api/requirements', shopKey, { ...body, allProjects: true })).status, 403);
+    assert.equal((await srv.call('POST', '/api/requirements', people.Rae.token, { ...body, allProjects: true })).status, 403);
+    const secret = await srv.call('POST', '/api/requirements?project=default', ALICE, { ...body, requirement: 'Main: invoices are exported nightly.' });
+    assert.equal(secret.status, 201);
+    const global = await srv.call('POST', '/api/requirements', ALICE, { ...body, allProjects: true });
+    assert.equal(global.status, 201);
+    assert.equal((await srv.call('POST', `/api/requirements/${global.body.requirement.id}/supersede`, shopKey, body)).status, 403);
+    assert.equal((await srv.call('POST', `/api/requirements/${global.body.requirement.id}/retire`, people.Rae.token)).status, 403);
+    const mine = await srv.call('POST', '/api/requirements?project=shop', people.Rae.token, body);
+    assert.equal(mine.status, 201);
+    const similar = mine.body.similar.map((r: any) => r.id);
+    assert.ok(similar.includes(global.body.requirement.id));
+    assert.ok(!similar.includes(secret.body.requirement.id), 'another project\'s requirement leaked');
+  });
+
+  test("a requirement can't cite another project's escalation", async () => {
+    const res = await srv.call('POST', '/api/requirements?project=default', ALICE, {
+      requirement: 'Guest checkout is allowed.',
+      justification: 'x',
+      tags: ['guest-checkout'],
+      sourceEscalation: 'SH-A1',
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /another project/);
+  });
+
+  test('turning push off for a project you are not in grants nothing', async () => {
+    srv.store.setNotify('shop', people.Pat.id, false);
+    assert.equal(srv.store.membershipsOf(people.Pat.id).has('shop'), false);
+    assert.equal(srv.store.notifyChoice('shop', people.Pat.id), false);
+  });
+});
+

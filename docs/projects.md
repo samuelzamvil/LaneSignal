@@ -32,6 +32,7 @@ A server starts with one project, **Main** (id `default`, key `MAIN`). Data from
 - A project **admin** can rename the project, change its key, add people, change their role and remove them. A **member** sees the project and answers its escalations. There are no finer permissions.
 - Only instance admins (account admins and static human tokens) create projects. The creator becomes the new project's admin.
 - When an account is removed, its memberships go with it.
+- Access is re-checked when it changes: open event streams restart, and a long wait that returns after someone lost a project leaves that project's escalations out.
 
 ## In the web app
 
@@ -46,7 +47,7 @@ Settings → **Projects** lists your projects. In it:
 - **Members and settings** shows the members. Project admins manage them there, and rename the project.
 - **New project** (instance admins only) creates one.
 
-When creating an agent key with access to several projects, choose **All my projects** or **Only** one project. A bound key needs no `project` parameter and can't reach anything else. One overseer per project usually wants a bound key.
+When creating an agent key with access to several projects, choose **All my projects** or **Only** one project. A bound key needs no `project` parameter and can't reach anything else. One overseer per project usually wants a bound key. If its owner leaves that project, the key reaches nothing.
 
 ## Agents and the API
 
@@ -55,9 +56,10 @@ When creating an agent key with access to several projects, choose **All my proj
   - A credential that reaches several projects must name one to write (publish a lane, raise an escalation). Otherwise the request fails with `Say which project: MAIN, SH`.
   - Listings without `project` cover every project the caller can see.
 - **`project` field:** lanes, groups, escalations and requirements carry a `project` field. Escalations also carry `projectKey`.
-- **Escalation codes:** a code names one escalation across projects with its key: `SH-A1`, `SH·A1` or `SH:A1`. A bare `A1` works with `project`, or when only one project has an `A1`.
+- **Escalation codes:** a code names one escalation across projects with its key: `SH-A1`, `SH·A1` or `SH:A1`. A bare `A1` works with `project`, or when only one of your projects has an `A1`; otherwise the error lists the keyed codes to choose from.
 - **`list_projects`** (MCP) and `GET /api/projects` list the projects a credential reaches.
-- **All-projects requirements:** record a requirement for every project with `all_projects: true` (MCP) or `allProjects: true` (HTTP). `find_requirements` in a project returns that project's requirements plus the all-projects ones.
+- **All-projects requirements:** record a requirement for every project with `all_projects: true` (MCP) or `allProjects: true` (HTTP). Only credentials that see every project write these: instance admins, static tokens, and keys owned by an account admin that aren't bound to one project. The same goes for superseding, editing or retiring one. `find_requirements` in a project returns that project's requirements plus the all-projects ones.
+- **Citations:** a project's requirement can only cite that project's escalations.
 
 ## Notifications
 

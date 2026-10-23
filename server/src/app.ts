@@ -151,10 +151,11 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   /** Fires when project memberships change, so open event streams reconnect with what they may now see. */
   const membershipChanges = new EventEmitter<{ changed: [] }>();
   membershipChanges.setMaxListeners(0);
-  const pubRecord = (r: RecordResult) => ({
+  /** Similar requirements are only those the caller may see. */
+  const pubRecord = (a: Access, r: RecordResult) => ({
     ...r,
     requirement: pub.requirement(r.requirement),
-    similar: r.similar.map(pub.requirement),
+    similar: r.similar.filter(a.sees).map(pub.requirement),
   });
 
   // Break-glass people management for static human tokens (account admins use /api/auth/admin/*).
@@ -229,7 +230,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       .map((pr) => ({
         ...pr,
         role: a.roleIn(pr.id) ?? 'member',
-        notify: mine.get(pr.id)?.notify ?? (!p.userId || !!p.superuser),
+        notify: mine.get(pr.id)?.notify ?? (p.userId ? (store.notifyChoice(pr.id, p.userId) ?? !!p.superuser) : true),
       }));
   };
 
@@ -421,7 +422,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       }, 20_000);
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
-        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : pub.wait(result)));
+        const visible = accessFor(store, principalOf(res)).projects;
+        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : pub.wait(result, visible)));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));
       } finally {
@@ -455,6 +457,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       if (revoked || (wait > 0 && !(await stillValidOf(res)()))) {
         res.status(401).json({ error: 'unauthorized' });
         return;
+      }
+      if (wait > 0 && !accessFor(store, principalOf(res)).projects.includes(escalation.project)) {
+        throw new NotFoundError(`Escalation "${String(req.params.id)}" not found`);
       }
       res.json(pub.escalation(escalation));
     }),
@@ -538,7 +543,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
 
   app.post('/api/requirements', any, (req, res) => {
     const result = store.recordRequirement(requirementBody(req, res), principalOf(res).name, principalOf(res).role === 'human');
-    res.status(201).json(pubRecord(result));
+    res.status(201).json(pubRecord(acc(res), result));
   });
 
   app.post('/api/requirements/:id/supersede', any, (req, res) => {
@@ -549,16 +554,18 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       principalOf(res).name,
       principalOf(res).role === 'human',
     );
-    res.status(201).json(pubRecord(result));
+    res.status(201).json(pubRecord(acc(res), result));
   });
 
   app.patch('/api/requirements/:id', human, (req, res) => {
     const current = visibleRequirement(res, String(req.params.id));
+    acc(res).requireWritable(current);
     res.json(pub.requirement(store.editRequirement(current.id, parse(s.requirementEdit, req.body))));
   });
 
   app.post('/api/requirements/:id/retire', human, (req, res) => {
     const current = visibleRequirement(res, String(req.params.id));
+    acc(res).requireWritable(current);
     res.json(pub.requirement(store.retireRequirement(current.id)));
   });
 

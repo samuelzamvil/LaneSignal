@@ -17,7 +17,7 @@ Product direction tends to get buried in tickets and escalation threads, and fin
 | `project` | The [project](projects.md) it belongs to, or none (`null`) when it applies to **all projects**: "all our apps store money as integers". Set with `allProjects: true` (`all_projects` in MCP) |
 | `group` | The train/epic it belongs to, or none for **product-wide** (the whole project) |
 | `decidedBy` | The person who decided. Taken from the escalation when one is cited |
-| `sourceEscalation` | The escalation the decision was made in (e.g. `A12`), if any |
+| `sourceEscalation` | The escalation the decision was made in (e.g. `A12`; `SH-A12` on an all-projects requirement), if any. It must be in the requirement's project |
 | `status` | `active`, `superseded` (with `supersededBy`) or `retired` (no longer applies, nothing replaces it) |
 | `recordedBy` | The agent key or person that wrote it down |
 

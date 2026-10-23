@@ -1,5 +1,7 @@
 import {
+  ForbiddenError,
   localId,
+  projectOf,
   NotFoundError,
   qualify,
   ValidationError,
@@ -34,6 +36,12 @@ export interface Access {
   scope(project?: string | null): string[];
   /** Finds an escalation by id or code the caller may see (a code needs its project). */
   escalation(idOrCode: string, project?: string | null): Escalation;
+  /** May write requirements that apply to every project: only credentials that see every project, unbound. */
+  global: boolean;
+  /** Throws unless the caller may change this requirement (all-projects ones need `global`). */
+  requireWritable(r: { project: string | null }): void;
+  /** Records the caller can see: their projects', and all-projects ones. */
+  sees(r: { project: string | null }): boolean;
 }
 
 export function accessFor(store: Store, principal: Principal): Access {
@@ -41,6 +49,8 @@ export function accessFor(store: Store, principal: Principal): Access {
   const memberships = all ? null : store.membershipsOf(principal.userId!);
   let visible = all ? store.listProjects().map((p) => p.id) : [...memberships!.keys()];
   if (principal.project) visible = visible.filter((p) => p === principal.project);
+
+  const global = !!all && !principal.project;
 
   const roleIn = (project: string): ProjectRole | null => {
     if (!visible.includes(project)) return null;
@@ -57,7 +67,11 @@ export function accessFor(store: Store, principal: Principal): Access {
 
   const pick = (project?: string | null) => {
     if (project) return resolve(project);
-    if (principal.project) return principal.project;
+    if (principal.project) {
+      // A key bound to a project its owner can't see (or that doesn't exist) reaches nothing.
+      if (!visible.includes(principal.project)) throw new NotFoundError(`Project "${principal.project}" not found`);
+      return principal.project;
+    }
     if (visible.length === 1) return visible[0];
     if (!visible.length) throw new NotFoundError('You are not a member of any project yet; ask an admin to add you');
     const keys = visible.map((id) => store.getProject(id)?.key ?? id);
@@ -72,22 +86,32 @@ export function accessFor(store: Store, principal: Principal): Access {
     pick,
     scope: (project) => (project ? [resolve(project)] : visible),
     escalation(idOrCode, project) {
-      const found = store.getEscalation(idOrCode, project ? resolve(project) : undefined);
-      // A bare code is ambiguous across projects; try the caller's default project.
-      const e =
-        found ??
-        (!project && visible.length > 0 && /^#?[A-Za-z]{1,4}\d+$/.test(idOrCode.trim())
-          ? (() => {
-              try {
-                return store.getEscalation(idOrCode, pick());
-              } catch {
-                return null;
-              }
-            })()
-          : null);
-      if (!e || !visible.includes(e.project)) throw new NotFoundError(`Escalation "${idOrCode}" not found`);
+      const notFound = () => new NotFoundError(`Escalation "${idOrCode}" not found`);
+      const inProject = project ? resolve(project) : undefined;
+      let e: Escalation | null;
+      if (!inProject && /^#?[A-Za-z]{1,4}\d+$/.test(idOrCode.trim())) {
+        // A bare code: look only in the caller's projects; more than one match needs a project.
+        const hits = visible.map((p) => store.getEscalation(idOrCode, p)).filter((x) => x !== null);
+        if (hits.length > 1) {
+          const keys = hits.map((h) => `${h.projectKey}-${h.ref}`);
+          throw new ValidationError(`"${idOrCode}" is in several projects: say which (${keys.join(', ')})`);
+        }
+        e = hits[0] ?? null;
+      } else {
+        e = store.getEscalation(idOrCode, inProject);
+      }
+      // A keyed code ("SH-A1") names its own project; anything else must be in the one asked for.
+      const keyed = /^#?[A-Za-z0-9]{1,10}[·:.-][A-Za-z]{1,4}\d+$/.test(idOrCode.trim());
+      if (!e || !visible.includes(e.project) || (inProject && !keyed && e.project !== inProject)) throw notFound();
       return e;
     },
+    global,
+    requireWritable(r) {
+      if (r.project === null && !global) {
+        throw new ForbiddenError('Only an instance admin (or a key it owns that is not bound to a project) changes requirements for all projects');
+      }
+    },
+    sees: (r) => r.project === null || visible.includes(r.project),
   };
 }
 
@@ -131,14 +155,21 @@ export function requirementInputFor(
 ): RequirementInput {
   const keepScope = current !== undefined && body.allProjects === undefined && body.group === undefined && !project;
   const scopeProject = body.allProjects ? null : keepScope ? current.project : a.pick(project);
+  if (current) a.requireWritable(current);
+  a.requireWritable({ project: scopeProject });
   const human = a.principal.role === 'human';
+  // A project's requirement can only cite that project's escalations.
+  const source = body.sourceEscalation ? a.escalation(body.sourceEscalation, project ?? scopeProject) : null;
+  if (source && scopeProject !== null && source.project !== scopeProject) {
+    throw new ValidationError(`${source.projectKey}-${source.ref} belongs to another project`);
+  }
   return {
     requirement: body.requirement,
     justification: body.justification,
     tags: body.tags,
     project: scopeProject,
     group: body.group ? qualify(a.pick(project), body.group) : keepScope ? undefined : body.group,
-    sourceEscalation: body.sourceEscalation ? a.escalation(body.sourceEscalation, project).id : body.sourceEscalation,
+    sourceEscalation: source ? source.id : body.sourceEscalation,
     decidedBy: body.decidedBy ?? (human && !body.sourceEscalation ? a.principal.name : null),
   };
 }
@@ -150,13 +181,20 @@ export const pub = {
   lane: (l: Lane): Lane => ({ ...l, id: localId(l.id), group: l.group && localId(l.group) }),
   escalation: <E extends Escalation>(e: E): E => ({ ...e, laneId: localId(e.laneId) }),
   requirement: (r: Requirement): Requirement => ({ ...r, group: r.group && localId(r.group) }),
-  wait: (w: WaitResult): WaitResult => ({
-    ...w,
-    decided: w.decided.map(pub.escalation),
-    closed: w.closed.map(pub.escalation),
-    open: w.open.map((o) => ({ ...o, laneId: localId(o.laneId) })),
-    removedLanes: w.removedLanes.map((l) => ({ ...l, laneId: localId(l.laneId) })),
-  }),
+  /**
+   * A wait result for a client. `projects` is what the caller sees *now*: a long wait
+   * re-checks it, so someone removed from a project meanwhile gets nothing from it.
+   */
+  wait: (w: WaitResult, projects?: string[]): WaitResult => {
+    const keep = (laneId: string) => !projects || projects.includes(projectOf(laneId));
+    return {
+      ...w,
+      decided: w.decided.filter((e) => keep(e.laneId)).map(pub.escalation),
+      closed: w.closed.filter((e) => keep(e.laneId)).map(pub.escalation),
+      open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: localId(o.laneId) })),
+      removedLanes: w.removedLanes.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
+    };
+  },
   /** The event as a client sees it, or null when the caller can't see its project. */
   event(e: StreamEvent, projects: string[]): StreamEvent | null {
     switch (e.type) {

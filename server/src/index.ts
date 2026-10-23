@@ -25,7 +25,7 @@ store.seedDefaultMembers(accounts.listUsers());
 const wantsPush = (userId: string, project: string) => {
   if (!accounts.userActive(userId)) return false;
   const membership = store.membershipsOf(userId).get(project);
-  return membership ? membership.notify : accounts.isAdmin(userId);
+  return membership ? membership.notify : accounts.isAdmin(userId) && store.notifyChoice(project, userId) !== false;
 };
 const push = startNotifier(config, store, wantsPush);
 accounts.people.on('gone', (userId, name, removed) => {

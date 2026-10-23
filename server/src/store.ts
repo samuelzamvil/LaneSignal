@@ -407,6 +407,13 @@ export class Store {
         notify INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (project_id, user_id)
       );
+      -- Push choices of people who see a project without being a member (instance admins).
+      CREATE TABLE project_notify (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        notify INTEGER NOT NULL,
+        PRIMARY KEY (project_id, user_id)
+      );
       UPDATE groups SET id = '${DEFAULT_PROJECT}/' || id;
       UPDATE lanes SET id = '${DEFAULT_PROJECT}/' || id,
         group_id = CASE WHEN group_id IS NULL THEN NULL ELSE '${DEFAULT_PROJECT}/' || group_id END;
@@ -1646,8 +1653,8 @@ export class Store {
   /** By id or key, case-insensitively. */
   projectByKey(key: string): Project | null {
     const r = this.db
-      .prepare('SELECT * FROM projects WHERE lower(key) = lower(?) OR lower(id) = lower(?) LIMIT 1')
-      .get(key, key) as Row | undefined;
+      .prepare('SELECT * FROM projects WHERE lower(key) = lower(?) OR lower(id) = lower(?) ORDER BY lower(id) = lower(?) DESC LIMIT 1')
+      .get(key, key, key) as Row | undefined;
     return r ? this.projectFromRow(r) : null;
   }
 
@@ -1664,6 +1671,8 @@ export class Store {
   createProject(input: { id: string; key: string; name: string }, creatorUserId: string | null): Project {
     const project = this.tx(() => {
       if (this.getProject(input.id)) throw new ConflictError(`Project "${input.id}" already exists`);
+      // Ids and keys share one namespace, since either names a project.
+      if (this.projectByKey(input.id)) throw new ConflictError(`"${input.id}" is already another project's key`);
       if (this.projectByKey(input.key)) throw new ConflictError(`Key "${input.key}" is already used by another project`);
       this.db
         .prepare('INSERT INTO projects (id, key, name, created_at) VALUES (?, ?, ?, ?)')
@@ -1722,20 +1731,33 @@ export class Store {
   /** Removes someone from every project (their account was removed). */
   removeUserEverywhere(userId: string) {
     this.db.prepare('DELETE FROM project_members WHERE user_id = ?').run(userId);
+    this.db.prepare('DELETE FROM project_notify WHERE user_id = ?').run(userId);
   }
 
   /**
-   * Turns push for one project on or off for a person. Someone without a
-   * membership row (an instance admin) gets one as admin, to hold the choice.
+   * Turns push for one project on or off for a person. For someone who sees it without
+   * being a member (an instance admin), the choice is kept apart, granting nothing.
    */
   setNotify(project: string, userId: string, notify: boolean) {
     if (!this.getProject(project)) throw new NotFoundError(`Project "${project}" not found`);
+    const member = this.db
+      .prepare('UPDATE project_members SET notify = ? WHERE project_id = ? AND user_id = ?')
+      .run(notify ? 1 : 0, project, userId);
+    if (Number(member.changes) > 0) return;
     this.db
       .prepare(
-        `INSERT INTO project_members (project_id, user_id, role, notify) VALUES (?, ?, 'admin', ?)
+        `INSERT INTO project_notify (project_id, user_id, notify) VALUES (?, ?, ?)
          ON CONFLICT(project_id, user_id) DO UPDATE SET notify = excluded.notify`,
       )
       .run(project, userId, notify ? 1 : 0);
+  }
+
+  /** A non-member's push choice for a project, if they made one. */
+  notifyChoice(project: string, userId: string): boolean | undefined {
+    const r = this.db.prepare('SELECT notify FROM project_notify WHERE project_id = ? AND user_id = ?').get(project, userId) as
+      | Row
+      | undefined;
+    return r ? Number(r.notify) === 1 : undefined;
   }
 
   /**
@@ -1769,7 +1791,8 @@ export class Store {
       status: r.status as RequirementStatus,
       supersededBy: r.superseded_by == null ? null : `R${Number(r.superseded_by)}`,
       decidedBy: r.decided_by as string,
-      sourceEscalation: source?.ref ?? null,
+      // Within a project its code is enough; an all-projects requirement names the project too.
+      sourceEscalation: source ? (r.project_id ? source.ref : `${source.projectKey}-${source.ref}`) : null,
       recordedBy: r.recorded_by as string,
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
@@ -1872,12 +1895,16 @@ export class Store {
   }
 
   /** Tags in use on active requirements (of these projects plus all-project ones), most used first. */
+  /** SQL limiting requirements (as `r`) to these projects plus the all-projects ones; every project when omitted. */
+  private inRequirementScope(projects?: string[]): { sql: string; params: string[] } {
+    if (!projects) return { sql: '', params: [] };
+    return projects.length
+      ? { sql: ` AND (r.project_id IS NULL OR r.project_id IN (${projects.map(() => '?').join(',')}))`, params: projects }
+      : { sql: ' AND r.project_id IS NULL', params: [] };
+  }
+
   requirementTags(group?: string, projects?: string[]): { tag: string; count: number }[] {
-    const p = projects
-      ? projects.length
-        ? { sql: ` AND (r.project_id IS NULL OR r.project_id IN (${projects.map(() => '?').join(',')}))`, params: projects }
-        : { sql: ' AND r.project_id IS NULL', params: [] }
-      : { sql: '', params: [] };
+    const p = this.inRequirementScope(projects);
     const rows = this.db
       .prepare(
         `SELECT j.value AS tag, COUNT(*) AS n FROM requirements r, json_each(r.tags) j
@@ -1952,10 +1979,15 @@ export class Store {
     return rows.map((r) => this.requirementFromRow(r));
   }
 
-  private tagWarnings(tags: string[]): string[] {
-    const total = Number((this.db.prepare("SELECT COUNT(*) AS n FROM requirements WHERE status = 'active'").get() as Row).n);
+  /** Counted over what the requirement's project sees: its own requirements and the all-projects ones. */
+  private tagWarnings(tags: string[], project: string | null): string[] {
+    const projects = project ? [project] : [];
+    const p = this.inRequirementScope(projects);
+    const total = Number(
+      (this.db.prepare(`SELECT COUNT(*) AS n FROM requirements r WHERE r.status = 'active'${p.sql}`).get(...p.params) as Row).n,
+    );
     if (total < 10) return [];
-    const counts = new Map(this.requirementTags().map((t) => [t.tag, t.count]));
+    const counts = new Map(this.requirementTags(undefined, projects).map((t) => [t.tag, t.count]));
     return tags
       .filter((t) => (counts.get(t) ?? 0) / total > 0.4)
       .map((t) => `Tag "${t}" is on ${counts.get(t)} of ${total} active requirements; a narrower tag would find this faster.`);
@@ -1986,7 +2018,7 @@ export class Store {
       return this.requireRequirement(String(num));
     });
     this.emit({ type: 'requirement', requirement });
-    return { requirement, similar: this.similarTo(requirement), warnings: this.tagWarnings(requirement.tags) };
+    return { requirement, similar: this.similarTo(requirement), warnings: this.tagWarnings(requirement.tags, requirement.project) };
   }
 
   /**
@@ -2016,7 +2048,7 @@ export class Store {
     });
     this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });
-    return { requirement, similar: this.similarTo(requirement).filter((r) => r.id !== old.id), warnings: this.tagWarnings(requirement.tags) };
+    return { requirement, similar: this.similarTo(requirement).filter((r) => r.id !== old.id), warnings: this.tagWarnings(requirement.tags, requirement.project) };
   }
 
   /** Corrections that keep the meaning (wording, tags). Changing the decision is a supersede. */

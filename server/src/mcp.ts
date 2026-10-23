@@ -193,6 +193,9 @@ function buildServer(
           store.waitForDecision(target.id, (wait_seconds ?? 0) * 1000, signal),
         );
         if (revoked || (wait_seconds && !(await stillValid()))) return fail(new Error('Credential revoked'));
+        if (wait_seconds && !accessFor(store, a.principal).projects.includes(value.project)) {
+          return fail(new NotFoundError(`Escalation "${id}" not found`));
+        }
         return json(pub.escalation(value));
       } catch (err) {
         return fail(err);
@@ -234,7 +237,7 @@ function buildServer(
           store.waitForDecisions(scope, timeout * 1000, signal),
         );
         if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
-        return json(pub.wait(value));
+        return json(pub.wait(value, timeout ? accessFor(store, a.principal).projects : undefined));
       } catch (err) {
         return fail(err);
       }
@@ -364,10 +367,11 @@ function buildServer(
     }
     return found;
   };
-  const pubRecord = (r: RecordResult) => ({
+  /** Similar requirements are only those the caller may see. */
+  const pubRecord = (a: Access, r: RecordResult) => ({
     ...r,
     requirement: pub.requirement(r.requirement),
-    similar: r.similar.map(pub.requirement),
+    similar: r.similar.filter(a.sees).map(pub.requirement),
   });
 
   server.registerTool(
@@ -448,7 +452,7 @@ function buildServer(
     },
     async (args) => {
       try {
-        return json(pubRecord(store.recordRequirement(toInput(args), who.name, who.role === 'human')));
+        return json(pubRecord(a, store.recordRequirement(toInput(args), who.name, who.role === 'human')));
       } catch (err) {
         return fail(err);
       }
@@ -466,7 +470,7 @@ function buildServer(
     async ({ id, ...args }) => {
       try {
         const current = visibleRequirement(id);
-        return json(pubRecord(store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human')));
+        return json(pubRecord(a, store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human')));
       } catch (err) {
         return fail(err);
       }

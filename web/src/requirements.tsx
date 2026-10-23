@@ -55,6 +55,7 @@ function EditForm({ req, client, onDone }: { req: Requirement; client: Client; o
 function RequirementCard({
   req,
   scopeName,
+  sourceCode,
   client,
   canEdit,
   onTag,
@@ -63,6 +64,8 @@ function RequirementCard({
   req: Requirement;
   /** Where it applies: a group, a project, or every project. */
   scopeName: string;
+  /** The cited escalation's code with its project key, so the link opens the right one. */
+  sourceCode: string | null;
   client: Client;
   canEdit: boolean;
   onTag: (tag: string) => void;
@@ -107,7 +110,7 @@ function RequirementCard({
             {req.sourceEscalation && (
               <>
                 {' in '}
-                <a href={`#/esc/${req.sourceEscalation}`}>{req.sourceEscalation}</a>
+                <a href={`#/esc/${encodeURIComponent(sourceCode ?? req.sourceEscalation)}`}>{req.sourceEscalation}</a>
               </>
             )}{' '}
             · recorded by {req.recordedBy} · {absolute(req.createdAt)}
@@ -254,6 +257,11 @@ export function RequirementsPane({
           key={r.id}
           req={r}
           scopeName={scopeOf(r)}
+          sourceCode={
+            r.sourceEscalation && r.project && !/[·:-]/.test(r.sourceEscalation)
+              ? `${projects.find((p) => p.id === r.project)?.key ?? r.project}-${r.sourceEscalation}`
+              : r.sourceEscalation
+          }
           client={client}
           canEdit={canEdit}
           onTag={(t) => setTags(tags.includes(t) ? tags : [...tags, t])}

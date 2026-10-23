@@ -67,6 +67,7 @@ test('upgrades a schema v1 database without losing escalations', () => {
       ALTER TABLE escalations DROP COLUMN project_id;
       ALTER TABLE requirements DROP COLUMN project_id;
       DROP TABLE project_members;
+      DROP TABLE project_notify;
       DROP TABLE projects;
       UPDATE groups SET id = substr(id, 9);
       UPDATE lanes SET id = substr(id, 9), group_id = CASE WHEN group_id IS NULL THEN NULL ELSE substr(group_id, 9) END;
@@ -425,6 +426,7 @@ test('tokens registered before the upgrade are matched by name', () => {
       ALTER TABLE escalations DROP COLUMN project_id;
       ALTER TABLE requirements DROP COLUMN project_id;
       DROP TABLE project_members;
+      DROP TABLE project_notify;
       DROP TABLE projects;
       UPDATE groups SET id = substr(id, 9);
       UPDATE lanes SET id = substr(id, 9), group_id = CASE WHEN group_id IS NULL THEN NULL ELSE substr(group_id, 9) END;
@@ -528,6 +530,7 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
       ALTER TABLE escalations DROP COLUMN project_id;
       ALTER TABLE requirements DROP COLUMN project_id;
       DROP TABLE project_members;
+      DROP TABLE project_notify;
       DROP TABLE projects;
       UPDATE groups SET id = substr(id, 9);
       UPDATE lanes SET id = substr(id, 9), group_id = CASE WHEN group_id IS NULL THEN NULL ELSE substr(group_id, 9) END;
