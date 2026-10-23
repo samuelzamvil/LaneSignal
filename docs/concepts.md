@@ -83,7 +83,7 @@ open ──(the agent dismisses it, saying what was decided)──► dismissed
 2. You answer **in the agent's own session** (e.g. Remote Control), quoting the code ("A12: drop it"). The conversation and the decision stay in one place; the alert card links to the session when the overseer published it.
 3. The agent dismisses the alert with a justification ("Sam: drop it, in session") and usually its next status. The justification is the record on the dashboard and in exports.
 
-- The dashboard is read-only, apart from **Dismiss** for a stale alert whose session ended.
+- The dashboard is read-only, apart from **Dismiss** for a stale alert whose session ended. A lane whose alert a person dismisses shows as waiting on its agent (`awaiting_agent`) until the agent publishes again.
 - Only the agent that raised an alert (any key of the same account) dismisses it, so an overseer can't close another's by reusing a code.
 - Raising the same question again on the same lane while it's still open (ignoring spacing and case) returns the existing escalation, so agent retries don't create duplicates.
 - A lane stays **blocked** while any of its blocking escalations is open, whatever status its agent publishes. Dismissing the last one puts the lane back to `active`, unless the agent says otherwise.

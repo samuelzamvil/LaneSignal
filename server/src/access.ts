@@ -264,9 +264,10 @@ export const brief = (e: Escalation & { duplicate?: boolean }) =>
     decidedBy: e.decidedBy,
     resolution: e.resolution,
     positions: e.positions.length ? e.positions : undefined,
+    createdBy: e.createdBy,
   });
 
-/** Drops null, undefined and false-y flags an agent would pay for and learn nothing from. */
+/** Drops null and undefined fields, which an agent would pay for and learn nothing from. */
 export function compact<T extends Record<string, unknown>>(o: T): Partial<T> {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null && v !== undefined)) as Partial<T>;
 }
@@ -318,6 +319,8 @@ export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}
 export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss') {
   if (a.principal.role !== 'agent') return;
   const owner = store.escalationOwner(e.id);
-  const mine = owner ? owner === ownerOf(a.principal) : e.createdBy === a.principal.name;
+  // Older rows recorded the account alone ("user:<id>"); those match any key of that account.
+  const me = ownerOf(a.principal);
+  const mine = owner ? owner === me || (a.principal.userId !== undefined && owner === `user:${a.principal.userId}`) : e.createdBy === a.principal.name;
   if (!mine) throw new ForbiddenError(`${e.ref} was raised by ${e.createdBy}; only that agent (or a person) can ${verb} it`);
 }

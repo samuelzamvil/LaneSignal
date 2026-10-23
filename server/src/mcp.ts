@@ -384,7 +384,7 @@ function buildServer(
         .optional()
         .describe(
           features.decisions
-            ? 'Who decided, e.g. "Sam (Remote Control, 2026-10-23)"; not needed for an escalation answered on the dashboard.'
+            ? 'Who decided, e.g. "Sam (Remote Control, 2026-10-23)"; leave out for an escalation answered on the dashboard.'
             : 'Who decided, e.g. "Sam (Remote Control, 2026-10-23)". Required.',
         ),
     };
@@ -441,7 +441,7 @@ function buildServer(
         requirement: briefRequirement(pub.requirement(r.requirement)),
         duplicate: r.duplicate,
         // Enough to tell whether one is the same decision; get_requirement has the rest.
-        similar: r.similar.filter(a.sees).map((x) => ({ id: x.id, requirement: x.requirement })),
+        similar: r.similar.some(a.sees) ? r.similar.filter(a.sees).map((x) => ({ id: x.id, requirement: x.requirement })) : undefined,
         warnings: r.warnings.length ? r.warnings : undefined,
       });
 
@@ -517,15 +517,19 @@ function buildServer(
       'record_requirement',
       {
         description:
-          'Record a product decision the owner made (never your own design choice), one per requirement. Say who ' +
-          'decided (`decided_by`), plus `source_escalation` when it answered an escalation. Search first so you don\'t ' +
+          'Record a product decision the owner made (never your own design choice), one per requirement. ' +
+          (features.decisions
+            ? 'Cite `source_escalation` alone if it was answered on the dashboard; otherwise say who decided (`decided_by`), ' +
+              'plus `source_escalation` when it answered an escalation in your session. '
+            : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
+          'Search first so you don\'t ' +
           'record it twice; the same requirement from the same escalation returns the first (`duplicate: true`). ' +
           '`similar` lists ones that read alike: if the owner changed their mind, supersede_requirement the old one.',
         inputSchema: { ...requirementFields, ...PROJECT_WRITE },
       },
       async (args) => {
         try {
-          return json(pubRecord(a, store.recordRequirement(toInput(args), who.name, who.role === 'human')));
+          return json(pubRecord(a, store.recordRequirement(toInput(args), who.name, who.role === 'human', ownerOf(who))));
         } catch (err) {
           return fail(err);
         }
@@ -543,7 +547,7 @@ function buildServer(
       async ({ id, ...args }) => {
         try {
           const current = visibleRequirement(id);
-          return json(pubRecord(a, store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human')));
+          return json(pubRecord(a, store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human', ownerOf(who))));
         } catch (err) {
           return fail(err);
         }

@@ -607,7 +607,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     requirementInputFor(acc(res), parse(s.requirementInput, req.body), projectQuery(req), current);
 
   app.post('/api/requirements', any, requirementsOnly, (req, res) => {
-    const result = store.recordRequirement(requirementBody(req, res), principalOf(res).name, principalOf(res).role === 'human');
+    const p = principalOf(res);
+    const result = store.recordRequirement(requirementBody(req, res), p.name, p.role === 'human', ownerOf(p));
     res.status(result.duplicate ? 200 : 201).json(pubRecord(acc(res), result));
   });
 
@@ -618,6 +619,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       requirementBody(req, res, current),
       principalOf(res).name,
       principalOf(res).role === 'human',
+      ownerOf(principalOf(res)),
     );
     res.status(201).json(pubRecord(acc(res), result));
   });

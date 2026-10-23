@@ -1009,11 +1009,9 @@ export class Store {
   /**
    * Raising the same question again on the same lane while the first is still
    * open (e.g. a retried call) returns the existing escalation with
-   * `duplicate: true` instead of creating a second one.
-   */
-  /**
-   * `owner` identifies who may later acknowledge it: the raising key's account
-   * ("user:<id>") or config token ("token:<name>").
+   * `duplicate: true` instead of creating a second one. `owner` identifies who may later
+   * dismiss or acknowledge it: the raising key ("user:<account>:<key name>") or config token
+   * ("token:<name>").
    */
   createEscalation(input: EscalationInput, actor: string, owner: string | null = null): Escalation & { duplicate?: boolean } {
     projectOf(input.laneId);
@@ -2001,6 +1999,7 @@ export class Store {
     input: RequirementInput,
     actor: string,
     actorIsHuman: boolean,
+    actorOwner: string | null,
   ): { decidedBy: string; escalationId: string | null } {
     if (input.sourceEscalation) {
       const esc = this.requireEscalation(input.sourceEscalation);
@@ -2016,7 +2015,10 @@ export class Store {
         );
       }
       const laneGroup = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(esc.laneId) as Row | undefined)?.group_id;
-      const related = esc.createdBy === actor || (input.group != null && laneGroup === input.group);
+      // Raised by this agent: the same key identity as for dismissing (or the name, for old rows).
+      const raiser = this.escalationOwner(esc.id);
+      const mine = raiser && actorOwner ? raiser === actorOwner : esc.createdBy === actor;
+      const related = mine || (input.group != null && laneGroup === input.group);
       if (!actorIsHuman && !related) {
         throw new ConflictError(
           `Escalation ${esc.ref} was raised by ${esc.createdBy} in another ${laneGroup ? `group (${laneGroup})` : 'context'}; ` +
@@ -2074,14 +2076,20 @@ export class Store {
   }
 
   /** Must run inside a transaction. */
-  private insertRequirement(input: RequirementInput, actor: string, actorIsHuman: boolean, at: string): number {
+  private insertRequirement(
+    input: RequirementInput,
+    actor: string,
+    actorIsHuman: boolean,
+    at: string,
+    actorOwner: string | null = null,
+  ): number {
     if (input.group && !this.getGroup(input.group)) throw new NotFoundError(`Group "${localId(input.group)}" not found`);
     if (input.group && input.project !== projectOf(input.group)) {
       throw new ValidationError('A requirement for a group applies to that group\'s project, not to all projects');
     }
     if (input.project && !this.getProject(input.project)) throw new NotFoundError(`Project "${input.project}" not found`);
     const tags = this.cleanTags(input.tags);
-    const { decidedBy, escalationId } = this.decisionSource(input, actor, actorIsHuman);
+    const { decidedBy, escalationId } = this.decisionSource(input, actor, actorIsHuman, actorOwner);
     const res = this.db
       .prepare(
         `INSERT INTO requirements (project_id, group_id, requirement, justification, tags, status, decided_by,
@@ -2092,7 +2100,7 @@ export class Store {
   }
 
   /** Records an owner decision. Returns it with similar active requirements, so duplicates get noticed. */
-  recordRequirement(input: RequirementInput, actor: string, actorIsHuman = false): RecordResult {
+  recordRequirement(input: RequirementInput, actor: string, actorIsHuman = false, actorOwner: string | null = null): RecordResult {
     // A retry (the same requirement from the same escalation) returns the first instead of a copy.
     // A second decision from the same answer is stored; `similar` shows the first.
     if (input.sourceEscalation) {
@@ -2105,7 +2113,7 @@ export class Store {
       if (same) return { requirement: this.requireRequirement(String(same.num)), similar: [], warnings: [], duplicate: true };
     }
     const requirement = this.tx(() => {
-      const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString());
+      const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString(), actorOwner);
       return this.requireRequirement(String(num));
     });
     this.emit({ type: 'requirement', requirement });
@@ -2117,7 +2125,13 @@ export class Store {
    * The old one stays, marked superseded, so the history of why is kept. Group
    * defaults to the old one's.
    */
-  supersedeRequirement(id: string, input: RequirementInput, actor: string, actorIsHuman = false): RecordResult {
+  supersedeRequirement(
+    id: string,
+    input: RequirementInput,
+    actor: string,
+    actorIsHuman = false,
+    actorOwner: string | null = null,
+  ): RecordResult {
     const { requirement, old } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (current.status !== 'active') throw new ConflictError(`${current.id} is ${current.status}; only active requirements can be superseded`);
@@ -2131,6 +2145,7 @@ export class Store {
         actor,
         actorIsHuman,
         at,
+        actorOwner,
       );
       this.db
         .prepare("UPDATE requirements SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE num = ?")

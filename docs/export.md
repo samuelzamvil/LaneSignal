@@ -16,9 +16,9 @@ Only routine activity text is capped, at the last `LANESIGNAL_EVENT_RETENTION` e
 |---|---|
 | **Web app** | Settings → **Export data**: an optional date range, then **Download everything (.zip)** or a single CSV. The Android app points you to the web app or the API, because WebView downloads need an extra plugin |
 | **HTTP API** | `GET /api/export` for a zip of every CSV plus a README. `GET /api/export/<dataset>.csv` or `.json` for a single dataset |
-| **MCP** | The `export_data` tool returns CSV (or JSON) in pages, so a Claude session can analyse it directly. A page is 100 rows by default (up to 1000), and is cut short to stay under about 60 KB. The first line says which rows you got and the `offset` for the next page |
+| **MCP** | The `export_data` tool (for people's own Claude sessions: a personal key; agent keys don't get it) returns CSV (or JSON) in pages, so you can analyse it directly. A page is 100 rows by default (up to 1000), and is cut short to stay under about 60 KB. The first line says which rows you got and the `offset` for the next page |
 
-Any signed-in person, agent key or static token can export. The server builds one export at a time; a second request in the meantime gets `429` with `Retry-After`. Large exports are built in pages, so the server stays responsive while they run.
+Any signed-in person, agent key or static token can export over HTTP. The server builds one export at a time; a second request in the meantime gets `429` with `Retry-After`. Large exports are built in pages, so the server stays responsive while they run.
 
 ```bash
 curl -fsS -H "authorization: Bearer $KEY" -o lanesignal.zip https://lanesignal.example.com/api/export
