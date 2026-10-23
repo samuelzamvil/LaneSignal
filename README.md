@@ -73,7 +73,12 @@ The server tracks `updatedAt`, time in the current status, and cumulative **time
 | `context` | What a human needs to know to answer without opening the agent's session |
 | `question` | The decision being asked for (also the headline) |
 | `recommendation` | What the escalating agent would do and why. `recommendedOption` marks one of `options` as recommended |
+| `cost` | What following the recommendation costs (dependencies, image size, time, risk) |
+| `alternatives` | Other paths considered, one string each, with its tradeoff |
+| `ticket` | What the question is about (e.g. the plan `gh:921`) when it differs from the lane's ticket |
 | `positions` | Other agents' agreement or disagreement with the recommendation: `{agent, stance: agree\|disagree\|neutral, note}`. Positions can be given at creation or added later, one per agent |
+
+A lane can have any number of open escalations. A plan with four questions raises four escalations, and the lane stays `blocked_human` until the last one is decided. The inbox lists each lane's questions together, in order, labelled "Question 1 of 4 from this lane". The detail sheet has Previous and Next buttons for stepping through the batch.
 
 Inbox cards stay compact: the question, a one-line recommendation, the agree/disagree counts and one-tap options. Tapping a card opens the full detail sheet with every section, a free-text answer and a note. Push notifications and rows in a lane's history open the same sheet.
 

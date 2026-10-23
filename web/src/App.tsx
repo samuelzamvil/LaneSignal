@@ -201,7 +201,14 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
     () => [...live.escalations.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     [live.escalations],
   );
-  const open = escalations.filter((e) => e.state === 'open');
+  // Inbox order: lanes by their oldest open question, then each lane's questions in order,
+  // so a batch ("four questions from #921") reads top to bottom.
+  const openByLane = new Map<string, typeof escalations>();
+  for (const e of escalations) {
+    if (e.state !== 'open') continue;
+    openByLane.set(e.laneId, [...(openByLane.get(e.laneId) ?? []), e]);
+  }
+  const open = [...openByLane.values()].flat();
   const decided = escalations.filter((e) => e.state === 'decided');
   // Refetch lane detail only when something about that lane changed.
   const laneVersion = route.laneId
@@ -212,6 +219,11 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
     : '';
   // Closed escalations drop out of the live map, which also changes this key.
   const escVersion = route.escId ? (live.escalations.get(route.escId)?.updatedAt ?? 'closed') : '';
+  const seqOf = (e: (typeof escalations)[number]) => {
+    const siblings = openByLane.get(e.laneId) ?? [];
+    return siblings.length > 1 ? { index: siblings.indexOf(e), total: siblings.length } : undefined;
+  };
+  const escLaneId = route.escId ? (live.escalations.get(route.escId)?.laneId ?? null) : null;
   const blockedLanes = lanes.filter((l) => l.status === 'blocked_human' && l.openEscalations === 0);
 
   useEffect(() => {
@@ -272,6 +284,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
         <EscalationCard
           key={e.id}
           esc={e}
+          seq={seqOf(e)}
           lane={live.lanes.get(e.laneId)}
           group={live.groups.get(live.lanes.get(e.laneId)?.group ?? '')}
           now={now}
@@ -454,6 +467,7 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
           client={client}
           lanes={live.lanes}
           groups={live.groups}
+          laneOpenIds={escLaneId ? (openByLane.get(escLaneId) ?? []).map((e) => e.id) : []}
           version={escVersion}
           now={now}
           onClose={() => (history.length > 1 ? history.back() : navigate('#/'))}
