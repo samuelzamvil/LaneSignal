@@ -9,6 +9,8 @@ import {
   type LaneEvent,
   type LaneStatus,
   type Link,
+  type Position,
+  type Stance,
   type StreamEvent,
 } from './types.ts';
 
@@ -26,8 +28,11 @@ export interface LanePatch {
 
 export interface EscalationInput {
   laneId: string;
-  title: string;
-  body?: string | null;
+  question: string;
+  context?: string | null;
+  recommendation?: string | null;
+  recommendedOption?: string | null;
+  positions?: { agent: string; stance: Stance; note?: string | null }[];
   options?: string[];
   links?: Link[];
   /** Marks the lane blocked_human until the escalation is decided. Default true. */
@@ -98,8 +103,11 @@ export class Store {
       CREATE TABLE IF NOT EXISTS escalations (
         id TEXT PRIMARY KEY,
         lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
-        title TEXT NOT NULL,
-        body TEXT,
+        question TEXT NOT NULL,
+        context TEXT,
+        recommendation TEXT,
+        recommended_option TEXT,
+        positions TEXT NOT NULL DEFAULT '[]',
         options TEXT NOT NULL DEFAULT '[]',
         links TEXT NOT NULL DEFAULT '[]',
         state TEXT NOT NULL,
@@ -311,8 +319,11 @@ export class Store {
     return {
       id: r.id as string,
       laneId: r.lane_id as string,
-      title: r.title as string,
-      body: (r.body as string | null) ?? null,
+      question: r.question as string,
+      context: (r.context as string | null) ?? null,
+      recommendation: (r.recommendation as string | null) ?? null,
+      recommendedOption: (r.recommended_option as string | null) ?? null,
+      positions: JSON.parse(r.positions as string) as Position[],
       options: JSON.parse(r.options as string) as string[],
       links: JSON.parse(r.links as string) as Link[],
       state: r.state as EscalationState,
@@ -371,21 +382,27 @@ export class Store {
       const id = randomUUID();
       this.db
         .prepare(
-          `INSERT INTO escalations (id, lane_id, title, body, options, links, state, created_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+          `INSERT INTO escalations (id, lane_id, question, context, recommendation, recommended_option, positions,
+             options, links, state, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
         )
         .run(
           id,
           input.laneId,
-          input.title,
-          input.body ?? null,
+          input.question,
+          input.context ?? null,
+          input.recommendation ?? null,
+          input.recommendedOption ?? null,
+          JSON.stringify(
+            (input.positions ?? []).map((p) => ({ agent: p.agent, stance: p.stance, note: p.note ?? null, at })),
+          ),
           JSON.stringify(input.options ?? []),
           JSON.stringify(input.links ?? []),
           actor,
           at,
           at,
         );
-      this.addEvent(input.laneId, at, 'escalation', `Escalated: ${input.title}`, actor);
+      this.addEvent(input.laneId, at, 'escalation', `Escalated: ${input.question}`, actor);
       if (input.blocking !== false && lane.status !== 'blocked_human') {
         this.applyLaneUpdate(lane, { status: 'blocked_human' }, actor, at);
       } else {
@@ -457,6 +474,25 @@ export class Store {
     });
     this.emit({ type: 'escalation', escalation });
     this.emit({ type: 'lane', lane });
+    return escalation;
+  }
+
+  /** Records (or replaces) one agent's stance on an open escalation's recommendation. */
+  addPosition(id: string, position: { agent: string; stance: Stance; note?: string | null }, actor: string): Escalation {
+    const escalation = this.tx(() => {
+      const current = this.requireEscalation(id);
+      if (current.state !== 'open') throw new ConflictError(`Escalation is ${current.state}; positions close once decided`);
+      const at = this.now().toISOString();
+      const positions = current.positions.filter((p) => p.agent !== position.agent);
+      positions.push({ agent: position.agent, stance: position.stance, note: position.note ?? null, at });
+      this.db
+        .prepare('UPDATE escalations SET positions = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(positions), at, id);
+      const verb = { agree: 'agrees', disagree: 'disagrees', neutral: 'is neutral' }[position.stance];
+      this.addEvent(current.laneId, at, 'escalation', `${position.agent} ${verb}${position.note ? `: ${position.note}` : ''}`, actor);
+      return this.requireEscalation(id);
+    });
+    this.emit({ type: 'escalation', escalation });
     return escalation;
   }
 

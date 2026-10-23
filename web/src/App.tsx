@@ -12,7 +12,8 @@ import {
   type Principal,
   type PublicConfig,
 } from './api.ts';
-import { Chips, EscalationCard, LaneCard, LaneDetail } from './components.tsx';
+import { Chips, LaneCard, LaneDetail } from './components.tsx';
+import { EscalationCard, EscalationDetail } from './escalations.tsx';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { useLiveData, useNow } from './live.ts';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
@@ -194,10 +195,6 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
     return () => void h.then((x) => x.remove());
   }, []);
 
-  useEffect(() => {
-    if (route.escId) document.getElementById(`esc-${route.escId}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [route.escId, live.escalations]);
-
   const lanes = useMemo(() => [...live.lanes.values()].sort(compareLanes), [live.lanes]);
   const escalations = useMemo(
     () => [...live.escalations.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
@@ -212,6 +209,8 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
         ...escalations.filter((e) => e.laneId === route.laneId).map((e) => e.id + e.state),
       ].join('|')
     : '';
+  // Closed escalations drop out of the live map, which also changes this key.
+  const escVersion = route.escId ? (live.escalations.get(route.escId)?.updatedAt ?? 'closed') : '';
   const blockedLanes = lanes.filter((l) => l.status === 'blocked_human' && l.openEscalations === 0);
 
   useEffect(() => {
@@ -260,8 +259,6 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
           lane={live.lanes.get(e.laneId)}
           now={now}
           client={client}
-          focused={route.escId === e.id}
-          onOpenLane={() => navigate(`#/lane/${encodeURIComponent(e.laneId)}`)}
         />
       ))}
       {blockedLanes.length > 0 && (
@@ -282,7 +279,6 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
               lane={live.lanes.get(e.laneId)}
               now={now}
               client={client}
-              onOpenLane={() => navigate(`#/lane/${encodeURIComponent(e.laneId)}`)}
             />
           ))}
         </>
@@ -422,6 +418,16 @@ function Dashboard({ conn, onSignOut }: { conn: Connection; onSignOut: (c: Clien
           <span className="icon">⚙</span>Settings
         </a>
       </nav>
+      {route.escId && (
+        <EscalationDetail
+          id={route.escId}
+          client={client}
+          lanes={live.lanes}
+          version={escVersion}
+          now={now}
+          onClose={() => (history.length > 1 ? history.back() : navigate('#/'))}
+        />
+      )}
       {route.laneId && (
         <LaneDetail
           laneId={route.laneId}

@@ -18,9 +18,15 @@ You are lane `<lane-id>`. Use the `lanesignal` MCP tools to keep humans informed
 
 When you need a human decision you cannot make yourself (destructive or irreversible changes, product and scope questions, credentials, conflicting instructions):
 
-1. Call `create_escalation`. Give it a specific `title` phrased as a question and a `body` with the context and tradeoffs. Add 2–4 short `options` when the answer is a choice.
+1. Call `create_escalation` with:
+   - `context`: what a human needs to know to answer from a phone, without opening your session (what you're doing, what you found, the tradeoffs and risks).
+   - `question`: the specific decision, phrased as a question.
+   - `recommendation`: what you would do and why.
+   - `options`: 2–4 short answers when the answer is a choice, with `recommended_option` set to the one you recommend.
+   - `positions`: other agents' agreement or disagreement, if you already know it.
 2. Wait with `get_escalation` and `wait_seconds: 300`. Repeat while the state is still `open`, and do other unblocked work in between if you have any.
 3. When the state is `decided`, act on `decision` and `decisionNote`, then call `acknowledge_escalation` with a short note on what you did.
-4. If the question gets answered another way (for example, in Remote Control), or stops mattering, call `withdraw_escalation` with the reason.
+4. If another lane's escalation affects your work, call `add_position` with `agree` or `disagree` (or `neutral`) and a one-line reason. Do this only while it is still open.
+5. If the question gets answered another way (for example, in Remote Control), or stops mattering, call `withdraw_escalation` with the reason.
 
 Don't escalate routine progress. Escalations page a human's phone.

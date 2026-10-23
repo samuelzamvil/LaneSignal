@@ -2,7 +2,7 @@ import { Capacitor } from '@capacitor/core';
 import type { Escalation, Lane, LaneEvent, Principal, PublicConfig, StreamEvent } from '../../server/src/types.ts';
 
 export type { Escalation, Lane, LaneEvent, Principal, PublicConfig, StreamEvent };
-export type { LaneStatus, Link } from '../../server/src/types.ts';
+export type { LaneStatus, Link, Position } from '../../server/src/types.ts';
 
 export const isNative = Capacitor.isNativePlatform();
 
@@ -73,6 +73,7 @@ export function createClient(conn: Connection) {
         'GET',
         `/api/lanes/${encodeURIComponent(id)}`,
       ),
+    escalation: (id: string) => request<Escalation>('GET', `/api/escalations/${encodeURIComponent(id)}`),
     deleteLane: (id: string) => request<void>('DELETE', `/api/lanes/${encodeURIComponent(id)}`),
     decide: (id: string, decision: string, note?: string) =>
       request<Escalation>('POST', `/api/escalations/${id}/decide`, { decision, note: note || null }),

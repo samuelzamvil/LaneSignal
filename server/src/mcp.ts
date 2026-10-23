@@ -89,20 +89,44 @@ function buildServer(store: Store, who: Principal) {
       {
         description:
           'Ask the human overseers for a decision. Shows prominently on the dashboard and sends a push notification. ' +
-          'By default marks the lane blocked_human. Provide short `options` for one-tap answers. ' +
+          'Structure: `context` (what a human needs to know, without opening your session), `question` (the decision, ' +
+          'phrased as a question), `recommendation` (what you would do and why), and `positions` (other agents\' ' +
+          'agreement/disagreement with the recommendation, if already known). Provide short `options` for one-tap answers ' +
+          'and set `recommended_option` to the one you recommend. By default marks the lane blocked_human. ' +
           'Then wait with get_escalation(wait_seconds) and acknowledge_escalation once you act on the decision.',
         inputSchema: {
           lane_id: s.laneId,
-          title: s.escalationInput.shape.title,
-          body: s.escalationInput.shape.body,
-          options: s.escalationInput.shape.options,
-          links: s.escalationInput.shape.links,
-          blocking: s.escalationInput.shape.blocking,
+          question: s.escalationFields.question,
+          context: s.escalationFields.context,
+          recommendation: s.escalationFields.recommendation,
+          recommended_option: s.escalationFields.recommendedOption,
+          positions: s.escalationFields.positions,
+          options: s.escalationFields.options,
+          links: s.escalationFields.links,
+          blocking: s.escalationFields.blocking,
         },
       },
-      async ({ lane_id, ...rest }) => {
+      async ({ lane_id, recommended_option, ...rest }) => {
         try {
-          return json(store.createEscalation({ laneId: lane_id, ...rest }, who.name));
+          const input = s.escalationInput.parse({ laneId: lane_id, recommendedOption: recommended_option, ...rest });
+          return json(store.createEscalation(input, who.name));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'add_position',
+      {
+        description:
+          'Record whether you agree or disagree with an open escalation\'s recommendation, with a short reason. ' +
+          'One position per agent; calling again replaces yours. Use `agent` to name yourself if you share a token.',
+        inputSchema: { id: z.string(), ...s.position.shape },
+      },
+      async ({ id, agent, ...rest }) => {
+        try {
+          return json(store.addPosition(id, { ...rest, agent: agent ?? who.name }, who.name));
         } catch (err) {
           return fail(err);
         }
