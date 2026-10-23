@@ -1,0 +1,22 @@
+services:
+  lanesignal:
+    build: .
+    image: lanesignal:latest
+    restart: unless-stopped
+    ports:
+      # Bind to localhost and put a TLS reverse proxy (Caddy, Traefik, Tailscale serve) in front.
+      - "127.0.0.1:${LANESIGNAL_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LANESIGNAL_TRUST_PROXY: "true"
+    volumes:
+      - lanesignal-data:/data
+      - ./config:/config:ro
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  lanesignal-data:
