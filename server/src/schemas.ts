@@ -13,9 +13,18 @@ export const link = z.object({
   kind: z.string().max(30).optional(),
 });
 
+/** Group ids follow the lane id format, e.g. "payments-epic" or "train-42". */
+export const groupId = laneId;
+
+export const groupPatch = z.object({
+  name: z.string().min(1).max(200).optional(),
+  ticket: z.string().max(300).nullable().optional(),
+  links: z.array(link).max(20).optional(),
+});
+
 export const lanePatch = z.object({
   name: z.string().min(1).max(200).optional(),
-  category: z.string().max(60).nullable().optional(),
+  group: groupId.nullable().optional(),
   status: z.enum(LANE_STATUSES).optional(),
   ticket: z.string().max(300).nullable().optional(),
   activity: z.string().max(2000).nullable().optional(),

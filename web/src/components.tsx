@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import type { Client, Escalation, Lane, LaneEvent, LaneStatus, Link, PublicConfig } from './api.ts';
+import type { Client, Escalation, Group, Lane, LaneEvent, LaneStatus, Link, PublicConfig } from './api.ts';
 import { ago, absolute, blockedMs, duration, isStale, needsHuman, STATUS_META } from './format.ts';
 
 export function StatusPill({ status }: { status: LaneStatus }) {
@@ -55,11 +55,14 @@ export function LaneCard({
   lane,
   now,
   config,
+  groupName,
   onOpen,
 }: {
   lane: Lane;
   now: number;
   config: PublicConfig;
+  /** Shown as a tag; null when the lane already sits under its group header. */
+  groupName?: string | null;
   onOpen: () => void;
 }) {
   const human = needsHuman(lane);
@@ -78,7 +81,7 @@ export function LaneCard({
         <StatusPill status={lane.status} />
       </header>
       <div className="meta">
-        {lane.category && <span className="tag">{lane.category}</span>}
+        {groupName && <span className="tag">{groupName}</span>}
         <TicketLink lane={lane} />
         {lane.openEscalations > 0 && (
           <span className="esc-count">
@@ -99,6 +102,22 @@ export function LaneCard({
         ) : null}
       </footer>
     </article>
+  );
+}
+
+/** Header for one epic/train/overseer: its ticket, overseer session link and how many lanes need you. */
+export function GroupHeader({ group, name, lanes }: { group: Group | undefined; name: string; lanes: Lane[] }) {
+  const waiting = lanes.filter(needsHuman).length;
+  return (
+    <header className="group-head">
+      <div className="group-title">
+        <h3>{name}</h3>
+        <span className="count">{lanes.length}</span>
+        {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
+        {group && <TicketLink lane={group} />}
+      </div>
+      {group && <Links links={group.links} />}
+    </header>
   );
 }
 
@@ -132,10 +151,14 @@ export function LaneDetail({
   version,
   now,
   canDelete,
+  group,
+  groupLabel,
   onClose,
 }: {
   laneId: string;
   client: Client;
+  group: Group | undefined;
+  groupLabel: string;
   version: string;
   now: number;
   canDelete: boolean;
@@ -173,10 +196,18 @@ export function LaneDetail({
               <dd>
                 <code>{data.lane.id}</code>
               </dd>
-              {data.lane.category && (
+              {data.lane.group && (
                 <>
-                  <dt>Category</dt>
-                  <dd>{data.lane.category}</dd>
+                  <dt>{groupLabel}</dt>
+                  <dd>
+                    {group?.name ?? data.lane.group}
+                    {group?.ticket && (
+                      <>
+                        {' · '}
+                        <TicketLink lane={group} />
+                      </>
+                    )}
+                  </dd>
                 </>
               )}
               {data.lane.ticket && (
@@ -198,6 +229,14 @@ export function LaneDetail({
             </dl>
             {data.lane.activity && <p className="activity full">{data.lane.activity}</p>}
             <Links links={data.lane.links} />
+            {group && group.links.length > 0 && (
+              <>
+                <h4>
+                  {groupLabel}: {group.name}
+                </h4>
+                <Links links={group.links} />
+              </>
+            )}
 
             {data.escalations.length > 0 && (
               <>

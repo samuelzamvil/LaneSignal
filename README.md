@@ -31,14 +31,14 @@ The resulting server is about 1,500 lines of TypeScript with three runtime depen
 ## Quick start (Docker)
 
 ```bash
-cp .env.example .env          # set tokens, ticket templates, categories
+cp .env.example .env          # set tokens, ticket templates, group label
 docker compose up -d --build
 curl localhost:8080/healthz   # {"ok":true}
 ```
 
-Open `http://localhost:8080` and sign in with an **overseer** token.
+Open `http://localhost:8080` and sign in with a **human** token.
 
-If you set no tokens at all, the server generates one overseer token and one agent token on first start and stores them in the data volume:
+If you set no tokens at all, the server generates one human token and one agent token on first start and stores them in the data volume:
 
 ```bash
 docker compose exec lanesignal cat /data/generated-tokens.json
@@ -50,10 +50,18 @@ For remote access, keep the port bound to localhost (the default in `docker-comp
 
 ## Concepts
 
+**Group** (the epic, train or overseer): one overseer agent session runs many lanes for a body of tickets, and the group is named after it. That makes overseer = epic/train = group, one concept. `LANESIGNAL_GROUP_LABEL` only sets what the UI calls it (Epic, Train, Overseer…). The group names themselves come from the overseers. A group has:
+
+- a name
+- the epic/train ticket
+- links, most usefully the overseer's Remote Control session, so you can go straight to the conversation that owns a decision
+
+A lane that references an unknown group creates it. The overseer fills in the details with `update_group`. Lanes are arranged by group by default, and groups with lanes that need you sort first.
+
 **Lane**: one long-running agent work stream, identified by a stable id the agent picks (`auth-rework`, `train-42`). A lane has:
 
 - a **status**: `active`, `pending_ci`, `awaiting_agent`, `blocked_human`, `idle` or `completed`
-- an optional **category** (a flat label such as Epic, Train or Overseer; no hierarchy)
+- an optional **group**: the id of the epic/train it belongs to. There is no deeper hierarchy
 - a **ticket** reference, a one-line **activity**, and **links** (PRs, CI runs, the Remote Control session)
 
 The server tracks `updatedAt`, time in the current status, and cumulative **time blocked**. The UI flags lanes as *stale* when an active lane hasn't published in `staleMinutes`.
@@ -73,10 +81,10 @@ Its lifecycle:
 
 ```
 open ──(human decides)──► decided ──(agent acknowledges)──► acknowledged
-  └────────(agent or overseer withdraws: answered elsewhere / moot)────► withdrawn
+  └────────(agent or human withdraws: answered elsewhere / moot)────► withdrawn
 ```
 
-Creating an escalation sets the lane to `blocked_human` unless `blocking: false` is passed. Once a lane's last open escalation is decided, the lane moves to `awaiting_agent`, so the blocked timer stops while the agent picks the decision up. When two overseers race, the second one gets `409 Conflict`. Decided-but-unacknowledged escalations stay on the dashboard under "awaiting agent" until the agent confirms.
+Creating an escalation sets the lane to `blocked_human` unless `blocking: false` is passed. Once a lane's last open escalation is decided, the lane moves to `awaiting_agent`, so the blocked timer stops while the agent picks the decision up. When two humans race, the second one gets `409 Conflict`. Decided-but-unacknowledged escalations stay on the dashboard under "awaiting agent" until the agent confirms.
 
 **Ticket references** are resolved with URL templates. With `redmine=https://redmine/issues/{id}` configured:
 
@@ -99,14 +107,16 @@ claude mcp add --transport http lanesignal https://lanesignal.example.com/mcp \
 
 | Tool | Role | Purpose |
 |---|---|---|
-| `update_lane` | agent | Create or patch the lane's status, ticket, activity, links and category |
+| `update_group` | agent | Overseers: name the epic/train, set its ticket and the overseer session link |
+| `update_lane` | agent | Create or patch the lane's status, ticket, activity, links and `group` |
 | `create_escalation` | agent | Ask for a decision (`options` render as one-tap buttons) |
 | `add_position` | agent | Agree or disagree with an open escalation's recommendation (one per agent; `agent` names you on a shared token) |
 | `get_escalation` | any | Read one escalation. `wait_seconds` (≤300) long-polls until it is decided |
 | `acknowledge_escalation` | agent | Confirm the decision was received; closes the escalation |
 | `withdraw_escalation` | agent | Close it without a dashboard decision (answered in Remote Control, or moot) |
 | `list_lanes`, `list_escalations` | any | Read state |
-| `decide_escalation` | overseer | Lets an overseer's own Claude session answer from the conversation |
+| `list_groups` | any | Read the groups |
+| `decide_escalation` | human | Lets a human's own Claude session answer from the conversation |
 
 A snippet to paste into an agent's `CLAUDE.md` is in [`docs/agent-instructions.md`](docs/agent-instructions.md).
 
@@ -117,7 +127,7 @@ All endpoints take `Authorization: Bearer <token>`.
 ```bash
 # publish lane state (creates the lane on first call; omitted fields stay unchanged)
 curl -X PUT $URL/api/lanes/auth-rework -H "authorization: Bearer $AGENT" -H 'content-type: application/json' \
-  -d '{"name":"Auth rework","category":"Epic","status":"pending_ci","ticket":"redmine:4812",
+  -d '{"name":"Auth rework","group":"payments-epic","status":"pending_ci","ticket":"redmine:4812",
        "activity":"Waiting on CI for PR #311",
        "links":[{"label":"PR #311","url":"https://github.com/o/r/pull/311","kind":"pr"}]}'
 
@@ -142,17 +152,20 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $AGENT" -
 | `GET /healthz` | public | Liveness and DB check |
 | `GET /api/snapshot` | any | All lanes plus unresolved escalations |
 | `GET /api/events` | any | SSE stream of `lane`, `lane_deleted` and `escalation` events |
+| `GET /api/groups` | any | |
+| `PUT /api/groups/:id` | agent | Upsert `{name?, ticket?, links?}` |
+| `DELETE /api/groups/:id` | human | Its lanes become ungrouped |
 | `GET /api/lanes`, `GET /api/lanes/:id` | any | Lane detail includes escalation history and the last 100 events |
 | `PUT /api/lanes/:id` | agent | Upsert |
-| `DELETE /api/lanes/:id` | overseer | Remove a lane and its history |
+| `DELETE /api/lanes/:id` | human | Remove a lane and its history |
 | `GET /api/escalations[?state=open,decided&lane=]` | any | |
 | `POST /api/escalations` | agent | |
 | `GET /api/escalations/:id[?wait=s]` | any | Long-poll |
 | `POST /api/escalations/:id/positions` | agent | `{stance, note?, agent?}`, open escalations only |
-| `POST /api/escalations/:id/decide` | overseer | `{decision, note?}` |
+| `POST /api/escalations/:id/decide` | human | `{decision, note?}` |
 | `POST /api/escalations/:id/ack` | agent | `{note?}` |
 | `POST /api/escalations/:id/withdraw` | any | `{note?}` |
-| `POST /api/push/register` / `unregister` | overseer | Used by the Android app |
+| `POST /api/push/register` / `unregister` | human | Used by the Android app |
 
 `scripts/seed-demo.mjs` publishes sample lanes if you want to try the UI.
 
@@ -167,7 +180,7 @@ npm ci
 cd web && npm run android:apk      # → web/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-On first launch, enter the server URL and an overseer token. The server must be reachable over **HTTPS**. For LAN-only testing over plain HTTP, sync with `LANESIGNAL_ALLOW_HTTP=1 npm run android:sync`.
+On first launch, enter the server URL and a human token. The server must be reachable over **HTTPS**. For LAN-only testing over plain HTTP, sync with `LANESIGNAL_ALLOW_HTTP=1 npm run android:sync`.
 
 **Signed release APK:** add the repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. CI then also builds `app-release.apk`.
 
@@ -189,9 +202,9 @@ By default, push fires only when an escalation is created. Add `blocked` or `com
 | `PORT` / `HOST` | | `8080` / `0.0.0.0` | |
 | `LANESIGNAL_DATA_DIR` | | `/data` | SQLite and generated tokens |
 | `LANESIGNAL_CONFIG` | | `/config/lanesignal.json` | Optional JSON config file |
-| `LANESIGNAL_OVERSEER_TOKENS` | `tokens[]` | | `name:token,…` (≥16 chars each) |
+| `LANESIGNAL_HUMAN_TOKENS` | `tokens[]` | | `name:token,…` (≥16 chars each). The former name `LANESIGNAL_OVERSEER_TOKENS` still works |
 | `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | `name:token,…` |
-| `LANESIGNAL_CATEGORIES` | `categories` | `Epic,Train,Overseer` | Lanes may also use other values |
+| `LANESIGNAL_GROUP_LABEL` | `groupLabel` | `Epic` | What groups are called in the UI (Epic, Train, Overseer…) |
 | `LANESIGNAL_TICKET_TEMPLATES` | `ticketTemplates` | | `key=url-with-{id},…` |
 | `LANESIGNAL_TICKET_DEFAULT` | `defaultTicketSystem` | first template | |
 | `LANESIGNAL_STALE_MINUTES` | `staleMinutes` | `30` | `0` disables the stale flag |
@@ -208,9 +221,9 @@ By default, push fires only when an escalation is created. Add `blocked` or `com
 
 - Bearer tokens have two roles:
   - **agent**: publish lanes, create, acknowledge and withdraw escalations.
-  - **overseer**: decide escalations, delete lanes, register for push.
+  - **human**: decide escalations, delete lanes and groups, register for push. Overseer *agents* use agent tokens.
 - Tokens are compared in constant time against SHA-256 digests.
-- Agents can't decide their own escalations, and overseers can't spoof lane state.
+- Agents can't decide their own escalations, and humans can't spoof lane state.
 - Link URLs must be `http(s)`, and all input is validated with zod.
 - The SSE endpoint is the only place a token is accepted as a query parameter (`?access_token=`), for clients that can't set headers. The bundled client sends a header.
 - TLS is terminated by your reverse proxy. Keep the container port off the public internet.
@@ -238,7 +251,7 @@ Layout:
 - Lane and escalation model, MCP and HTTP publishing
 - Persistent escalation lifecycle with acknowledgement
 - Live multi-client updates
-- Category and status filtering and grouping, with human-needed lanes first
+- Lanes grouped by epic/train (one overseer, many lanes), with group and status filters and human-needed lanes first
 - Blocked-time tracking
 - Ticket URL templates and contextual links
 - Mobile-first shared UI, Android APK, escalation-only push
@@ -255,6 +268,6 @@ Layout:
 **Possible later, if they prove useful:**
 
 - Web Push for desktop browsers
-- Per-overseer notification preferences
+- Per-human notification preferences
 - Pruning of old acknowledged escalations
 - An OIDC front door: today you can put the server behind an authenticating proxy such as oauth2-proxy and keep tokens for agents

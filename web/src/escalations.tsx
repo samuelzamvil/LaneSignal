@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Client, Escalation, Lane, Position } from './api.ts';
+import type { Client, Escalation, Group, Lane, Position } from './api.ts';
 import { Links, RichText, TicketLink } from './components.tsx';
 import { absolute, ago } from './format.ts';
 
@@ -134,7 +134,17 @@ function DecisionForm({
   );
 }
 
-function EscHead({ esc, lane, now }: { esc: Escalation; lane: Lane | undefined; now: number }) {
+function EscHead({
+  esc,
+  lane,
+  group,
+  now,
+}: {
+  esc: Escalation;
+  lane: Lane | undefined;
+  group: Group | undefined;
+  now: number;
+}) {
   return (
     <div className="esc-head">
       <a
@@ -144,7 +154,7 @@ function EscHead({ esc, lane, now }: { esc: Escalation; lane: Lane | undefined; 
       >
         {lane?.name ?? esc.laneId}
       </a>
-      {lane?.category && <span className="tag">{lane.category}</span>}
+      {(group || lane?.group) && <span className="tag">{group?.name ?? lane?.group}</span>}
       {lane && <TicketLink lane={lane} />}
       <span className="when" title={absolute(esc.createdAt)}>
         {ago(esc.createdAt, now)}
@@ -157,11 +167,13 @@ function EscHead({ esc, lane, now }: { esc: Escalation; lane: Lane | undefined; 
 export function EscalationCard({
   esc,
   lane,
+  group,
   now,
   client,
 }: {
   esc: Escalation;
   lane: Lane | undefined;
+  group: Group | undefined;
   now: number;
   client: Client;
 }) {
@@ -174,7 +186,7 @@ export function EscalationCard({
       tabIndex={0}
       onKeyDown={(e) => e.target === e.currentTarget && e.key === 'Enter' && open()}
     >
-      <EscHead esc={esc} lane={lane} now={now} />
+      <EscHead esc={esc} lane={lane} group={group} now={now} />
       <h3>{esc.question}</h3>
       {esc.state === 'decided' ? (
         <>
@@ -214,6 +226,7 @@ export function EscalationDetail({
   id,
   client,
   lanes,
+  groups,
   version,
   now,
   onClose,
@@ -221,6 +234,7 @@ export function EscalationDetail({
   id: string;
   client: Client;
   lanes: Map<string, Lane>;
+  groups: Map<string, Group>;
   /** Changes whenever the escalation changes, to trigger a refetch. */
   version: string;
   now: number;
@@ -253,7 +267,12 @@ export function EscalationDetail({
         {error && <p className="error sheet-body">{error}</p>}
         {esc && (
           <div className="sheet-body esc-detail">
-            <EscHead esc={esc} lane={lanes.get(esc.laneId)} now={now} />
+            <EscHead
+              esc={esc}
+              lane={lanes.get(esc.laneId)}
+              group={groups.get(lanes.get(esc.laneId)?.group ?? '')}
+              now={now}
+            />
             <p className="byline">
               Raised by {esc.createdBy} · {absolute(esc.createdAt)}
             </p>

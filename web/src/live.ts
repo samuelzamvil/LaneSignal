@@ -1,10 +1,11 @@
 import { App as CapApp } from '@capacitor/app';
 import { useEffect, useRef, useState } from 'react';
-import { isNative, type Client, type Escalation, type Lane, type StreamEvent } from './api.ts';
+import { isNative, type Client, type Escalation, type Group, type Lane, type StreamEvent } from './api.ts';
 
 export type LinkState = 'connecting' | 'live' | 'offline';
 
 export interface LiveData {
+  groups: Map<string, Group>;
   lanes: Map<string, Lane>;
   escalations: Map<string, Escalation>;
   link: LinkState;
@@ -22,6 +23,7 @@ const UNRESOLVED = new Set(['open', 'decided']);
  */
 export function useLiveData(client: Client): LiveData {
   const [state, setState] = useState<LiveData>({
+    groups: new Map(),
     lanes: new Map(),
     escalations: new Map(),
     link: 'connecting',
@@ -38,8 +40,11 @@ export function useLiveData(client: Client): LiveData {
 
     const apply = (e: StreamEvent) =>
       setState((s) => {
+        const groups = new Map(s.groups);
         const lanes = new Map(s.lanes);
         const escalations = new Map(s.escalations);
+        if (e.type === 'group') groups.set(e.group.id, e.group);
+        if (e.type === 'group_deleted') groups.delete(e.id);
         if (e.type === 'lane') lanes.set(e.lane.id, e.lane);
         if (e.type === 'lane_deleted') {
           lanes.delete(e.id);
@@ -49,7 +54,7 @@ export function useLiveData(client: Client): LiveData {
           if (UNRESOLVED.has(e.escalation.state)) escalations.set(e.escalation.id, e.escalation);
           else escalations.delete(e.escalation.id);
         }
-        return { ...s, lanes, escalations, version: s.version + 1, lastEvent: e };
+        return { ...s, groups, lanes, escalations, version: s.version + 1, lastEvent: e };
       });
 
     async function loop() {
@@ -62,6 +67,7 @@ export function useLiveData(client: Client): LiveData {
               const snap = await client.snapshot();
               setState((s) => ({
                 ...s,
+                groups: new Map(snap.groups.map((g) => [g.id, g])),
                 lanes: new Map(snap.lanes.map((l) => [l.id, l])),
                 escalations: new Map(snap.escalations.map((e) => [e.id, e])),
                 link: 'live',
