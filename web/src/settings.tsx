@@ -86,6 +86,7 @@ export function AgentKeysSection({ client, serverUrl, now }: { client: Client; s
   const mcpCommand = created
     ? `claude mcp add --transport http lanesignal ${serverUrl}/mcp --header "Authorization: Bearer ${created.key}"`
     : '';
+  const skillCommand = `mkdir -p .claude/skills/lanesignal && curl -fsS ${serverUrl}/api/skill -o .claude/skills/lanesignal/SKILL.md`;
 
   return (
     <section className="settings-block">
@@ -120,6 +121,16 @@ export function AgentKeysSection({ client, serverUrl, now }: { client: Client; s
           <code className="secret">{created.key}</code>
           <p className="hint">Add it to Claude Code:</p>
           <code className="secret">{mcpCommand}</code>
+          {created.role === 'agent' && (
+            <>
+              <p className="hint">Then install the skill that teaches agents how to use LaneSignal (run in the project):</p>
+              <code className="secret">{skillCommand}</code>
+              <p className="hint">
+                For long waits the skill also needs <code>LANESIGNAL_URL</code>, <code>LANESIGNAL_KEY</code> and{' '}
+                <code>LANESIGNAL_GROUP</code> in the agent's environment (see Connecting agents in the docs).
+              </p>
+            </>
+          )}
           <div className="actions">
             <button className="ghost" onClick={() => void navigator.clipboard?.writeText(created.key)}>
               Copy key
@@ -127,6 +138,11 @@ export function AgentKeysSection({ client, serverUrl, now }: { client: Client; s
             <button className="ghost" onClick={() => void navigator.clipboard?.writeText(mcpCommand)}>
               Copy command
             </button>
+            {created.role === 'agent' && (
+              <button className="ghost" onClick={() => void navigator.clipboard?.writeText(skillCommand)}>
+                Copy skill command
+              </button>
+            )}
             <button className="ghost" onClick={() => setCreated(null)}>
               Done
             </button>
