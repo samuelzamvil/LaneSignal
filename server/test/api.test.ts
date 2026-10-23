@@ -25,6 +25,7 @@ before(async () => {
     LANESIGNAL_OVERSEER_TOKENS: `bob:${BOB}`,
     LANESIGNAL_AUTH_SECRET: 'test-secret-0123456789-0123456789-0123',
     LANESIGNAL_TICKET_TEMPLATES: 'redmine=https://redmine.example/issues/{id},gh=https://github.com/o/r/issues/{id}',
+    LANESIGNAL_DECISIONS: 'true',
   });
   store = new Store({ path: ':memory:', resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem) });
   const accounts = await createAccounts(config, ':memory:');
@@ -93,6 +94,10 @@ describe('auth', () => {
 
 describe('lanes', () => {
   test('upsert creates, then patches, resolving ticket urls', async () => {
+    const typo = await call('PUT', '/api/lanes/epic-1', AGENT, { group: 'payments-epc' });
+    assert.equal(typo.status, 404, 'a mistyped group is an error, not a new group');
+    assert.match(typo.body.error, /Group "payments-epc" not found/);
+    assert.equal((await call('PUT', '/api/groups/payments-epic', AGENT, {})).status, 200);
     const created = await call('PUT', '/api/lanes/epic-1', AGENT, {
       name: 'Epic 1',
       group: 'payments-epic',
@@ -113,7 +118,7 @@ describe('lanes', () => {
     assert.equal(patched.body.links.length, 1);
   });
 
-  test('unknown group ids create the group; overseer fills in its metadata', async () => {
+  test('a group registered without a name is named after its id; overseer fills in its metadata', async () => {
     const groups = (await call('GET', '/api/groups', ALICE)).body;
     assert.deepEqual(
       groups.map((g: { id: string; name: string }) => [g.id, g.name]),
@@ -156,6 +161,7 @@ describe('lanes', () => {
   });
 
   test('deleting a group ungroups its lanes', async () => {
+    await call('PUT', '/api/groups/tmp-group', AGENT, {});
     await call('PUT', '/api/lanes/tmp-lane', AGENT, { group: 'tmp-group' });
     assert.equal((await call('DELETE', '/api/groups/tmp-group', ALICE)).status, 204);
     assert.equal((await call('GET', '/api/lanes/tmp-lane', ALICE)).body.lane.group, null);
@@ -193,6 +199,10 @@ describe('escalation lifecycle', () => {
   let id = '';
 
   test('agent creates; lane becomes blocked_human', async () => {
+    const unpublished = await call('POST', '/api/escalations', AGENT, { laneId: 'train-a', question: 'Too early?' });
+    assert.equal(unpublished.status, 404, 'the lane must be published first');
+    assert.match(unpublished.body.error, /Lane "train-a" not found: publish it first/);
+    await call('PUT', '/api/lanes/train-a', AGENT, {});
     const res = await call('POST', '/api/escalations', AGENT, {
       laneId: 'train-a',
       context: 'legacy_role has had no reads for 90 days.',
@@ -327,7 +337,7 @@ describe('mcp', () => {
     assert.ok(names.includes('create_escalation'));
     assert.ok(names.includes('add_position'));
     assert.ok(names.includes('update_group'));
-    assert.ok(names.includes('export_data'));
+    assert.ok(!names.includes('export_data'), 'exports are for people, not every agent session');
     assert.ok(!names.includes('decide_escalation'));
 
     const out = await rpc(AGENT, 'tools/call', {
@@ -335,14 +345,20 @@ describe('mcp', () => {
       arguments: { lane_id: 'mcp-lane', status: 'pending_ci', ticket: 'gh:5' },
     });
     const lane = JSON.parse(out.result.content[0].text);
-    assert.equal(lane.ticketUrl, 'https://github.com/o/r/issues/5');
+    assert.deepEqual(Object.keys(lane).sort(), ['id', 'letter', 'project', 'status'], 'where the lane stands, nothing echoed');
+    assert.equal(store.getLane('default/mcp-lane')?.ticketUrl, 'https://github.com/o/r/issues/5');
     assert.equal(store.getLane('default/mcp-lane')?.agent, 'bot');
 
     const created = await rpc(AGENT, 'tools/call', {
       name: 'create_escalation',
       arguments: { lane_id: 'mcp-lane', question: 'Merge?', options: ['Merge', 'Wait'], recommended_option: 'Merge' },
     });
-    assert.equal(JSON.parse(created.result.content[0].text).recommendedOption, 'Merge');
+    // Agents get the escalation back in brief: not the whole question echoed.
+    const brief = JSON.parse(created.result.content[0].text);
+    assert.match(brief.ref, /^[A-Z]+\d+$/);
+    assert.equal(brief.state, 'open');
+    assert.equal(brief.recommendedOption, undefined);
+    assert.equal(store.getEscalation(brief.id)?.recommendedOption, 'Merge');
     const bad = await rpc(AGENT, 'tools/call', {
       name: 'create_escalation',
       arguments: { lane_id: 'mcp-lane', question: 'Merge?', options: ['Merge'], recommended_option: 'Nope' },
@@ -351,13 +367,13 @@ describe('mcp', () => {
   });
 
   test('export_data returns CSV pages', async () => {
-    const out = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', limit: 1 } });
+    const out = await rpc(ALICE, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', limit: 1 } });
     const [summary, body] = out.result.content.map((c: { text: string }) => c.text);
     assert.match(summary, /^lanes: rows 1-1 of \d+; call again with offset 1/);
     assert.ok(body.startsWith('id,project,name,group_id,'));
-    const empty = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', offset: 9999 } });
+    const empty = await rpc(ALICE, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', offset: 9999 } });
     assert.ok(empty.result.content[1].text.startsWith('id,project,name,group_id,'), 'header even when empty');
-    const bad = await rpc(AGENT, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', from: 'soon' } });
+    const bad = await rpc(ALICE, 'tools/call', { name: 'export_data', arguments: { dataset: 'lanes', from: 'soon' } });
     assert.equal(bad.result.isError, true);
   });
 

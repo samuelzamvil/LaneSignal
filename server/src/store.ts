@@ -54,6 +54,8 @@ export interface RecordResult {
   similar: Requirement[];
   /** Advice, e.g. a tag already on most requirements. */
   warnings: string[];
+  /** True when an active requirement already cites the same escalation: that one is returned, nothing new is stored. */
+  duplicate?: boolean;
 }
 
 /** Lane letters: 0 -> A, 25 -> Z, 26 -> AA, like spreadsheet columns. */
@@ -200,7 +202,7 @@ export interface StoreOptions {
   broadTags?: string[];
 }
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 type Row = Record<string, unknown>;
 
@@ -336,6 +338,10 @@ export class Store {
         `);
       }
       if (version < 8) this.migrateV8();
+      // v9: who raised each escalation (the owning account, or a config token), so only they acknowledge it.
+      if (version < 9 && !this.hasColumn('escalations', 'raised_by_owner')) {
+        this.db.exec('ALTER TABLE escalations ADD COLUMN raised_by_owner TEXT');
+      }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -556,6 +562,16 @@ export class Store {
     ).map((r) => this.groupFromRow(r));
   }
 
+  /** Whether the group exists, archived or not (publishing to an archived one restores it). */
+  groupExists(id: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(id);
+  }
+
+  /** Whether the lane exists, archived or not (publishing to a removed one restores it). */
+  laneExists(id: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM lanes WHERE id = ?').get(id);
+  }
+
   getGroup(id: string): Group | null {
     const r = this.db.prepare('SELECT * FROM groups WHERE id = ? AND archived_at IS NULL').get(id) as Row | undefined;
     return r ? this.groupFromRow(r) : null;
@@ -731,6 +747,10 @@ export class Store {
     projectOf(id);
     if (patch.group && projectOf(patch.group) !== projectOf(id)) throw new Error('internal: a lane\'s group must be in its project');
     if (patch.status && !LANE_STATUSES.includes(patch.status)) throw new Error(`Invalid status "${patch.status}"`);
+    // A typo would otherwise put a lane in a new group nobody waits on.
+    if (patch.group && !this.groupExists(patch.group)) {
+      throw new NotFoundError(`Group "${localId(patch.group)}" not found: register it first (update_group, or PUT /api/groups/:id)`);
+    }
     let createdGroup: Group | null = null;
     let groupRestored = false;
     let previous: LaneStatus | null = null;
@@ -780,7 +800,9 @@ export class Store {
 
   /** Must run inside a transaction. */
   private applyLaneUpdate(existing: Lane, patch: LanePatch, actor: string | null, at: string) {
-    const status = patch.status ?? existing.status;
+    // A lane stays blocked while a blocking question is still open, so the dashboard keeps showing it.
+    const stillBlocked = existing.status === 'blocked_human' && this.openBlockingCount(existing.id) > 0;
+    const status = stillBlocked ? 'blocked_human' : (patch.status ?? existing.status);
     let statusSince = existing.statusSince;
     let blockedSince = existing.blockedSince;
     let blockedTotalMs = existing.blockedTotalMs;
@@ -921,7 +943,7 @@ export class Store {
    * everything not yet closed (open + decided-but-unacknowledged).
    */
   listEscalations(
-    filter: { states?: EscalationState[]; laneId?: string; projects?: string[]; limit?: number } = {},
+    filter: { states?: EscalationState[]; laneId?: string; groupId?: string; projects?: string[]; limit?: number } = {},
   ): Escalation[] {
     const states = filter.states ?? ['open', 'decided'];
     const where = [`state IN (${states.map(() => '?').join(',')})`];
@@ -929,6 +951,10 @@ export class Store {
     if (filter.laneId) {
       where.push('lane_id = ?');
       params.push(filter.laneId);
+    }
+    if (filter.groupId) {
+      where.push('lane_id IN (SELECT id FROM lanes WHERE group_id = ?)');
+      params.push(filter.groupId);
     }
     const p = this.inProjects(filter.projects);
     params.push(...p.params);
@@ -968,6 +994,12 @@ export class Store {
     return rows[0] ? this.escalationFromRow(rows[0]) : null;
   }
 
+  /** Who raised it ("user:<id>" or "token:<name>"); null for escalations from before this was recorded. */
+  escalationOwner(id: string): string | null {
+    const r = this.db.prepare('SELECT raised_by_owner FROM escalations WHERE id = ?').get(id) as Row | undefined;
+    return (r?.raised_by_owner as string | null) ?? null;
+  }
+
   private requireEscalation(id: string): Escalation {
     const e = this.getEscalation(id);
     if (!e) throw new NotFoundError(`Escalation "${id}" not found`);
@@ -977,27 +1009,33 @@ export class Store {
   /**
    * Raising the same question again on the same lane while the first is still
    * open (e.g. a retried call) returns the existing escalation with
-   * `duplicate: true` instead of creating a second one.
+   * `duplicate: true` instead of creating a second one. `owner` identifies who may later
+   * dismiss or acknowledge it: the raising key ("user:<account>:<key name>") or config token
+   * ("token:<name>").
    */
-  createEscalation(input: EscalationInput, actor: string): Escalation & { duplicate?: boolean } {
+  createEscalation(input: EscalationInput, actor: string, owner: string | null = null): Escalation & { duplicate?: boolean } {
     projectOf(input.laneId);
-    const existing = this.db
-      .prepare("SELECT id FROM escalations WHERE lane_id = ? AND question = ? AND created_by = ? AND state = 'open'")
-      .get(input.laneId, input.question, actor) as Row | undefined;
+    // A typo would otherwise create a new lane outside the group, which the overseer's wait never sees.
+    if (!this.laneExists(input.laneId)) {
+      throw new NotFoundError(
+        `Lane "${localId(input.laneId)}" not found: publish it first (update_lane with its group, or PUT /api/lanes/:id)`,
+      );
+    }
+    // The same question again (ignoring spacing and case) is a retry.
+    const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
+    const existing = (
+      this.db
+        .prepare(
+          `SELECT id, question FROM escalations WHERE lane_id = ? AND state = 'open'
+             AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`,
+        )
+        .all(input.laneId, owner ?? actor) as Row[]
+    ).find((r) => norm(r.question as string) === norm(input.question));
     if (existing) return { ...this.requireEscalation(existing.id as string), duplicate: true };
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
       this.restoreLane(input.laneId, actor, at);
-      let lane = this.getLane(input.laneId);
-      if (!lane) {
-        // Agents may escalate before ever publishing lane state.
-        this.db
-          .prepare(
-            `INSERT INTO lanes (id, name, status, agent, created_at, updated_at, status_since) VALUES (?, ?, 'active', ?, ?, ?, ?)`,
-          )
-          .run(input.laneId, localId(input.laneId), actor, at, at, at);
-        lane = this.requireLane(input.laneId);
-      }
+      const lane = this.requireLane(input.laneId);
       const id = randomUUID();
       const ref = Number((this.db.prepare('SELECT COALESCE(MAX(ref), 0) + 1 AS n FROM escalations').get() as Row).n);
       this.syncLetter(input.laneId, true);
@@ -1013,8 +1051,8 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO escalations (id, ref, letter_index, seq, lane_id, question, context, recommendation, recommended_option, cost,
-             alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+             alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at, raised_by_owner)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -1038,6 +1076,7 @@ export class Store {
           actor,
           at,
           at,
+          owner,
         );
       this.addEvent(input.laneId, at, 'escalation', `Escalated ${code}: ${input.question}`, actor);
       const blocks = input.blocking !== false && lane.status !== 'blocked_human';
@@ -1147,6 +1186,29 @@ export class Store {
       actor,
       true,
     );
+  }
+
+  /**
+   * Closes an alert that's been dealt with (the owner answered in the agent's session, or it became moot),
+   * with the justification, and publishes the lane's next state. A lane this unblocks goes back to
+   * `active` unless a status is given.
+   */
+  dismissEscalation(
+    id: string,
+    justification: string | null,
+    actor: string,
+    lane: Pick<LanePatch, 'status' | 'activity'> = {},
+    /** A person dismissing a stale alert leaves the lane waiting on its agent instead of showing it working. */
+    byAgent = true,
+  ): Escalation {
+    const before = this.requireEscalation(id);
+    const wasBlocked = this.getLane(before.laneId)?.status === 'blocked_human';
+    const escalation = this.withdrawEscalation(id, justification, actor);
+    const after = this.getLane(escalation.laneId);
+    if (!after) return escalation;
+    const status = lane.status ?? (byAgent && wasBlocked && after.status === 'awaiting_agent' ? 'active' : undefined);
+    if (status || lane.activity !== undefined) this.upsertLane(after.id, { status, activity: lane.activity }, actor);
+    return escalation;
   }
 
   private openBlockingCount(laneId: string) {
@@ -1937,24 +1999,33 @@ export class Store {
     input: RequirementInput,
     actor: string,
     actorIsHuman: boolean,
+    actorOwner: string | null,
   ): { decidedBy: string; escalationId: string | null } {
-    if (input.sourceEscalation && input.decidedBy) {
-      throw new ValidationError('Give either source_escalation or decided_by, not both: the escalation names its decider.');
-    }
     if (input.sourceEscalation) {
       const esc = this.requireEscalation(input.sourceEscalation);
-      if (!esc.decidedBy || (esc.state !== 'decided' && esc.state !== 'acknowledged')) {
-        throw new ConflictError(`Escalation ${esc.ref} hasn't been decided by a person, so it can't be the source`);
+      // Decided in LaneSignal: the escalation names its decider. Otherwise (the owner answered in the
+      // agent's session and the alert was dismissed) it stays linked, and decided_by says who decided.
+      const decidedHere = !!esc.decidedBy && (esc.state === 'decided' || esc.state === 'acknowledged');
+      if (decidedHere && input.decidedBy) {
+        throw new ValidationError('Give either source_escalation or decided_by, not both: the escalation names its decider.');
+      }
+      if (!decidedHere && !input.decidedBy?.trim()) {
+        throw new ConflictError(
+          `Escalation ${esc.ref} hasn't been decided in LaneSignal; say who decided with decided_by (the escalation stays linked)`,
+        );
       }
       const laneGroup = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(esc.laneId) as Row | undefined)?.group_id;
-      const related = esc.createdBy === actor || (input.group != null && laneGroup === input.group);
+      // Raised by this agent: the same key identity as for dismissing (or the name, for old rows).
+      const raiser = this.escalationOwner(esc.id);
+      const mine = raiser && actorOwner ? raiser === actorOwner : esc.createdBy === actor;
+      const related = mine || (input.group != null && laneGroup === input.group);
       if (!actorIsHuman && !related) {
         throw new ConflictError(
           `Escalation ${esc.ref} was raised by ${esc.createdBy} in another ${laneGroup ? `group (${laneGroup})` : 'context'}; ` +
             'cite an escalation you raised or one from this group, or name who decided with decided_by.',
         );
       }
-      return { decidedBy: esc.decidedBy, escalationId: esc.id };
+      return { decidedBy: decidedHere ? esc.decidedBy! : input.decidedBy!.trim(), escalationId: esc.id };
     }
     const decidedBy = input.decidedBy?.trim();
     if (!decidedBy) {
@@ -1986,22 +2057,39 @@ export class Store {
     const total = Number(
       (this.db.prepare(`SELECT COUNT(*) AS n FROM requirements r WHERE r.status = 'active'${p.sql}`).get(...p.params) as Row).n,
     );
-    if (total < 10) return [];
     const counts = new Map(this.requirementTags(undefined, projects).map((t) => [t.tag, t.count]));
-    return tags
-      .filter((t) => (counts.get(t) ?? 0) / total > 0.4)
-      .map((t) => `Tag "${t}" is on ${counts.get(t)} of ${total} active requirements; a narrower tag would find this faster.`);
+    // "payout-retry" next to an existing "payout-retries" splits searches in two.
+    const forms = (t: string) =>
+      new Set([t + 's', t + 'es', t.replace(/y$/, 'ies'), t.replace(/ies$/, 'y'), t.replace(/es$/, ''), t.replace(/s$/, '')]);
+    const near = tags.flatMap((t) => {
+      // Short words ("bu"/"bus", "new"/"news") differ by more than a plural.
+      const other = [...counts.keys()].find((c) => c !== t && !tags.includes(c) && Math.min(c.length, t.length) >= 5 && forms(t).has(c));
+      return other ? [`Tag "${t}" is close to the existing tag "${other}"; use that one if it means the same.`] : [];
+    });
+    if (total < 10) return near;
+    return [
+      ...near,
+      ...tags
+        .filter((t) => (counts.get(t) ?? 0) / total > 0.4)
+        .map((t) => `Tag "${t}" is on ${counts.get(t)} of ${total} active requirements; a narrower tag would find this faster.`),
+    ];
   }
 
   /** Must run inside a transaction. */
-  private insertRequirement(input: RequirementInput, actor: string, actorIsHuman: boolean, at: string): number {
+  private insertRequirement(
+    input: RequirementInput,
+    actor: string,
+    actorIsHuman: boolean,
+    at: string,
+    actorOwner: string | null = null,
+  ): number {
     if (input.group && !this.getGroup(input.group)) throw new NotFoundError(`Group "${localId(input.group)}" not found`);
     if (input.group && input.project !== projectOf(input.group)) {
       throw new ValidationError('A requirement for a group applies to that group\'s project, not to all projects');
     }
     if (input.project && !this.getProject(input.project)) throw new NotFoundError(`Project "${input.project}" not found`);
     const tags = this.cleanTags(input.tags);
-    const { decidedBy, escalationId } = this.decisionSource(input, actor, actorIsHuman);
+    const { decidedBy, escalationId } = this.decisionSource(input, actor, actorIsHuman, actorOwner);
     const res = this.db
       .prepare(
         `INSERT INTO requirements (project_id, group_id, requirement, justification, tags, status, decided_by,
@@ -2012,9 +2100,20 @@ export class Store {
   }
 
   /** Records an owner decision. Returns it with similar active requirements, so duplicates get noticed. */
-  recordRequirement(input: RequirementInput, actor: string, actorIsHuman = false): RecordResult {
+  recordRequirement(input: RequirementInput, actor: string, actorIsHuman = false, actorOwner: string | null = null): RecordResult {
+    // A retry (the same requirement from the same escalation) returns the first instead of a copy.
+    // A second decision from the same answer is stored; `similar` shows the first.
+    if (input.sourceEscalation) {
+      const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
+      const same = (
+        this.db
+          .prepare("SELECT num, requirement FROM requirements WHERE source_escalation_id = ? AND status = 'active' AND project_id IS ?")
+          .all(input.sourceEscalation, input.project ?? null) as Row[]
+      ).find((row) => norm(row.requirement as string) === norm(input.requirement));
+      if (same) return { requirement: this.requireRequirement(String(same.num)), similar: [], warnings: [], duplicate: true };
+    }
     const requirement = this.tx(() => {
-      const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString());
+      const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString(), actorOwner);
       return this.requireRequirement(String(num));
     });
     this.emit({ type: 'requirement', requirement });
@@ -2026,7 +2125,13 @@ export class Store {
    * The old one stays, marked superseded, so the history of why is kept. Group
    * defaults to the old one's.
    */
-  supersedeRequirement(id: string, input: RequirementInput, actor: string, actorIsHuman = false): RecordResult {
+  supersedeRequirement(
+    id: string,
+    input: RequirementInput,
+    actor: string,
+    actorIsHuman = false,
+    actorOwner: string | null = null,
+  ): RecordResult {
     const { requirement, old } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (current.status !== 'active') throw new ConflictError(`${current.id} is ${current.status}; only active requirements can be superseded`);
@@ -2040,6 +2145,7 @@ export class Store {
         actor,
         actorIsHuman,
         at,
+        actorOwner,
       );
       this.db
         .prepare("UPDATE requirements SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE num = ?")
@@ -2066,6 +2172,20 @@ export class Store {
           this.now().toISOString(),
           this.requirementNum(current.id)!,
         );
+      return this.requireRequirement(current.id);
+    });
+    this.emit({ type: 'requirement', requirement });
+    return requirement;
+  }
+
+  /** Undoes a retire (e.g. a mis-tap): the requirement is active again. */
+  restoreRequirement(id: string): Requirement {
+    const requirement = this.tx(() => {
+      const current = this.requireRequirement(id);
+      if (current.status !== 'retired') throw new ConflictError(`${current.id} is ${current.status}; only retired requirements can be restored`);
+      this.db
+        .prepare("UPDATE requirements SET status = 'active', updated_at = ? WHERE num = ?")
+        .run(this.now().toISOString(), this.requirementNum(current.id)!);
       return this.requireRequirement(current.id);
     });
     this.emit({ type: 'requirement', requirement });

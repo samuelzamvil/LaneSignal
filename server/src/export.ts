@@ -65,9 +65,14 @@ export async function datasetRowsAsync(store: Store, dataset: ExportDataset, fil
 const deflate = promisify(deflateRaw);
 
 /** All datasets as CSVs plus a README, zipped. Compression runs off the event loop. */
-export async function exportZip(store: Store, filter: ExportFilter, generatedAt: Date) {
+export async function exportZip(
+  store: Store,
+  filter: ExportFilter,
+  generatedAt: Date,
+  datasets: readonly ExportDataset[] = EXPORT_DATASETS,
+) {
   const files: { name: string; data: Buffer }[] = [];
-  for (const d of EXPORT_DATASETS) {
+  for (const d of datasets) {
     files.push({ name: `${d}.csv`, data: Buffer.from(await datasetCsvAsync(store, d, filter), 'utf8') });
   }
   files.push({
@@ -85,7 +90,7 @@ export async function exportZip(store: Store, filter: ExportFilter, generatedAt:
         'lanes.csv        every lane, including archived ones (archived_at set)',
         'groups.csv       every group (epic/train/overseer), including archived ones',
         'events.csv       lane history: status changes, escalation steps, recent activity text',
-        'requirements.csv the owner\'s product decisions, including superseded and retired ones',
+        ...(datasets.includes('requirements') ? ['requirements.csv the owner\'s product decisions, including superseded and retired ones'] : []),
         '',
         'Timestamps are UTC ISO 8601. Column reference: docs/export.md in the LaneSignal repository.',
         '',

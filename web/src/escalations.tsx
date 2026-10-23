@@ -3,6 +3,7 @@ import type { Client, Escalation, Group, Lane, Position } from './api.ts';
 import { Links, RichText, TicketLink } from './components.tsx';
 import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
+import { toast } from './toast.tsx';
 
 /** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
 export function isCodeOf(e: Escalation, code: string) {
@@ -145,7 +146,14 @@ function DecisionForm({
           <button
             className="primary"
             disabled={!decision || busy}
-            onClick={() => run(async () => (await client.decide(esc.id, decision, note, change), onDone?.()))}
+            onClick={() =>
+              run(async () => {
+                await client.decide(esc.id, decision, note, change);
+                // The card disappears at once; say what was sent, with a way back to fix a mis-tap.
+                toast({ text: `Sent “${decision}” to ${esc.ref}`, action: { label: 'Change', href: `#/esc/${esc.id}` } });
+                onDone?.();
+              })
+            }
           >
             {busy ? 'Sending…' : change ? 'Change decision' : 'Send decision'}
           </button>
@@ -210,6 +218,43 @@ function EscHead({
   );
 }
 
+/** The overseer's Remote Control session, from its group's links. */
+const sessionLink = (group: Group | undefined) => group?.links.find((l) => l.kind === 'session');
+
+/**
+ * Alerts are answered in the agent's own session, so the decision and the conversation stay
+ * in one place. The card shows the choices and links straight to that session.
+ */
+function AlertActions({ esc, group, onMore }: { esc: Escalation; group: Group | undefined; onMore: () => void }) {
+  const session = sessionLink(group);
+  return (
+    <div onClick={(e) => e.stopPropagation()}>
+      {esc.options.length > 0 && (
+        <p className="options-line">
+          {esc.options.map((o, i) => (
+            <span key={o}>
+              {i > 0 && ' · '}
+              <span className={o === esc.recommendedOption ? 'recommended' : undefined}>{o}</span>
+            </span>
+          ))}
+        </p>
+      )}
+      <div className="actions">
+        {session ? (
+          <a className="button primary" href={session.url} target="_blank" rel="noreferrer">
+            Answer in session ↗
+          </a>
+        ) : (
+          <span className="hint">Answer {esc.ref} in the agent's session.</span>
+        )}
+        <button className="ghost" onClick={onMore}>
+          Details
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Compact inbox card; tapping it opens the detail sheet. */
 export function EscalationCard({
   esc,
@@ -220,6 +265,7 @@ export function EscalationCard({
   seq,
   staleMinutes,
   showProject,
+  decisions,
 }: {
   esc: Escalation;
   lane: Lane | undefined;
@@ -230,6 +276,8 @@ export function EscalationCard({
   seq?: { index: number; total: number };
   staleMinutes: number;
   showProject: boolean;
+  /** People answer in LaneSignal; otherwise the card only tells them, and they answer in the agent's session. */
+  decisions: boolean;
 }) {
   const open = () => (location.hash = `#/esc/${esc.id}`);
   return (
@@ -247,6 +295,7 @@ export function EscalationCard({
         </p>
       )}
       <h3>{esc.question}</h3>
+      {esc.state === 'open' && esc.context && <p className="context-line">{esc.context}</p>}
       {esc.state === 'decided' ? (
         <>
           <p className="decision">
@@ -266,7 +315,11 @@ export function EscalationCard({
               Agents <StanceSummary positions={esc.positions} />
             </p>
           )}
-          <DecisionForm esc={esc} client={client} compact onMore={open} />
+          {decisions ? (
+            <DecisionForm esc={esc} client={client} compact onMore={open} />
+          ) : (
+            <AlertActions esc={esc} group={group} onMore={open} />
+          )}
         </>
       )}
     </article>
@@ -277,7 +330,7 @@ const STATE_LABEL: Record<Escalation['state'], string> = {
   open: 'Needs decision',
   decided: 'Decided · awaiting agent',
   acknowledged: 'Closed · acknowledged',
-  withdrawn: 'Closed · withdrawn',
+  withdrawn: 'Closed · dismissed',
 };
 
 /** Full-screen (mobile) / side (desktop) sheet with every section of an escalation. */
@@ -293,6 +346,7 @@ export function EscalationDetail({
   onClose,
   currentId,
   showProject,
+  decisions,
 }: {
   id: string;
   /** The escalation's id when the route names it by number. */
@@ -308,6 +362,7 @@ export function EscalationDetail({
   staleMinutes: number;
   onClose: () => void;
   showProject: boolean;
+  decisions: boolean;
 }) {
   const [loaded, setLoaded] = useState<Escalation | null>(null);
   const [changing, setChanging] = useState(false);
@@ -368,7 +423,7 @@ export function EscalationDetail({
             (esc.state === 'open' && !esc.blocking ? (
               <span className="pill tone-info">FYI · lane keeps working</span>
             ) : (
-              <span className={`pill ${esc.state === 'open' ? 'tone-danger' : 'tone-muted'}`}>{STATE_LABEL[esc.state]}</span>
+              <span className={`pill ${esc.state === 'open' ? 'tone-danger' : 'tone-muted'}`}>{esc.state === 'open' && !decisions ? 'Needs you' : STATE_LABEL[esc.state]}</span>
             ))}
         </header>
         {error && <p className="error sheet-body">{error}</p>}
@@ -463,7 +518,42 @@ export function EscalationDetail({
               </section>
             )}
 
-            {esc.state === 'open' ? (
+            {esc.state === 'open' && !decisions ? (
+              <section className="esc-section answer">
+                <h4>Answer</h4>
+                {(() => {
+                  const group = lane?.group ? groups.get(keyOf(lane.project, lane.group)) : undefined;
+                  const session = sessionLink(group);
+                  return (
+                    <p className="hint">
+                      Answer {showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref} in the agent's session
+                      {session ? (
+                        <>
+                          {': '}
+                          <a href={session.url} target="_blank" rel="noreferrer">
+                            open it ↗
+                          </a>
+                        </>
+                      ) : (
+                        '.'
+                      )}{' '}
+                      The agent dismisses this alert once it's dealt with.
+                    </p>
+                  );
+                })()}
+                <div className="actions">
+                  <button
+                    className="ghost danger"
+                    onClick={() => {
+                      const why = prompt('Dismiss this alert (e.g. its session ended)? Optional reason:');
+                      if (why !== null) client.withdraw(esc.id, why).catch((e: Error) => setError(e.message));
+                    }}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </section>
+            ) : esc.state === 'open' ? (
               <section className="esc-section answer">
                 <h4>{esc.blocking ? 'Your decision' : 'Your reply (optional)'}</h4>
                 <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
@@ -490,14 +580,28 @@ export function EscalationDetail({
                 {esc.state === 'decided' && (
                   <>
                     <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
-                    <button className="ghost" onClick={() => setChanging(true)}>
-                      Change decision
-                    </button>
+                    <div className="actions">
+                      {decisions && (
+                        <button className="ghost" onClick={() => setChanging(true)}>
+                          Change decision
+                        </button>
+                      )}
+                      {/* For an answer no agent will pick up (its session ended): clear it from the list. */}
+                      <button
+                        className="ghost danger"
+                        onClick={() => {
+                          const why = prompt('Close this without the agent picking it up? Optional reason:');
+                          if (why !== null) client.withdraw(esc.id, why).catch((e: Error) => setError(e.message));
+                        }}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
                   </>
                 )}
                 {esc.resolution && (
                   <p className="note">
-                    {esc.state === 'withdrawn' ? 'Withdrawn: ' : 'Agent: '}
+                    {esc.state === 'withdrawn' ? 'Dismissed: ' : 'Agent: '}
                     {esc.resolution}
                   </p>
                 )}

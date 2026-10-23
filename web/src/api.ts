@@ -97,11 +97,17 @@ export function createClient(conn: Connection) {
   const headers = { authorization: `Bearer ${conn.token}` };
 
   async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await fetch(base + path, {
-      method,
-      headers: body !== undefined ? { ...headers, 'content-type': 'application/json' } : headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(base + path, {
+        method,
+        headers: body !== undefined ? { ...headers, 'content-type': 'application/json' } : headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch {
+      // The browser's "Failed to fetch" says nothing useful to someone on a phone.
+      throw new ApiError(0, "Couldn't reach the server, so nothing was sent. Try again when you're back online.");
+    }
     if (!res.ok) {
       let message = res.statusText;
       try {
@@ -143,6 +149,7 @@ export function createClient(conn: Connection) {
     editRequirement: (id: string, patch: { requirement?: string; justification?: string; tags?: string[] }) =>
       request<Requirement>('PATCH', `/api/requirements/${encodeURIComponent(id)}`, patch),
     retireRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/retire`, {}),
+    restoreRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/restore`, {}),
     deleteLane: (project: string, id: string) =>
       request<void>('DELETE', `/api/lanes/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`),
 

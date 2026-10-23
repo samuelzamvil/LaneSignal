@@ -45,6 +45,14 @@ export interface Config {
   ntfyUrl: string | null;
   ntfyToken: string | null;
   eventRetention: number;
+  /**
+   * Answering escalations in LaneSignal (off by default): the dashboard's decision buttons, and agents
+   * waiting for and acknowledging decisions. Off, LaneSignal only alerts: people answer in the agent's
+   * own session, and the agent dismisses the alert with a justification.
+   */
+  decisions: boolean;
+  /** The requirements register (on by default). */
+  requirements: boolean;
 }
 
 /** Optional JSON file (usually on the /config volume). Env vars win over it. */
@@ -100,6 +108,15 @@ function int(name: string, value: string | number | undefined, fallback: number,
     throw new Error(`${name} must be an integer between ${min} and ${max}, got "${value}"`);
   }
   return n;
+}
+
+/** "true"/"false" (also 1/0, yes/no, on/off); anything else stops startup. */
+function bool(name: string, value: string | undefined, fallback: boolean) {
+  if (value === undefined || value.trim() === '') return fallback;
+  const v = value.trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(v)) return true;
+  if (['false', '0', 'no', 'off'].includes(v)) return false;
+  throw new Error(`${name} must be true or false, got "${value}"`);
 }
 
 const PROXY_KEYWORDS = new Set(['loopback', 'linklocal', 'uniquelocal']);
@@ -191,6 +208,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ntfyUrl: env.LANESIGNAL_NTFY_URL ?? file.ntfyUrl ?? null,
     ntfyToken: env.LANESIGNAL_NTFY_TOKEN ?? file.ntfyToken ?? null,
     eventRetention: int('LANESIGNAL_EVENT_RETENTION', env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention, 200, 1, 100_000),
+    decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, false),
+    requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),
   };
 }
 

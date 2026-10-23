@@ -16,6 +16,10 @@ export const needsHuman = (l: Lane) => l.status === 'blocked_human' || l.blockin
 export function compareLanes(a: Lane, b: Lane) {
   const h = Number(needsHuman(b)) - Number(needsHuman(a));
   if (h) return h;
+  // Among lanes waiting on a person, the one waiting longest comes first.
+  if (needsHuman(a) && a.blockedSince && b.blockedSince && a.blockedSince !== b.blockedSince) {
+    return a.blockedSince.localeCompare(b.blockedSince);
+  }
   const r = STATUS_META[a.status].rank - STATUS_META[b.status].rank;
   if (r) return r;
   return b.updatedAt.localeCompare(a.updatedAt);

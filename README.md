@@ -2,12 +2,13 @@
 
 *Internal codename: VNATS (Vault Network Activity & Triage System)*
 
-A small, self-hosted dashboard for watching autonomous coding-agent **lanes** and handling the **escalations** that need a human decision. It's built mobile-first, and the same React code runs in the browser and in an Android app.
+A small, self-hosted dashboard for watching autonomous coding-agent **lanes** and the **alerts** (escalations) that need you. It's built mobile-first, and the same React code runs in the browser and in an Android app.
 
-- Agents **publish** lane state and escalations over **MCP** or a plain **HTTP API**. Nobody has to poll sessions.
-- Humans see **open decisions first**, kept apart from routine status. They answer with one tap, and every connected browser and phone updates live over SSE.
-- Escalations **persist** until a human decides and the agent acknowledges.
-- Android **push notifications** fire only for human-required escalations by default.
+- Agents **publish** lane state and raise alerts over **MCP** or a plain **HTTP API**. Nobody has to poll sessions.
+- You see **what needs you first**, kept apart from routine status, and every connected browser and phone updates live over SSE.
+- You **answer in the agent's own session** (e.g. Claude Remote Control), so the conversation and the decision stay in one place. The agent then dismisses the alert with a justification. (Answering on the dashboard is an option, off by default: `LANESIGNAL_DECISIONS`.)
+- **Requirements** keep your product decisions as a durable record outside the repository that agents can search (`LANESIGNAL_REQUIREMENTS`, on by default).
+- Android **push notifications** fire only for new alerts by default.
 - It runs as **one Docker container** (API, MCP, SSE and the web app) with a SQLite file on a volume.
 
 LaneSignal is an observability and intervention surface, not an orchestrator. Claude Remote Control stays the conversational interface. LaneSignal tells you *which* lane needs you and links straight to its session, ticket, PR and CI run.

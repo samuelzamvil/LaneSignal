@@ -22,7 +22,7 @@ A static human token from the config (`LANESIGNAL_HUMAN_TOKENS`) can also comple
 
 Admins manage people under **Settings → People**:
 
-- **Add a person:** enter a name, an email and a temporary password, and optionally make them an admin. Share the password with them; they can change it under **Settings → Change password**.
+- **Add a person:** enter a name, an email and a temporary password, and optionally make them an admin. Share the password with them; they can change it under **Settings → Change password**. With one [project](projects.md) they join it straight away; with several, add them to projects under **Settings → Projects**.
 - **Remove a person:** their sessions and agent keys stop working at once, including streams that are already open.
 
 People can't rename themselves, because names are what decisions are attributed to.
@@ -33,18 +33,22 @@ Every person can create keys under **Settings → Keys**:
 
 1. Name the key after the overseer that will use it (e.g. `payments-overseer`). That name is shown as the agent on its lanes.
 2. Copy the key (`ls_…`) right away. It's shown once and only a hash is stored.
-3. Settings also shows a ready-to-paste command:
+3. Settings then shows everything an overseer needs, each with a copy button:
+   - the command that adds LaneSignal to Claude Code:
 
-   ```bash
-   claude mcp add --transport http lanesignal https://lanesignal.example.com/mcp \
-     --header "Authorization: Bearer ls_…"
-   ```
+     ```bash
+     claude mcp add --transport http lanesignal https://lanesignal.example.com/mcp \
+       --header "Authorization: Bearer ls_…"
+     ```
+   - the command that installs the [skill](agents.md#3-install-the-skill-how-to-use-lanesignal)
+   - an `env` block for `.claude/settings.local.json` (URL, key, group, and project when the key needs one), for the skill's long waits
+   - the starter [policy](agent-instructions.md) for the overseer's `CLAUDE.md`
 
 ### Personal keys
 
 Pick **Personal key** instead of **Agent key** to use LaneSignal from your own Claude session. A personal key acts as you:
 
-- It gets the human tools (`decide_escalation`, `withdraw_escalation`, and the read tools), and decisions show your name.
+- It gets the human tools (`dismiss_escalation`, the read tools, and `decide_escalation` when answering on the dashboard is on), and what it does shows your name.
 - It can't publish lanes or raise escalations.
 - It can't manage accounts, even if you're an admin.
 
