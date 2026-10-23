@@ -756,15 +756,21 @@ export class Store {
       .map((r) => this.escalationFromRow(r));
   }
 
-  /** By id, or by its code: "A12" (case-insensitive, an optional leading # is ignored). */
+  /**
+   * By id, or by its code: "A12" (case-insensitive, an optional leading # is ignored).
+   * Plain numbers ("42", "#42") are the global numbers used before lane codes, still accepted.
+   */
   getEscalation(id: string): Escalation | null {
     const code = /^#?([A-Za-z]{1,4})(\d{1,9})$/.exec(id.trim());
+    const legacy = /^#?(\d{1,15})$/.exec(id.trim());
     const r = (
       code
         ? this.db
             .prepare('SELECT * FROM escalations WHERE letter_index = ? AND seq = ?')
             .get(indexOfLetter(code[1]), Number(code[2]))
-        : this.db.prepare('SELECT * FROM escalations WHERE id = ?').get(id)
+        : legacy
+          ? this.db.prepare('SELECT * FROM escalations WHERE ref = ?').get(Number(legacy[1]))
+          : this.db.prepare('SELECT * FROM escalations WHERE id = ?').get(id)
     ) as Row | undefined;
     return r ? this.escalationFromRow(r) : null;
   }
@@ -1113,7 +1119,9 @@ export class Store {
         for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
       }
     }
-    const byAge = (a: Escalation, b: Escalation) => a.createdAt.localeCompare(b.createdAt);
+    // Creation order; the internal global number breaks ties within a millisecond.
+    const seqOf = (e: Escalation) => Number((this.db.prepare('SELECT ref FROM escalations WHERE id = ?').get(e.id) as Row).ref);
+    const byAge = (a: Escalation, b: Escalation) => a.createdAt.localeCompare(b.createdAt) || seqOf(a) - seqOf(b);
     const all = [...byId.values()].sort(byAge);
     const decided = all.filter((e) => e.state === 'decided');
     const closed = [...closedById.values()].sort(byAge);

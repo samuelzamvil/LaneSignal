@@ -35,7 +35,7 @@ When you need a human decision you cannot make yourself (destructive or irrevers
    Each escalation gets a code, its `ref`: the lane's letter and a number, like **A12**. Use it when you mention the question to the human, for example in Remote Control ("A12 is waiting on you"). The tools accept `"A12"` wherever they take an id. Retrying the same question on the same lane while it's open returns the first escalation (`duplicate: true`), so a retry after a network error is safe.
 2. Wait for answers with `wait_for_decisions`, scoped to your whole group (`group_id: "<group-id>"`), so one call covers every lane. It returns as soon as anything needs you:
    - `decided`: answered. Handle each one (step 3).
-   - `closed`: withdrawn by someone else. A resolution of "Lane removed by …" means a human stopped that lane: stop work on it, and don't publish to it again.
+   - `closed`: withdrawn by someone else. A resolution of "Lane removed by …" means someone (a human, or another agent) took that lane off the dashboard: stop work on it, and don't publish to it again.
    - `open`: still waiting.
    - `ready: false`: the wait ran out with nothing new. Call it again.
 

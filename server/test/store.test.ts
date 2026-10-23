@@ -490,6 +490,9 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
     assert.equal(store.getEscalation(open.id)?.ref, 'A1');
     assert.equal(store.getEscalation(old.id)?.ref, 'B1');
     assert.equal(store.createEscalation({ laneId: 'live', question: 'New?' }, 'bot').ref, 'A2');
+    // Numbers from before the upgrade (#1 was the first escalation) still resolve.
+    assert.equal(store.getEscalation('#1')?.id, old.id);
+    assert.equal(store.getEscalation('2')?.id, open.id);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

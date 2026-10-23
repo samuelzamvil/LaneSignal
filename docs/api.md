@@ -3,7 +3,7 @@
 Everything the MCP tools do is also available over plain HTTP, for scripts, CI jobs and agents without MCP.
 
 - **Auth:** every request (except `/healthz` and `/api/setup`) sends `Authorization: Bearer <credential>`. A credential is an agent key or personal key (`ls_…`), an account session token, or a static config token.
-- **Escalation ids:** wherever a path or field takes an escalation id, its code works too, e.g. `A12` (case doesn't matter).
+- **Escalation ids:** wherever a path or field takes an escalation id, its code works too, e.g. `A12` (case doesn't matter). Plain numbers from before lane codes (`42`) still resolve.
 - **Errors:** responses are JSON. Errors look like `{"error": "…"}` with a 4xx status:
   - `400` validation (with `issues`)
   - `401` no or invalid credential

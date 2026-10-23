@@ -79,7 +79,7 @@ export function LaneCard({
       <header>
         <h3>
           {lane.letter && (
-            <span className="lane-letter" title={`Its questions are numbered ${lane.letter}1, ${lane.letter}2, …`}>
+            <span className="lane-letter" title={`Lane ${lane.letter}: its questions are coded ${lane.letter} and a number`}>
               {lane.letter}
             </span>
           )}

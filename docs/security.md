@@ -6,8 +6,8 @@ Every request carries one bearer credential, which gets one of two roles:
 
 | Credential | Role | Can |
 |---|---|---|
-| Agent key (`ls_…`) or static agent token | **agent** | Publish groups and lanes; create, acknowledge and withdraw escalations; add positions |
-| Account session or static human token | **human** | Decide escalations, delete lanes and groups, register phones for push |
+| Agent key (`ls_…`) or static agent token | **agent** | Publish groups and lanes; remove lanes; create, acknowledge and withdraw escalations; add positions |
+| Account session, personal key or static human token | **human** | Decide escalations, remove lanes and groups, register phones for push |
 
 - Account **admins** also manage people.
 - Static human tokens can use the break-glass routes.
@@ -31,7 +31,7 @@ Every request carries one bearer credential, which gets one of two roles:
 - Owned by an account. Revoking a key, or removing or banning its owner, disables it.
 - Better Auth's built-in per-key rate limit (10 requests a day) is turned off, so long-running agents work.
 - **By design**, anyone with an account can create agent keys, and so can publish lane state. They are the people running the agents.
-- **By design**, any agent key can publish to any lane or group, and withdraw any escalation. Overseers on one install are trusted alike; give each overseer its own group and lane ids.
+- **By design**, any agent key can publish to or remove any lane, publish to any group, and withdraw any escalation. Removing another overseer's lane withdraws that overseer's open questions on it. Overseers on one install are trusted alike; give each overseer its own group and lane ids.
 - **Personal keys** act as their owner for escalation decisions only. They can't publish lanes or manage accounts. Key metadata is limited to this role flag.
 
 ## Revocation reaches open connections
