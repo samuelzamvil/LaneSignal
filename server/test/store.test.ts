@@ -54,6 +54,7 @@ test('upgrades a schema v1 database without losing escalations', () => {
       ALTER TABLE escalations DROP COLUMN ticket;
       ALTER TABLE escalations DROP COLUMN cost;
       ALTER TABLE escalations DROP COLUMN alternatives;
+      ALTER TABLE escalations DROP COLUMN blocking;
       UPDATE meta SET value = '1' WHERE key = 'schema_version';
     `);
     db.close();
@@ -63,8 +64,88 @@ test('upgrades a schema v1 database without losing escalations', () => {
     assert.equal(migrated?.question, 'Still here?');
     assert.deepEqual(migrated?.alternatives, []);
     assert.equal(migrated?.cost, null);
+    assert.equal(migrated?.blocking, true);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('refuses a pre-release database instead of failing on every write', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-'));
+  const file = path.join(dir, 'db.sqlite');
+  try {
+    const db = new DatabaseSync(file);
+    db.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO meta VALUES ('schema_version', '1');
+      CREATE TABLE lanes (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT);
+    `);
+    db.close();
+    assert.throws(() => new Store({ path: file, resolveTicketUrl }), /pre-release LaneSignal build/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('FYI (non-blocking) escalations do not keep a lane blocked', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  const blocking = store.createEscalation({ laneId: 'l', question: 'Blocking?' }, 'bot');
+  store.createEscalation({ laneId: 'l', question: 'FYI?', blocking: false }, 'bot');
+  assert.equal(store.getLane('l')?.status, 'blocked_human');
+  store.decideEscalation(blocking.id, 'yes', null, 'alice');
+  assert.equal(store.getLane('l')?.status, 'awaiting_agent');
+  assert.equal(store.getLane('l')?.openEscalations, 1);
+  store.close();
+});
+
+test('acknowledging or withdrawing never unblocks a lane the agent blocked itself', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  const e1 = store.createEscalation({ laneId: 'l', question: 'One?' }, 'bot');
+  const e2 = store.createEscalation({ laneId: 'l', question: 'Two?', blocking: false }, 'bot');
+  store.decideEscalation(e1.id, 'yes', null, 'alice');
+  store.decideEscalation(e2.id, 'yes', null, 'alice');
+  store.upsertLane('l', { status: 'blocked_human', activity: 'waiting for creds rotation' }, 'bot');
+  store.acknowledgeEscalation(e1.id, null, 'bot');
+  store.withdrawEscalation(e2.id, 'moot', 'bot');
+  assert.equal(store.getLane('l')?.status, 'blocked_human');
+  store.close();
+});
+
+test('lane history returns the newest escalations, oldest first', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  for (let i = 0; i < 60; i++) store.createEscalation({ laneId: 'l', question: `q${i}`, blocking: false }, 'bot');
+  const recent = store.listEscalations({ laneId: 'l', limit: 50 });
+  assert.equal(recent.length, 50);
+  assert.equal(recent[0].question, 'q10');
+  assert.equal(recent[49].question, 'q59');
+  store.close();
+});
+
+test('positions are capped per escalation', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  const e = store.createEscalation({ laneId: 'l', question: 'Q?' }, 'bot');
+  for (let i = 0; i < 20; i++) store.addPosition(e.id, { agent: `a${i}`, stance: 'agree' }, 'bot');
+  assert.throws(() => store.addPosition(e.id, { agent: 'a20', stance: 'agree' }, 'bot'), /At most 20/);
+  // Replacing an existing agent's position still works at the cap.
+  store.addPosition(e.id, { agent: 'a0', stance: 'disagree' }, 'bot');
+  store.close();
+});
+
+test('waiting on an escalation whose lane is deleted rejects instead of returning stale state', async () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  const e = store.createEscalation({ laneId: 'l', question: 'Q?' }, 'bot');
+  const waiting = store.waitForDecision(e.id, 5000);
+  store.deleteLane('l');
+  await assert.rejects(waiting, /no longer exists/);
+  store.close();
+});
+
+test('rejects invalid numeric configuration at startup', async () => {
+  const { loadConfig } = await import('../src/config.ts');
+  const base = { LANESIGNAL_CONFIG: '/nonexistent.json', LANESIGNAL_AGENT_TOKENS: 'bot:agent-token-0123456789' };
+  assert.throws(() => loadConfig({ ...base, LANESIGNAL_EVENT_RETENTION: 'abc' }), /LANESIGNAL_EVENT_RETENTION/);
+  assert.throws(() => loadConfig({ ...base, LANESIGNAL_EVENT_RETENTION: '0' }), /LANESIGNAL_EVENT_RETENTION/);
+  assert.throws(() => loadConfig({ ...base, PORT: '99999' }), /PORT/);
+  assert.equal(loadConfig({ ...base, LANESIGNAL_STALE_MINUTES: '0' }).staleMinutes, 0);
 });

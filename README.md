@@ -46,7 +46,7 @@ docker compose exec lanesignal cat /data/generated-tokens.json
 
 Data lives in the `lanesignal-data` volume (`/data/lanesignal.db`, SQLite in WAL mode). Restarts and image upgrades keep it, and schema migrations run on startup. Configuration can come from environment variables or `config/lanesignal.json`, which is mounted read-only at `/config`.
 
-For remote access, keep the port bound to localhost (the default in `docker-compose.yml`) and put a TLS reverse proxy in front of it: Caddy, Traefik, nginx or `tailscale serve`. SSE needs proxy buffering off. LaneSignal already sends `X-Accel-Buffering: no` for nginx. If you're behind Docker Hub rate limits, build with `--build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-bookworm-slim`.
+For remote access, keep the port bound to localhost (the default in `docker-compose.yml`) and put a TLS reverse proxy in front of it: Caddy, Traefik, nginx or `tailscale serve`. SSE needs proxy buffering off. LaneSignal already sends `X-Accel-Buffering: no` for nginx. Long-polls (`?wait=` up to 300s) send nothing until they answer, so set the proxy's read timeout above that, e.g. nginx `proxy_read_timeout 310s;`. The default of 60s cuts them off. Or have agents wait in shorter rounds. If you're behind Docker Hub rate limits, build with `--build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-bookworm-slim`.
 
 ## Concepts
 
@@ -89,7 +89,7 @@ open ──(human decides)──► decided ──(agent acknowledges)──► 
   └────────(agent or human withdraws: answered elsewhere / moot)────► withdrawn
 ```
 
-Creating an escalation sets the lane to `blocked_human` unless `blocking: false` is passed. Once a lane's last open escalation is decided, the lane moves to `awaiting_agent`, so the blocked timer stops while the agent picks the decision up. When two humans race, the second one gets `409 Conflict`. Decided-but-unacknowledged escalations stay on the dashboard under "awaiting agent" until the agent confirms.
+Creating an escalation sets the lane to `blocked_human` unless `blocking: false` is passed. `blocking: false` is for FYI questions, which never hold a lane blocked. Once a lane's last open *blocking* escalation is decided (or withdrawn while open), the lane moves to `awaiting_agent`, so the blocked timer stops while the agent picks the decision up. Acknowledging never changes the lane's status, and neither does anything else for a lane the agent set to `blocked_human` itself. The agent publishes what it does next. When two humans race, the second one gets `409 Conflict`. Decided-but-unacknowledged escalations stay on the dashboard under "awaiting agent" until the agent confirms.
 
 **Ticket references** are resolved with URL templates. With `redmine=https://redmine/issues/{id}` configured:
 
@@ -198,7 +198,7 @@ By default, push fires only when an escalation is created. Add `blocked` or `com
    - Store its `google-services.json` as the repository secret `GOOGLE_SERVICES_JSON`. CI compiles push support in only when this secret exists.
    - Put a service-account key at `config/fcm-service-account.json` and set `LANESIGNAL_FCM_SERVICE_ACCOUNT_FILE=/config/fcm-service-account.json`.
    - The server calls the FCM HTTP v1 API directly, without the firebase-admin SDK.
-2. **[ntfy](https://ntfy.sh)** (no Google dependency, self-hostable): set `LANESIGNAL_NTFY_URL=https://ntfy.example.com/<secret-topic>` (and `LANESIGNAL_NTFY_TOKEN` if needed). Then subscribe to the topic in the ntfy Android app. Notifications deep-link to `LANESIGNAL_PUBLIC_URL`.
+2. **[ntfy](https://ntfy.sh)** (no Google dependency, self-hostable): set `LANESIGNAL_NTFY_URL=https://ntfy.example.com/<secret-topic>` (and `LANESIGNAL_NTFY_TOKEN` if needed). LaneSignal publishes with ntfy's JSON API, so titles can contain any characters. Then subscribe to the topic in the ntfy Android app. Notifications deep-link to `LANESIGNAL_PUBLIC_URL`.
 
 ## Configuration
 

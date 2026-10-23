@@ -84,29 +84,39 @@ export function createClient(conn: Connection) {
 
     /**
      * Reads the SSE stream with fetch (so the token travels in a header, and
-     * it works the same in the browser and the Android WebView). Resolves when
-     * the stream ends; rejects on network errors.
+     * it works the same in the browser and the Android WebView). `onActivity`
+     * fires on every chunk, heartbeats included, for liveness checks.
+     * Resolves when the stream ends; rejects on network errors and with an
+     * ApiError when the server refuses the stream.
      */
-    async stream(onOpen: () => void, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
+    async stream(
+      handlers: { onOpen: () => void; onEvent: (e: StreamEvent) => void; onActivity: () => void },
+      signal: AbortSignal,
+    ) {
       const res = await fetch(`${base}/api/events`, { headers, signal });
       if (!res.ok || !res.body) throw new ApiError(res.status, 'event stream failed');
-      onOpen();
+      handlers.onOpen();
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buffer = '';
+      let cr = ''; // a trailing CR may be the first half of a CRLF split across chunks
       for (;;) {
         const { value, done } = await reader.read();
         if (done) return;
-        buffer += value;
+        handlers.onActivity();
+        let text = cr + value;
+        cr = text.endsWith('\r') ? '\r' : '';
+        if (cr) text = text.slice(0, -1);
+        buffer += text.replace(/\r\n?/g, '\n');
         let idx: number;
         while ((idx = buffer.indexOf('\n\n')) >= 0) {
           const chunk = buffer.slice(0, idx);
           buffer = buffer.slice(idx + 2);
           const data = chunk
             .split('\n')
-            .filter((l) => l.startsWith('data: '))
-            .map((l) => l.slice(6))
+            .filter((l) => l.startsWith('data:'))
+            .map((l) => l.slice(l.startsWith('data: ') ? 6 : 5))
             .join('\n');
-          if (data) onEvent(JSON.parse(data) as StreamEvent);
+          if (data) handlers.onEvent(JSON.parse(data) as StreamEvent);
         }
       }
     },

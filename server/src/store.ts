@@ -16,6 +16,8 @@ import {
 } from './types.ts';
 
 export class NotFoundError extends Error {}
+
+const MAX_POSITIONS = 20;
 export class ConflictError extends Error {}
 
 export interface GroupPatch {
@@ -57,7 +59,7 @@ export interface StoreOptions {
   now?: () => Date;
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 type Row = Record<string, unknown>;
 
@@ -95,6 +97,13 @@ export class Store {
     const row = this.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as Row | undefined;
     const version = row ? Number(row.value) : 0;
     if (version >= SCHEMA_VERSION) return;
+    if (version >= 1 && !this.hasColumn('lanes', 'group_id')) {
+      // Pre-release builds wrote schema_version 1 with a different layout.
+      throw new Error(
+        'This database was created by a pre-release LaneSignal build and cannot be upgraded. ' +
+          'Move lanesignal.db (and its -wal/-shm files) out of the data directory to start fresh.',
+      );
+    }
     this.tx(() => {
       if (version < 1) this.migrateV1();
       if (version < 2) {
@@ -105,10 +114,18 @@ export class Store {
           ALTER TABLE escalations ADD COLUMN alternatives TEXT NOT NULL DEFAULT '[]';
         `);
       }
+      if (version < 3) {
+        // Whether the escalation holds its lane in blocked_human (FYI questions don't).
+        this.db.exec('ALTER TABLE escalations ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1');
+      }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
     });
+  }
+
+  private hasColumn(table: string, column: string) {
+    return (this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).some((c) => c.name === column);
   }
 
   private migrateV1() {
@@ -254,9 +271,12 @@ export class Store {
   /** Lanes in the group become ungrouped. */
   deleteGroup(id: string) {
     const lanes = this.tx(() => {
+      const affected = this.listLanes()
+        .filter((l) => l.group === id)
+        .map((l) => l.id);
       const res = this.db.prepare('DELETE FROM groups WHERE id = ?').run(id);
       if (res.changes === 0) throw new NotFoundError(`Group "${id}" not found`);
-      return this.listLanes().filter((l) => l.group === null);
+      return affected.map((laneId) => this.requireLane(laneId));
     });
     this.emit({ type: 'group_deleted', id });
     for (const lane of lanes) this.emit({ type: 'lane', lane });
@@ -286,7 +306,9 @@ export class Store {
   }
 
   private static LANE_SELECT = `
-    SELECT l.*, (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open') AS open_escalations
+    SELECT l.*,
+      (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open') AS open_escalations,
+      (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open' AND e.blocking = 1) AS open_blocking
     FROM lanes l`;
 
   listLanes(): Lane[] {
@@ -309,8 +331,10 @@ export class Store {
   upsertLane(id: string, patch: LanePatch, actor: string | null): Lane {
     if (patch.status && !LANE_STATUSES.includes(patch.status)) throw new Error(`Invalid status "${patch.status}"`);
     let createdGroup: Group | null = null;
+    let previous: LaneStatus | null = null;
     const lane = this.tx(() => {
       const at = this.now().toISOString();
+      previous = this.getLane(id)?.status ?? null;
       if (patch.group && !this.getGroup(patch.group)) {
         this.writeGroup(patch.group, {}, actor, at);
         createdGroup = this.getGroup(patch.group);
@@ -345,7 +369,7 @@ export class Store {
       return this.requireLane(id);
     });
     if (createdGroup) this.emit({ type: 'group', group: createdGroup });
-    this.emit({ type: 'lane', lane });
+    this.emit({ type: 'lane', lane, statusChanged: previous !== lane.status });
     return lane;
   }
 
@@ -438,6 +462,7 @@ export class Store {
       positions: JSON.parse(r.positions as string) as Position[],
       options: JSON.parse(r.options as string) as string[],
       links: JSON.parse(r.links as string) as Link[],
+      blocking: Number(r.blocking ?? 1) === 1,
       state: r.state as EscalationState,
       createdBy: r.created_by as string,
       createdAt: r.created_at as string,
@@ -451,7 +476,10 @@ export class Store {
     };
   }
 
-  /** Default: everything not yet closed (open + decided-but-unacknowledged). */
+  /**
+   * The newest `limit` matches, returned oldest first. Default states:
+   * everything not yet closed (open + decided-but-unacknowledged).
+   */
   listEscalations(filter: { states?: EscalationState[]; laneId?: string; limit?: number } = {}): Escalation[] {
     const states = filter.states ?? ['open', 'decided'];
     const where = [`state IN (${states.map(() => '?').join(',')})`];
@@ -462,9 +490,11 @@ export class Store {
     }
     return (
       this.db
-        .prepare(`SELECT * FROM escalations WHERE ${where.join(' AND ')} ORDER BY created_at ASC LIMIT ?`)
-        .all(...params, filter.limit ?? 500) as Row[]
-    ).map((r) => this.escalationFromRow(r));
+        .prepare(`SELECT * FROM escalations WHERE ${where.join(' AND ')} ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+        .all(...params, filter.limit ?? 1000) as Row[]
+    )
+      .reverse()
+      .map((r) => this.escalationFromRow(r));
   }
 
   getEscalation(id: string): Escalation | null {
@@ -479,7 +509,7 @@ export class Store {
   }
 
   createEscalation(input: EscalationInput, actor: string): Escalation {
-    const { escalation, lane } = this.tx(() => {
+    const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
       let lane = this.getLane(input.laneId);
       if (!lane) {
@@ -495,8 +525,8 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO escalations (id, lane_id, question, context, recommendation, recommended_option, cost,
-             alternatives, ticket, positions, options, links, state, created_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+             alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
         )
         .run(
           id,
@@ -513,67 +543,98 @@ export class Store {
           ),
           JSON.stringify(input.options ?? []),
           JSON.stringify(input.links ?? []),
+          input.blocking === false ? 0 : 1,
           actor,
           at,
           at,
         );
       this.addEvent(input.laneId, at, 'escalation', `Escalated: ${input.question}`, actor);
-      if (input.blocking !== false && lane.status !== 'blocked_human') {
+      const blocks = input.blocking !== false && lane.status !== 'blocked_human';
+      if (blocks) {
         this.applyLaneUpdate(lane, { status: 'blocked_human' }, actor, at);
       } else {
         this.db.prepare('UPDATE lanes SET updated_at = ? WHERE id = ?').run(at, input.laneId);
       }
-      return { escalation: this.requireEscalation(id), lane: this.requireLane(input.laneId) };
+      return { escalation: this.requireEscalation(id), lane: this.requireLane(input.laneId), blocks };
     });
     this.emit({ type: 'escalation', escalation });
-    this.emit({ type: 'lane', lane });
+    this.emit({ type: 'lane', lane, statusChanged: blocks });
     return escalation;
   }
 
   decideEscalation(id: string, decision: string, note: string | null, by: string): Escalation {
-    return this.closeHumanStep(id, ['open'], (at) => {
-      this.db
-        .prepare(
-          `UPDATE escalations SET state = 'decided', decision = ?, decision_note = ?, decided_by = ?, decided_at = ?, updated_at = ? WHERE id = ?`,
-        )
-        .run(decision, note, by, at, at, id);
-      return `Decided by ${by}: ${decision}`;
-    }, by);
+    return this.closeHumanStep(
+      id,
+      ['open'],
+      (at) => {
+        this.db
+          .prepare(
+            `UPDATE escalations SET state = 'decided', decision = ?, decision_note = ?, decided_by = ?, decided_at = ?, updated_at = ? WHERE id = ?`,
+          )
+          .run(decision, note, by, at, at, id);
+        return `Decided by ${by}: ${decision}`;
+      },
+      by,
+      true,
+    );
   }
 
+  /** Acknowledging never changes lane status: the agent publishes what it does next. */
   acknowledgeEscalation(id: string, note: string | null, actor: string): Escalation {
-    return this.closeHumanStep(id, ['decided'], (at) => {
-      this.db
-        .prepare(
-          `UPDATE escalations SET state = 'acknowledged', acknowledged_at = ?, resolution = COALESCE(?, resolution), updated_at = ? WHERE id = ?`,
-        )
-        .run(at, note, at, id);
-      return 'Decision acknowledged';
-    }, actor);
+    return this.closeHumanStep(
+      id,
+      ['decided'],
+      (at) => {
+        this.db
+          .prepare(
+            `UPDATE escalations SET state = 'acknowledged', acknowledged_at = ?, resolution = COALESCE(?, resolution), updated_at = ? WHERE id = ?`,
+          )
+          .run(at, note, at, id);
+        return 'Decision acknowledged';
+      },
+      actor,
+      false,
+    );
   }
 
-  /** Agent (or overseer) closes an escalation without a dashboard decision, e.g. it was answered in Remote Control. */
+  /** Agent (or human) closes an escalation without a dashboard decision, e.g. it was answered in Remote Control. */
   withdrawEscalation(id: string, resolution: string | null, actor: string): Escalation {
-    return this.closeHumanStep(id, ['open', 'decided'], (at) => {
-      this.db
-        .prepare(`UPDATE escalations SET state = 'withdrawn', resolution = ?, updated_at = ? WHERE id = ?`)
-        .run(resolution, at, id);
-      return `Escalation closed${resolution ? `: ${resolution}` : ''}`;
-    }, actor);
+    return this.closeHumanStep(
+      id,
+      ['open', 'decided'],
+      (at) => {
+        this.db
+          .prepare(`UPDATE escalations SET state = 'withdrawn', resolution = ?, updated_at = ? WHERE id = ?`)
+          .run(resolution, at, id);
+        return `Escalation closed${resolution ? `: ${resolution}` : ''}`;
+      },
+      actor,
+      true,
+    );
+  }
+
+  private openBlockingCount(laneId: string) {
+    const r = this.db
+      .prepare("SELECT COUNT(*) AS n FROM escalations WHERE lane_id = ? AND state = 'open' AND blocking = 1")
+      .get(laneId) as Row;
+    return Number(r.n);
   }
 
   /**
-   * Shared state transition. Once a lane has no open escalations left, a
-   * blocked_human lane moves to awaiting_agent so the blocked timer stops
-   * while the agent picks up the decision.
+   * Shared state transition. When `mayUnblock` and an open blocking
+   * escalation just closed, a blocked_human lane with no open blocking
+   * escalations left moves to awaiting_agent, so the blocked timer stops
+   * while the agent picks up the answer. Lanes the agent blocked by hand,
+   * and FYI escalations, never unblock it.
    */
   private closeHumanStep(
     id: string,
     from: EscalationState[],
     apply: (at: string) => string,
     actor: string,
+    mayUnblock: boolean,
   ): Escalation {
-    const { escalation, lane } = this.tx(() => {
+    const { escalation, lane, unblocked } = this.tx(() => {
       const current = this.requireEscalation(id);
       if (!from.includes(current.state)) {
         throw new ConflictError(`Escalation is ${current.state}; expected ${from.join(' or ')}`);
@@ -582,13 +643,18 @@ export class Store {
       const message = apply(at);
       this.addEvent(current.laneId, at, 'escalation', message, actor);
       const lane = this.requireLane(current.laneId);
-      if (lane.openEscalations === 0 && lane.status === 'blocked_human') {
-        this.applyLaneUpdate(lane, { status: 'awaiting_agent' }, null, at);
-      }
-      return { escalation: this.requireEscalation(id), lane: this.requireLane(current.laneId) };
+      const unblocked =
+        mayUnblock &&
+        current.state === 'open' &&
+        current.blocking &&
+        lane.status === 'blocked_human' &&
+        this.openBlockingCount(lane.id) === 0;
+      if (unblocked) this.applyLaneUpdate(lane, { status: 'awaiting_agent' }, null, at);
+      return { escalation: this.requireEscalation(id), lane: this.requireLane(current.laneId), unblocked };
     });
     this.emit({ type: 'escalation', escalation });
-    this.emit({ type: 'lane', lane });
+    // Emitted either way: the lane's open-escalation count changed.
+    this.emit({ type: 'lane', lane, statusChanged: unblocked });
     return escalation;
   }
 
@@ -599,6 +665,7 @@ export class Store {
       if (current.state !== 'open') throw new ConflictError(`Escalation is ${current.state}; positions close once decided`);
       const at = this.now().toISOString();
       const positions = current.positions.filter((p) => p.agent !== position.agent);
+      if (positions.length >= MAX_POSITIONS) throw new ConflictError(`At most ${MAX_POSITIONS} agents can take a position`);
       positions.push({ agent: position.agent, stance: position.stance, note: position.note ?? null, at });
       this.db
         .prepare('UPDATE escalations SET positions = ?, updated_at = ? WHERE id = ?')
@@ -615,12 +682,15 @@ export class Store {
   waitForDecision(id: string, timeoutMs: number, signal?: AbortSignal): Promise<Escalation> {
     const current = this.requireEscalation(id);
     if (current.state !== 'open' || timeoutMs <= 0) return Promise.resolve(current);
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const done = () => {
         clearTimeout(timer);
         this.events.off('change', onChange);
         signal?.removeEventListener('abort', done);
-        resolve(this.getEscalation(id) ?? current);
+        const latest = this.getEscalation(id);
+        // The lane (and with it the escalation) was deleted while waiting.
+        if (latest) resolve(latest);
+        else reject(new NotFoundError(`Escalation "${id}" no longer exists`));
       };
       const onChange = (e: StreamEvent) => {
         if (e.type === 'escalation' && e.escalation.id === id && e.escalation.state !== 'open') done();

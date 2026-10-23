@@ -31,9 +31,6 @@ const server = app.listen(config.port, config.host, () => {
     push,
   });
 });
-// Long-polls and SSE streams outlive Node's default request timeout.
-server.requestTimeout = 0;
-server.headersTimeout = 60_000;
 
 function shutdown(signal: string) {
   log.info('shutting down', { signal });

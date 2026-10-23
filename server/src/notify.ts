@@ -14,6 +14,8 @@ export interface Notification {
   urgent: boolean;
 }
 
+const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+
 interface ServiceAccount {
   project_id: string;
   client_email: string;
@@ -66,7 +68,7 @@ class FcmSender {
       body: JSON.stringify({
         message: {
           token: deviceToken,
-          notification: { title: n.title, body: n.body },
+          notification: { title: clip(n.title, 200), body: clip(n.body, 1000) },
           data: { ...n.data, route: n.route },
           android: {
             priority: n.urgent ? 'high' : 'normal',
@@ -75,13 +77,13 @@ class FcmSender {
         },
       }),
     });
-    if (res.status === 404 || res.status === 400) {
-      const text = await res.text();
-      if (text.includes('UNREGISTERED') || text.includes('INVALID_ARGUMENT')) return false;
-      throw new Error(`FCM send failed: ${res.status} ${text}`);
-    }
-    if (!res.ok) throw new Error(`FCM send failed: ${res.status} ${await res.text()}`);
-    return true;
+    if (res.ok) return true;
+    const text = await res.text();
+    // Only token errors mean the device is gone. Other 400s (e.g. "message too big")
+    // are about the payload and must not unregister anyone.
+    if (res.status === 404 || text.includes('UNREGISTERED')) return false;
+    if (res.status === 400 && text.includes('message.token')) return false;
+    throw new Error(`FCM send failed: ${res.status} ${text}`);
   }
 }
 
@@ -100,7 +102,13 @@ export function startNotifier(config: Config, store: Store) {
 
   async function deliver(n: Notification) {
     if (fcm) {
-      for (const t of store.listPushTokens()) {
+      let tokens: ReturnType<Store['listPushTokens']> = [];
+      try {
+        tokens = store.listPushTokens();
+      } catch (err) {
+        log.warn('cannot read push tokens', { error: String(err) });
+      }
+      for (const t of tokens) {
         try {
           if (!(await fcm.send(t.token, n))) {
             store.removePushToken(t.token);
@@ -113,14 +121,26 @@ export function startNotifier(config: Config, store: Store) {
     }
     if (config.ntfyUrl) {
       try {
-        const headers: Record<string, string> = {
-          Title: n.title,
-          Priority: n.urgent ? 'high' : 'default',
-          Tags: n.urgent ? 'rotating_light' : 'information_source',
-        };
-        if (config.publicUrl) headers.Click = `${config.publicUrl.replace(/\/$/, '')}/${n.route}`;
-        if (config.ntfyToken) headers.Authorization = `Bearer ${config.ntfyToken}`;
-        const res = await fetch(config.ntfyUrl, { method: 'POST', headers, body: n.body });
+        // JSON publishing (POST to the server root with the topic in the body) keeps
+        // titles UTF-8; header-based publishing can't carry non-Latin-1 characters.
+        const url = new URL(config.ntfyUrl);
+        const segments = url.pathname.split('/').filter(Boolean);
+        const topic = segments.pop() ?? '';
+        url.pathname = `/${segments.map((p) => `${p}/`).join('')}`;
+        const headers: Record<string, string> = { 'content-type': 'application/json' };
+        if (config.ntfyToken) headers.authorization = `Bearer ${config.ntfyToken}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            topic,
+            title: clip(n.title, 200),
+            message: clip(n.body, 2000),
+            priority: n.urgent ? 4 : 3,
+            tags: [n.urgent ? 'rotating_light' : 'information_source'],
+            ...(config.publicUrl ? { click: `${config.publicUrl.replace(/\/$/, '')}/${n.route}` } : {}),
+          }),
+        });
         if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
       } catch (err) {
         log.warn('ntfy send failed', { error: String(err) });
@@ -145,7 +165,7 @@ export function startNotifier(config: Config, store: Store) {
         urgent: true,
       };
     }
-    if (e.type === 'lane' && e.lane.statusSince === e.lane.updatedAt) {
+    if (e.type === 'lane' && e.statusChanged) {
       const lane = e.lane;
       // Escalations already notify; don't double up on the lane transition.
       if (lane.status === 'blocked_human' && lane.openEscalations === 0 && config.notifyOn.has('blocked')) {
