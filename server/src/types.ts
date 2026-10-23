@@ -141,6 +141,11 @@ export type Role = 'human' | 'agent';
 export interface Principal {
   name: string;
   role: Role;
+  /** Owning account: the signed-in user, or the user an agent key belongs to. Absent for config tokens. */
+  userId?: string;
+  email?: string;
+  /** May manage accounts (account admins and config-file human tokens). */
+  admin?: boolean;
 }
 
 export type StreamEvent =

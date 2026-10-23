@@ -1,0 +1,218 @@
+import { useCallback, useEffect, useState } from 'react';
+import type { AgentKey, Client, Person, Principal } from './api.ts';
+import { absolute, ago } from './format.ts';
+
+function useAsync<T>(load: () => Promise<T>) {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const reload = useCallback(() => {
+    load()
+      .then((d) => (setData(d), setError(null)))
+      .catch((e: Error) => setError(e.message));
+  }, [load]);
+  useEffect(reload, [reload]);
+  return { data, error, reload };
+}
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+export function PasswordSection({ client, onNewSession }: { client: Client; onNewSession: (token: string) => void }) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [status, setStatus] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    try {
+      const token = await client.changePassword(current, next);
+      setStatus('Password changed. Other devices were signed out.');
+      setCurrent('');
+      setNext('');
+      onNewSession(token);
+    } catch (err) {
+      setStatus(errorText(err));
+    }
+  }
+
+  return (
+    <details className="settings-block">
+      <summary>Change password</summary>
+      <form onSubmit={submit} className="stack">
+        <input type="password" placeholder="Current password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" required />
+        <input type="password" placeholder="New password (10+ characters)" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" minLength={10} required />
+        <button className="primary">Change password</button>
+        {status && <p className="hint">{status}</p>}
+      </form>
+    </details>
+  );
+}
+
+/** Agent keys owned by the signed-in account; each key is shown once, at creation. */
+export function AgentKeysSection({ client, serverUrl, now }: { client: Client; serverUrl: string; now: number }) {
+  const load = useCallback(() => client.listKeys(), [client]);
+  const { data: keys, error, reload } = useAsync(load);
+  const [name, setName] = useState('');
+  const [created, setCreated] = useState<{ name: string; key: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function create(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setActionError(null);
+    try {
+      const k = await client.createKey(name.trim());
+      setCreated({ name: name.trim(), key: k.key });
+      setName('');
+      reload();
+    } catch (err) {
+      setActionError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke(k: AgentKey) {
+    if (!confirm(`Revoke "${k.name}"? Agents using it stop working immediately.`)) return;
+    try {
+      await client.deleteKey(k.id);
+      reload();
+    } catch (err) {
+      setActionError(errorText(err));
+    }
+  }
+
+  const mcpCommand = created
+    ? `claude mcp add --transport http lanesignal ${serverUrl}/mcp --header "Authorization: Bearer ${created.key}"`
+    : '';
+
+  return (
+    <section className="settings-block">
+      <h3>Agent keys</h3>
+      <p className="hint">
+        Give each overseer its own key. The key name is shown as the agent on its lanes. Keys belong to your account
+        and stop working if you revoke them or your account is removed.
+      </p>
+      <form onSubmit={create} className="inline-form">
+        <input placeholder="Key name, e.g. payments-overseer" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required />
+        <button className="primary" disabled={busy}>
+          Create
+        </button>
+      </form>
+      {created && (
+        <div className="new-key" role="status">
+          <p>
+            <strong>{created.name}</strong>: copy this key now. It won't be shown again.
+          </p>
+          <code className="secret">{created.key}</code>
+          <p className="hint">Add it to Claude Code:</p>
+          <code className="secret">{mcpCommand}</code>
+          <div className="actions">
+            <button className="ghost" onClick={() => void navigator.clipboard?.writeText(created.key)}>
+              Copy key
+            </button>
+            <button className="ghost" onClick={() => void navigator.clipboard?.writeText(mcpCommand)}>
+              Copy command
+            </button>
+            <button className="ghost" onClick={() => setCreated(null)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+      {(error || actionError) && <p className="error">{error ?? actionError}</p>}
+      {keys && keys.length === 0 && <p className="empty">No keys yet.</p>}
+      <ul className="rows">
+        {keys?.map((k) => (
+          <li key={k.id}>
+            <div>
+              <strong>{k.name ?? 'unnamed'}</strong> <code>{k.start}…</code>
+              <div className="muted small">
+                created {absolute(k.createdAt)} · {k.lastRequest ? `last used ${ago(k.lastRequest, now)}` : 'never used'}
+              </div>
+            </div>
+            <button className="ghost danger" onClick={() => void revoke(k)}>
+              Revoke
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Admins add and remove people. There is no public sign-up. */
+export function PeopleSection({ client, me }: { client: Client; me: Principal }) {
+  const load = useCallback(() => client.listPeople(), [client]);
+  const { data: people, error, reload } = useAsync(load);
+  const [form, setForm] = useState({ name: '', email: '', password: '', admin: false });
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    setActionError(null);
+    try {
+      await client.addPerson(form);
+      setNotice(`Added ${form.email}. Share the temporary password with them; they can change it in Settings.`);
+      setForm({ name: '', email: '', password: '', admin: false });
+      reload();
+    } catch (err) {
+      setActionError(errorText(err));
+    }
+  }
+
+  async function remove(p: Person) {
+    if (!confirm(`Remove ${p.email}? Their sessions and agent keys stop working.`)) return;
+    try {
+      await client.removePerson(p.id);
+      reload();
+    } catch (err) {
+      setActionError(errorText(err));
+    }
+  }
+
+  return (
+    <section className="settings-block">
+      <h3>People</h3>
+      {(error || actionError) && <p className="error">{error ?? actionError}</p>}
+      <ul className="rows">
+        {people?.map((p) => (
+          <li key={p.id}>
+            <div>
+              <strong>{p.name}</strong> {p.role === 'admin' && <span className="tag">admin</span>}
+              {p.banned && <span className="tag">banned</span>}
+              <div className="muted small">{p.email}</div>
+            </div>
+            {p.id !== me.userId && (
+              <button className="ghost danger" onClick={() => void remove(p)}>
+                Remove
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <details>
+        <summary>Add a person</summary>
+        <form onSubmit={add} className="stack">
+          <input placeholder="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+          <input type="email" placeholder="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} autoCapitalize="off" required />
+          <input
+            type="password"
+            placeholder="Temporary password (10+ characters)"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            autoComplete="new-password"
+            minLength={10}
+            required
+          />
+          <label className="check">
+            <input type="checkbox" checked={form.admin} onChange={(e) => setForm({ ...form, admin: e.target.checked })} /> Admin (can manage people)
+          </label>
+          <button className="primary">Add person</button>
+        </form>
+      </details>
+      {notice && <p className="hint">{notice}</p>}
+    </section>
+  );
+}

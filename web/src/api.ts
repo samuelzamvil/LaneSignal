@@ -9,7 +9,27 @@ export const isNative = Capacitor.isNativePlatform();
 export interface Connection {
   /** Empty string = same origin (browser served by the LaneSignal server). */
   server: string;
+  /** An account session token, or a static access token from the server config. */
   token: string;
+  kind?: 'session' | 'token';
+}
+
+export interface AgentKey {
+  id: string;
+  name: string | null;
+  /** First characters of the key, for recognising it. */
+  start: string | null;
+  createdAt: string;
+  lastRequest: string | null;
+}
+
+export interface Person {
+  id: string;
+  name: string;
+  email: string;
+  role: string | null;
+  banned: boolean | null;
+  createdAt: string;
 }
 
 const KEY = 'lanesignal.connection';
@@ -55,7 +75,8 @@ export function createClient(conn: Connection) {
     if (!res.ok) {
       let message = res.statusText;
       try {
-        message = ((await res.json()) as { error?: string }).error ?? message;
+        const body = (await res.json()) as { error?: string; message?: string };
+        message = body.error ?? body.message ?? message;
       } catch {
         /* not JSON */
       }
@@ -79,6 +100,40 @@ export function createClient(conn: Connection) {
       request<Escalation>('POST', `/api/escalations/${id}/decide`, { decision, note: note || null }),
     withdraw: (id: string, note?: string) =>
       request<Escalation>('POST', `/api/escalations/${id}/withdraw`, { note: note || null }),
+    signOut: () => request<unknown>('POST', '/api/auth/sign-out', {}),
+    /** Signs out every other device; returns this device's replacement session token. */
+    changePassword: async (currentPassword: string, newPassword: string): Promise<string> => {
+      const res = await fetch(`${base}/api/auth/change-password`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword, revokeOtherSessions: true }),
+      });
+      if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+      const token = res.headers.get('set-auth-token') ?? ((await res.json()) as { token?: string }).token;
+      if (!token) throw new ApiError(500, 'Server did not return a new session token');
+      return token;
+    },
+
+    // Agent keys belong to the signed-in account.
+    listKeys: async () => {
+      const res = await request<{ apiKeys: AgentKey[] } | AgentKey[]>('GET', '/api/auth/api-key/list');
+      return Array.isArray(res) ? res : res.apiKeys;
+    },
+    createKey: (name: string) => request<AgentKey & { key: string }>('POST', '/api/auth/api-key/create', { name }),
+    deleteKey: (keyId: string) => request<unknown>('POST', '/api/auth/api-key/delete', { keyId }),
+
+    // People (admins only).
+    listPeople: async () =>
+      (await request<{ users: Person[] }>('GET', '/api/auth/admin/list-users?limit=200&sortBy=createdAt')).users,
+    addPerson: (p: { name: string; email: string; password: string; admin: boolean }) =>
+      request<{ user: Person }>('POST', '/api/auth/admin/create-user', {
+        name: p.name,
+        email: p.email,
+        password: p.password,
+        role: p.admin ? 'admin' : 'user',
+      }),
+    removePerson: (userId: string) => request<unknown>('POST', '/api/auth/admin/remove-user', { userId }),
+
     registerPush: (token: string) => request<void>('POST', '/api/push/register', { token, platform: 'android' }),
     unregisterPush: (token: string) => request<void>('POST', '/api/push/unregister', { token }),
 
@@ -124,3 +179,43 @@ export function createClient(conn: Connection) {
 }
 
 export type Client = ReturnType<typeof createClient>;
+
+/** Unauthenticated calls used before there is a session. */
+export const publicApi = {
+  async setupStatus(server: string): Promise<{ needsSetup: boolean }> {
+    const res = await fetch(`${server}/api/setup`);
+    if (!res.ok) throw new ApiError(res.status, `Server answered ${res.status}`);
+    return (await res.json()) as { needsSetup: boolean };
+  },
+
+  async setup(server: string, input: { email: string; name: string; password: string; code: string }) {
+    const res = await fetch(`${server}/api/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+  },
+
+  /** Email + password sign-in; returns the bearer session token. */
+  async signIn(server: string, email: string, password: string): Promise<string> {
+    const res = await fetch(`${server}/api/auth/sign-in/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+    const token = res.headers.get('set-auth-token') ?? ((await res.json()) as { token?: string }).token;
+    if (!token) throw new ApiError(500, 'Server did not return a session token');
+    return token;
+  },
+};
+
+async function errorMessage(res: Response) {
+  try {
+    const body = (await res.json()) as { error?: string; message?: string; issues?: { message: string }[] };
+    return body.issues?.[0]?.message ?? body.error ?? body.message ?? res.statusText;
+  } catch {
+    return res.statusText;
+  }
+}

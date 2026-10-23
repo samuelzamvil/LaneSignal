@@ -69,6 +69,25 @@ export const resolution = z.object({
   note: z.string().max(5000).nullable().optional(),
 });
 
+const password = z.string().min(10).max(128);
+
+export const setupInput = z.object({
+  email: z.email(),
+  name: z.string().min(1).max(100),
+  password,
+  /** One-time code from the server log; not needed with a static human token. */
+  code: z.string().max(100).optional(),
+});
+
+export const personInput = z.object({
+  email: z.email(),
+  name: z.string().min(1).max(100),
+  password,
+  admin: z.boolean().optional(),
+});
+
+export const passwordReset = z.object({ email: z.email(), password });
+
 export const pushRegistration = z.object({
   token: z.string().min(10).max(4096),
   platform: z.enum(['android', 'ios', 'web']).default('android'),
