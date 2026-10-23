@@ -57,6 +57,9 @@ test('upgrades a schema v1 database without losing escalations', () => {
       ALTER TABLE escalations DROP COLUMN blocking;
       ALTER TABLE lanes DROP COLUMN archived_at;
       ALTER TABLE groups DROP COLUMN archived_at;
+      DROP INDEX escalations_ref;
+      ALTER TABLE escalations DROP COLUMN ref;
+      ALTER TABLE push_tokens DROP COLUMN user_id;
       UPDATE meta SET value = '1' WHERE key = 'schema_version';
     `);
     db.close();
@@ -67,6 +70,8 @@ test('upgrades a schema v1 database without losing escalations', () => {
     assert.deepEqual(migrated?.alternatives, []);
     assert.equal(migrated?.cost, null);
     assert.equal(migrated?.blocking, true);
+    assert.equal(migrated?.ref, 1);
+    assert.equal(store.getEscalation('#1')?.id, esc.id);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

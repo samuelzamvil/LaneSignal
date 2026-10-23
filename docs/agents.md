@@ -4,7 +4,9 @@ Agents talk to LaneSignal over MCP: a stateless Streamable HTTP endpoint at `POS
 
 ## 1. Create a key
 
-In LaneSignal, go to **Settings → Agent keys** and create one key per overseer, named after it (e.g. `payments-overseer`). That name is shown as the agent on its lanes. See [Agent keys](accounts.md#agent-keys).
+In LaneSignal, go to **Settings → Keys** and create one **agent key** per overseer, named after it (e.g. `payments-overseer`). That name is shown as the agent on its lanes. See [Agent keys](accounts.md#agent-keys).
+
+To answer escalations from your own Claude session, create a **personal key** there instead and add it the same way. It acts as you: it gets `decide_escalation`, and decisions show your name.
 
 ## 2. Add the MCP server
 
@@ -42,29 +44,37 @@ Paste the [agent instructions snippet](agent-instructions.md) into the overseer'
 - registering the group once
 - publishing real state changes rather than heartbeats
 - how to structure an escalation
-- waiting for answers without polling
+- waiting for answers across all its lanes, including waits of many hours
+- picking up answers after a restart
 
 ## Tools
 
-Which tools a client sees depends on its credential: agent keys get the agent tools, and human sessions get `decide_escalation`.
+Which tools a client sees depends on its credential: agent keys get the agent tools, and personal keys (or human sessions) get the human ones. Wherever a tool takes an escalation id, it also accepts the short number, `"42"` or `"#42"`.
 
 | Tool | Who | Purpose |
 |---|---|---|
 | `update_group` | agent | Name the epic/train, set its ticket, link the overseer's Remote Control session |
 | `update_lane` | agent | Create or update a lane: status, group, ticket, activity, links. Omitted fields stay unchanged |
-| `create_escalation` | agent | Ask humans a question (see the [fields](concepts.md#escalations)) |
+| `create_escalation` | agent | Ask humans a question (see the [fields](concepts.md#escalations)). The same open question on the same lane returns the existing one (`duplicate: true`), so retries are safe |
 | `add_position` | agent | Agree, disagree or stay neutral on an open escalation's recommendation, with a reason |
-| `get_escalation` | any | Read one escalation. `wait_seconds` (up to 300) waits until it's answered, so there's no polling loop |
-| `acknowledge_escalation` | agent | Confirm you received a decision and are acting on it. This closes the escalation |
+| `wait_for_decisions` | any | Wait on a group, lanes or escalations; returns as soon as one is decided. `wait_seconds` up to 3600 |
+| `get_escalation` | any | Read one escalation. `wait_seconds` (up to 300) waits until it's answered |
+| `acknowledge_escalation` | agent | Call as soon as a decision arrives: closes the escalation and returns the final decision. `status` and `activity` publish the lane's next state in the same call. Repeating it is safe |
 | `withdraw_escalation` | agent | Close it without a dashboard answer: answered in Remote Control, or moot |
 | `list_lanes` / `list_groups` / `list_escalations` | any | Read state |
 | `export_data` | any | All data for analysis (escalations, positions, lanes, groups, history) as CSV or JSON, paged. See [Export](export.md) |
-| `decide_escalation` | human | Lets a human's own Claude session answer from the conversation |
+| `decide_escalation` | human | Answer from your own Claude session. `change: true` corrects a decision the agent hasn't acknowledged yet |
+| `withdraw_escalation` | human | Dismiss an escalation that no longer needs an answer |
 
-## Waiting for a decision
+## Waiting for decisions
 
-`get_escalation` with `wait_seconds: 300` holds the request until a human decides, or until it times out and returns the escalation still `open`. Call it again while the state is `open`.
+Answers can take minutes or a day. An overseer waits on its whole group with one call:
 
-Behind a reverse proxy, the proxy's read timeout must be above 300s, or use a shorter `wait_seconds`. See [Reverse proxy](reverse-proxy.md).
+- `wait_for_decisions` with `group_id` returns as soon as any escalation in the group is decided, or straight away if one already is. Its result lists `decided` (act on these), `closed` (escalations named by id that were withdrawn, e.g. because a human removed the lane) and `open`.
+- `ready: false` means the wait ran out with nothing new; call again. Decided escalations stay decided until acknowledged, so a dropped call or a server restart loses nothing: call again.
+- While an agent waits, its lanes show **agent waiting** on the dashboard. A person answering at hour 20 can see whether the answer reaches someone now.
+- During a wait the server sends a notification every 20 seconds (progress, if the client asked for it), so proxies and clients see that the call is alive.
+
+**Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. For waits that may last hours, the [agent instructions](agent-instructions.md) run the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
 
 If the key is revoked while the agent is waiting, the call fails.

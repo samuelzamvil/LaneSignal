@@ -2,7 +2,8 @@
 
 Everything the MCP tools do is also available over plain HTTP, for scripts, CI jobs and agents without MCP.
 
-- **Auth:** every request (except `/healthz` and `/api/setup`) sends `Authorization: Bearer <credential>`. A credential is an agent key (`ls_…`), an account session token, or a static config token.
+- **Auth:** every request (except `/healthz` and `/api/setup`) sends `Authorization: Bearer <credential>`. A credential is an agent key or personal key (`ls_…`), an account session token, or a static config token.
+- **Escalation ids:** wherever a path or field takes an escalation id, the short number works too: `42` or `#42` (URL-encode `#` as `%23`).
 - **Errors:** responses are JSON. Errors look like `{"error": "…"}` with a 4xx status:
   - `400` validation (with `issues`)
   - `401` no or invalid credential
@@ -32,12 +33,12 @@ ID=$(curl -s -X POST $URL/api/escalations -H "authorization: Bearer $KEY" -H 'co
        "alternatives":["Rename it to legacy_role_deprecated for one release."],
        "options":["Drop","Keep"],"recommendedOption":"Drop"}' | jq -r .id)
 
-# wait for the answer (up to 300s per call; repeat while state is "open")
-curl -s "$URL/api/escalations/$ID?wait=300" -H "authorization: Bearer $KEY" | jq '{state,decision,decisionNote}'
+# wait for answers on any of the group's lanes (up to 24h per call; repeat while ready is false)
+curl -s "$URL/api/wait?group=payments-epic&timeout=86400" -H "authorization: Bearer $KEY" | jq '.decided[] | {ref,decision,decisionNote}'
 
-# confirm you're acting on it
+# acknowledge first: returns the final decision, and publishes the lane's next state
 curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
-  -H 'content-type: application/json' -d '{"note":"dropping in migration 0042"}'
+  -H 'content-type: application/json' -d '{"note":"dropping in migration 0042","status":"active","activity":"Dropping legacy_role"}'
 ```
 
 ## Endpoints
@@ -59,11 +60,12 @@ curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
 | `PUT /api/lanes/:id` | agent | Create or update `{name?, group?, status?, ticket?, activity?, links?}` |
 | `DELETE /api/lanes/:id` | human | Archives the lane and withdraws its unanswered escalations; decided ones keep their answer. Its history stays for export, and republishing restores it |
 | `GET /api/escalations?state=open,decided&lane=<id>` | any | Defaults to unresolved (open and decided) |
-| `POST /api/escalations` | agent | See the [fields](concepts.md#escalations). `blocking: false` for FYI questions |
+| `POST /api/escalations` | agent | See the [fields](concepts.md#escalations). `blocking: false` for FYI questions. `201` when created; `200` with `duplicate: true` when the same question is already open on that lane |
 | `GET /api/escalations/:id?wait=<s>` | any | `wait` (up to 300) holds the request until it's no longer open |
+| `GET /api/wait?group=&lane=a,b&ids=1,2&timeout=<s>` | any | Waits until something in scope needs the agent; give at least one of `group`, `lane`, `ids`. Returns `{ready, decided, closed, open}` ([details](agents.md#waiting-for-decisions)). `timeout` defaults to 300, max 86400. If it has to wait, it sends `200` at once and a space every 20s until the JSON follows, so proxies keep it open |
 | `POST /api/escalations/:id/positions` | agent | `{stance, note?, agent?}`. Open escalations only; at most 20 agents |
-| `POST /api/escalations/:id/decide` | human | `{decision, note?}` |
-| `POST /api/escalations/:id/ack` | agent | `{note?}` |
+| `POST /api/escalations/:id/decide` | human | `{decision, note?, change?}`. A second decision is `409`, unless `change: true` and the agent hasn't acknowledged yet |
+| `POST /api/escalations/:id/ack` | agent | `{note?, status?, activity?}`. Returns the escalation with the final decision; `status`/`activity` update the lane. Repeating it returns the same result |
 | `POST /api/escalations/:id/withdraw` | any | `{note?}` |
 | `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=` filter. One export at a time (`429` while another runs). See [Export](export.md) |
 | `GET /api/export/<dataset>.csv` / `.json` | any | `escalations`, `positions`, `lanes`, `groups` or `events`. Same filters |

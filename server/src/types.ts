@@ -60,6 +60,10 @@ export interface Lane {
   blockedTotalMs: number;
   /** Count of escalations still waiting on a human decision. */
   openEscalations: number;
+  /** Of those, how many hold the lane blocked (the rest are FYI). */
+  blockingEscalations: number;
+  /** An agent is waiting on this lane's escalations right now, so an answer reaches it at once. */
+  agentWaiting: boolean;
 }
 
 export type EscalationState = 'open' | 'decided' | 'acknowledged' | 'withdrawn';
@@ -81,6 +85,8 @@ export interface Position {
  */
 export interface Escalation {
   id: string;
+  /** Short number for humans and agents to refer to it by ("#42"); accepted wherever an id is. */
+  ref: number;
   laneId: string;
   /** The decision being asked for; doubles as the headline. */
   question: string;

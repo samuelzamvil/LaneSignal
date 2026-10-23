@@ -52,7 +52,8 @@ export function AgentKeysSection({ client, serverUrl, now }: { client: Client; s
   const load = useCallback(() => client.listKeys(), [client]);
   const { data: keys, error, reload } = useAsync(load);
   const [name, setName] = useState('');
-  const [created, setCreated] = useState<{ name: string; key: string } | null>(null);
+  const [role, setRole] = useState<'agent' | 'human'>('agent');
+  const [created, setCreated] = useState<{ name: string; key: string; role: 'agent' | 'human' } | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -61,8 +62,8 @@ export function AgentKeysSection({ client, serverUrl, now }: { client: Client; s
     setBusy(true);
     setActionError(null);
     try {
-      const k = await client.createKey(name.trim());
-      setCreated({ name: name.trim(), key: k.key });
+      const k = await client.createKey(name.trim(), role);
+      setCreated({ name: name.trim(), key: k.key, role });
       setName('');
       reload();
     } catch (err) {
@@ -88,13 +89,25 @@ export function AgentKeysSection({ client, serverUrl, now }: { client: Client; s
 
   return (
     <section className="settings-block">
-      <h3>Agent keys</h3>
+      <h3>Keys</h3>
       <p className="hint">
-        Give each overseer its own key. The key name is shown as the agent on its lanes. Keys belong to your account
-        and stop working if you revoke them or your account is removed.
+        Give each overseer its own <strong>agent key</strong>; the key name is shown as the agent on its lanes. A{' '}
+        <strong>personal key</strong> is for your own Claude session: it answers escalations as you (decisions show your
+        name) but can't publish lanes. Keys belong to your account and stop working if you revoke them or your account is
+        removed.
       </p>
       <form onSubmit={create} className="inline-form">
-        <input placeholder="Key name, e.g. payments-overseer" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required />
+        <select value={role} onChange={(e) => setRole(e.target.value as 'agent' | 'human')} aria-label="Key type">
+          <option value="agent">Agent key</option>
+          <option value="human">Personal key</option>
+        </select>
+        <input
+          placeholder={role === 'agent' ? 'Key name, e.g. payments-overseer' : 'Key name, e.g. my-laptop-claude'}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={32}
+          required
+        />
         <button className="primary" disabled={busy}>
           Create
         </button>
@@ -127,6 +140,7 @@ export function AgentKeysSection({ client, serverUrl, now }: { client: Client; s
           <li key={k.id}>
             <div>
               <strong>{k.name ?? 'unnamed'}</strong> <code>{k.start}…</code>
+              {k.metadata?.role === 'human' && <span className="tag">personal</span>}
               <div className="muted small">
                 created {absolute(k.createdAt)} · {k.lastRequest ? `last used ${ago(k.lastRequest, now)}` : 'never used'}
               </div>

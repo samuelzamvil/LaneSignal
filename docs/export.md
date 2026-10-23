@@ -46,7 +46,8 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 | Column | Meaning |
 |---|---|
-| `id`, `lane_id`, `lane_name`, `group_id`, `group_name` | What it belongs to (the group as the lane has it now, even if the group was archived) |
+| `id`, `ref` | The escalation's id and its short number (#42) |
+| `lane_id`, `lane_name`, `group_id`, `group_name` | What it belongs to (the group as the lane has it now, even if the group was archived) |
 | `ticket`, `ticket_url` | The escalation's own reference, e.g. the plan PR |
 | `question`, `context`, `recommendation`, `recommended_option`, `cost`, `alternatives`, `options` | The question as asked |
 | `blocking` | `false` for FYI questions |
@@ -64,7 +65,7 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 ### `positions.csv` (one row per agent position)
 
-`escalation_id`, `lane_id`, `question`, `agent`, `stance` (`agree`, `disagree` or `neutral`), `note`, `at`.
+`escalation_id`, `escalation_ref`, `lane_id`, `question`, `agent`, `stance` (`agree`, `disagree` or `neutral`), `note`, `at`.
 
 ### `lanes.csv` (every lane, including archived ones)
 

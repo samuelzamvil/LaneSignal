@@ -29,7 +29,7 @@ People can't rename themselves, because names are what decisions are attributed 
 
 ## Agent keys
 
-Every person can create keys under **Settings → Agent keys**:
+Every person can create keys under **Settings → Keys**:
 
 1. Name the key after the overseer that will use it (e.g. `payments-overseer`). That name is shown as the agent on its lanes.
 2. Copy the key (`ls_…`) right away. It's shown once and only a hash is stored.
@@ -40,10 +40,21 @@ Every person can create keys under **Settings → Agent keys**:
      --header "Authorization: Bearer ls_…"
    ```
 
+### Personal keys
+
+Pick **Personal key** instead of **Agent key** to use LaneSignal from your own Claude session. A personal key acts as you:
+
+- It gets the human tools (`decide_escalation`, `withdraw_escalation`, and the read tools), and decisions show your name.
+- It can't publish lanes or raise escalations.
+- It can't manage accounts, even if you're an admin.
+
+Keys are marked *personal* in the list.
+
 **Revoke** a key from the same list. Any agent using it is cut off immediately, including its open long-polls. The list shows when each key was last used.
 
 ## Sessions
 
+- A sign-in lasts `LANESIGNAL_SESSION_DAYS` (default 90) days without being used. Each use, at most once a day, extends it, so a phone you open now and then stays signed in.
 - **Sign out** ends the session on the server, not just on the device.
 - **Change password** keeps the current device signed in and signs out every other device.
 - **Admin password reset** signs the person out everywhere.

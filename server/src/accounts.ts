@@ -66,6 +66,8 @@ export async function createAccounts(config: Config, dbPath: string) {
     },
     // Only an admin (or first-run setup) creates accounts.
     emailAndPassword: { enabled: true, disableSignUp: true, minPasswordLength: 10, maxPasswordLength: 128 },
+    // A phone that isn't opened for a while stays signed in; every use (at most daily) extends the session.
+    session: { expiresIn: config.sessionDays * 86_400, updateAge: 86_400 },
     // On in every environment (Better Auth only enables it in production by default), keyed on the real client IP.
     rateLimit: {
       enabled: true,
@@ -97,6 +99,16 @@ export async function createAccounts(config: Config, dbPath: string) {
         if (ctx.path === '/api-key/create' && ctx.body && 'prefix' in ctx.body) {
           throw new APIError('BAD_REQUEST', { message: 'Custom key prefixes are not supported' });
         }
+        // Key metadata only says which role the key acts as.
+        if ((ctx.path === '/api-key/create' || ctx.path === '/api-key/update') && ctx.body?.metadata !== undefined) {
+          const m = ctx.body.metadata as unknown;
+          const ok =
+            m === null ||
+            (typeof m === 'object' &&
+              Object.keys(m as object).every((k) => k === 'role') &&
+              ['agent', 'human', undefined].includes((m as { role?: string }).role));
+          if (!ok) throw new APIError('BAD_REQUEST', { message: 'Key metadata may only set role to "agent" or "human"' });
+        }
       }),
       after: createAuthMiddleware(async (ctx) => {
         // An admin password reset signs the person out everywhere.
@@ -115,6 +127,8 @@ export async function createAccounts(config: Config, dbPath: string) {
       admin(),
       apiKey({
         defaultPrefix: KEY_PREFIX,
+        // Holds only { role }: "human" keys let a person answer escalations from their own MCP client.
+        enableMetadata: true,
         // The plugin's default (10 requests/day/key) would starve agents.
         rateLimit: { enabled: false },
       }),
@@ -166,6 +180,8 @@ export async function createAccounts(config: Config, dbPath: string) {
     revocations,
 
     needsSetup: () => userCount() === 0,
+    /** Whether an account still exists and isn't banned (push tokens of removed people are skipped). */
+    userActive: ownerActive,
     /** Exposed for tests. */
     get setupCode() {
       return setupCode;
@@ -218,6 +234,21 @@ export async function createAccounts(config: Config, dbPath: string) {
         if (token.startsWith(KEY_PREFIX)) {
           const res = await auth.api.verifyApiKey({ body: { key: token } });
           if (!res.valid || !res.key || !ownerActive(res.key.referenceId)) return null;
+          const meta = res.key.metadata as { role?: string } | null | undefined;
+          if (meta?.role === 'human') {
+            // Acts as its owner: decisions are attributed to the person, not the key.
+            const owner = db.prepare('SELECT name, email, role FROM user WHERE id = ?').get(res.key.referenceId) as
+              | { name: string; email: string; role: string | null }
+              | undefined;
+            if (!owner) return null;
+            return {
+              name: owner.name || owner.email,
+              role: 'human',
+              userId: res.key.referenceId,
+              email: owner.email,
+              admin: false,
+            };
+          }
           return { name: res.key.name ?? 'agent', role: 'agent', userId: res.key.referenceId };
         }
         const session = await auth.api.getSession({ headers: new Headers({ authorization: `Bearer ${token}` }) });

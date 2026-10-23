@@ -18,10 +18,10 @@ const store = new Store({
   eventRetention: config.eventRetention,
 });
 const accounts = await createAccounts(config, path.join(config.dataDir, 'lanesignal.db'));
-const push = startNotifier(config, store);
+const push = startNotifier(config, store, accounts.userActive);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const webDir = process.env.LANESIGNAL_WEB_DIR ?? path.resolve(here, '../../web/dist');
+const webDir = path.resolve(process.env.LANESIGNAL_WEB_DIR ?? path.resolve(here, '../../web/dist'));
 const app = createApp({ config, store, accounts, push, webDir });
 
 const server = app.listen(config.port, config.host, (err?: Error) => {

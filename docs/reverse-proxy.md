@@ -22,9 +22,10 @@ LaneSignal speaks plain HTTP on port 8080. Put HTTPS in front of it whenever it'
    With the wrong setting the limit either stops working, or everyone shares the proxy's IP and five bad attempts lock everyone out for a minute.
 3. **Long requests:**
    - `/api/events` is a long-lived Server-Sent Events stream.
-   - Agents long-poll for decisions for up to 300s, and nothing is sent while they wait.
+   - Agents wait for decisions: up to 300s for `get_escalation`, and up to 24h for `wait_for_decisions` and `GET /api/wait`. The longer waits send something every 20 seconds (MCP notifications, or a space on `/api/wait`), so idle timeouts, Cloudflare's 100-second limit included, don't cut them off.
+   - The single-escalation long-poll (`GET /api/escalations/:id?wait=`) sends nothing until it answers.
 
-   Turn off response buffering, and set read timeouts above 300s. Most proxies default to 60s, which cuts long-polls off.
+   Turn off response buffering, and set read timeouts above 300s. Most proxies default to 60s, which cuts the single-escalation long-poll off.
 
 ## Caddy
 

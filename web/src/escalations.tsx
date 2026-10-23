@@ -3,6 +3,30 @@ import type { Client, Escalation, Group, Lane, Position } from './api.ts';
 import { Links, RichText, TicketLink } from './components.tsx';
 import { absolute, ago } from './format.ts';
 
+/**
+ * Whether the answer will reach an agent now. Open: is an agent waiting on it?
+ * Decided: has the agent picked it up, or is it overdue (older than the stale threshold)?
+ */
+function AgentPresence({ esc, lane, now, staleMinutes }: { esc: Escalation; lane: Lane | undefined; now: number; staleMinutes: number }) {
+  if (esc.state === 'open') {
+    return lane?.agentWaiting ? (
+      <p className="agent-presence on">● An agent is waiting for this answer.</p>
+    ) : (
+      <p className="agent-presence">No agent is waiting right now; it gets your answer when it next checks in.</p>
+    );
+  }
+  if (esc.state !== 'decided') return null;
+  const late = staleMinutes > 0 && esc.decidedAt && now - Date.parse(esc.decidedAt) > staleMinutes * 60_000;
+  return late ? (
+    <p className="agent-presence late">
+      ⚠ Decided {ago(esc.decidedAt!, now)}; the agent hasn't picked it up yet.
+      {lane?.agentWaiting ? '' : ' No agent is waiting on this lane.'}
+    </p>
+  ) : (
+    <p className="hint">Waiting for the agent to acknowledge.</p>
+  );
+}
+
 const STANCE_META: Record<Position['stance'], { icon: string; label: string }> = {
   agree: { icon: '✓', label: 'Agrees' },
   disagree: { icon: '✗', label: 'Disagrees' },
@@ -36,11 +60,16 @@ function DecisionForm({
   client,
   compact,
   onMore,
+  change,
+  onDone,
 }: {
   esc: Escalation;
   client: Client;
   compact?: boolean;
   onMore?: () => void;
+  /** Replaces the answer on a decided escalation. */
+  change?: boolean;
+  onDone?: () => void;
 }) {
   const [choice, setChoice] = useState('');
   const [custom, setCustom] = useState('');
@@ -108,12 +137,16 @@ function DecisionForm({
           <button
             className="primary"
             disabled={!decision || busy}
-            onClick={() => run(() => client.decide(esc.id, decision, note))}
+            onClick={() => run(async () => (await client.decide(esc.id, decision, note, change), onDone?.()))}
           >
-            {busy ? 'Sending…' : 'Send decision'}
+            {busy ? 'Sending…' : change ? 'Change decision' : 'Send decision'}
           </button>
         )}
-        {compact ? (
+        {change ? (
+          <button className="ghost" disabled={busy} onClick={onDone}>
+            Cancel
+          </button>
+        ) : compact ? (
           <button className="ghost" onClick={onMore}>
             Details
           </button>
@@ -147,6 +180,9 @@ function EscHead({
 }) {
   return (
     <div className="esc-head">
+      <span className="ref" title="Use this number when talking to the agent about it">
+        #{esc.ref}
+      </span>
       <a
         className="lane-ref"
         href={`#/lane/${encodeURIComponent(esc.laneId)}`}
@@ -171,6 +207,7 @@ export function EscalationCard({
   now,
   client,
   seq,
+  staleMinutes,
 }: {
   esc: Escalation;
   lane: Lane | undefined;
@@ -179,11 +216,12 @@ export function EscalationCard({
   client: Client;
   /** Position among the lane's open escalations, when it has more than one. */
   seq?: { index: number; total: number };
+  staleMinutes: number;
 }) {
   const open = () => (location.hash = `#/esc/${esc.id}`);
   return (
     <article
-      className={`esc-card ${esc.state}`}
+      className={`esc-card ${esc.state}${esc.blocking ? '' : ' fyi'}`}
       onClick={open}
       role="button"
       tabIndex={0}
@@ -201,7 +239,7 @@ export function EscalationCard({
           <p className="decision">
             <strong>{esc.decision}</strong> — {esc.decidedBy}, {esc.decidedAt && ago(esc.decidedAt, now)}
           </p>
-          <p className="hint">Waiting for the agent to acknowledge.</p>
+          <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
         </>
       ) : (
         <>
@@ -238,9 +276,13 @@ export function EscalationDetail({
   laneOpenIds,
   version,
   now,
+  staleMinutes,
   onClose,
+  currentId,
 }: {
   id: string;
+  /** The escalation's id when the route names it by number. */
+  currentId?: string;
   client: Client;
   lanes: Map<string, Lane>;
   groups: Map<string, Group>;
@@ -249,16 +291,20 @@ export function EscalationDetail({
   /** Changes whenever the escalation changes, to trigger a refetch. */
   version: string;
   now: number;
+  staleMinutes: number;
   onClose: () => void;
 }) {
   const [loaded, setLoaded] = useState<Escalation | null>(null);
+  const [changing, setChanging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sheet = useRef<HTMLElement>(null);
   // While stepping to another question, never show (or answer) the previous one.
-  const esc = loaded?.id === id ? loaded : null;
+  // `id` may be the escalation's short number (#/esc/42) as well as its id.
+  const esc = loaded && (loaded.id === id || String(loaded.ref) === id) ? loaded : null;
 
   useEffect(() => {
     sheet.current?.scrollTo(0, 0);
+    setChanging(false);
   }, [id]);
 
   useEffect(() => {
@@ -273,7 +319,7 @@ export function EscalationDetail({
   }, [client, id, version]);
 
   // Step through a lane's batch of questions without going back to the inbox.
-  const idx = laneOpenIds.indexOf(id);
+  const idx = laneOpenIds.indexOf(currentId ?? id);
   const prev = idx > 0 ? laneOpenIds[idx - 1] : undefined;
   const next = idx >= 0 ? laneOpenIds[idx + 1] : laneOpenIds[0];
   const go = (target: string) => location.replace(`#/esc/${target}`);
@@ -300,7 +346,12 @@ export function EscalationDetail({
             ←
           </button>
           <h2>Escalation</h2>
-          {esc && <span className={`pill ${esc.state === 'open' ? 'tone-danger' : 'tone-muted'}`}>{STATE_LABEL[esc.state]}</span>}
+          {esc &&
+            (esc.state === 'open' && !esc.blocking ? (
+              <span className="pill tone-info">FYI · lane keeps working</span>
+            ) : (
+              <span className={`pill ${esc.state === 'open' ? 'tone-danger' : 'tone-muted'}`}>{STATE_LABEL[esc.state]}</span>
+            ))}
         </header>
         {error && <p className="error sheet-body">{error}</p>}
         {esc && (
@@ -395,8 +446,17 @@ export function EscalationDetail({
 
             {esc.state === 'open' ? (
               <section className="esc-section answer">
-                <h4>Your decision</h4>
+                <h4>{esc.blocking ? 'Your decision' : 'Your reply (optional)'}</h4>
+                <AgentPresence esc={esc} lane={lanes.get(esc.laneId)} now={now} staleMinutes={staleMinutes} />
                 <DecisionForm key={esc.id} esc={esc} client={client} />
+              </section>
+            ) : esc.state === 'decided' && changing ? (
+              <section className="esc-section answer">
+                <h4>Change decision</h4>
+                <p className="hint">
+                  Currently <strong>{esc.decision}</strong>. The agent acts on the new answer if it hasn't acknowledged yet.
+                </p>
+                <DecisionForm key={`${esc.id}-change`} esc={esc} client={client} change onDone={() => setChanging(false)} />
               </section>
             ) : (
               <section className="esc-section outcome">
@@ -408,7 +468,14 @@ export function EscalationDetail({
                   </p>
                 )}
                 {esc.decisionNote && <p className="note">{esc.decisionNote}</p>}
-                {esc.state === 'decided' && <p className="hint">Waiting for the agent to acknowledge.</p>}
+                {esc.state === 'decided' && (
+                  <>
+                    <AgentPresence esc={esc} lane={lanes.get(esc.laneId)} now={now} staleMinutes={staleMinutes} />
+                    <button className="ghost" onClick={() => setChanging(true)}>
+                      Change decision
+                    </button>
+                  </>
+                )}
                 {esc.resolution && (
                   <p className="note">
                     {esc.state === 'withdrawn' ? 'Withdrawn: ' : 'Agent: '}

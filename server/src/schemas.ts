@@ -63,11 +63,47 @@ export const escalationInput = z
 export const decision = z.object({
   decision: z.string().min(1).max(2000),
   note: z.string().max(5000).nullable().optional(),
+  /** Replace the answer on a decided escalation the agent hasn't acknowledged yet. */
+  change: z.boolean().optional(),
 });
 
 export const resolution = z.object({
   note: z.string().max(5000).nullable().optional(),
 });
+
+/** Acknowledging can publish the lane's next state in the same call. */
+export const acknowledgement = resolution.extend({
+  status: z.enum(LANE_STATUSES).optional(),
+  activity: z.string().max(2000).nullable().optional(),
+});
+
+/** Escalation ids or short numbers ("42" or "#42"). */
+const idList = z.array(z.string().min(1).max(100)).max(100);
+
+/** Longest single wait. The server sends keepalive bytes while it waits, so proxies don't cut it off. */
+export const MAX_WAIT_SECONDS = 86_400;
+
+export const waitScope = z
+  .object({
+    ids: idList.optional(),
+    laneIds: z.array(laneId).max(100).optional(),
+    groupId: groupId.optional(),
+  })
+  .refine((w) => w.ids?.length || w.laneIds?.length || w.groupId, {
+    message: 'give a group, lanes, or escalation ids to wait on',
+  });
+
+const csv = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v);
+
+/** GET /api/wait query: ?group=&lane=a,b&ids=1,2&timeout=seconds */
+export const waitQuery = z
+  .object({
+    group: groupId.optional(),
+    lane: z.preprocess(csv, z.array(laneId).max(100)).optional(),
+    ids: z.preprocess(csv, idList).optional(),
+    timeout: z.coerce.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
+  })
+  .strict();
 
 const password = z.string().min(10).max(128);
 
@@ -100,9 +136,8 @@ const instant = z
   )
   .transform((v, ctx) => {
     const ms = Date.parse(v.length === 10 ? `${v}T00:00:00Z` : v);
-    // Reject impossible dates (2026-02-30) instead of letting them roll over.
-    const sameDay = v.length !== 10 || new Date(ms).toISOString().slice(0, 10) === v;
-    if (Number.isNaN(ms) || !sameDay) {
+    // Reject impossible dates (2026-13-01, 2026-02-30) instead of letting them roll over.
+    if (Number.isNaN(ms) || (v.length === 10 && new Date(ms).toISOString().slice(0, 10) !== v)) {
       ctx.addIssue({ code: 'custom', message: 'not a valid date' });
       return z.NEVER;
     }

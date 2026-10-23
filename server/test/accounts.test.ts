@@ -189,6 +189,34 @@ describe('accounts', () => {
     assert.equal((await call('GET', '/api/me', danToken)).status, 401);
   });
 
+  test('a personal (human) key answers escalations as its owner, for their own MCP client', async () => {
+    const created = await call('POST', '/api/auth/api-key/create', adminToken, { name: 'ada-claude', metadata: { role: 'human' } });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const key = created.body.key;
+    assert.deepEqual((await call('GET', '/api/me', key)).body, {
+      name: 'Ada',
+      role: 'human',
+      userId: (await call('GET', '/api/me', adminToken)).body.userId,
+      email: 'ada@example.com',
+      admin: false,
+    });
+    const bot = (await call('POST', '/api/auth/api-key/create', adminToken, { name: 'personal-test-bot' })).body.key;
+    const esc = await call('POST', '/api/escalations', bot, { laneId: 'wiring', question: 'Personal key?' });
+    assert.equal(esc.status, 201);
+    const decided = await call('POST', `/api/escalations/${esc.body.id}/decide`, key, { decision: 'yes' });
+    assert.equal(decided.status, 200);
+    assert.equal(decided.body.decidedBy, 'Ada');
+    assert.equal((await call('PUT', '/api/lanes/wiring', key, { status: 'idle' })).status, 403);
+    // It can't manage accounts the way the owner's session can.
+    assert.equal((await call('POST', '/api/admin/people', key, { email: 'z@example.com', name: 'Z', password: 'temporary password' })).status, 403);
+  });
+
+  test('key metadata can only set the role', async () => {
+    for (const metadata of [{ role: 'admin' }, { role: 'human', extra: 1 }, 'human']) {
+      assert.equal((await call('POST', '/api/auth/api-key/create', adminToken, { name: 'x', metadata })).status, 400, JSON.stringify(metadata));
+    }
+  });
+
   test('people cannot rename themselves, mint oddly prefixed keys, or impersonate', async () => {
     assert.equal((await call('POST', '/api/auth/update-user', adminToken, { name: 'Someone Else' })).status, 403);
     assert.equal((await call('POST', '/api/auth/api-key/create', adminToken, { name: 'x', prefix: 'zz_' })).status, 400);

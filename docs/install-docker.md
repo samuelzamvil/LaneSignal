@@ -37,7 +37,7 @@ docker compose build --build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-bookwo
 
 ## Without Docker
 
-You need Node.js 22.13 or later (`node:sqlite` is built in):
+You need Node.js 22.13 or later; 24 is what the image uses (`node:sqlite` is built in):
 
 ```bash
 npm ci && npm run build
