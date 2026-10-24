@@ -68,6 +68,7 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `PUT /api/projects/:id/members/:userId` | project admin | `{role: "admin" \| "member"}`: add a person or change their role |
 | `DELETE /api/projects/:id/members/:userId` | project admin | Remove a member |
 | `PUT /api/projects/:id/notifications` | person | `{enabled}`: push for this project on your own devices |
+| `PUT /api/settings/push` | instance admin | `{quietAlerts}`: send alerts as regular notifications instead of high priority (shown in `GET /api/config`) |
 | `GET /api/people` | project admin | Everyone with an account, for adding members |
 | `GET /api/events` | any | Server-Sent Events: `group`, `group_deleted`, `lane`, `lane_deleted`, `escalation`. Only your projects' events. The stream ends when memberships or projects change; reconnect and re-snapshot. Heartbeat every 25s. `?access_token=` is accepted here only, for clients that can't set headers |
 | `GET /api/groups` | any | |
