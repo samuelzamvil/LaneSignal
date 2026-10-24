@@ -13,6 +13,7 @@ import {
 } from './api.ts';
 import { Chips, GroupHeader, LaneCard, LaneDetail } from './components.tsx';
 import { EscalationCard, EscalationDetail, isCodeOf } from './escalations.tsx';
+import { routeFromAppLink } from './deeplink.ts';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { keyOf } from './merge.ts';
 import { useLiveData, useNow } from './live.ts';
@@ -33,10 +34,21 @@ interface Route {
   escId?: string;
 }
 
+/** A URL path segment decoded, or null when it's malformed (e.g. "%E0" from a crafted link). */
+const decode = (part: string) => {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return null;
+  }
+};
+
 function parseRoute(hash: string): Route {
   const [, a, b, c] = hash.replace(/^#/, '').split('/');
-  if (a === 'lane' && b && c) return { view: 'lanes', laneProject: decodeURIComponent(b), laneId: decodeURIComponent(c) };
-  if (a === 'lane' && b) return { view: 'lanes', laneId: decodeURIComponent(b) };
+  const lb = b ? decode(b) : null;
+  const lc = c ? decode(c) : null;
+  if (a === 'lane' && lb && lc) return { view: 'lanes', laneProject: lb, laneId: lc };
+  if (a === 'lane' && lb && !c) return { view: 'lanes', laneId: lb };
   if (a === 'esc' && b) return { view: 'inbox', escId: b };
   if (a === 'lanes' || a === 'reqs' || a === 'settings') return { view: a };
   return { view: 'inbox' };
@@ -219,6 +231,19 @@ function Dashboard({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // lanesignal:// links (ntfy notifications) open the screen they name. Capacitor delivers the link that
+  // started the app this way too, and holds links that arrive before sign-in until this listener exists.
+  useEffect(() => {
+    if (!isNative) return;
+    const open = (url: string | undefined) => {
+      const route = url ? routeFromAppLink(url) : null;
+      if (route) navigate(route);
+    };
+    const h = CapApp.addListener('appUrlOpen', (e) => open(e.url));
+    return () => void h.then((x) => x.remove());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Android hardware back button: close sheets first, then leave the app.

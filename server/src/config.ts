@@ -44,6 +44,11 @@ export interface Config {
   fcmServiceAccountFile: string | null;
   ntfyUrl: string | null;
   ntfyToken: string | null;
+  /**
+   * What tapping an ntfy notification opens: the LaneSignal Android app ("app", a lanesignal:// link,
+   * with an "Open in browser" button when the public URL is set) or the web app ("browser").
+   */
+  ntfyOpen: 'app' | 'browser';
   eventRetention: number;
   /**
    * Answering escalations in LaneSignal (off by default): the dashboard's decision buttons, and agents
@@ -117,6 +122,14 @@ function bool(name: string, value: string | undefined, fallback: boolean) {
   if (['true', '1', 'yes', 'on'].includes(v)) return true;
   if (['false', '0', 'no', 'off'].includes(v)) return false;
   throw new Error(`${name} must be true or false, got "${value}"`);
+}
+
+/** One of a few words; anything else stops startup. */
+function oneOf<T extends string>(name: string, value: string | undefined, allowed: readonly T[], fallback: T): T {
+  if (value === undefined || value.trim() === '') return fallback;
+  const v = value.trim().toLowerCase() as T;
+  if (!allowed.includes(v)) throw new Error(`${name} must be one of ${allowed.join(', ')}, got "${value}"`);
+  return v;
 }
 
 const PROXY_KEYWORDS = new Set(['loopback', 'linklocal', 'uniquelocal']);
@@ -207,6 +220,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     fcmServiceAccountFile: env.LANESIGNAL_FCM_SERVICE_ACCOUNT_FILE ?? file.fcmServiceAccountFile ?? null,
     ntfyUrl: env.LANESIGNAL_NTFY_URL ?? file.ntfyUrl ?? null,
     ntfyToken: env.LANESIGNAL_NTFY_TOKEN ?? file.ntfyToken ?? null,
+    ntfyOpen: oneOf('LANESIGNAL_NTFY_OPEN', env.LANESIGNAL_NTFY_OPEN, ['app', 'browser'] as const, 'app'),
     eventRetention: int('LANESIGNAL_EVENT_RETENTION', env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention, 200, 1, 100_000),
     decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, false),
     requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),

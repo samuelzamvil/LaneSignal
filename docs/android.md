@@ -47,7 +47,7 @@ Push goes out for **new escalations** only, unless `LANESIGNAL_NOTIFY_ON` adds `
 1. Choose a long, random topic name. On public `ntfy.sh`, anyone who knows the topic can read it.
 2. Set `LANESIGNAL_NTFY_URL=https://ntfy.sh/<topic>`, or point it at your own ntfy server. Add `LANESIGNAL_NTFY_TOKEN` if the topic needs auth.
 3. Install the ntfy app on your phone and subscribe to the topic.
-4. Set `LANESIGNAL_PUBLIC_URL` so tapping a notification opens the escalation in LaneSignal.
+4. Tapping a notification opens that alert in the LaneSignal app (through its `lanesignal://` link). With `LANESIGNAL_PUBLIC_URL` set, the notification also has an **Open in browser** button. If you read ntfy anywhere other than an Android phone with the LaneSignal app (ntfy web or desktop, iOS), set `LANESIGNAL_NTFY_OPEN=browser` so a tap opens the web app instead: the app link goes nowhere there.
 
 ### Firebase Cloud Messaging (native push in the LaneSignal app)
 
