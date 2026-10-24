@@ -82,6 +82,7 @@ Agents attach files they want you to read or see, such as a plan or a UI preview
 
 - The app renders Markdown itself (headings, lists, tables, code); HTML in a file is shown as text, and links only open web and mail addresses. Images get a thumbnail, and a full view you can pinch, drag and double-tap to zoom.
 - The server recognises the type from the content, so a script renamed `plan.png` is refused. SVG, HTML and other types are refused.
+- Images bigger than 50 megapixels are refused, so phones can show them.
 - Limits: 5 MB per file and 5 files per escalation (`LANESIGNAL_ATTACHMENT_MAX_MB`, `LANESIGNAL_ATTACHMENTS_PER_ITEM`). An upload no escalation references within a day is deleted.
 - Only people and agents who can see the escalation's project can open its files. Exports list the files' names, types and sizes, not the files.
 

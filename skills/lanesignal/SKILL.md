@@ -57,7 +57,7 @@ Call `create_escalation` once per decision. Four questions in a plan means four 
 
 - **Codes:** each escalation gets a code, its `ref`, like **A12** (the lane's letter and a number). The owner uses it when they answer you ("A12: drop it"); use it too. Every tool accepts it in place of the id.
 - **Retries are safe:** re-sending the same open question on the same lane returns the existing escalation (`duplicate: true`).
-- **An FYI that now blocks you:** call `create_escalation` again with the FYI's exact `question` and without `blocking: false`. It keeps its code, blocks the lane and notifies the owner as a new question (`upgraded: true`). Fields you give (`context`, `recommendation`, …) replace the FYI's, so give the owner what they need to answer.
+- **An FYI that now blocks you:** call `create_escalation` again with the FYI's exact `question` and without `blocking: false`. It keeps its code, blocks the lane and notifies the owner as a new question (`upgraded: true`). Fields you give (`context`, `recommendation`, …) replace the FYI's, and new `attachments` are added, so give the owner what they need to answer.
 
 ### Attachments
 

@@ -112,6 +112,37 @@ describe('attachments', () => {
     assert.match(again.text, /already on another escalation/);
   });
 
+  test('re-sending the same files on a retry or an upgrade is fine; new ones are added', async () => {
+    const a = (await upload(AGENT, 'a.md', '# a')).body.id;
+    const b = (await upload(AGENT, 'b.md', '# b')).body.id;
+    const fyi = await ask('Heads up: new plan', { blocking: false, attachments: [a] });
+    // A retry brings a second file.
+    const retry = await ask('Heads up: new plan', { blocking: false, attachments: [a, b] });
+    assert.equal(retry.value.id, fyi.value.id);
+    assert.equal((await full(fyi.value.id)).attachments.length, 2);
+    // Upgrading with the same files (the limit is 2) doesn't count them twice.
+    const upgraded = await ask('Heads up: new plan', { attachments: [a, b], allow_reject: false });
+    assert.equal(upgraded.isError, false, upgraded.text);
+    assert.equal(upgraded.value.upgraded, true);
+    const got = await full(fyi.value.id);
+    assert.equal(got.attachments.length, 2);
+    assert.equal(got.allowReject, false);
+  });
+
+  test("images too large for a phone are refused", async () => {
+    const huge = Uint8Array.from([...PNG.slice(0, 8), 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0x9c, 0x40, 0, 0, 0x9c, 0x40]);
+    const res = await upload(AGENT, 'bomb.png', huge);
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /40000×40000/);
+  });
+
+  test('Accept, Reject and Other are spelled one way whatever the case', async () => {
+    const e = (await ask('Which?')).value;
+    const ok = await decide(e.id, 'accept');
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.decision, 'Accept');
+  });
+
   test('an upload needs a file field', async () => {
     const res = await srv.call('POST', '/api/attachments', AGENT, { file: 'plan' });
     assert.equal(res.status, 400);

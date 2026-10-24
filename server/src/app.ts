@@ -5,7 +5,7 @@ import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
 import { accessFor, briefWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
-import { readUpload, sniff } from './attachments.ts';
+import { oversizedImage, readUpload, sniff } from './attachments.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import type { Config } from './config.ts';
@@ -406,12 +406,23 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     '/api/attachments',
     any,
     h(async (req, res) => {
-      const file = await readUpload(req, config.attachmentMaxBytes);
+      const p = principalOf(res);
+      let file: Awaited<ReturnType<typeof readUpload>>;
+      try {
+        // Refuse before reading the body when there's no room for it anyway.
+        store.checkUploadRoom(ownerOf(p));
+        file = await readUpload(req, config.attachmentMaxBytes);
+      } catch (err) {
+        // Discard the rest of the upload, so the client gets the error instead of a stalled request.
+        req.resume();
+        throw err;
+      }
       const type = sniff(file.data, file.name);
       if (!type) {
         throw new ValidationError('Attach Markdown (.md) or text (.txt) files, or PNG, JPEG, WebP or GIF images');
       }
-      const p = principalOf(res);
+      const tooBig = oversizedImage(file.data, type);
+      if (tooBig) throw new ValidationError(tooBig);
       res.status(201).json(store.addAttachment({ ...file, type }, ownerOf(p), p.name));
     }),
   );

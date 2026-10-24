@@ -662,7 +662,7 @@ function buildServer(
             : '. ') +
           'Files (a plan, a screenshot) go in `attachments`: ids from uploading each to /api/attachments. ' +
           'Returns its code (`ref`, e.g. "A12"), usable in every tool. The same open question again returns the first ' +
-          '(`duplicate: true`); the same `question` as an open FYI of yours, raised as blocking, makes it block and notifies the owner (`upgraded: true`; fields you give replace the FYI\'s). ' +
+          '(`duplicate: true`); the same `question` as an open FYI of yours, raised as blocking, makes it block and notifies the owner (`upgraded: true`; fields you give replace the FYI\'s, new attachments are added). ' +
           (features.decisions
             ? 'Then wait with wait_for_decisions and acknowledge_escalation as soon as one is decided.'
             : 'The owner answers in your session, quoting the code; then dismiss_escalation with what they decided.'),
@@ -671,7 +671,6 @@ function buildServer(
           question: s.escalationFields.question,
           context: s.escalationFields.context,
           recommendation: s.escalationFields.recommendation,
-          recommended_option: s.escalationFields.recommendedOption,
           cost: s.escalationFields.cost,
           alternatives: s.escalationFields.alternatives,
           ticket: s.escalationFields.ticket,

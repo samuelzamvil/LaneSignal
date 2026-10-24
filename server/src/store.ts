@@ -1063,12 +1063,7 @@ export class Store {
     this.db
       .prepare('DELETE FROM attachments WHERE escalation_id IS NULL AND created_at < ?')
       .run(new Date(now.getTime() - UNREFERENCED_TTL_MS).toISOString());
-    const pending = Number(
-      (this.db.prepare('SELECT COUNT(*) AS n FROM attachments WHERE escalation_id IS NULL AND owner = ?').get(owner) as Row).n,
-    );
-    if (pending >= MAX_PENDING_UPLOADS) {
-      throw new ConflictError(`${MAX_PENDING_UPLOADS} uploads are waiting to be attached; attach them or wait a day`);
-    }
+    this.checkUploadRoom(owner);
     const id = randomUUID();
     this.db
       .prepare(
@@ -1078,23 +1073,31 @@ export class Store {
     return { id, name: file.name, type: file.type, size: file.data.byteLength };
   }
 
+  /** Throws when the uploader already has the most uploads waiting to be attached (checked before reading a body). */
+  checkUploadRoom(owner: string) {
+    const pending = Number(
+      (this.db.prepare('SELECT COUNT(*) AS n FROM attachments WHERE escalation_id IS NULL AND owner = ?').get(owner) as Row).n,
+    );
+    if (pending >= MAX_PENDING_UPLOADS) {
+      throw new ConflictError(`${MAX_PENDING_UPLOADS} uploads are waiting to be attached; attach them or wait a day`);
+    }
+  }
+
   /** Attaches uploads to an escalation (inside its transaction). Each must be the owner's and not attached yet. */
   private linkAttachments(escalationId: string, ids: string[], owner: string) {
     if (!ids.length) return;
-    const unique = [...new Set(ids)];
-    const have = this.attachmentsOf(escalationId).length;
-    if (have + unique.length > this.attachmentsPerItem) {
-      throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per escalation`);
-    }
-    unique.forEach((id, i) => {
+    let have = this.attachmentsOf(escalationId).length;
+    for (const id of new Set(ids)) {
       const r = this.db.prepare('SELECT owner, escalation_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
       if (!r || r.owner !== owner) {
         throw new NotFoundError(`Attachment ${id} not found: upload it first (POST /api/attachments), with the same key`);
       }
-      if (r.escalation_id === escalationId) return;
+      // Already here (a retry sending the same ids): nothing to add.
+      if (r.escalation_id === escalationId) continue;
       if (r.escalation_id) throw new ConflictError(`Attachment ${id} is already on another escalation; upload it again`);
-      this.db.prepare('UPDATE attachments SET escalation_id = ?, position = ? WHERE id = ?').run(escalationId, have + i, id);
-    });
+      if (have >= this.attachmentsPerItem) throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per escalation`);
+      this.db.prepare('UPDATE attachments SET escalation_id = ?, position = ? WHERE id = ?').run(escalationId, have++, id);
+    }
   }
 
   /**
@@ -1160,6 +1163,12 @@ export class Store {
       // Raising an open FYI again as blocking (the default) makes it need the owner now (same code).
       if (input.blocking !== false && !this.requireEscalation(id).blocking) {
         return { ...this.makeBlocking(id, input, actor, owner), duplicate: true, upgraded: true };
+      }
+      // A retry may bring files the first call didn't: attach them rather than leave them unused.
+      if (input.attachments?.length) {
+        const before = this.attachmentsOf(id).length;
+        this.tx(() => this.linkAttachments(id, input.attachments!, owner ?? actor));
+        if (this.attachmentsOf(id).length !== before) this.emit({ type: 'escalation', escalation: this.requireEscalation(id) });
       }
       return { ...this.requireEscalation(id), duplicate: true };
     }
@@ -1268,6 +1277,8 @@ export class Store {
           input.allowReject === undefined ? null : input.allowReject ? 1 : 0,
           id,
         );
+      // Reject withdrawn: what it meant no longer applies.
+      if (input.allowReject === false) this.db.prepare('UPDATE escalations SET reject_means = NULL WHERE id = ?').run(id);
       this.linkAttachments(id, input.attachments ?? [], owner ?? actor);
       this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${before.question}`, actor);
       const lane = this.requireLane(before.laneId);
@@ -1311,12 +1322,16 @@ export class Store {
    * it, a second decision is a conflict, so two people can't overwrite each other.
    */
   decideEscalation(id: string, decision: string, note: string | null, by: string, change = false): Escalation {
-    // The answer bar's choices: Reject only where the agent offered it, and Other only with instructions.
+    // The answer bar's choices: Accept, Reject (where the agent offered it) or Other with instructions.
+    // People answering from their own Claude session may still write a free-text answer, and older
+    // escalations with options take any of them.
+    const target = this.requireEscalation(id);
     const choice = decision.trim().toLowerCase();
-    if (choice === 'reject' && !this.requireEscalation(id).allowReject) {
-      throw new ValidationError("The agent didn't offer Reject on this escalation");
+    if (!target.options.length && (choice === 'accept' || choice === 'reject' || choice === 'other')) {
+      if (choice === 'reject' && !target.allowReject) throw new ValidationError("The agent didn't offer Reject on this escalation");
+      if (choice === 'other' && !note?.trim()) throw new ValidationError('Other needs instructions for the agent');
+      decision = choice[0].toUpperCase() + choice.slice(1);
     }
-    if (choice === 'other' && !note?.trim()) throw new ValidationError('Other needs instructions for the agent');
     if (change) {
       const current = this.requireEscalation(id);
       if (current.state === 'acknowledged') {

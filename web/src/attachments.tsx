@@ -1,6 +1,10 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Component, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import type { AttachmentMeta, Client } from './api.ts';
 import { MarkdownView } from './markdown-view.tsx';
+import { pushOverlay } from './nav.ts';
+
+/** Markdown bigger than this is shown as plain text: rendering it would be slow on a phone. */
+const RENDER_LIMIT = 300_000;
 
 const isImage = (f: AttachmentMeta) => f.type.startsWith('image/');
 
@@ -14,14 +18,16 @@ function size(bytes: number) {
 function useFile(client: Client, file: AttachmentMeta | null, as: 'url' | 'text') {
   const [value, setValue] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // By id: live updates bring new objects for the same file, which mustn't download it again.
+  const id = file?.id;
   useEffect(() => {
-    if (!file) return;
+    if (!id) return;
     let url: string | null = null;
     let cancelled = false;
     setValue(null);
     setError(null);
     client
-      .attachment(file.id)
+      .attachment(id)
       .then(async (blob) => {
         if (cancelled) return;
         if (as === 'text') setValue(await blob.text());
@@ -32,7 +38,7 @@ function useFile(client: Client, file: AttachmentMeta | null, as: 'url' | 'text'
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [client, file, as]);
+  }, [client, id, as]);
   return { value, error };
 }
 
@@ -67,6 +73,9 @@ function AttachmentViewer({ client, file, onClose }: { client: Client; file: Att
   const image = isImage(file);
   const { value, error } = useFile(client, file, image ? 'url' : 'text');
 
+  // Android's back button closes the viewer first.
+  useEffect(() => pushOverlay(onClose), [onClose]);
+
   // Escape closes the viewer, not the escalation under it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -92,15 +101,28 @@ function AttachmentViewer({ client, file, onClose }: { client: Client; file: Att
       {value &&
         (image ? (
           <ZoomImage src={value} alt={file.name} />
-        ) : file.type === 'text/markdown' ? (
+        ) : file.type === 'text/markdown' && value.length <= RENDER_LIMIT ? (
           <div className="viewer-body">
-            <MarkdownView text={value} />
+            <Fallback text={value}>
+              <MarkdownView text={value} />
+            </Fallback>
           </div>
         ) : (
           <pre className="viewer-body plain-text">{value}</pre>
         ))}
     </div>
   );
+}
+
+/** Shows the file as plain text if rendering it fails, rather than blanking the app. */
+class Fallback extends Component<{ text: string; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    return this.state.failed ? <pre className="plain-text">{this.props.text}</pre> : this.props.children;
+  }
 }
 
 /** An image that pinches, drags and double-taps to zoom (mouse wheel on desktop). */

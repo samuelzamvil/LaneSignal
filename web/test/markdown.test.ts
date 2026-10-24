@@ -65,3 +65,34 @@ test("links only go to web and mail addresses; HTML stays text", () => {
   const html = parseMarkdown('<script>alert(1)</script>');
   assert.deepEqual(html, [{ t: 'paragraph', children: [{ t: 'text', text: '<script>alert(1)</script>' }] }]);
 });
+
+test('large or hostile files parse quickly and never nest without limit', () => {
+  const inputs = [
+    '*a '.repeat(100_000),
+    '**a '.repeat(50_000),
+    '[a '.repeat(100_000),
+    '- a\n\n'.repeat(50_000),
+    `| a |\n${' '.repeat(100_000)}x`,
+    '>'.repeat(20_000),
+    `${'- '.repeat(20_000)}x`,
+    `${'  '.repeat(5000)}- x`,
+    `_${'a_'.repeat(50_000)}`,
+    '\n'.repeat(500_000),
+  ];
+  for (const text of inputs) {
+    const started = performance.now();
+    parseMarkdown(text);
+    const ms = performance.now() - started;
+    assert.ok(ms < 1500, `${JSON.stringify(text.slice(0, 12))}… took ${Math.round(ms)} ms`);
+  }
+});
+
+test('lists, fences and tables in common shapes', () => {
+  const ol = parseMarkdown('1. a\n\n2. b');
+  assert.equal(ol.length, 1);
+  assert.equal((ol[0] as { items: unknown[] }).items.length, 2);
+  const fence = parseMarkdown('````\n```js\ncode\n```\n````');
+  assert.deepEqual(fence, [{ t: 'code', lang: '', text: '```js\ncode\n```' }]);
+  const table = parseMarkdown('Plan:\n| a | b |\n|---|---|\n| 1 | 2 |');
+  assert.deepEqual(table.map((b) => b.t), ['paragraph', 'table']);
+});
