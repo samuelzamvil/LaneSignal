@@ -226,7 +226,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -464,6 +464,10 @@ export class Store {
               SELECT lane_id, 'agent', COALESCE(actor, 'agent'), message, at FROM lane_events WHERE kind = 'notice' ORDER BY id;
           `);
         }
+      }
+      if (version < 14) {
+        // v14: whether a TRMNL screen's account has TRMNL+, which allows more pushes per hour.
+        if (!this.hasColumn('trmnl_setups', 'plus')) this.db.exec('ALTER TABLE trmnl_setups ADD COLUMN plus INTEGER NOT NULL DEFAULT 0');
       }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
@@ -3010,6 +3014,7 @@ export class Store {
       webhookUrl: r.webhook_url as string,
       enabled: Number(r.enabled) === 1,
       includeNotifications: Number(r.include_notifications) === 1,
+      plus: Number(r.plus) === 1,
       card: r.card ? (JSON.parse(r.card as string) as TrmnlCard) : null,
       lastPushAt: (r.last_push_at as string | null) ?? null,
       lastError: (r.last_error as string | null) ?? null,
@@ -3027,8 +3032,11 @@ export class Store {
     return (this.db.prepare('SELECT * FROM trmnl_setups').all() as Row[]).map((r) => this.trmnlFromRow(r));
   }
 
-  /** Creates or changes a project's TRMNL setup; a new one needs the webhook URL. */
-  saveTrmnlSetup(project: string, input: { webhookUrl?: string; enabled: boolean; includeNotifications: boolean }): TrmnlSetup {
+  /** Creates or changes a project's TRMNL setup; a new one needs the webhook URL. Leaving `plus` out keeps it. */
+  saveTrmnlSetup(
+    project: string,
+    input: { webhookUrl?: string; enabled: boolean; includeNotifications: boolean; plus?: boolean },
+  ): TrmnlSetup {
     if (!this.getProject(project)) throw new NotFoundError(`Project "${project}" not found`);
     const current = this.trmnlSetup(project);
     const url = input.webhookUrl ?? current?.webhookUrl;
@@ -3040,12 +3048,12 @@ export class Store {
     const dropCard = !!current && current.includeNotifications !== input.includeNotifications;
     this.db
       .prepare(
-        `INSERT INTO trmnl_setups (project_id, webhook_url, enabled, include_notifications, updated_at) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO trmnl_setups (project_id, webhook_url, enabled, include_notifications, plus, updated_at) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(project_id) DO UPDATE SET webhook_url = excluded.webhook_url, enabled = excluded.enabled,
-           include_notifications = excluded.include_notifications, updated_at = excluded.updated_at
+           include_notifications = excluded.include_notifications, plus = excluded.plus, updated_at = excluded.updated_at
            ${fresh ? ', last_push_at = NULL, last_error = NULL, last_error_at = NULL' : ''}${dropCard ? ', card = NULL' : ''}`,
       )
-      .run(project, url, input.enabled ? 1 : 0, input.includeNotifications ? 1 : 0, now);
+      .run(project, url, input.enabled ? 1 : 0, input.includeNotifications ? 1 : 0, (input.plus ?? current?.plus) ? 1 : 0, now);
     return this.trmnlSetup(project)!;
   }
 

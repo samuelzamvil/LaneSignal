@@ -353,6 +353,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       webhookUrl: maskWebhookUrl(t.webhookUrl),
       enabled: t.enabled,
       includeNotifications: t.includeNotifications,
+      plus: t.plus,
       lastPushAt: t.lastPushAt,
       lastError: t.lastError,
       lastErrorAt: t.lastErrorAt,
