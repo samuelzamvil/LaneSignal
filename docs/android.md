@@ -31,7 +31,7 @@ Without a signing key, every build is signed with a throwaway debug key, so Andr
 1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new): repository access *Only select repositories* → this one; permissions **Administration**, **Environments** and **Secrets**: *Read and write*; a short expiry (e.g. 1 day).
 2. In the repository: Settings → Secrets and variables → Actions → New repository secret, named `SIGNING_SETUP_TOKEN`, with the token as its value.
 3. Actions → **Android signing setup** → Run workflow (on `main`).
-4. When it's green, delete the `SIGNING_SETUP_TOKEN` secret and the token. No backup of the key is kept this way; if the environment's secrets are ever deleted, phones need one more uninstall.
+4. When it's green, delete the `SIGNING_SETUP_TOKEN` secret and the token. The next build of `main` is signed; to get one straight away, run Actions → **CI** → Run workflow on `main`. No backup of the key is kept this way; if the environment's secrets are ever deleted, phones need one more uninstall.
 
 **From your computer** (also keeps a backup of the key):
 

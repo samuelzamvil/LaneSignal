@@ -46,12 +46,14 @@ cat >> "$notes" <<EOF
 Push notifications through Firebase are only built in when the repository has the \`GOOGLE_SERVICES_JSON\` secret; ntfy works either way. See [Android app and push notifications](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/android.md).
 
 Built from \`${GITHUB_SHA:0:7}\`.
+<!-- run:${GITHUB_RUN_NUMBER} -->
 EOF
 
 if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
   if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-    # A re-run: refresh the APK on the existing release.
+    # A re-run (or a manual run, e.g. once signing is set up): refresh the APK and its notes.
     gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
+    gh release edit "$GITHUB_REF_NAME" --notes-file "$notes"
   else
     pre=(); [[ "$GITHUB_REF_NAME" == *-* ]] && pre=(--prerelease)   # v1.0.0-rc1
     gh release create "$GITHUB_REF_NAME" "$asset" --verify-tag "${pre[@]}" --title "LaneSignal $GITHUB_REF_NAME" --notes-file "$notes"
@@ -60,6 +62,12 @@ else
   # Runs can finish out of order: only the build of main's current head becomes "latest".
   head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
   if [ "$head" != "$GITHUB_SHA" ]; then echo "main has moved on to ${head:0:7}; not publishing ${GITHUB_SHA:0:7}"; exit 0; fi
+  # A push run and a manual run can build the same commit: never replace a newer build (a higher
+  # versionCode, which phones would refuse to go back from) with an older one.
+  current=$(gh release view latest --json body --jq .body 2>/dev/null | sed -n 's/.*<!-- run:\([0-9]*\) -->.*/\1/p' || true)
+  if [ -n "$current" ] && [ "$current" -ge "$GITHUB_RUN_NUMBER" ]; then
+    echo "latest is already run $current; not replacing it with run $GITHUB_RUN_NUMBER"; exit 0
+  fi
   # One rolling pre-release for main: replace it, and its tag, so it points at this commit.
   gh release delete latest --yes --cleanup-tag 2>/dev/null || true
   gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/latest" >/dev/null 2>&1 || true
