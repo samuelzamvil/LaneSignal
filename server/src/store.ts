@@ -1820,7 +1820,9 @@ export class Store {
     // decided to act isn't left with a conversation it can only dismiss.
     const thread = current.state === 'open' ? this.messagesOf(current.id) : [];
     const lastOwner = thread.findLastIndex((m) => m.from === 'owner');
-    if (lastOwner >= 0) {
+    // On the owner's turn, only after the agent's reply: an FYI re-raised as blocking also hands the
+    // turn back, and its old notes mustn't answer the new question.
+    if (lastOwner >= 0 && (current.turn === 'agent' || thread[thread.length - 1].from === 'agent')) {
       // The owner's latest run of messages, so earlier instructions in it aren't lost.
       const pending = thread.slice(thread.slice(0, lastOwner).findLastIndex((m) => m.from === 'agent') + 1, lastOwner + 1);
       const last = pending[pending.length - 1];

@@ -115,6 +115,12 @@ describe('conversations', () => {
     const unanswered = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'rename', question: 'Untouched?' })).value;
     const early = await srv.tool(AGENT, 'acknowledge_escalation', { id: unanswered.ref });
     assert.match(early.text, /is open; expected decided/);
+    // An FYI re-raised as blocking goes back to the owner: notes on the FYI don't answer it.
+    const fyi = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'rename', question: 'FYI: queue is slow', blocking: false })).value;
+    await other(fyi.id, 'Noted, ignore for now');
+    await srv.tool(AGENT, 'create_escalation', { lane_id: 'rename', question: 'FYI: queue is slow', blocking: true });
+    const stale = await srv.tool(AGENT, 'acknowledge_escalation', { id: fyi.ref });
+    assert.match(stale.text, /is open; expected decided/);
   });
 
   test("dismissing during the agent's turn puts the lane back to work", async () => {
