@@ -83,13 +83,12 @@ A group can be linked to one or more epic tickets. Epics are long-lived and aren
 - **`epics` table:** ref, name, state and links, linked many-to-many with groups.
 - **Epic card:** sits alongside the lane cards. It shows the combined status updates of the lanes under it, and has its own message board, separate from any lane's messages.
 
-## Open questions
+### Settled for epics
 
-1. **Escalations on a lane with no ticket.** Proposal: they attach to the group's epic and take the epic's code (**900A**). A group with no epic would fall back to the lane's letter, as today.
-2. **A URL used as a ticket ref.** Linking is unaffected. The issue is the code text: the code is the ref plus a letter, so the ref `https://github.com/o/r/issues/500` would give a code ending `…/issues/500A`.
-3. **Which lanes feed an epic's card**, when a group has several epics.
-4. **What makes an epic "not worked the same"**: its states, its blocking rules, and whether questions can be raised on it.
-5. **Whether an epic can span groups.**
+- **One behaviour for every escalation:** an escalation raised on a lane with no ticket belongs to its group's epic and takes the epic's code (**900A**).
+- **An epic belongs to one group.** A group can have several epics.
+- **The epic card shows every lane in its group.** If a group has two epics, both cards show the same lanes.
+- **Agents can raise questions on an epic.** The epic is where durable conversations happen: steering current and future work, and deciding which tickets to create.
 
 ## Delivery
 
