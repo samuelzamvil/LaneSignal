@@ -245,6 +245,14 @@ describe('changing direction', () => {
     assert.equal(first.status, 'pending');
     let now = (await srv.call('GET', `/api/requirements/${old.id}`, ALICE)).body;
     assert.deepEqual([now.status, now.supersededBy], ['active', first.id], 'still in force, replacement named');
+    // Whichever of the two a search finds, agents get both: the decision in force, then the pending change.
+    const ids = (r: { value: { id: string }[] }) => r.value.map((x) => x.id);
+    assert.deepEqual(ids(await srv.tool(AGENT, 'find_requirements', { query: 'nightly' })), [old.id, first.id]);
+    assert.deepEqual(ids(await srv.tool(AGENT, 'find_requirements', { query: 'hourly' })), [old.id, first.id]);
+    assert.deepEqual(ids(await srv.tool(AGENT, 'find_requirements', { query: first.id })), [old.id, first.id]);
+    assert.deepEqual(ids(await srv.tool(AGENT, 'find_requirements', { query: old.id })), [old.id, first.id]);
+    const listed = (await srv.call('GET', '/api/requirements?tag=export-window&status=active', ALICE)).body;
+    assert.deepEqual(listed.map((x: any) => [x.id, x.status]), [[old.id, 'active'], [first.id, 'pending']]);
     const twice = await srv.tool(AGENT, 'supersede_requirement', { id: old.id, requirement: 'Exports run weekly.', ...base });
     assert.match(twice.text, /already has a replacement waiting/);
     // Rejected: the old one is clear again and can be replaced afresh.

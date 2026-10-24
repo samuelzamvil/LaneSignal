@@ -2699,7 +2699,9 @@ export class Store {
     // An id ("R14") finds that requirement, whatever its status.
     if (filter.query && this.requirementNum(filter.query) !== null && /^r/i.test(filter.query.trim())) {
       const one = this.getRequirement(filter.query);
-      return one && (!filter.projects || one.project === null || filter.projects.includes(one.project)) ? [one] : [];
+      return one && (!filter.projects || one.project === null || filter.projects.includes(one.project))
+        ? this.withPendingChanges([one], filter.projects)
+        : [];
     }
     const limit = filter.limit ?? 50;
     const match = filter.query?.trim() ? this.ftsMatch(filter.query) : undefined;
@@ -2715,7 +2717,37 @@ export class Store {
       : (this.db
           .prepare(`SELECT r.* FROM requirements r WHERE ${where.join(' AND ')} ORDER BY r.num DESC LIMIT ?`)
           .all(...params, limit) as Row[]);
-    return rows.map((r) => this.requirementFromRow(r));
+    return this.withPendingChanges(
+      rows.map((r) => this.requirementFromRow(r)),
+      filter.projects,
+    );
+  }
+
+  /**
+   * A change waiting for approval comes with what it changes, whichever of the two was found:
+   * the requirement in force, then its pending replacement, so an agent reading either knows
+   * the decision may be about to change. Pairs are added whatever the other filters say.
+   */
+  private withPendingChanges(found: Requirement[], projects?: string[]): Requirement[] {
+    const visible = (r: Requirement) => !projects || r.project === null || projects.includes(r.project);
+    const out: Requirement[] = [];
+    const add = (r: Requirement) => {
+      if (!out.some((x) => x.id === r.id)) out.push(r);
+    };
+    for (const req of found) {
+      if (req.status === 'pending') {
+        for (const num of this.replacedBy(this.requirementNum(req.id)!)) {
+          const old = this.requireRequirement(String(num));
+          if (visible(old)) add(old);
+        }
+      }
+      add(req);
+      if (inForce(req) && req.supersededBy) {
+        const next = this.getRequirement(req.supersededBy);
+        if (next && next.status === 'pending' && visible(next)) add(next);
+      }
+    }
+    return out;
   }
 
   /** SQL limiting requirements (as `r`) to these projects plus the all-projects ones; every project when omitted. */
