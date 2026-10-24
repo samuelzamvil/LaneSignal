@@ -96,6 +96,33 @@ describe('conversations', () => {
     assert.equal(ack.value.decisionNote, 'Drop the unused index\n\nAnd rename the column');
   });
 
+  test('acknowledging after the agent replied takes the owner\'s latest instructions', async () => {
+    await srv.publish('rename', { group: 'payments' });
+    const status = async () => (await srv.call('GET', '/api/lanes/rename', ALICE)).body.lane.status;
+    const e = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'rename', question: 'Rename the queue?' })).value;
+    await other(e.id, 'Call it jobs');
+    await srv.call('POST', `/api/escalations/${e.id}/messages`, ALICE, { body: 'Keep the old name as an alias' });
+    await srv.tool(AGENT, 'reply_to_escalation', { id: e.ref, message: 'On it: jobs, with an alias.' });
+    assert.equal(await status(), 'blocked_human');
+    const ack = await srv.tool(AGENT, 'acknowledge_escalation', { id: e.ref });
+    assert.equal(ack.isError, false, ack.text);
+    assert.equal(ack.value.state, 'acknowledged');
+    assert.equal(ack.value.decision, 'Other');
+    assert.equal(ack.value.decisionNote, 'Call it jobs\n\nKeep the old name as an alias');
+    // The reply had put the lane back to blocked; acknowledging releases it.
+    assert.equal(await status(), 'awaiting_agent');
+    // With no instructions from the owner, an open escalation still can't be acknowledged.
+    const unanswered = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'rename', question: 'Untouched?' })).value;
+    const early = await srv.tool(AGENT, 'acknowledge_escalation', { id: unanswered.ref });
+    assert.match(early.text, /is open; expected decided/);
+    // An FYI re-raised as blocking goes back to the owner: notes on the FYI don't answer it.
+    const fyi = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'rename', question: 'FYI: queue is slow', blocking: false })).value;
+    await other(fyi.id, 'Noted, ignore for now');
+    await srv.tool(AGENT, 'create_escalation', { lane_id: 'rename', question: 'FYI: queue is slow', blocking: true });
+    const stale = await srv.tool(AGENT, 'acknowledge_escalation', { id: fyi.ref });
+    assert.match(stale.text, /is open; expected decided/);
+  });
+
   test("dismissing during the agent's turn puts the lane back to work", async () => {
     await srv.publish('quiet', { group: 'payments' });
     const e = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'quiet', question: 'Dismiss me?' })).value;
