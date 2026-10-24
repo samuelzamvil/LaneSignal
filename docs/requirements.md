@@ -5,6 +5,7 @@ Product direction tends to get buried in tickets and agent sessions, and finding
 - **The decisions are the owner's.** Agents record them, but only decisions a person made: an answered escalation, or something the owner said (e.g. in Remote Control). An agent's own design choices don't belong here. An agent can cite only an escalation it raised, or one from a lane in the same train/epic.
 - **One decision per requirement**, so it can be found, cited and replaced on its own.
 - **Short.** The requirement is at most 300 characters and the justification at most 800, so agents can read many of them cheaply.
+- **A person approves.** What an agent records starts **pending** and stays pending until a person approves it on the Requirements page; a requirement a person records is approved as it's recorded. Pending requirements still turn up in every search, marked `pending`, so agents follow them, but the owner hasn't yet confirmed the agent wrote the decision down right. Requirements recorded before approvals existed are pending too.
 - **Nothing is deleted.** When the owner changes direction, the new requirement *supersedes* the old one, which stays (marked) so the history of why is kept. A requirement retired by mistake can be restored.
 - **Retries don't duplicate.** Recording the same requirement again from the same escalation returns the first (`duplicate: true`). A second, different decision from the same answer is stored, and `similar` shows the first.
 
@@ -20,7 +21,7 @@ Product direction tends to get buried in tickets and agent sessions, and finding
 | `group` | The train/epic it belongs to, or none for **product-wide** (the whole project) |
 | `decidedBy` | The person who decided, e.g. "Sam (Remote Control, 2026-10-23)". Taken from the escalation when it was answered on the dashboard |
 | `sourceEscalation` | The alert the decision answered (e.g. `A12`; `SH-A12` on an all-projects requirement), if any. It must be in the requirement's project. When the owner answered in the agent's session, the agent cites it together with `decidedBy` |
-| `status` | `active`, `superseded` (with `supersededBy`) or `retired` (no longer applies, nothing replaces it) |
+| `status` | `pending` (recorded, waiting for a person's approval), `active` (approved), `superseded` (with `supersededBy`) or `retired` (no longer applies, nothing replaces it; also how a pending one is rejected) |
 | `recordedBy` | The agent key or person that wrote it down |
 
 ### Tags
@@ -37,8 +38,8 @@ Tags exist to find things, so they must be specific:
 
 | Tool | Use |
 |---|---|
-| `find_requirements` | Before escalating a product or scope question, search here. If a requirement answers it, follow it and cite its id. Free-text search ranks the best matches first, matches word forms ("retries" finds "retry") and prefixes ("deploy" finds "deployments"); an id like `R14` finds that requirement whatever its status or filters; `group_id` covers that train/epic plus product-wide requirements |
-| `record_requirement` | After the owner decides something that sets direction, record it with `source_escalation` (e.g. `"A12"`) or `decided_by` (e.g. `"Sam (Remote Control, 2026-10-23)"`). The result lists `similar` active requirements, so a duplicate is noticed straight away |
+| `find_requirements` | Before escalating a product or scope question, search here. If a requirement answers it, follow it and cite its id. Pending and active requirements are returned unless `statuses` says otherwise; a pending one is marked `status: "pending"`. Free-text search ranks the best matches first, matches word forms ("retries" finds "retry") and prefixes ("deploy" finds "deployments"); an id like `R14` finds that requirement whatever its status or filters; `group_id` covers that train/epic plus product-wide requirements |
+| `record_requirement` | After the owner decides something that sets direction, record it with `source_escalation` (e.g. `"A12"`) or `decided_by` (e.g. `"Sam (Remote Control, 2026-10-23)"`). The requirement starts `pending`. The result lists `similar` pending or active requirements, so a duplicate is noticed straight away |
 | `supersede_requirement` | The owner changed their mind: record the new decision and mark the old one superseded |
 | `get_requirement`, `list_requirement_tags` | Read one; see tags in use |
 
@@ -46,8 +47,8 @@ The service doesn't decide *when* agents record requirements; that's the project
 
 ## In the app
 
-**Requirements** (bottom bar on phones, top bar on desktop) lists active requirements, newest first, with search, a group filter, and tag filters (tap a tag). Tick **Superseded & retired** to see the history.
+**Requirements** (bottom bar on phones, top bar on desktop) lists pending and active requirements, newest first, with search, a group filter, and tag filters (tap a tag). Pending ones carry a **Pending approval** badge; tick **Pending approval only** to work through them. Tick **Superseded & retired** to see the history. **Cards / List** switches between full cards and one line per requirement (tap a line to open its card); the choice is remembered on the device.
 
-People can **edit wording** (fix phrasing, justification or tags without changing the meaning) and **retire** a requirement. A change of decision is a supersede, recorded like any other decision.
+People **approve** a pending requirement (or **reject** it, which retires it), **edit wording** (fix phrasing, justification or tags without changing the meaning) and **retire** a requirement. Restoring a retired one makes it active again. A change of decision is a supersede, recorded like any other decision.
 
 Requirements are part of the [export](export.md) (`requirements.csv`).

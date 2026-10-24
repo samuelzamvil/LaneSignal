@@ -41,6 +41,10 @@ export const DEFAULT_BROAD_TAGS = [
   'requirement', 'requirements', 'decision', 'decisions', 'important', 'todo', 'bug', 'bugs', 'code', 'app',
 ];
 
+/** Requirements that still apply: approved, or recorded and waiting for approval. */
+const IN_FORCE: RequirementStatus[] = ['pending', 'active'];
+const inForce = (r: Requirement) => IN_FORCE.includes(r.status);
+
 export interface RequirementInput {
   requirement: string;
   justification: string;
@@ -226,7 +230,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -468,6 +472,10 @@ export class Store {
       if (version < 14) {
         // v14: whether a TRMNL screen's account has TRMNL+, which allows more pushes per hour.
         if (!this.hasColumn('trmnl_setups', 'plus')) this.db.exec('ALTER TABLE trmnl_setups ADD COLUMN plus INTEGER NOT NULL DEFAULT 0');
+      }
+      if (version < 15) {
+        // v15: requirements wait for a person's approval. Those in force so far were recorded without one.
+        this.db.exec("UPDATE requirements SET status = 'pending' WHERE status = 'active'");
       }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
@@ -2655,7 +2663,7 @@ export class Store {
   /**
    * Search: `query` is free text (ranked full-text match); `tags` must all be
    * present; `group` limits to that group plus product-wide ones (unless
-   * `includeProductWide` is false). Active only unless `statuses` says otherwise.
+   * `includeProductWide` is false). In force (pending or active) unless `statuses` says otherwise.
    */
   findRequirements(filter: {
     query?: string;
@@ -2677,7 +2685,7 @@ export class Store {
       );
       params.push(...filter.projects);
     }
-    const statuses = filter.statuses ?? ['active'];
+    const statuses = filter.statuses ?? IN_FORCE;
     where.push(`r.status IN (${statuses.map(() => '?').join(',')})`);
     params.push(...statuses);
     if (filter.group !== undefined) {
@@ -2710,7 +2718,6 @@ export class Store {
     return rows.map((r) => this.requirementFromRow(r));
   }
 
-  /** Tags in use on active requirements (of these projects plus all-project ones), most used first. */
   /** SQL limiting requirements (as `r`) to these projects plus the all-projects ones; every project when omitted. */
   private inRequirementScope(projects?: string[]): { sql: string; params: string[] } {
     if (!projects) return { sql: '', params: [] };
@@ -2719,12 +2726,13 @@ export class Store {
       : { sql: ' AND r.project_id IS NULL', params: [] };
   }
 
+  /** Tags in use on requirements in force (of these projects plus all-project ones), most used first. */
   requirementTags(group?: string, projects?: string[]): { tag: string; count: number }[] {
     const p = this.inRequirementScope(projects);
     const rows = this.db
       .prepare(
         `SELECT j.value AS tag, COUNT(*) AS n FROM requirements r, json_each(r.tags) j
-         WHERE r.status = 'active' ${group !== undefined ? 'AND (r.group_id = ? OR r.group_id IS NULL)' : ''}${p.sql}
+         WHERE r.status IN ('pending', 'active') ${group !== undefined ? 'AND (r.group_id = ? OR r.group_id IS NULL)' : ''}${p.sql}
          GROUP BY j.value ORDER BY n DESC, j.value`,
       )
       .all(...(group !== undefined ? [group] : []), ...p.params) as Row[];
@@ -2796,7 +2804,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `${match.cte} SELECT r.* FROM best JOIN requirements r ON r.num = best.num
-         WHERE r.status = 'active' AND r.num <> ? AND (r.group_id IS ? OR r.group_id IS NULL OR ? IS NULL)
+         WHERE r.status IN ('pending', 'active') AND r.num <> ? AND (r.group_id IS ? OR r.group_id IS NULL OR ? IS NULL)
            AND (r.project_id IS ? OR r.project_id IS NULL OR ? IS NULL)
          ORDER BY best.score LIMIT 3`,
       )
@@ -2809,7 +2817,7 @@ export class Store {
     const projects = project ? [project] : [];
     const p = this.inRequirementScope(projects);
     const total = Number(
-      (this.db.prepare(`SELECT COUNT(*) AS n FROM requirements r WHERE r.status = 'active'${p.sql}`).get(...p.params) as Row).n,
+      (this.db.prepare(`SELECT COUNT(*) AS n FROM requirements r WHERE r.status IN ('pending', 'active')${p.sql}`).get(...p.params) as Row).n,
     );
     const counts = new Map(this.requirementTags(undefined, projects).map((t) => [t.tag, t.count]));
     // "payout-retry" next to an existing "payout-retries" splits searches in two.
@@ -2847,9 +2855,22 @@ export class Store {
     const res = this.db
       .prepare(
         `INSERT INTO requirements (project_id, group_id, requirement, justification, tags, status, decided_by,
-           source_escalation_id, recorded_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+           source_escalation_id, recorded_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(input.project ?? null, input.group ?? null, input.requirement.trim(), input.justification.trim(), JSON.stringify(tags), decidedBy, escalationId, actor, at, at);
+      .run(
+        input.project ?? null,
+        input.group ?? null,
+        input.requirement.trim(),
+        input.justification.trim(),
+        JSON.stringify(tags),
+        // A person recording it is the approval; an agent's record waits for one.
+        actorIsHuman ? 'active' : 'pending',
+        decidedBy,
+        escalationId,
+        actor,
+        at,
+        at,
+      );
     return Number(res.lastInsertRowid);
   }
 
@@ -2861,7 +2882,7 @@ export class Store {
       const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
       const same = (
         this.db
-          .prepare("SELECT num, requirement FROM requirements WHERE source_escalation_id = ? AND status = 'active' AND project_id IS ?")
+          .prepare("SELECT num, requirement FROM requirements WHERE source_escalation_id = ? AND status IN ('pending', 'active') AND project_id IS ?")
           .all(input.sourceEscalation, input.project ?? null) as Row[]
       ).find((row) => norm(row.requirement as string) === norm(input.requirement));
       if (same) return { requirement: this.requireRequirement(String(same.num)), similar: [], warnings: [], duplicate: true };
@@ -2888,7 +2909,7 @@ export class Store {
   ): RecordResult {
     const { requirement, old } = this.tx(() => {
       const current = this.requireRequirement(id);
-      if (current.status !== 'active') throw new ConflictError(`${current.id} is ${current.status}; only active requirements can be superseded`);
+      if (!inForce(current)) throw new ConflictError(`${current.id} is ${current.status}; only pending or active requirements can be superseded`);
       const at = this.now().toISOString();
       const num = this.insertRequirement(
         {
@@ -2915,7 +2936,7 @@ export class Store {
   editRequirement(id: string, patch: { requirement?: string; justification?: string; tags?: string[] }): Requirement {
     const requirement = this.tx(() => {
       const current = this.requireRequirement(id);
-      if (current.status !== 'active') throw new ConflictError(`${current.id} is ${current.status}; only active requirements can be edited`);
+      if (!inForce(current)) throw new ConflictError(`${current.id} is ${current.status}; only pending or active requirements can be edited`);
       const tags = patch.tags ? this.cleanTags(patch.tags) : current.tags;
       this.db
         .prepare('UPDATE requirements SET requirement = ?, justification = ?, tags = ?, updated_at = ? WHERE num = ?')
@@ -2932,7 +2953,21 @@ export class Store {
     return requirement;
   }
 
-  /** Undoes a retire (e.g. a mis-tap): the requirement is active again. */
+  /** A person confirms an agent's record of their decision: pending becomes active. */
+  approveRequirement(id: string): Requirement {
+    const requirement = this.tx(() => {
+      const current = this.requireRequirement(id);
+      if (current.status !== 'pending') throw new ConflictError(`${current.id} is ${current.status}; only pending requirements can be approved`);
+      this.db
+        .prepare("UPDATE requirements SET status = 'active', updated_at = ? WHERE num = ?")
+        .run(this.now().toISOString(), this.requirementNum(current.id)!);
+      return this.requireRequirement(current.id);
+    });
+    this.emit({ type: 'requirement', requirement });
+    return requirement;
+  }
+
+  /** Undoes a retire (e.g. a mis-tap): a person restores it, so it is active (approved) again. */
   restoreRequirement(id: string): Requirement {
     const requirement = this.tx(() => {
       const current = this.requireRequirement(id);
@@ -2950,7 +2985,7 @@ export class Store {
   retireRequirement(id: string): Requirement {
     const requirement = this.tx(() => {
       const current = this.requireRequirement(id);
-      if (current.status !== 'active') throw new ConflictError(`${current.id} is already ${current.status}`);
+      if (!inForce(current)) throw new ConflictError(`${current.id} is already ${current.status}`);
       this.db
         .prepare("UPDATE requirements SET status = 'retired', updated_at = ? WHERE num = ?")
         .run(this.now().toISOString(), this.requirementNum(current.id)!);

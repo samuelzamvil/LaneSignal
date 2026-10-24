@@ -1381,6 +1381,74 @@ textarea {
   opacity: 0.7;
 }
 
+.req-card.pending {
+  box-shadow: inset 3px 0 0 var(--info);
+}
+
+/* Requirements as a list: one line each; a tapped row opens its card below it. */
+.req-list {
+  border-top: 1px solid var(--border);
+}
+
+.req-list .req-card {
+  margin: 8px 0 12px;
+}
+
+.req-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.req-row:hover {
+  background: var(--surface);
+}
+
+.req-row.pending {
+  box-shadow: inset 3px 0 0 var(--info);
+}
+
+.req-row.superseded,
+.req-row.retired {
+  opacity: 0.7;
+}
+
+.req-row .ref {
+  min-width: 2.5em;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.req-row-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.req-row-text,
+.req-row-scope {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.req-row-text {
+  font-weight: 600;
+}
+
+.req-row-scope {
+  font-size: 0.8rem;
+}
+
 .req-card h3 {
   margin: 10px 0 6px;
   font-size: 1.05rem;

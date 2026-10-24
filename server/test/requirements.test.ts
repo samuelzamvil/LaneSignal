@@ -35,7 +35,7 @@ describe('recording owner decisions', () => {
     assert.equal(req.recordedBy, 'overseer');
     assert.equal(req.group, 'payments');
     assert.deepEqual(req.tags, ['payout-retries', 'dead-letter']);
-    assert.equal(req.status, 'active');
+    assert.equal(req.status, 'pending', 'an agent\'s record waits for approval');
   });
 
   test('from a conversation: decided_by names the person', async () => {
@@ -72,6 +72,7 @@ describe('recording owner decisions', () => {
     });
     assert.equal(res.status, 201, JSON.stringify(res.body));
     assert.equal(res.body.requirement.decidedBy, 'alice');
+    assert.equal(res.body.requirement.status, 'active', 'a person recording it approves it');
   });
 
   test('broad, malformed or too many tags are rejected; unknown groups too', async () => {
@@ -202,10 +203,37 @@ describe('changing direction', () => {
     assert.equal(replacement.group, undefined, 'keeps the old scope (no group)');
     const active = (await srv.call('GET', '/api/requirements?tag=money-amounts', ALICE)).body;
     assert.deepEqual(active.map((r: any) => r.id), [replacement.id]);
-    const all = (await srv.call('GET', '/api/requirements?tag=money-amounts&status=active,superseded', ALICE)).body;
+    const all = (await srv.call('GET', '/api/requirements?tag=money-amounts&status=pending,superseded', ALICE)).body;
     assert.equal(all.length, 2);
     const again = await srv.tool(AGENT, 'supersede_requirement', { id: old.id, requirement: 'Z.', justification: 'Z.', tags: ['z-z'], decided_by: 'Sam' });
-    assert.match(again.text, /superseded; only active/);
+    assert.match(again.text, /superseded; only pending or active/);
+  });
+
+  test('pending records show in searches until a person approves them', async () => {
+    const res = await record({
+      requirement: 'Refunds are issued to the original payment method only.',
+      justification: 'Fraud review, Q3.',
+      tags: ['refund-method'],
+      decided_by: 'Sam',
+    });
+    const id = res.value.requirement.id;
+    assert.equal(res.value.requirement.status, 'pending');
+    // Searches return it, marked pending, to agents and people alike.
+    const found = (await srv.tool(AGENT, 'find_requirements', { query: 'refunds' })).value;
+    assert.deepEqual(found.map((x: any) => [x.id, x.status]), [[id, 'pending']]);
+    assert.equal((await srv.call('GET', '/api/requirements?tag=refund-method', ALICE)).body[0].status, 'pending');
+    assert.deepEqual((await srv.call('GET', '/api/requirements?tag=refund-method&status=active', ALICE)).body, []);
+    // Only people approve.
+    assert.equal((await srv.call('POST', `/api/requirements/${id}/approve`, AGENT)).status, 403);
+    const approved = await srv.call('POST', `/api/requirements/${id}/approve`, ALICE);
+    assert.equal(approved.body.status, 'active');
+    assert.equal((await srv.tool(AGENT, 'get_requirement', { id })).value.status, undefined, 'active is the quiet default');
+    assert.equal((await srv.call('POST', `/api/requirements/${id}/approve`, ALICE)).status, 409);
+    // Retiring a pending record rejects it; restoring it is a person's approval.
+    const other = (await record({ requirement: 'Refunds over $500 need a second approver.', justification: 'Fraud.', tags: ['refund-limits'], decided_by: 'Sam' })).value.requirement.id;
+    assert.equal((await srv.call('POST', `/api/requirements/${other}/retire`, ALICE)).body.status, 'retired');
+    assert.equal((await srv.call('POST', `/api/requirements/${other}/approve`, ALICE)).status, 409);
+    assert.equal((await srv.call('POST', `/api/requirements/${other}/restore`, ALICE)).body.status, 'active');
   });
 
   test('people correct wording or retire; agents cannot', async () => {

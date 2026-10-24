@@ -149,7 +149,7 @@ Answers can take minutes or a day.
 
 LaneSignal keeps the owner's product decisions as **requirements**, outside the repository, so any agent can find them later.
 
-**Before you ask:** for product or scope questions, call `find_requirements` first (`query` is free text; pass your `group_id`). If an active requirement answers the question, follow it and cite its id ("per R14") instead of asking again.
+**Before you ask:** for product or scope questions, call `find_requirements` first (`query` is free text; pass your `group_id`). If a requirement answers the question, follow it and cite its id ("per R14") instead of asking again.
 
 If your owner's policy asks you to keep product decisions (or you're told to record one):
 
@@ -158,4 +158,5 @@ If your owner's policy asks you to keep product decisions (or you're told to rec
 - **Tags:** 1–3 specific kebab-case tags naming the capability (`payout-retries`, not `backend`). Check `list_requirement_tags` and reuse existing tags.
 - **Scope:** set `group_id` for your train/epic, or leave it out for decisions about the whole project. Pass `all_projects: true` only when the owner said the decision covers all their projects.
 - **Search first:** `find_requirements` with the decision's key words before recording, so it isn't recorded twice. Recording the same requirement from the same `source_escalation` again returns the existing one (`duplicate: true`).
-- **Check the reply:** `similar` lists active requirements that read alike, and `warnings` flags tags close to existing ones (reuse those). If a similar one is the same decision, tell the owner (only people retire requirements). If the owner changed an earlier decision, use `supersede_requirement` on the old one instead of recording a new one.
+- **Pending until approved:** what you record is `pending` until the owner approves it in LaneSignal. Pending requirements still come back from `find_requirements` (marked `status: "pending"`); follow them like active ones.
+- **Check the reply:** `similar` lists pending or active requirements that read alike, and `warnings` flags tags close to existing ones (reuse those). If a similar one is the same decision, tell the owner (only people retire requirements). If the owner changed an earlier decision, use `supersede_requirement` on the old one instead of recording a new one.

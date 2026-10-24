@@ -263,7 +263,11 @@ export interface Principal {
   project?: string;
 }
 
-export type RequirementStatus = 'active' | 'superseded' | 'retired';
+/**
+ * `pending` until a person approves it (agents' records start there), then `active`;
+ * `superseded` or `retired` once it no longer applies.
+ */
+export type RequirementStatus = 'pending' | 'active' | 'superseded' | 'retired';
 
 /**
  * A product decision made by the owner, kept so it can be found later without

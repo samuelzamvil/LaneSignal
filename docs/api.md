@@ -100,14 +100,15 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `POST /api/escalations/:id/withdraw` | any | Dismiss: `{note, status?, activity?}`. Agents must give `note`, the justification (what was decided and where); only the agent that raised it can dismiss it (`403` otherwise), and people may dismiss stale ones. `status`/`activity` publish the lane's next state; a lane this unblocks goes back to `active` |
 | `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=&project=` filter. One export at a time (`429` while another runs). See [Export](export.md) |
 | `GET /api/export/<dataset>.csv` / `.json` | any | `escalations`, `positions`, `messages`, `lane_messages`, `lanes`, `groups`, `events` or `requirements`. Same filters |
-| `GET /api/requirements?q=&tag=a,b&group=&status=active,superseded&limit=` | any | Search [requirements](requirements.md). All `/api/requirements` routes are `404` when `LANESIGNAL_REQUIREMENTS=false`. Active only by default; `q` is free text, or an id like `R14`. Includes requirements for all projects |
+| `GET /api/requirements?q=&tag=a,b&group=&status=pending,active,superseded&limit=` | any | Search [requirements](requirements.md). All `/api/requirements` routes are `404` when `LANESIGNAL_REQUIREMENTS=false`. Pending and active ones by default; `q` is free text, or an id like `R14`. Includes requirements for all projects |
 | `GET /api/requirements/tags?group=` | any | Tags in use, with counts |
 | `GET /api/requirements/:id` | any | One requirement |
-| `POST /api/requirements` | any | `{requirement, justification, tags, group?, sourceEscalation?, decidedBy?, allProjects?}`. `requirement` is at most 300 characters and `justification` at most 800. Recording the same requirement again from the same escalation returns the first with `duplicate: true` (`200`). `allProjects: true` makes it apply to every project. Agents must say who decided: `decidedBy`, or a `sourceEscalation` decided on the dashboard (an alert answered in the session is cited together with `decidedBy`); a person recording one is the decider by default. Returns `{requirement, similar, warnings}` |
-| `POST /api/requirements/:id/supersede` | any | Same body; marks the old one superseded |
+| `POST /api/requirements` | any | `{requirement, justification, tags, group?, sourceEscalation?, decidedBy?, allProjects?}`. `requirement` is at most 300 characters and `justification` at most 800. Recording the same requirement again from the same escalation returns the first with `duplicate: true` (`200`). `allProjects: true` makes it apply to every project. Agents must say who decided: `decidedBy`, or a `sourceEscalation` decided on the dashboard (an alert answered in the session is cited together with `decidedBy`); a person recording one is the decider by default. An agent's requirement starts `pending`; a person's is `active` straight away. Returns `{requirement, similar, warnings}` |
+| `POST /api/requirements/:id/supersede` | any | Same body; marks the old one (pending or active) superseded |
 | `PATCH /api/requirements/:id` | human | Fix `requirement`, `justification` or `tags` wording |
-| `POST /api/requirements/:id/retire` | human | It no longer applies; nothing replaces it |
-| `POST /api/requirements/:id/restore` | human | Undo a retire |
+| `POST /api/requirements/:id/approve` | human | A pending requirement becomes `active` (`409` if it isn't pending) |
+| `POST /api/requirements/:id/retire` | human | It no longer applies (or, for a pending one, it's rejected); nothing replaces it |
+| `POST /api/requirements/:id/restore` | human | Undo a retire; it comes back `active` |
 | `POST /api/push/register`, `/unregister` | human | Used by the Android app |
 | `POST /api/admin/people` | static human token | Break-glass: add a person `{email, name, password, admin?}` |
 | `POST /api/admin/people/password` | static human token | Break-glass: `{email, password}`, which also signs them out |

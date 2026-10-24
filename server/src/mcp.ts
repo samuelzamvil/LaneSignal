@@ -459,13 +459,14 @@ function buildServer(
         description:
           'Search the owner\'s past decisions. Check before escalating a product or scope question; if one answers it, ' +
           'follow it and cite its id. `query` is free text; `tags` must all match; `group_id` adds the train/epic\'s ' +
-          'requirements to the project-wide ones. Active only unless you set `statuses`.',
+          'requirements to the project-wide ones. Returns pending and active ones unless you set `statuses`. ' +
+          '`status: "pending"` means the owner hasn\'t approved the record yet: follow it, but it may still be corrected.',
         inputSchema: {
           query: z.string().max(500).optional(),
           tags: z.array(s.requirementTag).max(5).optional(),
           group_id: s.groupId.optional(),
           group: GROUP_ALIAS,
-          statuses: z.array(z.enum(['active', 'superseded', 'retired'])).optional(),
+          statuses: z.array(z.enum(s.REQUIREMENT_STATUSES)).optional(),
           limit: z.number().int().min(1).max(100).optional(),
           ...PROJECT,
         },
@@ -505,7 +506,7 @@ function buildServer(
     server.registerTool(
       'list_requirement_tags',
       {
-        description: 'Tags in use on active requirements, with counts, so you reuse them instead of inventing near-synonyms.',
+        description: 'Tags in use on pending and active requirements, with counts, so you reuse them instead of inventing near-synonyms.',
         inputSchema: { group_id: s.groupId.optional(), group: GROUP_ALIAS, ...PROJECT },
         annotations: { readOnlyHint: true },
       },
@@ -532,7 +533,8 @@ function buildServer(
             : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
           'Search first so you don\'t ' +
           'record it twice; the same requirement from the same escalation returns the first (`duplicate: true`). ' +
-          '`similar` lists ones that read alike: if the owner changed their mind, supersede_requirement the old one.',
+          '`similar` lists ones that read alike: if the owner changed their mind, supersede_requirement the old one. ' +
+          'What you record is `pending` until a person approves it.',
         inputSchema: { ...requirementFields, ...PROJECT_WRITE },
       },
       async (args) => {

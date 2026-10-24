@@ -843,6 +843,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json(pub.requirement(store.editRequirement(current.id, parse(s.requirementEdit, req.body))));
   });
 
+  app.post('/api/requirements/:id/approve', human, requirementsOnly, (req, res) => {
+    const current = visibleRequirement(res, String(req.params.id));
+    acc(res).requireWritable(current);
+    res.json(pub.requirement(store.approveRequirement(current.id)));
+  });
+
   app.post('/api/requirements/:id/restore', human, requirementsOnly, (req, res) => {
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
