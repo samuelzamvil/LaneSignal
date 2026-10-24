@@ -14,6 +14,8 @@ import type {
   Requirement,
   RequirementStatus,
   StreamEvent,
+  TrmnlPushResult,
+  TrmnlView,
 } from '../../server/src/types.ts';
 
 export type {
@@ -31,6 +33,8 @@ export type {
   Requirement,
   RequirementStatus,
   StreamEvent,
+  TrmnlPushResult,
+  TrmnlView,
 };
 export type { LaneStatus, Link, Position } from '../../server/src/types.ts';
 
@@ -178,6 +182,13 @@ export function createClient(conn: Connection) {
       request<void>('DELETE', `/api/projects/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`),
     setProjectNotify: (id: string, enabled: boolean) =>
       request<void>('PUT', `/api/projects/${encodeURIComponent(id)}/notifications`, { enabled }),
+    // A project's TRMNL screen (project admins).
+    trmnl: (id: string) => request<TrmnlView>('GET', `/api/projects/${encodeURIComponent(id)}/trmnl`),
+    saveTrmnl: (id: string, input: { webhookUrl?: string; enabled: boolean; includeNotifications: boolean }) =>
+      request<TrmnlView>('PUT', `/api/projects/${encodeURIComponent(id)}/trmnl`, input),
+    removeTrmnl: (id: string) => request<void>('DELETE', `/api/projects/${encodeURIComponent(id)}/trmnl`),
+    sendTrmnl: (id: string) =>
+      request<TrmnlPushResult & { setup: TrmnlView }>('POST', `/api/projects/${encodeURIComponent(id)}/trmnl/send`, {}),
     people: () => request<{ id: string; name: string; email: string }[]>('GET', '/api/people'),
     /** `change` replaces the answer on a decided escalation the agent hasn't acknowledged. */
     decide: (id: string, decision: string, note?: string, change = false) =>

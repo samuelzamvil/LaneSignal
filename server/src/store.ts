@@ -19,6 +19,8 @@ import {
   type ProjectRole,
   type Requirement,
   type RequirementStatus,
+  type TrmnlCard,
+  type TrmnlSetup,
   type Stance,
   type StreamEvent,
 } from './types.ts';
@@ -220,7 +222,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -416,6 +418,22 @@ export class Store {
           );
           CREATE INDEX IF NOT EXISTS messages_escalation ON messages(escalation_id, id);
           CREATE INDEX IF NOT EXISTS attachments_message ON attachments(message_id) WHERE message_id IS NOT NULL;
+        `);
+      }
+      if (version < 12) {
+        // v12: each project's TRMNL screen (the webhook LaneSignal pushes to, and what its card shows).
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS trmnl_setups (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            webhook_url TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            include_notifications INTEGER NOT NULL DEFAULT 0,
+            card TEXT,
+            last_push_at TEXT,
+            last_error TEXT,
+            last_error_at TEXT,
+            updated_at TEXT NOT NULL
+          );
         `);
       }
       this.db
@@ -2766,5 +2784,72 @@ export class Store {
       owner: string;
       userId: string | null;
     }[];
+  }
+  // ---- TRMNL screens (one per project) --------------------------------------------
+
+  private trmnlFromRow(r: Row): TrmnlSetup {
+    return {
+      project: r.project_id as string,
+      webhookUrl: r.webhook_url as string,
+      enabled: Number(r.enabled) === 1,
+      includeNotifications: Number(r.include_notifications) === 1,
+      card: r.card ? (JSON.parse(r.card as string) as TrmnlCard) : null,
+      lastPushAt: (r.last_push_at as string | null) ?? null,
+      lastError: (r.last_error as string | null) ?? null,
+      lastErrorAt: (r.last_error_at as string | null) ?? null,
+      updatedAt: r.updated_at as string,
+    };
+  }
+
+  trmnlSetup(project: string): TrmnlSetup | null {
+    const r = this.db.prepare('SELECT * FROM trmnl_setups WHERE project_id = ?').get(project) as Row | undefined;
+    return r ? this.trmnlFromRow(r) : null;
+  }
+
+  listTrmnlSetups(): TrmnlSetup[] {
+    return (this.db.prepare('SELECT * FROM trmnl_setups').all() as Row[]).map((r) => this.trmnlFromRow(r));
+  }
+
+  /** Creates or changes a project's TRMNL setup; a new one needs the webhook URL. */
+  saveTrmnlSetup(project: string, input: { webhookUrl?: string; enabled: boolean; includeNotifications: boolean }): TrmnlSetup {
+    if (!this.getProject(project)) throw new NotFoundError(`Project "${project}" not found`);
+    const current = this.trmnlSetup(project);
+    const url = input.webhookUrl ?? current?.webhookUrl;
+    if (!url) throw new ValidationError('webhookUrl is required');
+    const now = this.now().toISOString();
+    // A new URL is a new plugin: its last push and error belong to the old one.
+    const fresh = !current || url !== current.webhookUrl;
+    // Switching lane updates on or off: an update kept from before shouldn't come back.
+    const dropCard = !!current && current.includeNotifications !== input.includeNotifications;
+    this.db
+      .prepare(
+        `INSERT INTO trmnl_setups (project_id, webhook_url, enabled, include_notifications, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET webhook_url = excluded.webhook_url, enabled = excluded.enabled,
+           include_notifications = excluded.include_notifications, updated_at = excluded.updated_at
+           ${fresh ? ', last_push_at = NULL, last_error = NULL, last_error_at = NULL' : ''}${dropCard ? ', card = NULL' : ''}`,
+      )
+      .run(project, url, input.enabled ? 1 : 0, input.includeNotifications ? 1 : 0, now);
+    return this.trmnlSetup(project)!;
+  }
+
+  deleteTrmnlSetup(project: string) {
+    this.db.prepare('DELETE FROM trmnl_setups WHERE project_id = ?').run(project);
+  }
+
+  setTrmnlCard(project: string, card: TrmnlCard | null) {
+    this.db.prepare('UPDATE trmnl_setups SET card = ? WHERE project_id = ?').run(card ? JSON.stringify(card) : null, project);
+  }
+
+  /** The outcome of a push: success clears the error. */
+  recordTrmnlPush(project: string, at: Date, error: string | null) {
+    if (error === null) {
+      this.db
+        .prepare('UPDATE trmnl_setups SET last_push_at = ?, last_error = NULL, last_error_at = NULL WHERE project_id = ?')
+        .run(at.toISOString(), project);
+    } else {
+      this.db
+        .prepare('UPDATE trmnl_setups SET last_error = ?, last_error_at = ? WHERE project_id = ?')
+        .run(error, at.toISOString(), project);
+    }
   }
 }

@@ -1,0 +1,65 @@
+{% assign now = "now" | date: "%s" | plus: 0 %}
+<div class="ls">
+  <div class="ls-main">
+    <div class="ls-card-col">
+      {% if card %}
+      {% if card.type == 'escalation' %}{% if card.label == 'FYI' %}{% assign kind = 'fyi' %}{% else %}{% assign kind = 'open' %}{% endif %}{% else %}{% assign kind = 'update' %}{% endif %}
+      <div class="ls-card {{ kind }}">
+        <div class="ls-head">
+          {% if card.code %}<span class="ls-ref">{{ card.code | escape }}</span>{% endif %}
+          <span class="ls-lane">{{ card.lane | escape }}</span>
+          {% if card.group %}<span class="ls-tag">{{ card.group | escape }}</span>{% endif %}
+          <span class="ls-when">{% render "ago", now: now, at: card.at %}</span>
+        </div>
+        <span><span class="ls-pill{% if kind == 'open' %} strong{% endif %}">{{ card.label | escape }}</span></span>
+        <p class="ls-question">{{ card.title | escape }}</p>
+        {% if card.context %}<p class="ls-context">{{ card.context | escape }}</p>{% endif %}
+        {% if card.files > 0 %}<span class="ls-files">{{ card.files }} file{% if card.files > 1 %}s{% endif %} attached</span>{% endif %}
+        {% if card.message %}<p class="ls-message">{{ card.message | escape }}</p>{% endif %}
+        {% if card.recommendation %}<p class="ls-rec"><span class="ls-label">Recommends</span> {{ card.recommendation | escape }}</p>{% endif %}
+        {% if card.accept or card.reject %}
+        <div class="ls-answers">
+          <div class="ls-answer"><b>Accept</b>{% if card.accept %}<span>{{ card.accept | escape }}</span>{% endif %}</div>
+          {% if card.reject %}<div class="ls-answer"><b>Reject</b><span>{{ card.reject | escape }}</span></div>{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% else %}
+      <div class="ls-clear">
+        <b>All clear</b>
+        <span>Nothing needs you right now.</span>
+      </div>
+      {% endif %}
+    </div>
+    <div class="ls-list-col">
+      {% assign pending_count = pending | size | plus: more %}
+      <div class="ls-list-head"><span>Also pending</span><span>{{ pending_count }}</span></div>
+      {% if pending_count == 0 %}
+      <div class="ls-empty">No other questions.</div>
+      {% else %}
+      <div class="ls-rows">
+        {% for row in pending %}
+        <div class="ls-row">
+          <span class="ls-ref">{{ row.code | escape }}</span>
+          <span class="ls-row-main">
+            <span class="ls-row-q">{{ row.q | escape }}</span>
+            <span class="ls-row-where">{{ row.lane | escape }} · {% render "ago", now: now, at: row.at %}</span>
+          </span>
+          <span class="ls-pill{% if row.status == 'Needs you' or row.status == 'Replied' %} strong{% endif %}">{{ row.status | escape }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% if more > 0 %}<div class="ls-more">+{{ more }} more in LaneSignal</div>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+  {% comment %}
+    TRMNL only redraws when new data arrives, so "ago" would freeze. The clock time stays true: LaneSignal
+    pushes at least hourly, so a time more than an hour old means it stopped.
+  {% endcomment %}
+  {% assign offset = trmnl.user.utc_offset | default: 0 %}
+  <div class="ls-foot">
+    <span><b>LaneSignal</b> · {{ project | escape }}</span>
+    <span>Updated {{ asOf | plus: offset | date: "%a %H:%M" }}</span>
+  </div>
+</div>

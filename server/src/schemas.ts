@@ -262,5 +262,9 @@ export const projectInput = z.object({ id: projectId, key: projectKey, name: z.s
 export const projectPatch = z.object({ key: projectKey.optional(), name: z.string().trim().min(1).max(100).optional() }).strict();
 export const memberInput = z.object({ role: z.enum(['admin', 'member']) }).strict();
 export const notifyInput = z.object({ enabled: z.boolean() }).strict();
+/** A project's TRMNL screen. The webhook URL may be left out to keep the saved one. */
+export const trmnlInput = z
+  .object({ webhookUrl: z.string().trim().min(1).max(500).optional(), enabled: z.boolean(), includeNotifications: z.boolean() })
+  .strict();
 export const pushSettings = z.object({ quietAlerts: z.boolean() }).strict();
 

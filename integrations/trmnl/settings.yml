@@ -1,0 +1,8 @@
+---
+# LaneSignal's notifications channel for TRMNL. LaneSignal pushes the data to this plugin's
+# webhook; see docs/trmnl.md. The download from Settings names it after the project.
+name: LaneSignal
+strategy: webhook
+refresh_interval: 15
+no_screen_padding: 'no'
+dark_mode: 'no'

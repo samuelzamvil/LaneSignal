@@ -11,6 +11,7 @@ import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth
 import type { Config } from './config.ts';
 import { log } from './log.ts';
 import { mcpHandler } from './mcp.ts';
+import { buildPayload, checkWebhookUrl, maskWebhookUrl, pluginZip, type TrmnlPusher } from './trmnl.ts';
 import * as s from './schemas.ts';
 import { datasetCsvAsync, datasetRowsAsync, exportZip } from './export.ts';
 import {
@@ -32,6 +33,7 @@ import {
   type PublicConfig,
   type Requirement,
   type StreamEvent,
+  type TrmnlView,
 } from './types.ts';
 
 export interface AppOptions {
@@ -43,6 +45,10 @@ export interface AppOptions {
   webDir?: string;
   /** The Claude Code skill (SKILL.md) served at /api/skill, when present. */
   skillFile?: string;
+  /** Pushes projects' TRMNL screens; without it, setups can be saved but nothing is sent. */
+  trmnl?: TrmnlPusher;
+  /** The TRMNL plugin's files (integrations/trmnl), zipped for download. */
+  trmnlDir?: string;
 }
 
 const parse = <T>(schema: ZodType<T>, value: unknown): T => schema.parse(value);
@@ -53,7 +59,7 @@ const h = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => 
   Promise.resolve(fn(req, res)).catch(next);
 };
 
-export function createApp({ config, store, accounts, push, webDir, skillFile }: AppOptions) {
+export function createApp({ config, store, accounts, push, webDir, skillFile, trmnl, trmnlDir }: AppOptions) {
   const app = express();
   const auth = createAuth(config.tokens, accounts);
   if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy);
@@ -335,6 +341,73 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     store.setNotify(acc(res).pick(String(req.params.id)), p.userId, parse(s.notifyInput, req.body).enabled);
     res.sendStatus(204);
   });
+
+  // ---- TRMNL screen (one per project, managed by its admins) ----
+
+  const trmnlView = (project: string): TrmnlView => {
+    const t = store.trmnlSetup(project);
+    if (!t) return { configured: false };
+    return {
+      configured: true,
+      webhookUrl: maskWebhookUrl(t.webhookUrl),
+      enabled: t.enabled,
+      includeNotifications: t.includeNotifications,
+      lastPushAt: t.lastPushAt,
+      lastError: t.lastError,
+      lastErrorAt: t.lastErrorAt,
+      updatedAt: t.updatedAt,
+    };
+  };
+
+  app.get('/api/projects/:id/trmnl', human, (req, res) => {
+    res.json(trmnlView(requireProjectAdmin(res, String(req.params.id))));
+  });
+
+  app.put('/api/projects/:id/trmnl', human, (req, res) => {
+    const project = requireProjectAdmin(res, String(req.params.id));
+    const input = parse(s.trmnlInput, req.body);
+    const webhookUrl = input.webhookUrl === undefined ? undefined : checkWebhookUrl(input.webhookUrl, config.trmnlHosts);
+    const before = store.trmnlSetup(project)?.webhookUrl;
+    const saved = store.saveTrmnlSetup(project, { ...input, webhookUrl });
+    trmnl?.reset(project, saved.webhookUrl !== before);
+    res.json(trmnlView(project));
+  });
+
+  app.delete('/api/projects/:id/trmnl', human, (req, res) => {
+    store.deleteTrmnlSetup(requireProjectAdmin(res, String(req.params.id)));
+    res.sendStatus(204);
+  });
+
+  /** Pushes the screen now, and says how TRMNL answered. */
+  app.post('/api/projects/:id/trmnl/send', human, h(async (req, res) => {
+    const project = requireProjectAdmin(res, String(req.params.id));
+    if (!store.trmnlSetup(project)) throw new NotFoundError('This project has no TRMNL screen set up');
+    if (!trmnl) throw new ConflictError('This server does not push to TRMNL');
+    const result = await trmnl.sendNow(project);
+    res.json({ ...result, setup: trmnlView(project) });
+  }));
+
+  /** The data the screen gets (what the next push sends). */
+  app.get('/api/projects/:id/trmnl/preview', human, (req, res) => {
+    const project = requireProjectAdmin(res, String(req.params.id));
+    const setup = store.trmnlSetup(project);
+    if (!setup) throw new NotFoundError('This project has no TRMNL screen set up');
+    res.json({ merge_variables: buildPayload(store, setup, new Date()) });
+  });
+
+  /** The private plugin to import into TRMNL, named after the project. */
+  app.get('/api/projects/:id/trmnl/plugin.zip', human, h(async (req, res) => {
+    const project = requireProjectAdmin(res, String(req.params.id));
+    if (!trmnlDir || !existsSync(path.join(trmnlDir, 'settings.yml'))) throw new NotFoundError('The TRMNL plugin files are not installed');
+    const body = await pluginZip(trmnlDir, store.getProject(project)?.name ?? project, new Date());
+    res
+      .set({
+        'content-type': 'application/zip',
+        'content-disposition': `attachment; filename="lanesignal-trmnl-${project}.zip"`,
+        'cache-control': 'no-store',
+      })
+      .send(body);
+  }));
 
   /** Instance admins choose whether alerts arrive as high priority or as regular notifications. */
   app.put('/api/settings/push', human, (req, res) => {

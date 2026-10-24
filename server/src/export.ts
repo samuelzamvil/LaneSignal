@@ -99,10 +99,12 @@ export async function exportZip(
       'utf8',
     ),
   });
-  return zip(
-    await Promise.all(files.map(async (f) => ({ ...f, compressed: await deflate(f.data) }))),
-    generatedAt,
-  );
+  return zipFiles(files, generatedAt);
+}
+
+/** Zips files (deflated off the event loop). */
+export async function zipFiles(files: { name: string; data: Buffer }[], date: Date): Promise<Buffer> {
+  return zip(await Promise.all(files.map(async (f) => ({ ...f, compressed: await deflate(f.data) }))), date);
 }
 
 /** Minimal ZIP writer (deflate), enough for a handful of text files. */

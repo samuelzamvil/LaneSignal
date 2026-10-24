@@ -23,6 +23,7 @@ LaneSignal is a self-hosted dashboard for autonomous coding-agent **lanes** and 
 | [Agent policy template](agent-instructions.md) | When agents use LaneSignal: paste into an overseer's `CLAUDE.md` (the [skill](agents.md#3-install-the-skill-how-to-use-lanesignal) covers how) |
 | [HTTP API](api.md) | REST and SSE endpoints for scripts and non-MCP agents |
 | [Android app and push notifications](android.md) | Installing the APK, FCM, ntfy |
+| [TRMNL screen](trmnl.md) | A project's latest notification and pending escalations on a TRMNL e-ink display |
 | [Exporting data for analysis](export.md) | CSV and zip downloads, the MCP export tool, the column reference |
 
 ## Run
