@@ -24,7 +24,9 @@ if [ "$signed" = true ]; then
 
 1. Open this page on the phone and download \`$asset\`.
 2. Open it. When Android asks, allow installs from your browser (or Files app).
-3. Later versions install over this one. If you have an older, unsigned build installed, uninstall it once first.
+3. Play Protect may warn that the app is from an unknown developer: choose **Install anyway**.
+
+**Updating:** newer builds install over this one. Uninstall first only when coming from an older, unsigned build, or when going back from a newer build to an older one (e.g. from the latest main build to an earlier tagged release).
 EOF
 else
   cat > "$notes" <<EOF

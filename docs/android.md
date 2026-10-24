@@ -37,7 +37,10 @@ Run it on your own machine (it needs a JDK's `keytool`, `openssl` and the GitHub
 - stores the keystore and its passwords there as secrets (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`);
 - keeps a backup in `~/.lanesignal-signing/`. Keep a copy somewhere safe: if the key is lost, phones need one more uninstall.
 
-The first signed build still needs the old (debug-signed) app uninstalled once; every build after that updates in place. The script refuses to replace an existing key, since that would mean another uninstall everywhere.
+The first signed build still needs the old (debug-signed) app uninstalled once; every build after that updates in place. The script refuses to replace an existing key, since that would mean another uninstall everywhere. If it fails part-way, run it again: it reuses the saved key.
+
+- **Remove old repository secrets.** If you added `ANDROID_KEYSTORE_*` / `ANDROID_KEY_*` as repository secrets before, delete them: repository secrets reach every build, pull requests included. The script warns when it finds them.
+- **Tags.** Anyone who can push a `v*` tag gets a build signed with the key. If others have write access, restrict who may create `v*` tags (a tag ruleset) or add required reviewers to the environment.
 
 ## Signing in
 
