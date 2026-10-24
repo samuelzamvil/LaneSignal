@@ -559,9 +559,24 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       if (wait > 0 && !accessFor(store, principalOf(res)).projects.includes(escalation.project)) {
         throw new NotFoundError(`Escalation "${String(req.params.id)}" not found`);
       }
-      res.json(pub.escalation(escalation));
+      res.json(pub.escalation({ ...escalation, messages: store.messagesOf(escalation.id) }));
     }),
   );
+
+  /**
+   * A message in an escalation's conversation. From a person it's an answer of Other (the agent acts
+   * on it or replies); from the agent that raised it, a short reply or update.
+   */
+  app.post('/api/escalations/:id/messages', any, decisionsOnly, (req, res) => {
+    const body = parse(s.message, req.body ?? {});
+    const a = acc(res);
+    const target = a.escalation(String(req.params.id), projectQuery(req));
+    const p = principalOf(res);
+    if (p.role === 'agent') requireRaiser(store, a, target, 'reply to');
+    const from = p.role === 'agent' ? 'agent' : 'owner';
+    const escalation = store.postMessage(target.id, { from, author: p.name, body: body.body, attachments: body.attachments }, ownerOf(p));
+    res.status(201).json(pub.escalation({ ...escalation, messages: store.messagesOf(escalation.id) }));
+  });
 
   const escalationOf = (req: Request, res: Response) => acc(res).escalation(String(req.params.id), projectQuery(req)).id;
 

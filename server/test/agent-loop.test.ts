@@ -179,7 +179,7 @@ describe('waiting on many escalations', () => {
     await decide(open.id, 'yes');
     await srv.tool(AGENT, 'acknowledge_escalation', { id: open.id });
     const empty = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'wait-group', wait_seconds: 30 })).value;
-    assert.deepEqual({ ...empty, checkedAt: undefined }, { ready: true, decided: [], closed: [], open: [], removedLanes: [], checkedAt: undefined });
+    assert.deepEqual({ ...empty, checkedAt: undefined }, { ready: true, decided: [], replies: [], closed: [], open: [], removedLanes: [], checkedAt: undefined });
     assert.ok(Date.parse(empty.checkedAt));
   });
 

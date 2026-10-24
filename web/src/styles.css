@@ -1746,3 +1746,64 @@ a.button.primary {
   border: 1px solid var(--border);
   text-align: left;
 }
+
+/* ---- conversations ---- */
+
+.last-message {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.last-message .label,
+.msg-meta {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.msg {
+  max-width: 88%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.msg .rich {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+}
+
+.msg.from-owner {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.msg .attachments {
+  margin-top: 6px;
+}
+
+/* The owner answered Other and the agent is replying: nothing to do yet. */
+.esc-card.open.agent-turn {
+  border-width: 1px;
+  border-color: var(--border);
+  box-shadow: none;
+}
