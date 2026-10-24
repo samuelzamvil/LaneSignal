@@ -391,7 +391,7 @@ function TrmnlSettings({ client, project }: { client: Client; project: ProjectAc
   useEffect(() => {
     setEnabled(view?.configured ? view.enabled : true);
     setIncludeNotifications(view?.configured ? view.includeNotifications : false);
-    setPlus(view?.configured ? view.plus : false);
+    setPlus(view?.configured ? (view.plus ?? false) : false);
   }, [view]);
 
   async function run(fn: () => Promise<string | null>) {
@@ -409,7 +409,14 @@ function TrmnlSettings({ client, project }: { client: Client; project: ProjectAc
   const save = (e: React.FormEvent) => {
     e.preventDefault();
     void run(async () => {
-      await client.saveTrmnl(project.id, { ...(url.trim() && { webhookUrl: url.trim() }), enabled, includeNotifications, plus });
+      // A server from before TRMNL+ refuses the field: only send it when it means something.
+      const sendPlus = plus || (view?.configured && view.plus !== undefined);
+      await client.saveTrmnl(project.id, {
+        ...(url.trim() && { webhookUrl: url.trim() }),
+        enabled,
+        includeNotifications,
+        ...(sendPlus && { plus }),
+      });
       setUrl('');
       return enabled ? 'Saved. The screen updates within a few minutes.' : 'Saved. Pushes are paused.';
     });

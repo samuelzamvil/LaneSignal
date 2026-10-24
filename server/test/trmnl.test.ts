@@ -254,7 +254,7 @@ describe('pushing', () => {
       await sleep(100);
       assert.equal(trmnl.pushes.length, 2, 'sent once the TRMNL+ gap passed');
       escalate(store, { laneId: 'default/auth', question: 'Q2?' }, 'bot');
-      await sleep(60);
+      await sleep(20);
       assert.equal(trmnl.pushes.length, 2);
       await sleep(150);
       assert.equal(trmnl.pushes.length, 3);

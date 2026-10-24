@@ -15,7 +15,7 @@ LaneSignal **pushes** to TRMNL; TRMNL never connects to LaneSignal. That keeps a
 - Each project's screen is a TRMNL **private plugin** with the *Webhook* strategy. LaneSignal sends the screen's data to the plugin's webhook URL, and TRMNL draws it with the plugin's layout.
 - LaneSignal pushes when something on the screen changes. A burst of changes becomes one push, and nothing is sent when the data hasn't changed. With nothing changing, it pushes once an hour so the "updated" time stays current.
 - TRMNL accepts 12 pushes per plugin per hour (30 with TRMNL+), so LaneSignal pushes at most once every 5 minutes per project, or every 2 minutes with **TRMNL+** ticked in the settings.
-- Pushes aren't queued. The first change after a quiet spell goes out within seconds; changes during the wait that follows become one push that sends the screen as it is then. Six escalations at once cost two pushes: the first one, then the latest on the card with the other five in the list.
+- Pushes aren't queued. The first change after a quiet spell goes out within seconds; changes during the wait that follows become one push that sends the screen as it is then. Six escalations raised over a few minutes cost two pushes: the first one, then the latest on the card with the other five in the list (six within the same couple of seconds go out as one).
 - TRMNL redraws as soon as a push arrives if the plugin hasn't redrawn in the last 15 minutes; otherwise on its next scheduled refresh. Expect a new card within about 15 minutes, or 5 minutes with TRMNL+. Your phone stays the urgent channel.
 - A push is at most 5 KB (TRMNL's limit). When there are too many questions to fit, the list shows "+N more in LaneSignal".
 
