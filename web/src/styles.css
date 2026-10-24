@@ -1106,6 +1106,12 @@ textarea {
   .sheet-body {
     max-width: 860px;
   }
+
+  .panes .history-empty {
+    display: grid;
+    place-items: center;
+    min-height: 50vh;
+  }
 }
 
 /* ---- group (epic / train / overseer) sections ---- */
@@ -1847,10 +1853,15 @@ a.button.primary {
   vertical-align: middle;
 }
 
-.inbox h2 {
+/* Heading and the Cards / List switch on one line. */
+.pane-head {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.pane-head h2 {
+  flex: 1;
 }
 
 .layout-toggle button {
@@ -1883,6 +1894,27 @@ a.button.primary {
 .esc-row:hover,
 .history-row:hover {
   background: var(--surface);
+}
+
+/* The item open beside the list (desktop). */
+.esc-row.selected,
+.history-row.selected {
+  background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Desktop History: the right side until an escalation is picked. Phones show only the list. */
+.history-empty {
+  display: none;
 }
 
 .esc-row .ref,

@@ -198,6 +198,8 @@ function Dashboard({
   const [me, setMe] = useState<Principal | null>(null);
   const [authError, setAuthError] = useState(false);
   const live = useLiveData(client);
+  // History refreshes when an escalation closes (leaves the live set), not on every update.
+  const unresolvedIds = useMemo(() => [...live.escalations.keys()].sort().join(','), [live.escalations]);
   const now = useNow();
   const [route, navigate] = useRoute();
   const [filters, setFilters] = useFilters();
@@ -249,7 +251,8 @@ function Dashboard({
     const observer = new ResizeObserver(set);
     observer.observe(bar);
     return () => observer.disconnect();
-  }, []);
+    // The top bar appears once the configuration has loaded.
+  }, [!!config]);
 
   // Escape closes an open sheet (desktop).
   useEffect(() => {
@@ -451,7 +454,7 @@ function Dashboard({
   /** One escalation in the inbox: a card with the answer buttons, or a one-line row. */
   const escItem = (e: Escalation, seq?: { index: number; total: number }) =>
     inboxLayout === 'list' ? (
-      <EscalationRow key={e.id} esc={e} lane={laneOf(e)} now={now} showProject={showProject} />
+      <EscalationRow key={e.id} esc={e} lane={laneOf(e)} now={now} showProject={showProject} selected={route.escId === e.id} />
     ) : (
       <EscalationCard
         key={e.id}
@@ -469,8 +472,10 @@ function Dashboard({
 
   const inbox = (
     <section className={`pane inbox layout-${inboxLayout}`} aria-label="Needs you">
-      <h2>
-        Needs you <span className={`count${open.length ? ' hot' : ''}`}>{open.length}</span>
+      <div className="pane-head">
+        <h2>
+          Needs you <span className={`count${open.length ? ' hot' : ''}`}>{open.length}</span>
+        </h2>
         <span className="layout-toggle" role="group" aria-label="Show as">
           <button className={inboxLayout === 'cards' ? 'on' : ''} aria-pressed={inboxLayout === 'cards'} onClick={() => setInboxLayout('cards')}>
             Cards
@@ -479,7 +484,7 @@ function Dashboard({
             List
           </button>
         </span>
-      </h2>
+      </div>
       {open.length === 0 && blockedLanes.length === 0 && (
         isLive && live.projects.length === 0 ? (
           <p className="empty">You're not in any project yet. Ask a project admin to add you.</p>
@@ -735,13 +740,18 @@ function Dashboard({
             project={projectFilter}
             groupLabel={config.groupLabel}
             now={now}
-            version={String(live.escalations.size)}
+            version={unresolvedIds}
+            selectedId={route.escId}
           />
         ) : (
           inbox
         )}
         {route.view === 'settings' ? (
           settings
+        ) : route.view === 'history' ? (
+          <section className="pane history-empty" aria-hidden>
+            <p className="empty">Pick an escalation to see it here.</p>
+          </section>
         ) : route.view === 'reqs' && config.requirements ? (
           <RequirementsPane
             client={client}

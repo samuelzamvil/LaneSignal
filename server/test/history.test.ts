@@ -32,6 +32,9 @@ test('closed escalations, latest first, searchable and filtered', async () => {
   assert.deepEqual((await history(`?q=${a.ref}`)).items.map((e: any) => e.id), [a.id]);
   assert.deepEqual((await history('?q=100%25')).items, []);
   assert.deepEqual((await history('?outcome=dismissed')).items.map((e: any) => e.id), [c.id]);
+  assert.deepEqual((await history('?outcome=answered')).items.map((e: any) => e.id), [b.id, a.id]);
+  assert.deepEqual((await history('?q=legacy_')).items.map((e: any) => e.id), [a.id]);
+  assert.deepEqual((await history('?q=legacy%5F%5F')).items, []);
   assert.deepEqual((await history('?group=payments')).items.length, 2);
   assert.equal((await srv.call('GET', '/api/history?group=nope', ALICE)).status, 404);
   // Pages.

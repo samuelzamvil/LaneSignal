@@ -48,6 +48,18 @@ export function trackEntry() {
   current = { hash: location.hash, ...(history.state as Entry) };
 }
 
+/** Whether an escalation or lane is open (a sheet, or the right pane on desktop). */
+const sheetOpen = () => /^#\/(esc|lane)\//.test(location.hash) || /^#\/history\/[^/]+/.test(location.hash);
+
+/**
+ * Opens an escalation or lane. With one already open (picking another from the list beside it on
+ * desktop), it takes that one's place, so back and close still return to the list.
+ */
+export function openItem(hash: string) {
+  if (sheetOpen()) stepTo(hash);
+  else location.hash = hash;
+}
+
 /** Move to a sibling screen (e.g. the next question) in place of this one. */
 export function stepTo(hash: string) {
   if (hash === location.hash) return; // no hashchange would clear the flag

@@ -1,18 +1,44 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, Lane, ProjectAccess } from './api.ts';
 import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
+import { openItem } from './nav.ts';
 
 type Outcome = '' | 'answered' | 'dismissed';
 
 /** One closed escalation: its code, question and how it ended. */
-function HistoryRow({ esc, lane, now, showProject }: { esc: Escalation; lane: Lane | undefined; now: number; showProject: boolean }) {
+function HistoryRow({
+  esc,
+  lane,
+  now,
+  showProject,
+  selected,
+}: {
+  esc: Escalation;
+  lane: Lane | undefined;
+  now: number;
+  showProject: boolean;
+  selected: boolean;
+}) {
+  const answered = { label: esc.decision ?? 'Answered', text: esc.decisionNote, tone: esc.decision === 'Reject' ? 'reject' : esc.decision === 'Accept' ? 'accept' : 'other' };
+  // Answered, then dismissed by the agent instead of acknowledged: the answer still matters.
   const outcome =
     esc.state === 'withdrawn'
-      ? { label: 'Dismissed', text: esc.resolution, tone: 'muted' }
-      : { label: esc.decision ?? 'Answered', text: esc.decisionNote, tone: esc.decision === 'Reject' ? 'reject' : esc.decision === 'Accept' ? 'accept' : 'other' };
+      ? esc.decision
+        ? { ...answered, text: [esc.decisionNote, `then dismissed${esc.resolution ? `: ${esc.resolution}` : ''}`].filter(Boolean).join(' · ') }
+        : { label: 'Dismissed', text: esc.resolution, tone: 'muted' }
+      : answered;
+  const href = `#/history/${encodeURIComponent(esc.id)}`;
   return (
-    <a className="history-row" href={`#/history/${encodeURIComponent(esc.id)}`}>
+    <a
+      className={`history-row${selected ? ' selected' : ''}`}
+      href={href}
+      aria-current={selected ? 'page' : undefined}
+      onClick={(e) => {
+        e.preventDefault();
+        openItem(href);
+      }}
+    >
       <span className="ref">{showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref}</span>
       <span className="history-main">
         <span className="history-question">{esc.question}</span>
@@ -40,6 +66,7 @@ export function HistoryPane({
   groupLabel,
   now,
   version,
+  selectedId,
 }: {
   client: Client;
   /** Keyed by keyOf(project, id). */
@@ -50,8 +77,10 @@ export function HistoryPane({
   project: string;
   groupLabel: string;
   now: number;
-  /** Changes when escalations change, to refetch. */
+  /** Changes when escalations close, to refresh. */
   version: string;
+  /** The escalation open beside the list. */
+  selectedId?: string;
 }) {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -79,27 +108,47 @@ export function HistoryPane({
     group: chosen?.id,
     outcome: outcome || undefined,
   };
+  const filterKey = JSON.stringify(filter);
+  /** The filter the list shows; a response for another one is dropped. */
+  const shown = useRef('');
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     client
       .history(filter)
-      .then((r) => !cancelled && (setItems(r.items), setNext(r.next), setError(null)))
+      .then((r) => {
+        if (cancelled) return;
+        if (shown.current === filterKey) {
+          // Same filter, something closed: put the newest first and keep the older pages already loaded.
+          setItems((cur) => [...r.items, ...(cur ?? []).filter((e) => !r.items.some((n) => n.id === e.id))]);
+        } else {
+          setItems(r.items);
+          setNext(r.next);
+        }
+        shown.current = filterKey;
+        setError(null);
+      })
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, debounced, chosen?.project, chosen?.id, project, outcome, version]);
+  }, [client, filterKey, version]);
 
   async function more() {
-    if (!next) return;
+    if (!next || loadingMore) return;
+    const key = filterKey;
+    setLoadingMore(true);
     try {
       const r = await client.history({ ...filter, before: next });
-      setItems((cur) => [...(cur ?? []), ...r.items]);
+      if (shown.current !== key) return;
+      setItems((cur) => [...(cur ?? []), ...r.items.filter((e) => !(cur ?? []).some((c) => c.id === e.id))]);
       setNext(r.next);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -134,12 +183,19 @@ export function HistoryPane({
       {items && items.length === 0 && <p className="empty">{debounced || outcome || group ? 'Nothing matches.' : 'Nothing closed yet.'}</p>}
       <div className="history-list">
         {items?.map((e) => (
-          <HistoryRow key={e.id} esc={e} lane={lanes.get(keyOf(e.project, e.laneId))} now={now} showProject={multiProject} />
+          <HistoryRow
+            key={e.id}
+            esc={e}
+            lane={lanes.get(keyOf(e.project, e.laneId))}
+            now={now}
+            showProject={multiProject}
+            selected={selectedId === e.id}
+          />
         ))}
       </div>
       {next && (
-        <button className="ghost load-more" onClick={() => void more()}>
-          Show older
+        <button className="ghost load-more" disabled={loadingMore} onClick={() => void more()}>
+          {loadingMore ? 'Loading…' : 'Show older'}
         </button>
       )}
     </section>
