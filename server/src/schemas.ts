@@ -262,4 +262,5 @@ export const projectInput = z.object({ id: projectId, key: projectKey, name: z.s
 export const projectPatch = z.object({ key: projectKey.optional(), name: z.string().trim().min(1).max(100).optional() }).strict();
 export const memberInput = z.object({ role: z.enum(['admin', 'member']) }).strict();
 export const notifyInput = z.object({ enabled: z.boolean() }).strict();
+export const pushSettings = z.object({ quietAlerts: z.boolean() }).strict();
 

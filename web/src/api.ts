@@ -126,6 +126,7 @@ export function createClient(conn: Connection) {
   return {
     me: () => request<Principal>('GET', '/api/me'),
     config: () => request<PublicConfig>('GET', '/api/config'),
+    setQuietAlerts: (quietAlerts: boolean) => request<void>('PUT', '/api/settings/push', { quietAlerts }),
     snapshot: () =>
       request<{ projects: ProjectAccess[]; groups: Group[]; lanes: Lane[]; escalations: Escalation[]; serverTime: string }>(
         'GET',

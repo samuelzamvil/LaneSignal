@@ -665,6 +665,29 @@ function Dashboard({
                 : 'Server has no FCM credentials'}
           {config.push.ntfy && ' · ntfy enabled on server'}
         </dd>
+        <dt>Alerts</dt>
+        <dd>
+          {me && (me.superuser || (me.admin && !me.userId)) ? (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={config.quietAlerts}
+                onChange={(e) => {
+                  const quietAlerts = e.target.checked;
+                  client
+                    .setQuietAlerts(quietAlerts)
+                    .then(() => setConfig({ ...config, quietAlerts }))
+                    .catch((err: Error) => alert(`Could not change the setting: ${err.message}`));
+                }}
+              />
+              Quiet: send alerts as regular notifications, not high priority
+            </label>
+          ) : config.quietAlerts ? (
+            'Sent as regular notifications'
+          ) : (
+            'High priority'
+          )}
+        </dd>
         <dt>Ticket systems</dt>
         <dd>{config.ticketSystems.join(', ') || 'none configured'}</dd>
       </dl>

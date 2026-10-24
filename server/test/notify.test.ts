@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import { loadConfig } from '../src/config.ts';
 import { startNotifier } from '../src/notify.ts';
 import { Store } from '../src/store.ts';
+import { AGENT, ALICE, startServer } from './helpers.ts';
 import { esc as escalate, lane as publishLane } from './publish.ts';
 
 const settle = () => new Promise((r) => setTimeout(r, 150));
@@ -193,4 +194,37 @@ test("every agent message in a conversation reaches the owner", async () => {
   );
   sink.close();
   store.close();
+});
+
+test('quiet alerts send questions as regular notifications', async () => {
+  const sink = await ntfySink();
+  const { config, store } = setup({ LANESIGNAL_NTFY_URL: `${sink.url}/t` });
+  startNotifier(config, store);
+  publishLane(store, 'default/q', { status: 'active' }, 'bot');
+
+  store.setQuietAlerts(true);
+  const quiet = escalate(store, { laneId: 'default/q', question: 'Quietly?' }, 'bot');
+  await settle();
+  store.setQuietAlerts(false);
+  escalate(store, { laneId: 'default/q', question: 'Loudly?' }, 'bot');
+  await settle();
+
+  assert.deepEqual(
+    sink.received.map((r) => [r.body.title, r.body.priority]),
+    [
+      [`Needs you ${quiet.ref} · q`, 3],
+      [`Needs you ${quiet.ref.replace(/\d+$/, (n) => String(Number(n) + 1))} · q`, 4],
+    ],
+  );
+  sink.close();
+  store.close();
+});
+
+test('instance admins switch quiet alerts; agents cannot', async () => {
+  const srv = await startServer();
+  assert.equal((await srv.call('GET', '/api/config', ALICE)).body.quietAlerts, false);
+  assert.equal((await srv.call('PUT', '/api/settings/push', AGENT, { quietAlerts: true })).status, 403);
+  assert.equal((await srv.call('PUT', '/api/settings/push', ALICE, { quietAlerts: true })).status, 204);
+  assert.equal((await srv.call('GET', '/api/config', ALICE)).body.quietAlerts, true);
+  srv.close();
 });

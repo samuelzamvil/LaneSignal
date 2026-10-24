@@ -83,3 +83,7 @@ With the Dockge stack, add the config mount to `volumes:`:
 ```
 
 Settings shows whether push is available: "Enabled for escalations", "Not included in this build", or "Server has no FCM credentials". In the browser it shows "Android app only".
+
+### Quiet alerts
+
+Questions that need you normally arrive as high priority: in the app's **Escalations** channel (pops up on screen and vibrates) or at ntfy priority 4. An instance admin can turn on **Settings → Alerts → Quiet** to send them as regular notifications instead: the **Lane updates** channel, or ntfy priority 3. It applies to everyone on the server and takes effect for the next notification. FCM still delivers them promptly; only how they show changes. To change just one phone instead, edit the Escalations channel in Android's settings for the app (Settings → Apps → LaneSignal → Notifications).

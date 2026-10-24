@@ -2748,6 +2748,17 @@ export class Store {
     this.db.prepare('DELETE FROM push_tokens WHERE token = ?').run(token);
   }
 
+  /** Alerts go out as regular notifications rather than high priority (an instance setting). */
+  quietAlerts(): boolean {
+    return !!this.db.prepare("SELECT 1 FROM meta WHERE key = 'quiet_alerts' AND value = '1'").get();
+  }
+
+  setQuietAlerts(on: boolean) {
+    this.db
+      .prepare("INSERT INTO meta (key, value) VALUES ('quiet_alerts', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(on ? '1' : '0');
+  }
+
   listPushTokens(): { token: string; platform: string; owner: string; userId: string | null }[] {
     return this.db.prepare('SELECT token, platform, owner, user_id AS userId FROM push_tokens').all() as {
       token: string;

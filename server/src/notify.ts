@@ -63,7 +63,8 @@ class FcmSender {
   }
 
   /** Returns false when the device token is no longer valid. */
-  async send(deviceToken: string, n: Notification): Promise<boolean> {
+  /** `loud`: the high-importance channel (heads-up, vibration); otherwise the regular one. */
+  async send(deviceToken: string, n: Notification, loud: boolean): Promise<boolean> {
     const res = await fetch(`https://fcm.googleapis.com/v1/projects/${this.account.project_id}/messages:send`, {
       method: 'POST',
       headers: { authorization: `Bearer ${await this.token()}`, 'content-type': 'application/json' },
@@ -73,8 +74,9 @@ class FcmSender {
           notification: { title: clip(n.title, 200), body: clip(n.body, 1000) },
           data: { ...n.data, route: n.route },
           android: {
+            // Delivery stays high priority for urgent ones even when they show quietly, so they aren't delayed.
             priority: n.urgent ? 'high' : 'normal',
-            notification: { channel_id: n.urgent ? 'escalations' : 'updates', tag: n.data.escalationId ?? n.data.laneId },
+            notification: { channel_id: loud ? 'escalations' : 'updates', tag: n.data.escalationId ?? n.data.laneId },
           },
         },
       }),
@@ -140,6 +142,8 @@ export function startNotifier(
   const enabled = { fcm: fcm !== null, ntfy: config.ntfyUrl !== null };
 
   async function deliver(n: Notification) {
+    // Quiet alerts: urgent notifications show like regular ones (no heads-up or high-priority buzz).
+    const loud = n.urgent && !store.quietAlerts();
     if (fcm) {
       let tokens: ReturnType<Store['listPushTokens']> = [];
       try {
@@ -150,7 +154,7 @@ export function startNotifier(
       for (const t of tokens) {
         if (t.userId && !wantsPush(t.userId, n.project)) continue;
         try {
-          if (!(await fcm.send(t.token, n))) {
+          if (!(await fcm.send(t.token, n, loud))) {
             store.removePushToken(t.token);
             log.info('removed stale push token', { owner: t.owner });
           }
@@ -176,7 +180,7 @@ export function startNotifier(
             topic,
             title: clip(n.title, 200),
             message: clip(n.body, 2000),
-            priority: n.urgent ? 4 : 3,
+            priority: loud ? 4 : 3,
             tags: [n.urgent ? 'rotating_light' : 'information_source'],
             ...ntfyLinks(config, n.route),
           }),
