@@ -12,8 +12,13 @@ import type { Escalation, Notice, StreamEvent, TrmnlCard, TrmnlPushResult, Trmnl
  * card, and the project's other pending escalations beside it.
  */
 
-/** TRMNL's free tier takes 12 pushes per plugin per hour: one every 5 minutes, with some slack. */
+/**
+ * TRMNL takes 12 pushes per plugin per hour (one every 5 minutes), 30 with TRMNL+ (one every 2),
+ * each spaced with some slack. Changes during the wait aren't queued: the push after it sends the
+ * screen as it is then, so a burst of escalations costs two pushes, the first and the latest.
+ */
 const MIN_GAP_MS = 310_000;
+const PLUS_GAP_MS = 130_000;
 /** Bursts (an escalation and its lane change) become one push. */
 const DEBOUNCE_MS = 2_000;
 /** Pushes again after an hour of no changes, so the screen's "updated" time shows LaneSignal is alive. */
@@ -286,6 +291,7 @@ export interface TrmnlOptions {
   fetch?: typeof fetch;
   now?: () => Date;
   minGapMs?: number;
+  plusGapMs?: number;
   debounceMs?: number;
   heartbeatMs?: number;
 }
@@ -298,6 +304,7 @@ export class TrmnlPusher {
   private readonly fetch: typeof fetch;
   private readonly now: () => Date;
   private readonly minGap: number;
+  private readonly plusGap: number;
   private readonly debounce: number;
   private readonly heartbeatMs: number;
   private readonly onChange = (e: StreamEvent) => this.change(e);
@@ -310,6 +317,7 @@ export class TrmnlPusher {
     this.fetch = opts.fetch ?? fetch;
     this.now = opts.now ?? (() => new Date());
     this.minGap = opts.minGapMs ?? MIN_GAP_MS;
+    this.plusGap = opts.plusGapMs ?? PLUS_GAP_MS;
     this.debounce = opts.debounceMs ?? DEBOUNCE_MS;
     this.heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS;
   }
@@ -357,10 +365,11 @@ export class TrmnlPusher {
     if (newPlugin) {
       st.generation++;
       st.lastAttempt = 0;
-      // A timer waiting out the old plugin's rate limit would hold the first push back.
-      if (st.timer) clearTimeout(st.timer);
-      st.timer = null;
     }
+    // A timer waiting out the old plugin's rate limit, or the free tier's after turning on TRMNL+,
+    // would hold the next push back: schedule it again.
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = null;
     this.touch(project);
   }
 
@@ -416,7 +425,8 @@ export class TrmnlPusher {
       return;
     }
     if (st.timer) return;
-    const wait = Math.max(this.debounce, st.lastAttempt + this.minGap - this.now().getTime());
+    const gap = this.store.trmnlSetup(project)?.plus ? this.plusGap : this.minGap;
+    const wait = Math.max(this.debounce, st.lastAttempt + gap - this.now().getTime());
     st.timer = setTimeout(() => {
       this.flush(project).catch((err) => log.error('trmnl push crashed', { project, error: String(err) }));
     }, wait);

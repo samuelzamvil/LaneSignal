@@ -14,7 +14,8 @@ LaneSignal **pushes** to TRMNL; TRMNL never connects to LaneSignal. That keeps a
 
 - Each project's screen is a TRMNL **private plugin** with the *Webhook* strategy. LaneSignal sends the screen's data to the plugin's webhook URL, and TRMNL draws it with the plugin's layout.
 - LaneSignal pushes when something on the screen changes. A burst of changes becomes one push, and nothing is sent when the data hasn't changed. With nothing changing, it pushes once an hour so the "updated" time stays current.
-- TRMNL accepts 12 pushes per plugin per hour (30 with TRMNL+), so LaneSignal pushes at most once every 5 minutes per project.
+- TRMNL accepts 12 pushes per plugin per hour (30 with TRMNL+), so LaneSignal pushes at most once every 5 minutes per project, or every 2 minutes with **TRMNL+** ticked in the settings.
+- Pushes aren't queued. The first change after a quiet spell goes out within seconds; changes during the wait that follows become one push that sends the screen as it is then. Six escalations at once cost two pushes: the first one, then the latest on the card with the other five in the list.
 - TRMNL redraws as soon as a push arrives if the plugin hasn't redrawn in the last 15 minutes; otherwise on its next scheduled refresh. Expect a new card within about 15 minutes, or 5 minutes with TRMNL+. Your phone stays the urgent channel.
 - A push is at most 5 KB (TRMNL's limit). When there are too many questions to fit, the list shows "+N more in LaneSignal".
 
@@ -44,6 +45,7 @@ To show several projects, set each one up and keep all their plugins in your TRM
 |---|---|
 | **Webhook URL** | Where pushes go. Treat it like a password: anyone who has it can write to your screen. After saving it's shown with the plugin id hidden; paste a new one to replace it |
 | **Push to TRMNL** | Untick to pause pushes without losing the URL |
+| **TRMNL+** | Tick it if your TRMNL account has TRMNL+: LaneSignal then pushes up to every 2 minutes (TRMNL+ allows 30 an hour) instead of every 5 (12 an hour). Ticked without TRMNL+, pushes get refused with 429 and retried later |
 | **Lane updates on the card too** | Off (the default): only escalations take the card (new questions, and agent replies in a conversation). On: the agent's messages on lanes (milestones, with how many files are attached), completed lanes, and lanes blocked without an escalation take it too |
 
 Below the settings, LaneSignal shows when it last pushed and the last problem, if any. **Remove** deletes the setup; delete the plugin in TRMNL too.
@@ -64,7 +66,7 @@ LaneSignal only pushes to `trmnl.com` (and `usetrmnl.com`) over HTTPS unless tol
 | *TRMNL answered 403* | The account needs Developer Edition or a BYOD license, or the plugin isn't set to the Webhook strategy |
 | *TRMNL answered 404* | The plugin was deleted or the URL is wrong. Copy the Webhook URL again |
 | *TRMNL answered 422* | TRMNL refused the data. The message says why; [open an issue](https://github.com/samuelzamvil/LaneSignal/issues) with it |
-| *TRMNL says too many pushes (429)* | Usually after a few **Send now** clicks. LaneSignal tries again by itself |
+| *TRMNL says too many pushes (429)* | Usually after a few **Send now** clicks, or **TRMNL+** ticked on an account without it. LaneSignal tries again by itself |
 | *Couldn't reach TRMNL* | The server has no outbound HTTPS to `trmnl.com`. Check its firewall or proxy; LaneSignal keeps retrying |
 | *Updated* on the screen is more than an hour old | LaneSignal stopped pushing: check the server is running, and the last problem in the settings |
 | *That isn't a plugin's webhook URL* | Copy the **Webhook URL** from the plugin's settings in TRMNL, not the address of the page you're on |

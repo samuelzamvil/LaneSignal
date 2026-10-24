@@ -385,11 +385,13 @@ function TrmnlSettings({ client, project }: { client: Client; project: ProjectAc
   const [url, setUrl] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [includeNotifications, setIncludeNotifications] = useState(false);
+  const [plus, setPlus] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     setEnabled(view?.configured ? view.enabled : true);
     setIncludeNotifications(view?.configured ? view.includeNotifications : false);
+    setPlus(view?.configured ? view.plus : false);
   }, [view]);
 
   async function run(fn: () => Promise<string | null>) {
@@ -407,7 +409,7 @@ function TrmnlSettings({ client, project }: { client: Client; project: ProjectAc
   const save = (e: React.FormEvent) => {
     e.preventDefault();
     void run(async () => {
-      await client.saveTrmnl(project.id, { ...(url.trim() && { webhookUrl: url.trim() }), enabled, includeNotifications });
+      await client.saveTrmnl(project.id, { ...(url.trim() && { webhookUrl: url.trim() }), enabled, includeNotifications, plus });
       setUrl('');
       return enabled ? 'Saved. The screen updates within a few minutes.' : 'Saved. Pushes are paused.';
     });
@@ -479,6 +481,10 @@ function TrmnlSettings({ client, project }: { client: Client; project: ProjectAc
           <label className="check">
             <input type="checkbox" checked={includeNotifications} onChange={(e) => setIncludeNotifications(e.target.checked)} />{' '}
             Lane updates on the card too (milestones, completed, blocked), not only escalations
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={plus} onChange={(e) => setPlus(e.target.checked)} /> My TRMNL account has TRMNL+ (push every 2
+            minutes instead of every 5)
           </label>
           <div className="actions">
             <button className="primary" disabled={busy}>
