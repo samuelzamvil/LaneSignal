@@ -44,7 +44,7 @@ To show several projects, set each one up and keep all their plugins in your TRM
 |---|---|
 | **Webhook URL** | Where pushes go. Treat it like a password: anyone who has it can write to your screen. After saving it's shown with the plugin id hidden; paste a new one to replace it |
 | **Push to TRMNL** | Untick to pause pushes without losing the URL |
-| **Lane updates on the card too** | Off (the default): only escalations take the card (new questions, and agent replies in a conversation). On: lane milestones from overseers, completed lanes, and lanes blocked without an escalation take it too |
+| **Lane updates on the card too** | Off (the default): only escalations take the card (new questions, and agent replies in a conversation). On: the agent's messages on lanes (milestones, with how many files are attached), completed lanes, and lanes blocked without an escalation take it too |
 
 Below the settings, LaneSignal shows when it last pushed and the last problem, if any. **Remove** deletes the setup; delete the plugin in TRMNL too.
 

@@ -71,7 +71,7 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `GET /api/projects/:id/trmnl` | project admin | The project's [TRMNL screen](trmnl.md): `{configured: false}`, or `{configured: true, webhookUrl, enabled, includeNotifications, lastPushAt, lastError, lastErrorAt, updatedAt}` with the webhook URL's plugin id hidden |
 | `PUT /api/projects/:id/trmnl` | project admin | `{webhookUrl?, enabled, includeNotifications}`. `webhookUrl` is needed the first time; leave it out to keep the saved one. It must be a TRMNL plugin's webhook URL, `https://trmnl.com/api/custom_plugins/<id>` (or `usetrmnl.com`), or any URL on a host in `LANESIGNAL_TRMNL_HOSTS` (http allowed there). Redirects aren't followed |
 | `DELETE /api/projects/:id/trmnl` | project admin | Stops pushing and forgets the URL |
-| `POST /api/projects/:id/trmnl/send` | project admin | Pushes now: `{ok, status?, error?, setup}` with TRMNL's answer. `404` when no screen is set up; `409` when this server doesn't push to TRMNL |
+| `POST /api/projects/:id/trmnl/send` | project admin | Pushes now: `{ok, status?, error?, setup}` with TRMNL's answer. `404` when no screen is set up; `409` when this server doesn't push to TRMNL or the screen's pushes are paused |
 | `GET /api/projects/:id/trmnl/preview` | project admin | `{merge_variables}`: the data the next push sends |
 | `GET /api/projects/:id/trmnl/plugin.zip` | project admin | The private plugin to import into TRMNL, named after the project |
 | `PUT /api/settings/push` | instance admin | `{quietAlerts}`: send alerts as regular notifications instead of high priority (shown in `GET /api/config`). Returns `204` |

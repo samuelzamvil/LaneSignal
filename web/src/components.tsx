@@ -60,12 +60,14 @@ export function LaneRow({ lane, now, onOpen }: { lane: Lane; now: number; onOpen
     <button className={`lane-row${needsHuman(lane) ? ' needs-human' : ''}`} onClick={onOpen}>
       <span className="ref">{lane.letter ?? ''}</span>
       <span className="lane-row-main">
-        <span className="lane-row-name">
-          {lane.name}
-          {hasNewMessage(lane) && <span className="new-message" title="The agent wrote on this lane"> 💬</span>}
-        </span>
+        <span className="lane-row-name">{lane.name}</span>
         <span className="muted lane-row-activity">{lane.activity ?? lane.id}</span>
       </span>
+      {hasNewMessage(lane) && (
+        <span className="new-message" title="The agent wrote on this lane">
+          💬
+        </span>
+      )}
       <StatusPill status={lane.status} />
       <span className="muted lane-row-when">{ago(lane.updatedAt, now)}</span>
     </button>
@@ -266,7 +268,8 @@ export function LaneDetail({
       .laneDetail(project, laneId)
       .then((d) => {
         if (cancelled) return;
-        setData(d);
+        // A server from before lane conversations sends none.
+        setData({ ...d, messages: d.messages ?? [] });
         setError(null);
         markMessagesSeen(d.lane, d.lane.lastAgentMessageId);
       })

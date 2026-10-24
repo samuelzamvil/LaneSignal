@@ -33,22 +33,26 @@ const keyOf = (lane: Pick<Lane, 'project' | 'id'>) => `${lane.project}/${lane.id
  */
 export function hasNewMessage(lane: Lane): boolean {
   const all = read();
-  return all !== null && lane.lastAgentMessageId !== null && lane.lastAgentMessageId > (all[keyOf(lane)] ?? 0);
+  return all !== null && lane.lastAgentMessageId != null && lane.lastAgentMessageId > (all[keyOf(lane)] ?? 0);
 }
 
 /** On a device that has never tracked messages: what the lanes hold now counts as read. */
 export function baselineSeen(lanes: Iterable<Lane>) {
   if (read() !== null) return;
+  const list = [...lanes];
+  // A server from before lane conversations doesn't say: baseline once it does, or its notices would all be new.
+  if (list.some((l) => l.lastAgentMessageId === undefined)) return;
   const all: Record<string, number> = {};
-  for (const l of lanes) if (l.lastAgentMessageId !== null) all[keyOf(l)] = l.lastAgentMessageId;
+  for (const l of list) if (l.lastAgentMessageId !== null) all[keyOf(l)] = l.lastAgentMessageId;
   write(all);
   window.dispatchEvent(new Event(EVENT));
 }
 
 /** Marks the lane's messages up to `id` as read here. */
 export function markMessagesSeen(lane: Pick<Lane, 'project' | 'id'>, id: number | null) {
-  if (id === null) return;
-  const all = read() ?? {};
+  // Before the baseline (a lane opened from a push on a cold start), the baseline records it.
+  const all = read();
+  if (id == null || all === null) return;
   if ((all[keyOf(lane)] ?? 0) >= id) return;
   all[keyOf(lane)] = id;
   write(all);

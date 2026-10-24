@@ -139,6 +139,15 @@ describe('lane conversations', () => {
     assert.equal((await detail('talk-1')).lane.unreadByAgent, 0);
   });
 
+  test('the owner saying the same again counts once the agent read the first; before that it is a retry', async () => {
+    const first = await write('talk-5', 'ok');
+    assert.equal((await write('talk-5', 'ok')).body.id, first.body.id, 'a retry');
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'talk-5' });
+    const again = await write('talk-5', 'ok');
+    assert.notEqual(again.body.id, first.body.id);
+    assert.deepEqual((await srv.tool(AGENT, 'update_lane', { lane_id: 'talk-5' })).value.ownerMessages.map((m: any) => m.body), ['ok']);
+  });
+
   test('limits: length, empty, removed lanes', async () => {
     assert.equal((await write('talk-5', '   ')).status, 400);
     assert.equal((await write('talk-5', 'x'.repeat(2001))).status, 400);

@@ -1674,9 +1674,13 @@ export class Store {
         .prepare('SELECT * FROM lane_messages WHERE lane_id = ? AND author_kind = ? ORDER BY id DESC LIMIT 1')
         .get(laneId, message.from) as Row | undefined;
       const fresh = recent && at.getTime() - Date.parse(recent.created_at as string) < 60_000;
-      if (fresh && recent.author === message.author && recent.body === body) {
-        return { posted: this.laneMessageFromRow(recent), duplicate: true };
-      }
+      // A retry returns the message already sent; the owner saying the same again after the agent read it is new.
+      const retry =
+        fresh &&
+        recent.author === message.author &&
+        recent.body === body &&
+        (message.from === 'agent' || Number(recent.id) > this.agentReadId(laneId));
+      if (retry) return { posted: this.laneMessageFromRow(recent, this.agentReadId(laneId)), duplicate: true };
       if (message.from === 'agent' && fresh) {
         throw new ConflictError('One message per lane per minute: put everything in one message');
       }

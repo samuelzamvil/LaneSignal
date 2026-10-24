@@ -298,7 +298,8 @@ export interface Requirement {
 /** What the TRMNL screen's card shows: an escalation (drawn from its current state), or a notification. */
 export type TrmnlCard =
   | { kind: 'escalation'; id: string; at: string }
-  | { kind: 'notice' | 'completed' | 'blocked'; laneId: string; title: string; body: string; at: string };
+  /** `files`: how many the agent attached to a notice. */
+  | { kind: 'notice' | 'completed' | 'blocked'; laneId: string; title: string; body: string; at: string; files?: number };
 
 /** A project's TRMNL screen: a private plugin LaneSignal pushes to. */
 export interface TrmnlSetup {

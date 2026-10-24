@@ -88,7 +88,7 @@ A tap asks you to confirm, with a box for instructions to the agent: optional fo
 Each lane has a conversation of its own, outside any escalation, in the lane's sheet:
 
 - **The agent's milestones** ("Merged PR #311", "Starting gh:42") arrive with `notify_owner`, optionally with files (a screenshot, release notes). Each sends a quiet push that opens the lane, and the lane's card shows **💬 new message** (a 💬 in the list view) until you open it on that device (a device counts from the first time it opens the app, so older messages aren't marked).
-- **You can write back** from the sheet (with answering in LaneSignal on). Nothing blocks and the lane's status doesn't change: the agent gets your note the next time it publishes the lane, writes on it or waits on it, and the note then reads *seen by the agent*.
+- **You can write back** from the sheet (with answering in LaneSignal on). Nothing blocks and the lane's status doesn't change: the agent gets your note the next time it publishes the lane, writes on it or waits on it, and the note then reads *seen by the agent*. Each note goes to one agent, whichever reports in first: an overseer waiting on its whole group picks up notes on all its lanes.
 - Use an escalation instead when the agent needs a decision from you.
 - Agent messages are at most 500 characters (yours, 2,000), one per lane per minute. Conversations stay with the lane and are exported in `lane_messages.csv`.
 

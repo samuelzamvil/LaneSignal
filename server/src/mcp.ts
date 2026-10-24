@@ -304,7 +304,9 @@ function buildServer(
           );
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
           const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
-          return json(briefWait(pub.wait(store.handOver(value, visible), timeout ? visible : undefined)));
+          // A cancelled call never reaches the agent: its notes stay unread.
+          if (!extra.signal.aborted) store.handOver(value, visible);
+          return json(briefWait(pub.wait(value, timeout ? visible : undefined)));
         } catch (err) {
           return fail(err);
         }
