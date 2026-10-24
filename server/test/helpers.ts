@@ -25,6 +25,7 @@ export async function startServer(env: Record<string, string> = {}) {
     path: ':memory:',
     resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem),
     waitGraceMs: 50,
+    attachmentsPerItem: config.attachmentsPerItem,
   });
   const accounts = await createAccounts(config, ':memory:');
   const skillFile = fileURLToPath(new URL('../../skills/lanesignal/SKILL.md', import.meta.url));

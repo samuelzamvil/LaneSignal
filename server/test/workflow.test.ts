@@ -102,8 +102,8 @@ describe('escalations on one lane', () => {
         recommendation: 'Yes',
         cost: 'A new dependency',
         alternatives: ['Hand-written REST calls'],
-        options: ['Yes', 'No'],
-        recommended_option: 'Yes',
+        accept_means: 'Add the dependency',
+        reject_means: 'Hand-write the REST calls',
       });
       assert.equal(res.isError, false, res.text);
       assert.equal(res.value.state, 'open');

@@ -119,8 +119,16 @@ export interface Escalation {
   ticketUrl: string | null;
   /** Agreement/disagreement from agents, one entry per agent. */
   positions: Position[];
-  /** Suggested answers rendered as one-tap buttons. */
+  /** Suggested answers rendered as one-tap buttons (older escalations; new ones use Accept / Reject / Other). */
   options: string[];
+  /** What answering Accept means, e.g. "Drop the column in migration 0042". */
+  acceptMeans: string | null;
+  /** What answering Reject means; only when `allowReject`. */
+  rejectMeans: string | null;
+  /** Whether Reject is offered (default true). */
+  allowReject: boolean;
+  /** Files the agent attached (plans, screenshots). Fetch each from /api/attachments/:id. */
+  attachments: AttachmentMeta[];
   links: Link[];
   /** Holds the lane in blocked_human while open; false for FYI questions. */
   blocking: boolean;
@@ -136,6 +144,16 @@ export interface Escalation {
   /** Agent note when acknowledging or withdrawing. */
   resolution: string | null;
 }
+
+/** A file on an escalation: Markdown or plain text, or a PNG, JPEG, WebP or GIF image. */
+export interface AttachmentMeta {
+  id: string;
+  name: string;
+  type: AttachmentType;
+  size: number;
+}
+
+export type AttachmentType = 'text/markdown' | 'text/plain' | 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
 
 export interface LaneEvent {
   id: number;

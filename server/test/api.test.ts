@@ -350,17 +350,17 @@ describe('mcp', () => {
 
     const created = await rpc(AGENT, 'tools/call', {
       name: 'create_escalation',
-      arguments: { lane_id: 'mcp-lane', question: 'Merge?', options: ['Merge', 'Wait'], recommended_option: 'Merge' },
+      arguments: { lane_id: 'mcp-lane', question: 'Merge?', accept_means: 'Merge it now', reject_means: 'Wait for QA' },
     });
     // Agents get the escalation back in brief: not the whole question echoed.
     const brief = JSON.parse(created.result.content[0].text);
     assert.match(brief.ref, /^[A-Z]+\d+$/);
     assert.equal(brief.state, 'open');
-    assert.equal(brief.recommendedOption, undefined);
-    assert.equal(store.getEscalation(brief.id)?.recommendedOption, 'Merge');
+    assert.equal(brief.acceptMeans, undefined);
+    assert.equal(store.getEscalation(brief.id)?.acceptMeans, 'Merge it now');
     const bad = await rpc(AGENT, 'tools/call', {
       name: 'create_escalation',
-      arguments: { lane_id: 'mcp-lane', question: 'Merge?', options: ['Merge'], recommended_option: 'Nope' },
+      arguments: { lane_id: 'mcp-lane', question: 'Merge?', reject_means: '' },
     });
     assert.equal(bad.result.isError, true);
   });

@@ -17,7 +17,7 @@ import { routeFromAppLink } from './deeplink.ts';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { keyOf } from './merge.ts';
 import { useLiveData, useNow } from './live.ts';
-import { backLabel, closeTo, trackEntry } from './nav.ts';
+import { backLabel, closeOverlay, closeTo, trackEntry } from './nav.ts';
 import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { RequirementsPane } from './requirements.tsx';
@@ -241,7 +241,9 @@ function Dashboard({
   useEffect(() => {
     if (!isNative) return;
     const h = CapApp.addListener('backButton', () => {
-      // Sheets close the way their back button says; other screens step back.
+      // Overlays (an open attachment) close first, then sheets the way their back button says;
+      // other screens step back.
+      if (closeOverlay()) return;
       const r = parseRoute(location.hash);
       if (r.escId) closeTo('#/');
       else if (r.laneId) closeTo('#/lanes');
