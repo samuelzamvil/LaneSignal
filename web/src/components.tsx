@@ -170,6 +170,7 @@ export function LaneDetail({
   group,
   groupLabel,
   onClose,
+  backTo,
 }: {
   laneId: string;
   project: string;
@@ -180,6 +181,8 @@ export function LaneDetail({
   now: number;
   canDelete: boolean;
   onClose: () => void;
+  /** Where closing goes, named on the back button. */
+  backTo: string;
 }) {
   const [data, setData] = useState<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -197,12 +200,15 @@ export function LaneDetail({
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <section className="sheet" onClick={(e) => e.stopPropagation()} aria-label="Lane details">
+      <section className="sheet sheet-lane" onClick={(e) => e.stopPropagation()} aria-label="Lane details">
         <header className="sheet-head">
-          <button className="back" onClick={onClose} aria-label="Close">
-            ←
+          <button className="back" onClick={onClose} aria-label={`Back to ${backTo}`}>
+            ← {backTo}
           </button>
-          <h2>{data?.lane.name ?? laneId}</h2>
+          <div className="sheet-title">
+            <span className="sheet-kind">Lane{data?.lane.letter ? ` ${data.lane.letter}` : ''}</span>
+            <h2>{data?.lane.name ?? laneId}</h2>
+          </div>
           {data && <StatusPill status={data.lane.status} />}
         </header>
         {error && <p className="error">{error}</p>}

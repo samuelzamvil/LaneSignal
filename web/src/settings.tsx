@@ -229,7 +229,7 @@ export function AgentKeysSection({
               )}
               <details>
                 <summary className="hint">3. Tell the overseer when to use LaneSignal: a starter policy for its CLAUDE.md</summary>
-                <CopyBlock label="Policy" text={policyFor('', needsProject ? '<project-id>' : null, requirements)} />
+                <CopyBlock label="Policy" text={policyFor('', needsProject ? '<project-id>' : null, requirements, decisions)} />
               </details>
             </>
           )}

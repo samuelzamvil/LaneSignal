@@ -872,16 +872,60 @@ textarea {
 }
 
 .sheet-head h2 {
-  flex: 1;
   margin: 0;
   font-size: 1.15rem;
   overflow-wrap: anywhere;
 }
 
+.sheet-title {
+  flex: 1;
+  min-width: 0;
+}
+
+/* What kind of screen this is: lanes are blue, escalations red (blocking), blue-grey (FYI) or grey (closed). */
+.sheet-kind {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--kind);
+}
+
+.sheet {
+  --kind: var(--muted);
+}
+
+.sheet-lane {
+  --kind: var(--accent);
+}
+
+.sheet-esc.is-blocking {
+  --kind: var(--danger);
+}
+
+.sheet-esc.is-fyi {
+  --kind: var(--info);
+}
+
+.sheet-lane .sheet-head,
+.sheet-esc .sheet-head {
+  background: color-mix(in srgb, var(--kind) 9%, var(--bg));
+  border-top: 3px solid var(--kind);
+}
+
+.sheet-esc .sheet-head h2 {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .back {
-  width: var(--tap);
-  padding: 0;
-  font-size: 1.3rem;
+  min-width: var(--tap);
+  min-height: var(--tap);
+  padding: 0 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--accent);
   background: none;
   border: none;
 }

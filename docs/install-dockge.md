@@ -43,7 +43,7 @@ The code is deleted once the account exists. Then continue with [accounts and ag
 | `image` | `:main` (latest merge) | You want to pin a build: use `:sha-<commit>` from the package page |
 | `ports` | `8080:8080` on all interfaces | A proxy installed on the host (Caddy, nginx, `tailscale serve`) fronts it: use `127.0.0.1:8080:8080` and `LANESIGNAL_TRUST_PROXY=1`. Containerised proxies use the network option below instead |
 | `volumes` | Named volume `lanesignal-data` | You want the files in the stack folder: use `./data:/data` after `mkdir data && sudo chown 1000:1000 data`. The container runs as uid 1000, so a root-owned folder won't work |
-| `LANESIGNAL_DECISIONS` | `false` | You want to answer on the dashboard too, with agents waiting for the answer. Off, you answer in the agent's session and it dismisses the alert. Set it in the `.env` editor; see [Features](configuration.md#features) |
+| `LANESIGNAL_DECISIONS` | `true` | Set `false` for alerts only: you answer in the agent's session and it dismisses the alert, with no answer buttons on the dashboard. Set it in the `.env` editor; see [Features](configuration.md#features) |
 | `LANESIGNAL_REQUIREMENTS` | `true` | You don't want the requirements register: `false` removes its tools, page and export |
 | Proxy network | Commented out | Your reverse proxy (Nginx Proxy Manager, Traefik, Caddy) runs in Docker. Uncomment the `networks` lines with the proxy's network name, remove `ports:`, set `LANESIGNAL_TRUST_PROXY=1`, and point the proxy at `http://lanesignal:8080` |
 

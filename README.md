@@ -2,13 +2,13 @@
 
 *Internal codename: VNATS (Vault Network Activity & Triage System)*
 
-A small, self-hosted dashboard for watching autonomous coding-agent **lanes** and the **alerts** (escalations) that need you. It's built mobile-first, and the same React code runs in the browser and in an Android app.
+A small, self-hosted dashboard for watching autonomous coding-agent **lanes** and answering the **escalations** that need you. It's built mobile-first, and the same React code runs in the browser and in an Android app.
 
-- Agents **publish** lane state and raise alerts over **MCP** or a plain **HTTP API**. Nobody has to poll sessions.
+- Agents **publish** lane state and raise escalations over **MCP** or a plain **HTTP API**. Nobody has to poll sessions.
 - You see **what needs you first**, kept apart from routine status, and every connected browser and phone updates live over SSE.
-- You **answer in the agent's own session** (e.g. Claude Remote Control), so the conversation and the decision stay in one place. The agent then dismisses the alert with a justification. (Answering on the dashboard is an option, off by default: `LANESIGNAL_DECISIONS`.)
+- You **answer on your phone or the dashboard**; the agent waits for the answer, acknowledges it and carries on. Answering in the agent's own session (e.g. Claude Remote Control) works too. (`LANESIGNAL_DECISIONS=false` turns LaneSignal into alerts only.)
 - **Requirements** keep your product decisions as a durable record outside the repository that agents can search (`LANESIGNAL_REQUIREMENTS`, on by default).
-- Android **push notifications** fire only for new alerts by default.
+- Android **push notifications** fire only for new escalations by default.
 - It runs as **one Docker container** (API, MCP, SSE and the web app) with a SQLite file on a volume.
 
 LaneSignal is an observability and intervention surface, not an orchestrator. Claude Remote Control stays the conversational interface. LaneSignal tells you *which* lane needs you and links straight to its session, ticket, PR and CI run.
@@ -40,7 +40,7 @@ Open `http://<host>:8080` and create the admin account with that one-time setup 
 3. Paste the [agent policy template](docs/agent-instructions.md) into the overseer's `CLAUDE.md` and edit it.
 4. On your phone, install the Android app from the [Releases page](https://github.com/samuelzamvil/LaneSignal/releases) (unsigned: sideload it; see [Android](docs/android.md)), or use the web app.
 
-Two switches in the stack's environment change what LaneSignal does: `LANESIGNAL_DECISIONS` (answering on the dashboard; off by default) and `LANESIGNAL_REQUIREMENTS` (the requirements register; on). See [Configuration](docs/configuration.md#features).
+Two switches in the stack's environment change what LaneSignal does: `LANESIGNAL_DECISIONS` (answering on the dashboard; on by default) and `LANESIGNAL_REQUIREMENTS` (the requirements register; on). See [Configuration](docs/configuration.md#features).
 
 ## Documentation
 

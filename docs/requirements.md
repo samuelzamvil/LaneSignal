@@ -46,7 +46,7 @@ The service doesn't decide *when* agents record requirements; that's the project
 
 ## In the app
 
-**Requirements** (bottom bar on phones, top bar on desktop) lists active requirements, newest first, with search, a train/epic filter, and tag filters (tap a tag). Tick **Superseded & retired** to see the history.
+**Requirements** (bottom bar on phones, top bar on desktop) lists active requirements, newest first, with search, a group filter, and tag filters (tap a tag). Tick **Superseded & retired** to see the history.
 
 People can **edit wording** (fix phrasing, justification or tags without changing the meaning) and **retire** a requirement. A change of decision is a supersede, recorded like any other decision.
 

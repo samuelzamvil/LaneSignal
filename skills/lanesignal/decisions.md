@@ -1,16 +1,19 @@
+## When the owner answers
 
-## Answering in LaneSignal (turned on for this server)
+The owner answers on the LaneSignal dashboard or phone app. You wait for the decision, acknowledge it, then act on it.
 
-This server also lets the owner answer escalations on the dashboard. Then you wait for the decision and acknowledge it, instead of being answered in your session. Answers in your session still work: dismiss those alerts as above.
+1. **Wait** for answers on your whole group (next section). Keep working on lanes that aren't blocked meanwhile.
+2. **Acknowledge first, then act:** call `acknowledge_escalation` as soon as an escalation is decided. It returns the final `decision` and `decisionNote` (the owner may correct a mis-tap until you acknowledge). Act on what it returns. Only the agent that raised an escalation can acknowledge it; repeating an acknowledgement changes nothing.
+3. **Publish the next state in the same call:** pass `status` and `activity`, e.g. `status: "active", activity: "Dropping the column (A12)"`.
+4. **Answered in this session instead?** If the owner answers you here ("A12: drop it"), close it with `dismiss_escalation`: `justification` says what was decided and where, e.g. `"Sam: drop the column (in session, 2026-10-23)"`, plus `status` and `activity` as above. Dismiss moot escalations the same way, saying why ("Superseded by A14"). Only you can dismiss yours; the owner may also dismiss a stale one from the dashboard.
+5. **Other lanes' questions:** if one affects your work, `add_position` with `agree`, `disagree` or `neutral` and a one-line reason, while it's still open.
 
-- **Other lanes' questions:** if one affects your work, `add_position` with `agree`, `disagree` or `neutral` and a one-line reason, while it's still open.
-
-### Waiting for answers
+## Waiting for answers
 
 Answers can take minutes or a day.
 
 - **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns as soon as anything needs you:
-  - `decided`: answered. Handle each one (next section).
+  - `decided`: answered. Acknowledge and act on each one (above).
   - `closed`: withdrawn by someone else. "Lane removed by …" means the lane was taken off the dashboard.
   - `removedLanes`: lanes someone else took off the dashboard (including ones with nothing open). Stop work on them and don't publish to them again; publishing brings a lane back.
   - `open`: still waiting.
@@ -43,11 +46,8 @@ Answers can take minutes or a day.
 
   If your key reaches several projects, also set `LANESIGNAL_PROJECT`. It starts from the `checkedAt` saved in `.claude/lanesignal-since` (or `LANESIGNAL_SINCE`, if set), saves each new one there, prints the same JSON as `wait_for_decisions`, and gives up after about 10 minutes of failures.
 
-### Acting on a decision
+## After a restart
 
-1. **Acknowledge first, then act:** call `acknowledge_escalation` as soon as an escalation is decided. It returns the final `decision` and `decisionNote` (the owner may correct a mis-tap until you acknowledge). Act on what it returns. Only the agent that raised an escalation can acknowledge it.
-2. **Publish the next state in the same call:** pass `status` and `activity`, e.g. `status: "active", activity: "Dropping the column (A12)"`.
-3. **Repeats are harmless:** repeating an acknowledgement changes nothing.
-
-
-After a restart, also call `wait_for_decisions` with your `group_id`, `wait_seconds: 0` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`, and handle anything decided while you were away.
+1. Call `update_group` (as at any session start).
+2. Call `wait_for_decisions` with your `group_id`, `wait_seconds: 0` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything decided while you were away. Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
+3. Call `list_lanes` with your `group_id`. A lane you were running that's missing was removed: stop work on it.

@@ -51,7 +51,7 @@ export interface Config {
   ntfyOpen: 'app' | 'browser';
   eventRetention: number;
   /**
-   * Answering escalations in LaneSignal (off by default): the dashboard's decision buttons, and agents
+   * Answering escalations in LaneSignal (on by default): the dashboard's decision buttons, and agents
    * waiting for and acknowledging decisions. Off, LaneSignal only alerts: people answer in the agent's
    * own session, and the agent dismisses the alert with a justification.
    */
@@ -211,7 +211,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     sessionDays: int('LANESIGNAL_SESSION_DAYS', env.LANESIGNAL_SESSION_DAYS, 90, 1, 3650),
     broadTags: env.LANESIGNAL_BROAD_TAGS !== undefined ? (list(env.LANESIGNAL_BROAD_TAGS) ?? []) : null,
-    groupLabel: env.LANESIGNAL_GROUP_LABEL ?? file.groupLabel ?? 'Epic',
+    groupLabel: env.LANESIGNAL_GROUP_LABEL ?? file.groupLabel ?? 'Group',
     ticketTemplates,
     defaultTicketSystem:
       env.LANESIGNAL_TICKET_DEFAULT ?? file.defaultTicketSystem ?? Object.keys(ticketTemplates)[0] ?? null,
@@ -222,7 +222,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ntfyToken: env.LANESIGNAL_NTFY_TOKEN ?? file.ntfyToken ?? null,
     ntfyOpen: oneOf('LANESIGNAL_NTFY_OPEN', env.LANESIGNAL_NTFY_OPEN, ['app', 'browser'] as const, 'app'),
     eventRetention: int('LANESIGNAL_EVENT_RETENTION', env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention, 200, 1, 100_000),
-    decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, false),
+    decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, true),
     requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),
   };
 }

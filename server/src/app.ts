@@ -124,8 +124,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
 
   // The agent skill: public (no secrets in it), so installing is one curl.
   /**
-   * The skill, as this server is configured: the core (alerts) plus the requirements and answering
-   * sections when those are on, which sit next to SKILL.md.
+   * The skill, as this server is configured: the core, then how answers arrive (decisions.md when
+   * people answer in LaneSignal, alerts.md when they answer in the agent's session), then the
+   * requirements section when that's on. The parts sit next to SKILL.md.
    */
   app.get('/api/skill', (_req, res) => {
     if (!skillFile || !existsSync(skillFile)) {
@@ -138,8 +139,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     };
     const text =
       readFileSync(skillFile, 'utf8') +
-      (config.requirements ? part('requirements.md') : '') +
-      (config.decisions ? part('decisions.md') : '');
+      part(config.decisions ? 'decisions.md' : 'alerts.md') +
+      (config.requirements ? part('requirements.md') : '');
     res.set({ 'cache-control': 'no-cache', 'content-type': 'text/markdown; charset=utf-8' }).send(text);
   });
 
@@ -160,7 +161,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
   const acc = (res: Response): Access => (res.locals.access ??= accessFor(store, principalOf(res)));
   const projectQuery = (req: Request) => (typeof req.query.project === 'string' ? req.query.project : undefined);
   /** Fires when project memberships change, so open event streams reconnect with what they may now see. */
-  /** Routes for answering in LaneSignal, off unless LANESIGNAL_DECISIONS is set. */
+  /** Routes for answering in LaneSignal, on unless LANESIGNAL_DECISIONS=false. */
   const decisionsOnly = (_req: Request, _res: Response, next: NextFunction) => {
     if (config.decisions) return next();
     throw new NotFoundError(
