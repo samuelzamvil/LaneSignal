@@ -95,6 +95,20 @@ class FcmSender {
  * notifications: they're an active member with notifications on (it filters out
  * removed and banned people too). Phones registered with a config token get all.
  */
+/**
+ * Where tapping an ntfy notification goes. "app": the LaneSignal Android app through its own
+ * lanesignal:// link (works without a public URL), plus an "Open in browser" button when there is one.
+ * "browser": the web app at the public URL.
+ */
+export function ntfyLinks(config: Pick<Config, 'publicUrl' | 'ntfyOpen'>, route: string) {
+  const web = config.publicUrl ? `${config.publicUrl.replace(/\/$/, '')}/${route}` : null;
+  if (config.ntfyOpen === 'browser') return web ? { click: web } : {};
+  return {
+    click: `lanesignal://${route.replace(/^#\//, '')}`,
+    ...(web ? { actions: [{ action: 'view', label: 'Open in browser', url: web }] } : {}),
+  };
+}
+
 export function startNotifier(
   config: Config,
   store: Store,
@@ -150,7 +164,7 @@ export function startNotifier(
             message: clip(n.body, 2000),
             priority: n.urgent ? 4 : 3,
             tags: [n.urgent ? 'rotating_light' : 'information_source'],
-            ...(config.publicUrl ? { click: `${config.publicUrl.replace(/\/$/, '')}/${n.route}` } : {}),
+            ...ntfyLinks(config, n.route),
           }),
         });
         if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);

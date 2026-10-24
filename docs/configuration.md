@@ -56,6 +56,7 @@ In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "t
 | `LANESIGNAL_NOTIFY_ON` | `notifyOn` | `escalation` | Comma-separated: `escalation`, `blocked`, `completed` |
 | `LANESIGNAL_NTFY_URL` | `ntfyUrl` | | `https://ntfy.example.com/<topic>` |
 | `LANESIGNAL_NTFY_TOKEN` | `ntfyToken` | | If your ntfy topic needs auth |
+| `LANESIGNAL_NTFY_OPEN` | | `app` | What tapping an ntfy notification opens: `app`, the LaneSignal Android app (with an **Open in browser** button when `LANESIGNAL_PUBLIC_URL` is set), or `browser`, the web app at `LANESIGNAL_PUBLIC_URL` |
 | `LANESIGNAL_FCM_SERVICE_ACCOUNT_FILE` | `fcmServiceAccountFile` | | Path to a Firebase service-account JSON, e.g. `/config/fcm-service-account.json` |
 
 See [Android and push](android.md).

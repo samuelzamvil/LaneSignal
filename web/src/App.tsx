@@ -13,6 +13,7 @@ import {
 } from './api.ts';
 import { Chips, GroupHeader, LaneCard, LaneDetail } from './components.tsx';
 import { EscalationCard, EscalationDetail, isCodeOf } from './escalations.tsx';
+import { routeFromAppLink } from './deeplink.ts';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { keyOf } from './merge.ts';
 import { useLiveData, useNow } from './live.ts';
@@ -219,6 +220,19 @@ function Dashboard({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // lanesignal:// links (ntfy notifications) open the screen they name, whether they started the app or not.
+  useEffect(() => {
+    if (!isNative) return;
+    const open = (url: string | undefined) => {
+      const route = url ? routeFromAppLink(url) : null;
+      if (route) navigate(route);
+    };
+    void CapApp.getLaunchUrl().then((launch) => open(launch?.url));
+    const h = CapApp.addListener('appUrlOpen', (e) => open(e.url));
+    return () => void h.then((x) => x.remove());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Android hardware back button: close sheets first, then leave the app.

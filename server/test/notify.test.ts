@@ -57,7 +57,9 @@ test('ntfy gets new escalations only, as UTF-8 JSON, not positions or decisions'
   assert.equal(body.title, `Needs you ${esc.ref} · Auth → OAuth 🚀`);
   assert.equal(body.priority, 4);
   assert.equal(body.message, 'Ship it?');
-  assert.equal(body.click, `https://ls.example/#/esc/${esc.id}`);
+  // Tapping opens the Android app; a button opens the web app instead.
+  assert.equal(body.click, `lanesignal://esc/${esc.id}`);
+  assert.deepEqual(body.actions, [{ action: 'view', label: 'Open in browser', url: `https://ls.example/#/esc/${esc.id}` }]);
   sink.close();
   store.close();
 });
@@ -134,4 +136,11 @@ test('an FCM payload error does not unregister devices; a token error does', asy
     globalThis.fetch = realFetch;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('ntfy taps can open the web app instead, and the app link works without a public URL', async () => {
+  const { ntfyLinks } = await import('../src/notify.ts');
+  assert.deepEqual(ntfyLinks({ publicUrl: 'https://ls.example', ntfyOpen: 'browser' }, '#/esc/e1'), { click: 'https://ls.example/#/esc/e1' });
+  assert.deepEqual(ntfyLinks({ publicUrl: null, ntfyOpen: 'app' }, '#/lane/default/l1'), { click: 'lanesignal://lane/default/l1' });
+  assert.deepEqual(ntfyLinks({ publicUrl: null, ntfyOpen: 'browser' }, '#/esc/e1'), {});
 });
