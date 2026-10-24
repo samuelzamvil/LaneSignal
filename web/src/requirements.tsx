@@ -245,7 +245,8 @@ export function RequirementsPane({
         group: chosen?.id,
         statuses: pendingOnly ? ['pending'] : showOld ? ['pending', 'active', 'superseded', 'retired'] : ['pending', 'active'],
       })
-      .then((r) => !cancelled && (setItems(r), setError(null)))
+      // The server pairs a pending change with the requirement it would replace; this filter shows the pending side only.
+      .then((r) => !cancelled && (setItems(pendingOnly ? r.filter((x) => x.status === 'pending') : r), setError(null)))
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
