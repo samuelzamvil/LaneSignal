@@ -90,6 +90,12 @@ A group can be linked to one or more epic tickets. Epics are long-lived and aren
 - **The epic card shows every lane in its group.** If a group has two epics, both cards show the same lanes.
 - **Agents can raise questions on an epic.** The epic is where durable conversations happen: steering current and future work, and deciding which tickets to create.
 
+- **Every group has an epic.** If none is supplied, the group stands in as its epic, so the same rules hold whether or not there are real epic refs. When a group has several epics, the agent names one.
+- **Requirements stay separate** from epics for now.
+- **The epic message board works like lane messages:** same limits, attachments and quiet pushes. The owner's notes go to the group's overseer, since it's the one changing status.
+- **Closing an epic:** the overseer can request it, and a person approves, the same way as requirements.
+- **Placement:** epic cards replace the group header on the Lanes page (name, ticket link, overseer session, "needs you" count), with the group's lanes below.
+
 ## Delivery
 
 1. **Tickets:** schema, migration, ticket codes, `fill_lane`, filters, export. Server and agent tools first, with the dashboard following.
