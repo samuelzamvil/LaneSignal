@@ -156,3 +156,58 @@ describe('small results', () => {
     assert.equal(all.length, 2);
   });
 });
+
+describe('notices', () => {
+  test('an overseer tells the owner about a milestone; it lands in the lane history, one per minute', async () => {
+    const res = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Merged PR #311' });
+    assert.equal(res.isError, false, res.text);
+    const events = (await srv.call('GET', '/api/lanes/pay-1', ALICE)).body.events;
+    assert.ok(events.some((e: any) => e.kind === 'notice' && e.message === 'Merged PR #311'));
+    const again = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Starting gh:42' });
+    assert.equal(again.isError, true);
+    assert.match(again.text, /One notice per lane per minute/);
+    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'Starting gh:42' })).status, 201);
+    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'x'.repeat(141) })).status, 400);
+    assert.equal((await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-l', message: 'typo' })).isError, true);
+    assert.equal((await srv.call('POST', '/api/lanes/pay-1/notices', ALICE, { message: 'not an agent' })).status, 403);
+  });
+});
+
+describe('an FYI that now needs the owner', () => {
+  test('raising it again as blocking keeps its code, blocks the lane and takes the new fields', async () => {
+    await srv.publish('fyi-lane', { group: 'payments' });
+    const fyi = await ask('fyi-lane', 'CI takes 40 minutes now', AGENT, { blocking: false });
+    assert.equal((await srv.call('GET', '/api/lanes/fyi-lane', ALICE)).body.lane.status, 'active');
+    // Leaving `blocking` out means blocking, as when creating.
+    const res = await srv.call('POST', '/api/escalations', AGENT, {
+      laneId: 'fyi-lane',
+      question: 'CI takes 40 minutes now',
+      recommendation: 'Split the e2e job',
+      options: ['Split', 'Leave it'],
+      recommendedOption: 'Split',
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.id, fyi.id);
+    assert.equal(res.body.upgraded, true);
+    assert.equal(res.body.blocking, true);
+    assert.deepEqual(res.body.options, ['Split', 'Leave it']);
+    assert.equal(res.body.recommendation, 'Split the e2e job');
+    assert.equal((await srv.call('GET', '/api/lanes/fyi-lane', ALICE)).body.lane.status, 'blocked_human');
+    // Again: nothing more to upgrade.
+    assert.equal((await ask('fyi-lane', 'CI takes 40 minutes now')).upgraded, undefined);
+    // A retry of the original FYI call leaves it alone.
+    const fyi2 = await ask('fyi-lane', 'Flaky test in payouts', AGENT, { blocking: false });
+    assert.equal((await ask('fyi-lane', 'Flaky test in payouts', AGENT, { blocking: false })).upgraded, undefined);
+    // Once answered, the same question is a new escalation.
+    await decide(fyi2.id, 'noted');
+    const fresh = await ask('fyi-lane', 'Flaky test in payouts', AGENT, { blocking: true });
+    assert.notEqual(fresh.id, fyi2.id);
+  });
+});
+
+test('a notice is one line', async () => {
+  const res = await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #311\nAlso lots more' });
+  assert.equal(res.status, 400);
+  assert.equal((await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #311' })).status, 201);
+  assert.equal((await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #312' })).status, 409);
+});

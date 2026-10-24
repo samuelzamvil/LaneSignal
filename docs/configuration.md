@@ -53,7 +53,7 @@ In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "t
 
 | Env var | JSON key | Default | Notes |
 |---|---|---|---|
-| `LANESIGNAL_NOTIFY_ON` | `notifyOn` | `escalation` | Comma-separated: `escalation`, `blocked`, `completed` |
+| `LANESIGNAL_NOTIFY_ON` | `notifyOn` | `escalation,notice` | Comma-separated: `escalation` (new questions, and FYIs that become blocking), `notice` (milestones overseers send with `notify_owner`), `blocked`, `completed`. A list set before notices existed (e.g. `escalation` alone) leaves them out: add `notice` |
 | `LANESIGNAL_NTFY_URL` | `ntfyUrl` | | `https://ntfy.example.com/<topic>` |
 | `LANESIGNAL_NTFY_TOKEN` | `ntfyToken` | | If your ntfy topic needs auth |
 | `LANESIGNAL_NTFY_OPEN` | | `app` | What tapping an ntfy notification opens: `app`, the LaneSignal Android app (with an **Open in browser** button when `LANESIGNAL_PUBLIC_URL` is set), or `browser`, the web app at `LANESIGNAL_PUBLIC_URL` |

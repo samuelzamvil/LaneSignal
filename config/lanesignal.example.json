@@ -10,7 +10,8 @@
   "defaultTicketSystem": "redmine",
   "staleMinutes": 30,
   "notifyOn": [
-    "escalation"
+    "escalation",
+    "notice"
   ],
   "fcmServiceAccountFile": "/config/fcm-service-account.json"
 }

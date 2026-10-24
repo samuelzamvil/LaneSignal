@@ -249,11 +249,12 @@ export const pub = {
  * An escalation as agents need it after asking: what was decided, not the whole question echoed
  * back (context can run to pages). get_escalation and GET /api/escalations/:id return everything.
  */
-export const brief = (e: Escalation & { duplicate?: boolean }) =>
+export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean }) =>
   compact({
     id: e.id,
     ref: e.ref,
     duplicate: e.duplicate,
+    upgraded: e.upgraded,
     projectKey: e.projectKey,
     laneId: e.laneId,
     state: e.state,
