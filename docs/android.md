@@ -11,7 +11,7 @@ Download it from the repository's **Releases** page, on the phone:
 
 Open the downloaded `lanesignal-<version>.apk` and allow *Install unknown apps* for your browser or file manager when Android asks. The release notes say the same.
 
-Without the signing secrets below, the APK is **unsigned**: not signed with a release key, only with a throwaway debug key per build, so it can only be sideloaded. Android also refuses to install one such build over another, so uninstall the old version before installing a new one, then sign in again. Pull-request builds are only attached to their CI run (Actions → the run → **Artifacts**), not released.
+Without the signing secrets below, the APK is **unsigned**: not signed with a release key, only with a throwaway debug key per build, so it can only be sideloaded. Android also refuses to install one such build over another, so uninstall the old version before installing a new one, then sign in again. Pull-request builds are only attached to their CI run (Actions → the run → **Artifacts**, kept for 7 days), not released.
 
 To build it yourself you need JDK 21 and the Android SDK (platform 36):
 

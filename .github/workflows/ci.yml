@@ -130,6 +130,10 @@ jobs:
             web/android/app/build/outputs/apk/debug/*.apk
             web/android/app/build/outputs/apk/release/*-release.apk
           if-no-files-found: error
+          # The release job takes it from here within the same run; a public repo's artifacts
+          # (pull-request builds included) needn't linger for GitHub's default 90 days. After a week,
+          # re-run all jobs (or Run workflow) to release again: the release job alone finds nothing.
+          retention-days: 7
 
   # Publishes the APK to the Releases page: main updates the "latest" pre-release, a v* tag gets its own.
   # A manual run (Actions → CI → Run workflow) republishes too, e.g. right after the signing key is set up.
