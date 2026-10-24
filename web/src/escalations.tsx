@@ -4,7 +4,7 @@ import { AttachmentList } from './attachments.tsx';
 import { Links, RichText, TicketLink } from './components.tsx';
 import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
-import { stepTo } from './nav.ts';
+import { openItem, stepTo } from './nav.ts';
 import { toast } from './toast.tsx';
 
 /** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
@@ -419,7 +419,7 @@ export function EscalationCard({
   /** People answer in LaneSignal; otherwise the card only tells them, and they answer in the agent's session. */
   decisions: boolean;
 }) {
-  const open = () => (location.hash = `#/esc/${esc.id}`);
+  const open = () => openItem(`#/esc/${esc.id}`);
   return (
     <article
       className={`esc-card ${esc.state}${esc.blocking ? '' : ' fyi'}${esc.state === 'open' && esc.turn === 'agent' ? ' agent-turn' : ''}`}
@@ -478,6 +478,69 @@ export function EscalationCard({
         </>
       )}
     </article>
+  );
+}
+
+/** The inbox's list layout: one line per escalation; tapping opens it. */
+export function EscalationRow({
+  esc,
+  lane,
+  now,
+  showProject,
+  selected,
+}: {
+  esc: Escalation;
+  lane: Lane | undefined;
+  now: number;
+  showProject: boolean;
+  /** It's the one open beside the list. */
+  selected: boolean;
+}) {
+  const href = `#/esc/${encodeURIComponent(esc.id)}`;
+  const status =
+    esc.state === 'decided'
+      ? { label: esc.decision ?? 'Decided', tone: 'muted' }
+      : esc.turn === 'agent'
+        ? { label: "Agent's turn", tone: 'info' }
+        : esc.lastMessage?.from === 'agent'
+          ? { label: 'Replied', tone: 'danger' }
+          : !esc.blocking
+            ? { label: 'FYI', tone: 'info' }
+            : { label: 'Needs you', tone: 'danger' };
+  return (
+    <a
+      className={`esc-row ${esc.state}${selected ? ' selected' : ''}`}
+      href={href}
+      aria-current={selected ? 'page' : undefined}
+      onClick={(e) => {
+        e.preventDefault();
+        openItem(href);
+      }}
+    >
+      <span className="ref">{showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref}</span>
+      <span className="esc-row-main">
+        <span className="esc-row-question">{esc.question}</span>
+        <span className="muted esc-row-where">
+          {lane?.name ?? esc.laneId}
+          {esc.attachments.length > 0 && (
+            <>
+              {' · '}
+              <span aria-hidden>📎</span>
+              <span className="sr-only">attachments</span>
+            </>
+          )}
+          {esc.messageCount > 0 && (
+            <>
+              {` · ${esc.messageCount} `}
+              <span aria-hidden>💬</span>
+              <span className="sr-only">messages</span>
+            </>
+          )}{' '}
+          · {ago(esc.updatedAt, now)}
+        </span>
+      </span>
+      <span className={`pill tone-${status.tone}`}>{status.label}</span>
+    </a>
   );
 }
 

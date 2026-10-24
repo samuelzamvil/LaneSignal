@@ -473,6 +473,24 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     );
   });
 
+  /** Closed escalations for the History view: search, outcome and group filters, latest first, in pages. */
+  app.get('/api/history', any, (req, res) => {
+    const query = parse(s.historyQuery, req.query);
+    const a = acc(res);
+    const group = query.group ? q(a.pick(query.project, { group: query.group }), query.group) : undefined;
+    if (group && !store.groupExists(group)) throw new NotFoundError(`Group "${query.group}" not found`);
+    const states = query.outcome === 'answered' ? ['acknowledged' as const] : query.outcome === 'dismissed' ? ['withdrawn' as const] : undefined;
+    const page = store.historyEscalations({
+      projects: a.scope(query.project),
+      query: query.q,
+      groupId: group,
+      states,
+      before: query.before_at && query.before_id ? { at: query.before_at, id: query.before_id } : undefined,
+      limit: query.limit,
+    });
+    res.json({ items: page.items.map(pub.escalation), next: page.next });
+  });
+
   /** 201 when created; 200 with `duplicate: true` when the same open question already exists (a retry). */
   app.post('/api/escalations', agent, (req, res) => {
     const input = parse(s.escalationInput, req.body);

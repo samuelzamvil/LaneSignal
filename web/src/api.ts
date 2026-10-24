@@ -137,6 +137,16 @@ export function createClient(conn: Connection) {
         `/api/lanes/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`,
       ),
     escalation: (id: string) => request<Escalation>('GET', `/api/escalations/${encodeURIComponent(id)}`),
+    /** Closed escalations, latest first. `before` is the previous page's `next`. */
+    history: (f: { q?: string; project?: string; group?: string; outcome?: 'answered' | 'dismissed'; before?: { at: string; id: string } }) => {
+      const qs = new URLSearchParams();
+      if (f.q) qs.set('q', f.q);
+      if (f.project) qs.set('project', f.project);
+      if (f.group) qs.set('group', f.group);
+      if (f.outcome) qs.set('outcome', f.outcome);
+      if (f.before) (qs.set('before_at', f.before.at), qs.set('before_id', f.before.id));
+      return request<{ items: Escalation[]; next: { at: string; id: string } | null }>('GET', `/api/history?${qs}`);
+    },
     requirements: (f: { q?: string; tags?: string[]; group?: string; project?: string; statuses?: RequirementStatus[] }) => {
       const p = new URLSearchParams();
       if (f.project) p.set('project', f.project);
