@@ -8,6 +8,7 @@ import {
   type ProjectAccess,
   type ProjectMember,
   type ProjectRole,
+  type TrmnlView,
 } from './api.ts';
 import { absolute, ago } from './format.ts';
 import { policyFor } from './policy.ts';
@@ -374,6 +375,140 @@ function ProjectSettings({ client, project, onChanged }: { client: Client; proje
   );
 }
 
+/**
+ * The project's TRMNL screen: LaneSignal pushes its latest notification and the other pending
+ * escalations to a TRMNL private plugin's webhook. Project admins set it up here.
+ */
+function TrmnlSettings({ client, project }: { client: Client; project: ProjectAccess }) {
+  const load = useCallback(() => client.trmnl(project.id), [client, project.id]);
+  const { data: view, error, reload } = useAsync(load);
+  const [url, setUrl] = useState('');
+  const [enabled, setEnabled] = useState(true);
+  const [includeNotifications, setIncludeNotifications] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setEnabled(view?.configured ? view.enabled : true);
+    setIncludeNotifications(view?.configured ? view.includeNotifications : false);
+  }, [view]);
+
+  async function run(fn: () => Promise<string | null>) {
+    setBusy(true);
+    setStatus(null);
+    try {
+      setStatus(await fn());
+      reload();
+    } catch (err) {
+      setStatus(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const save = (e: React.FormEvent) => {
+    e.preventDefault();
+    void run(async () => {
+      await client.saveTrmnl(project.id, { ...(url.trim() && { webhookUrl: url.trim() }), enabled, includeNotifications });
+      setUrl('');
+      return enabled ? 'Saved. The screen updates within a few minutes.' : 'Saved. Pushes are paused.';
+    });
+  };
+  const sendNow = () =>
+    void run(async () => {
+      const r = await client.sendTrmnl(project.id);
+      return r.ok ? 'Sent. TRMNL shows it on its next refresh.' : (r.error ?? 'TRMNL refused the push.');
+    });
+  const download = (
+    <button
+      type="button"
+      className="ghost"
+      disabled={busy}
+      onClick={() =>
+        void run(async () => {
+          await client.download(`/api/projects/${encodeURIComponent(project.id)}/trmnl/plugin.zip`, `lanesignal-trmnl-${project.id}.zip`);
+          return null;
+        })
+      }
+    >
+      lanesignal-trmnl-{project.id}.zip
+    </button>
+  );
+  const remove = () =>
+    confirm(`Stop pushing ${project.name} to TRMNL and forget its webhook URL?`) &&
+    void run(async () => {
+      await client.removeTrmnl(project.id);
+      return 'Removed. Delete the plugin in TRMNL too.';
+    });
+
+  return (
+    <div className="stack trmnl-settings">
+      <h4>TRMNL screen</h4>
+      <p className="hint">
+        Shows this project's latest notification as a card, with its other pending escalations beside it, on a TRMNL. LaneSignal
+        pushes to TRMNL; TRMNL never connects to this server.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {view && !view.configured && (
+        <ol className="hint steps">
+          <li>
+            {isNative ? 'Download the plugin from the web app (Settings → Projects).' : <>Download the plugin: {download}</>}
+          </li>
+          <li>In TRMNL, open Plugins → Private Plugin → Import new, and choose that file.</li>
+          <li>Open the new plugin's settings, copy its Webhook URL and paste it below.</li>
+        </ol>
+      )}
+      {view && (
+        <form className="stack" onSubmit={save}>
+          {view.configured && (
+            <p className="muted small">
+              Webhook: <code>{view.webhookUrl}</code>
+            </p>
+          )}
+          <input
+            type="url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder={view.configured ? 'New URL to replace it' : 'https://trmnl.com/api/custom_plugins/…'}
+            aria-label="TRMNL webhook URL"
+            autoCapitalize="off"
+            autoComplete="off"
+            required={!view.configured}
+          />
+          <label className="check">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Push to TRMNL
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={includeNotifications} onChange={(e) => setIncludeNotifications(e.target.checked)} />{' '}
+            Lane updates on the card too (milestones, completed, blocked), not only escalations
+          </label>
+          <div className="actions">
+            <button className="primary" disabled={busy}>
+              Save
+            </button>
+            {view.configured && (
+              <>
+                <button type="button" className="ghost" disabled={busy || !view.enabled} onClick={sendNow}>
+                  Send now
+                </button>
+                <button type="button" className="ghost danger" disabled={busy} onClick={remove}>
+                  Remove
+                </button>
+              </>
+            )}
+          </div>
+        </form>
+      )}
+      {view?.configured && !isNative && <p className="hint">Plugin file for TRMNL: {download}</p>}
+      {view?.configured && (
+        <p className="muted small">
+          {view.lastPushAt ? `Last push ${ago(view.lastPushAt, Date.now())}.` : 'Nothing pushed yet.'}
+          {view.lastError && view.lastErrorAt && ` Last problem (${ago(view.lastErrorAt, Date.now())}): ${view.lastError}`}
+        </p>
+      )}
+      {status && <p className="hint">{status}</p>}
+    </div>
+  );
+}
+
 /** Instance admins start new projects; they become its admin. */
 function NewProject({ client, onChanged }: { client: Client; onChanged: () => void }) {
   const [form, setForm] = useState({ id: '', key: '', name: '' });
@@ -460,6 +595,7 @@ export function ProjectsSection({
                   <summary>Members{p.role === 'admin' ? ' and settings' : ''}</summary>
                   {p.role === 'admin' && <ProjectSettings client={client} project={p} onChanged={onChanged} />}
                   <ProjectMembers client={client} project={p} me={me} />
+                  {p.role === 'admin' && <TrmnlSettings client={client} project={p} />}
                 </details>
               )}
             </div>

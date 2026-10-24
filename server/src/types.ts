@@ -280,6 +280,38 @@ export interface Requirement {
   updatedAt: string;
 }
 
+/** What the TRMNL screen's card shows: an escalation (drawn from its current state), or a notification. */
+export type TrmnlCard =
+  | { kind: 'escalation'; id: string; at: string }
+  | { kind: 'notice' | 'completed' | 'blocked'; laneId: string; title: string; body: string; at: string };
+
+/** A project's TRMNL screen: a private plugin LaneSignal pushes to. */
+export interface TrmnlSetup {
+  project: string;
+  webhookUrl: string;
+  enabled: boolean;
+  /** Lane milestones, completions and blocks take the card too, not only escalations. */
+  includeNotifications: boolean;
+  card: TrmnlCard | null;
+  lastPushAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  updatedAt: string;
+}
+
+/** A project's TRMNL setup as its admins see it: the webhook URL is masked. */
+export type TrmnlView =
+  | { configured: false }
+  | ({ configured: true } & Pick<TrmnlSetup, 'webhookUrl' | 'enabled' | 'includeNotifications' | 'lastPushAt' | 'lastError' | 'lastErrorAt' | 'updatedAt'>);
+
+/** How TRMNL answered a push. */
+export interface TrmnlPushResult {
+  ok: boolean;
+  /** TRMNL's HTTP status, when it answered. */
+  status?: number;
+  error?: string;
+}
+
 /** A milestone an overseer tells the owner about: a quiet push, kept in the lane's history. */
 export interface Notice {
   project: string;

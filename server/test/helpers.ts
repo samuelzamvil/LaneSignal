@@ -5,13 +5,17 @@ import { createApp } from '../src/app.ts';
 import { loadConfig } from '../src/config.ts';
 import { Store } from '../src/store.ts';
 import { ticketResolver } from '../src/tickets.ts';
+import { TrmnlPusher, type TrmnlOptions } from '../src/trmnl.ts';
 
 export const AGENT = 'agent-token-0123456789';
 export const REVIEWER = 'review-token-0123456789';
 export const ALICE = 'alice-token-0123456789';
 
-/** A server on a random port with static tokens: agents "overseer" and "reviewer", human "alice". */
-export async function startServer(env: Record<string, string> = {}) {
+/**
+ * A server on a random port with static tokens: agents "overseer" and "reviewer", human "alice".
+ * With `trmnl`, it pushes TRMNL screens through the given (fake) fetch.
+ */
+export async function startServer(env: Record<string, string> = {}, opts: { trmnl?: TrmnlOptions } = {}) {
   const config = loadConfig({
     LANESIGNAL_DATA_DIR: '/nonexistent-unused',
     LANESIGNAL_CONFIG: '/nonexistent.json',
@@ -29,7 +33,9 @@ export async function startServer(env: Record<string, string> = {}) {
   });
   const accounts = await createAccounts(config, ':memory:');
   const skillFile = fileURLToPath(new URL('../../skills/lanesignal/SKILL.md', import.meta.url));
-  const server = createApp({ config, store, accounts, push: { fcm: false, ntfy: false }, skillFile }).listen(0);
+  const trmnl = opts.trmnl ? new TrmnlPusher(store, opts.trmnl).start() : undefined;
+  const trmnlDir = fileURLToPath(new URL('../../integrations/trmnl', import.meta.url));
+  const server = createApp({ config, store, accounts, push: { fcm: false, ntfy: false }, skillFile, trmnl, trmnlDir }).listen(0);
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
@@ -102,6 +108,7 @@ export async function startServer(env: Record<string, string> = {}) {
     tool,
     publish,
     close() {
+      trmnl?.stop();
       server.closeAllConnections();
       server.close();
     },

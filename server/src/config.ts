@@ -62,6 +62,8 @@ export interface Config {
   decisions: boolean;
   /** The requirements register (on by default). */
   requirements: boolean;
+  /** Hosts a project's TRMNL webhook URL may point at (TRMNL's own, plus self-hosted TRMNL servers). */
+  trmnlHosts: string[];
 }
 
 /** Optional JSON file (usually on the /config volume). Env vars win over it. */
@@ -80,6 +82,9 @@ interface FileConfig {
   ntfyToken?: string;
   eventRetention?: number;
 }
+
+/** TRMNL's own servers, always allowed for webhooks (HTTPS only). */
+export const TRMNL_HOSTS = ['trmnl.com', 'usetrmnl.com'];
 
 const list = (v: string | undefined) =>
   v
@@ -230,6 +235,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     eventRetention: int('LANESIGNAL_EVENT_RETENTION', env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention, 200, 1, 100_000),
     decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, true),
     requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),
+    trmnlHosts: [...TRMNL_HOSTS, ...(list(env.LANESIGNAL_TRMNL_HOSTS) ?? []).map((h) => h.toLowerCase())],
   };
 }
 

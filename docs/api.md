@@ -68,6 +68,12 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `PUT /api/projects/:id/members/:userId` | project admin | `{role: "admin" \| "member"}`: add a person or change their role |
 | `DELETE /api/projects/:id/members/:userId` | project admin | Remove a member |
 | `PUT /api/projects/:id/notifications` | person | `{enabled}`: push for this project on your own devices |
+| `GET /api/projects/:id/trmnl` | project admin | The project's [TRMNL screen](trmnl.md): `{configured: false}`, or `{configured: true, webhookUrl, enabled, includeNotifications, lastPushAt, lastError, lastErrorAt, updatedAt}` with the webhook URL's plugin id hidden |
+| `PUT /api/projects/:id/trmnl` | project admin | `{webhookUrl?, enabled, includeNotifications}`. `webhookUrl` is needed the first time; leave it out to keep the saved one. It must be `https://trmnl.com/…` (or a host in `LANESIGNAL_TRMNL_HOSTS`) |
+| `DELETE /api/projects/:id/trmnl` | project admin | Stops pushing and forgets the URL |
+| `POST /api/projects/:id/trmnl/send` | project admin | Pushes now: `{ok, status?, error?, setup}` with TRMNL's answer |
+| `GET /api/projects/:id/trmnl/preview` | project admin | `{merge_variables}`: the data the next push sends |
+| `GET /api/projects/:id/trmnl/plugin.zip` | project admin | The private plugin to import into TRMNL, named after the project |
 | `PUT /api/settings/push` | instance admin | `{quietAlerts}`: send alerts as regular notifications instead of high priority (shown in `GET /api/config`) |
 | `GET /api/people` | project admin | Everyone with an account, for adding members |
 | `GET /api/events` | any | Server-Sent Events: `group`, `group_deleted`, `lane`, `lane_deleted`, `escalation`. Only your projects' events. The stream ends when memberships or projects change; reconnect and re-snapshot. Heartbeat every 25s. `?access_token=` is accepted here only, for clients that can't set headers |
