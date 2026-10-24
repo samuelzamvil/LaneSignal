@@ -1981,3 +1981,59 @@ a.button.primary {
   display: block;
   margin: 12px auto;
 }
+
+/* Lanes as a list: one line each. */
+.lane-list {
+  border-top: 1px solid var(--border);
+}
+
+.lane-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.lane-row:hover {
+  background: var(--surface);
+}
+
+.lane-row.needs-human {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.lane-row .ref {
+  min-width: 2em;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.lane-row-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.lane-row-name {
+  font-weight: 600;
+}
+
+.lane-row-name,
+.lane-row-activity {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lane-row-activity,
+.lane-row-when {
+  font-size: 0.8rem;
+}

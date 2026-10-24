@@ -12,7 +12,7 @@ import {
   type Principal,
   type PublicConfig,
 } from './api.ts';
-import { Chips, GroupHeader, LaneCard, LaneDetail } from './components.tsx';
+import { Chips, GroupHeader, LaneCard, LaneDetail, LaneRow } from './components.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
 import { routeFromAppLink } from './deeplink.ts';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
@@ -110,12 +110,11 @@ function useFilters(): [Filters, (f: Partial<Filters>) => void] {
 const toggle = <T,>(list: T[], v: T) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
 /** Which project the views show: '' for all of them (the combined view). Remembered per device. */
-const LAYOUT_KEY = 'lanesignal.inboxLayout';
-/** Inbox as cards (with answer buttons) or a compact list; remembered on this device. */
-function useInboxLayout(): ['cards' | 'list', (l: 'cards' | 'list') => void] {
+/** Cards or a compact list, for the inbox or the lanes; remembered on this device. */
+function useLayout(key: string): ['cards' | 'list', (l: 'cards' | 'list') => void] {
   const [layout, setLayout] = useState<'cards' | 'list'>(() => {
     try {
-      return localStorage.getItem(LAYOUT_KEY) === 'list' ? 'list' : 'cards';
+      return localStorage.getItem(key) === 'list' ? 'list' : 'cards';
     } catch {
       return 'cards';
     }
@@ -125,7 +124,7 @@ function useInboxLayout(): ['cards' | 'list', (l: 'cards' | 'list') => void] {
     (l) => {
       setLayout(l);
       try {
-        localStorage.setItem(LAYOUT_KEY, l);
+        localStorage.setItem(key, l);
       } catch {
         /* storage unavailable: keep it for this visit */
       }
@@ -298,7 +297,8 @@ function Dashboard({
   }, []);
 
   const [projectChoice, setProjectFilter] = useProjectFilter();
-  const [inboxLayout, setInboxLayout] = useInboxLayout();
+  const [inboxLayout, setInboxLayout] = useLayout('lanesignal.inboxLayout');
+  const [laneLayout, setLaneLayout] = useLayout('lanesignal.laneLayout');
   // Only a project the caller can still see filters anything; with one project there's nothing to pick.
   const multiProject = live.projects.length > 1;
   const projectFilter = multiProject && live.projects.some((p) => p.id === projectChoice) ? projectChoice : '';
@@ -547,9 +547,19 @@ function Dashboard({
 
   const lanePane = (
     <section className="pane lanes" aria-label="Lanes">
-      <h2>
-        Lanes <span className="count">{visible.length}</span>
-      </h2>
+      <div className="pane-head">
+        <h2>
+          Lanes <span className="count">{visible.length}</span>
+        </h2>
+        <span className="layout-toggle" role="group" aria-label="Show as">
+          <button className={laneLayout === 'cards' ? 'on' : ''} aria-pressed={laneLayout === 'cards'} onClick={() => setLaneLayout('cards')}>
+            Cards
+          </button>
+          <button className={laneLayout === 'list' ? 'on' : ''} aria-pressed={laneLayout === 'list'} onClick={() => setLaneLayout('list')}>
+            List
+          </button>
+        </span>
+      </div>
       <div className="filters">
         {(groupIds.length > 1 || activeGroups.length > 0) && (
           <Chips
@@ -609,8 +619,11 @@ function Dashboard({
                   </h3>
                 )
               )}
-              <div className="lane-grid">
-                {sec.lanes.map((l) => (
+              <div className={laneLayout === 'list' ? 'lane-list' : 'lane-grid'}>
+                {sec.lanes.map((l) =>
+                  laneLayout === 'list' ? (
+                    <LaneRow key={keyOf(l.project, l.id)} lane={l} now={now} onOpen={() => navigate(laneRoute(l.project, l.id))} />
+                  ) : (
                   <LaneCard
                     key={keyOf(l.project, l.id)}
                     lane={l}
@@ -619,7 +632,8 @@ function Dashboard({
                     groupName={filters.arrange === 'group' || !l.group ? null : groupName(laneGroupKey(l))}
                     onOpen={() => navigate(laneRoute(l.project, l.id))}
                   />
-                ))}
+                  ),
+                )}
               </div>
             </div>
           ),

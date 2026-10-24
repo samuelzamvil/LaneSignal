@@ -51,6 +51,21 @@ export function RichText({ text }: { text: string }) {
   );
 }
 
+/** The lanes' list layout: one line per lane; tapping opens it. */
+export function LaneRow({ lane, now, onOpen }: { lane: Lane; now: number; onOpen: () => void }) {
+  return (
+    <button className={`lane-row${needsHuman(lane) ? ' needs-human' : ''}`} onClick={onOpen}>
+      <span className="ref">{lane.letter ?? ''}</span>
+      <span className="lane-row-main">
+        <span className="lane-row-name">{lane.name}</span>
+        <span className="muted lane-row-activity">{lane.activity ?? lane.id}</span>
+      </span>
+      <StatusPill status={lane.status} />
+      <span className="muted lane-row-when">{ago(lane.updatedAt, now)}</span>
+    </button>
+  );
+}
+
 export function LaneCard({
   lane,
   now,
