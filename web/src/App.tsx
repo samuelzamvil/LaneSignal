@@ -7,12 +7,13 @@ import {
   saveConnection,
   type Client,
   type Connection,
+  type Escalation,
   type LaneStatus,
   type Principal,
   type PublicConfig,
 } from './api.ts';
 import { Chips, GroupHeader, LaneCard, LaneDetail } from './components.tsx';
-import { EscalationCard, EscalationDetail, isCodeOf } from './escalations.tsx';
+import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
 import { routeFromAppLink } from './deeplink.ts';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { keyOf } from './merge.ts';
@@ -20,13 +21,14 @@ import { useLiveData, useNow } from './live.ts';
 import { backLabel, closeOverlay, closeTo, trackEntry } from './nav.ts';
 import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
+import { HistoryPane } from './history.tsx';
 import { RequirementsPane } from './requirements.tsx';
 import { Toaster } from './toast.tsx';
 import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection, ProjectsSection } from './settings.tsx';
 
 // ---- routing (hash based, so it works from file-less Capacitor URLs and push deep links) ----
 
-type View = 'inbox' | 'lanes' | 'reqs' | 'settings';
+type View = 'inbox' | 'lanes' | 'reqs' | 'history' | 'settings';
 interface Route {
   view: View;
   laneId?: string;
@@ -51,9 +53,14 @@ function parseRoute(hash: string): Route {
   if (a === 'lane' && lb && lc) return { view: 'lanes', laneProject: lb, laneId: lc };
   if (a === 'lane' && lb && !c) return { view: 'lanes', laneId: lb };
   if (a === 'esc' && b) return { view: 'inbox', escId: b };
-  if (a === 'lanes' || a === 'reqs' || a === 'settings') return { view: a };
+  // A closed escalation opened from History: closing it goes back there.
+  if (a === 'history' && b) return { view: 'history', escId: b };
+  if (a === 'lanes' || a === 'reqs' || a === 'history' || a === 'settings') return { view: a };
   return { view: 'inbox' };
 }
+
+/** Where closing an escalation goes when there's no in-app history to step back to. */
+const escFallback = (r: Route) => (r.view === 'history' ? '#/history' : '#/');
 
 function useRoute(): [Route, (r: string) => void] {
   const [route, setRoute] = useState(() => parseRoute(location.hash));
@@ -103,6 +110,29 @@ function useFilters(): [Filters, (f: Partial<Filters>) => void] {
 const toggle = <T,>(list: T[], v: T) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
 /** Which project the views show: '' for all of them (the combined view). Remembered per device. */
+const LAYOUT_KEY = 'lanesignal.inboxLayout';
+/** Inbox as cards (with answer buttons) or a compact list; remembered on this device. */
+function useInboxLayout(): ['cards' | 'list', (l: 'cards' | 'list') => void] {
+  const [layout, setLayout] = useState<'cards' | 'list'>(() => {
+    try {
+      return localStorage.getItem(LAYOUT_KEY) === 'list' ? 'list' : 'cards';
+    } catch {
+      return 'cards';
+    }
+  });
+  return [
+    layout,
+    (l) => {
+      setLayout(l);
+      try {
+        localStorage.setItem(LAYOUT_KEY, l);
+      } catch {
+        /* storage unavailable: keep it for this visit */
+      }
+    },
+  ];
+}
+
 const PROJECT_KEY = 'lanesignal.project';
 function useProjectFilter(): [string, (p: string) => void] {
   const [p, setP] = useState(() => {
@@ -210,6 +240,17 @@ function Dashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, config]);
 
+  // Desktop: the open escalation or lane sits beside the list, under the top bar, so CSS needs its height.
+  useEffect(() => {
+    const bar = document.querySelector('.topbar');
+    if (!bar) return;
+    const set = () => document.documentElement.style.setProperty('--topbar-h', `${bar.getBoundingClientRect().height}px`);
+    set();
+    const observer = new ResizeObserver(set);
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, []);
+
   // Escape closes an open sheet (desktop).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -217,7 +258,7 @@ function Dashboard({
       // Escape while typing an answer shouldn't throw the draft away.
       if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select')) return;
       const r = parseRoute(location.hash);
-      if (r.escId) closeTo('#/');
+      if (r.escId) closeTo(escFallback(r));
       else if (r.laneId) closeTo('#/lanes');
     };
     window.addEventListener('keydown', onKey);
@@ -245,7 +286,7 @@ function Dashboard({
       // other screens step back.
       if (closeOverlay()) return;
       const r = parseRoute(location.hash);
-      if (r.escId) closeTo('#/');
+      if (r.escId) closeTo(escFallback(r));
       else if (r.laneId) closeTo('#/lanes');
       else if (location.hash && location.hash !== '#/') history.back();
       else void CapApp.minimizeApp();
@@ -254,6 +295,7 @@ function Dashboard({
   }, []);
 
   const [projectChoice, setProjectFilter] = useProjectFilter();
+  const [inboxLayout, setInboxLayout] = useInboxLayout();
   // Only a project the caller can still see filters anything; with one project there's nothing to pick.
   const multiProject = live.projects.length > 1;
   const projectFilter = multiProject && live.projects.some((p) => p.id === projectChoice) ? projectChoice : '';
@@ -406,10 +448,37 @@ function Dashboard({
   }
   const completedCount = lanes.filter((l) => l.status === 'completed').length;
 
+  /** One escalation in the inbox: a card with the answer buttons, or a one-line row. */
+  const escItem = (e: Escalation, seq?: { index: number; total: number }) =>
+    inboxLayout === 'list' ? (
+      <EscalationRow key={e.id} esc={e} lane={laneOf(e)} now={now} showProject={showProject} />
+    ) : (
+      <EscalationCard
+        key={e.id}
+        esc={e}
+        seq={seq}
+        lane={laneOf(e)}
+        group={groupOfLane(laneOf(e))}
+        now={now}
+        client={client}
+        staleMinutes={config.staleMinutes}
+        showProject={showProject}
+        decisions={config.decisions}
+      />
+    );
+
   const inbox = (
-    <section className="pane inbox" aria-label="Needs you">
+    <section className={`pane inbox layout-${inboxLayout}`} aria-label="Needs you">
       <h2>
         Needs you <span className={`count${open.length ? ' hot' : ''}`}>{open.length}</span>
+        <span className="layout-toggle" role="group" aria-label="Show as">
+          <button className={inboxLayout === 'cards' ? 'on' : ''} aria-pressed={inboxLayout === 'cards'} onClick={() => setInboxLayout('cards')}>
+            Cards
+          </button>
+          <button className={inboxLayout === 'list' ? 'on' : ''} aria-pressed={inboxLayout === 'list'} onClick={() => setInboxLayout('list')}>
+            List
+          </button>
+        </span>
       </h2>
       {open.length === 0 && blockedLanes.length === 0 && (
         isLive && live.projects.length === 0 ? (
@@ -423,18 +492,7 @@ function Dashboard({
         )
       )}
       {open.map((e) => (
-        <EscalationCard
-          key={e.id}
-          esc={e}
-          seq={seqOf(e)}
-          lane={laneOf(e)}
-          group={groupOfLane(laneOf(e))}
-          now={now}
-          client={client}
-          staleMinutes={config.staleMinutes}
-          showProject={showProject}
-          decisions={config.decisions}
-        />
+        escItem(e, seqOf(e))
       ))}
       {blockedLanes.length > 0 && (
         <>
@@ -457,17 +515,7 @@ function Dashboard({
             Agent's turn · replying to you <span className="count">{replying.length}</span>
           </h3>
           {replying.map((e) => (
-            <EscalationCard
-              key={e.id}
-              esc={e}
-              lane={laneOf(e)}
-              group={groupOfLane(laneOf(e))}
-              now={now}
-              client={client}
-              staleMinutes={config.staleMinutes}
-              showProject={showProject}
-              decisions={config.decisions}
-            />
+            escItem(e)
           ))}
         </>
       )}
@@ -477,18 +525,7 @@ function Dashboard({
             FYI · agents keep working <span className="count">{fyi.length}</span>
           </h3>
           {fyi.map((e) => (
-            <EscalationCard
-              key={e.id}
-              esc={e}
-              seq={seqOf(e)}
-              lane={laneOf(e)}
-              group={groupOfLane(laneOf(e))}
-              now={now}
-              client={client}
-              staleMinutes={config.staleMinutes}
-              showProject={showProject}
-              decisions={config.decisions}
-            />
+            escItem(e, seqOf(e))
           ))}
         </>
       )}
@@ -496,17 +533,7 @@ function Dashboard({
         <>
           <h3 className="subhead">Decided · awaiting agent</h3>
           {decided.map((e) => (
-            <EscalationCard
-              key={e.id}
-              esc={e}
-              lane={laneOf(e)}
-              group={groupOfLane(laneOf(e))}
-              now={now}
-              client={client}
-              staleMinutes={config.staleMinutes}
-              showProject={showProject}
-              decisions={config.decisions}
-            />
+            escItem(e)
           ))}
         </>
       )}
@@ -671,6 +698,9 @@ function Dashboard({
           <a href="#/lanes" className={route.view === 'lanes' || route.view === 'inbox' ? 'on' : ''}>
             Lanes
           </a>
+          <a href="#/history" className={route.view === 'history' ? 'on' : ''}>
+            History
+          </a>
           {config.requirements && (
             <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
               Requirements
@@ -696,7 +726,20 @@ function Dashboard({
         </a>
       )}
       <main className="panes">
-        {inbox}
+        {route.view === 'history' ? (
+          <HistoryPane
+            client={client}
+            groups={live.groups}
+            lanes={live.lanes}
+            projects={live.projects}
+            project={projectFilter}
+            groupLabel={config.groupLabel}
+            now={now}
+            version={String(live.escalations.size)}
+          />
+        ) : (
+          inbox
+        )}
         {route.view === 'settings' ? (
           settings
         ) : route.view === 'reqs' && config.requirements ? (
@@ -721,6 +764,9 @@ function Dashboard({
         <a href="#/lanes" className={route.view === 'lanes' ? 'on' : ''}>
           <span className="icon">☰</span>Lanes
         </a>
+        <a href="#/history" className={route.view === 'history' ? 'on' : ''}>
+          <span className="icon">↺</span>History
+        </a>
         {config.requirements && (
           <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
             <span className="icon">§</span>Requirements
@@ -736,15 +782,15 @@ function Dashboard({
           client={client}
           lanes={live.lanes}
           groups={live.groups}
-          laneOpenIds={escLaneKey ? (openByLane.get(escLaneKey) ?? []).map((e) => e.id) : []}
+          laneOpenIds={escLaneKey && route.view !== 'history' ? (openByLane.get(escLaneKey) ?? []).map((e) => e.id) : []}
           showProject={multiProject}
           decisions={config.decisions}
           currentId={routeEsc?.id}
           version={escVersion}
           now={now}
           staleMinutes={config.staleMinutes}
-          onClose={() => closeTo('#/')}
-          backTo={backLabel('#/')}
+          onClose={() => closeTo(escFallback(route))}
+          backTo={backLabel(escFallback(route))}
         />
       )}
       {route.laneId && routeLaneProject && (

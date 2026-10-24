@@ -13,6 +13,7 @@ const NAMES: Record<string, string> = {
   lane: 'Lane',
   esc: 'Escalation',
   reqs: 'Requirements',
+  history: 'History',
   settings: 'Settings',
 };
 

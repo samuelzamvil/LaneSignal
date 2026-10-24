@@ -83,6 +83,17 @@ export const message = z.object({
   attachments: z.array(z.string().min(1).max(64)).max(20).optional(),
 });
 
+/** GET /api/history */
+export const historyQuery = z.object({
+  q: z.string().max(200).optional(),
+  project: z.string().max(64).optional(),
+  group: z.string().max(64).optional(),
+  outcome: z.enum(['all', 'answered', 'dismissed']).optional(),
+  before_at: z.string().max(40).optional(),
+  before_id: z.string().max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
 export const resolution = z.object({
   note: z.string().max(5000).nullable().optional(),
 });

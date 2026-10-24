@@ -481,6 +481,34 @@ export function EscalationCard({
   );
 }
 
+/** The inbox's list layout: one line per escalation; tapping opens it. */
+export function EscalationRow({ esc, lane, now, showProject }: { esc: Escalation; lane: Lane | undefined; now: number; showProject: boolean }) {
+  const status =
+    esc.state === 'decided'
+      ? { label: esc.decision ?? 'Decided', tone: 'muted' }
+      : esc.turn === 'agent'
+        ? { label: "Agent's turn", tone: 'info' }
+        : esc.lastMessage?.from === 'agent'
+          ? { label: 'Replied', tone: 'danger' }
+          : !esc.blocking
+            ? { label: 'FYI', tone: 'info' }
+            : { label: 'Needs you', tone: 'danger' };
+  return (
+    <a className={`esc-row ${esc.state}`} href={`#/esc/${encodeURIComponent(esc.id)}`}>
+      <span className="ref">{showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref}</span>
+      <span className="esc-row-main">
+        <span className="esc-row-question">{esc.question}</span>
+        <span className="muted esc-row-where">
+          {lane?.name ?? esc.laneId}
+          {esc.attachments.length > 0 && ' · 📎'}
+          {esc.messageCount > 0 && ` · ${esc.messageCount} 💬`} · {ago(esc.updatedAt, now)}
+        </span>
+      </span>
+      <span className={`pill tone-${status.tone}`}>{status.label}</span>
+    </a>
+  );
+}
+
 const STATE_LABEL: Record<Escalation['state'], string> = {
   open: 'Needs decision',
   decided: 'Decided · awaiting agent',

@@ -270,6 +270,7 @@ textarea {
 }
 
 /* Mobile: one pane at a time. */
+.view-history .lanes,
 .view-inbox .lanes,
 .view-inbox .settings,
 .view-lanes .inbox,
@@ -1047,7 +1048,7 @@ textarea {
 
   .panes {
     display: grid;
-    grid-template-columns: minmax(340px, 420px) 1fr;
+    grid-template-columns: 420px 1fr;
     gap: 24px;
     align-items: start;
     padding: 8px 24px 24px;
@@ -1065,10 +1066,11 @@ textarea {
     display: none;
   }
 
-  .inbox {
+  .inbox,
+  .history {
     position: sticky;
-    top: 64px;
-    max-height: calc(100dvh - 72px);
+    top: calc(var(--topbar-h, 57px) + 8px);
+    max-height: calc(100dvh - var(--topbar-h, 57px) - 16px);
     overflow-y: auto;
     padding-right: 4px;
   }
@@ -1077,6 +1079,32 @@ textarea {
     flex-wrap: wrap;
     margin: 0;
     padding: 0;
+  }
+
+  /*
+   * Two panes: the list on the left stays usable while an escalation or lane is open on the right,
+   * in the space the lanes otherwise take. Picking another item swaps the right pane.
+   */
+  .sheet-backdrop {
+    top: var(--topbar-h, 57px);
+    left: 456px;
+    z-index: 9;
+    background: none;
+  }
+
+  .sheet {
+    inset: 0;
+    width: auto;
+    border-left: 1px solid var(--border);
+    box-shadow: -8px 0 24px rgb(0 0 0 / 0.06);
+  }
+
+  .sheet-head {
+    padding-top: 8px;
+  }
+
+  .sheet-body {
+    max-width: 860px;
   }
 }
 
@@ -1806,4 +1834,118 @@ a.button.primary {
   border-width: 1px;
   border-color: var(--border);
   box-shadow: none;
+}
+
+/* ---- inbox layout toggle, list rows, history ---- */
+
+.layout-toggle {
+  display: inline-flex;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.inbox h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.layout-toggle button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.layout-toggle button.on {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.esc-row,
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+}
+
+.esc-row:hover,
+.history-row:hover {
+  background: var(--surface);
+}
+
+.esc-row .ref,
+.history-row .ref {
+  min-width: 3em;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.esc-row-main,
+.history-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.esc-row-question,
+.history-question {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.esc-row-where,
+.history-where {
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-meta {
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-list {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+
+.outcome {
+  font-weight: 700;
+}
+
+.outcome.tone-accept {
+  color: var(--ok);
+}
+
+.outcome.tone-reject {
+  color: var(--danger);
+}
+
+.outcome.tone-other {
+  color: var(--accent);
+}
+
+.load-more {
+  display: block;
+  margin: 12px auto;
 }
