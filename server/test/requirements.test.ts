@@ -266,6 +266,23 @@ describe('changing direction', () => {
     assert.deepEqual([now.status, now.supersededBy], ['superseded', second.id]);
   });
 
+  test('superseding a pending change swaps the proposal instead of chaining', async () => {
+    const base = { justification: 'Ops.', tags: ['backup-window'], decided_by: 'Sam' };
+    const a = (await srv.call('POST', '/api/requirements', ALICE, { requirement: 'Backups run at 02:00.', justification: 'Ops.', tags: ['backup-window'] })).body.requirement;
+    const b = (await srv.tool(AGENT, 'supersede_requirement', { id: a.id, requirement: 'Backups run at 03:00.', ...base })).value.requirement;
+    const c = (await srv.tool(AGENT, 'supersede_requirement', { id: b.id, requirement: 'Backups run at 04:00.', ...base })).value.requirement;
+    const get = async (id: string) => (await srv.call('GET', `/api/requirements/${id}`, ALICE)).body;
+    assert.deepEqual([(await get(a.id)).status, (await get(a.id)).supersededBy], ['active', c.id], 'the decision in force waits on the newest proposal');
+    assert.deepEqual([(await get(b.id)).status, (await get(b.id)).supersededBy], ['superseded', c.id]);
+    for (const query of ['02', '04', a.id, c.id]) {
+      const found = (await srv.tool(AGENT, 'find_requirements', { query })).value.map((x: any) => x.id);
+      assert.deepEqual(found, [a.id, c.id], query);
+    }
+    await srv.call('POST', `/api/requirements/${c.id}/approve`, ALICE);
+    assert.deepEqual([(await get(a.id)).status, (await get(a.id)).supersededBy], ['superseded', c.id]);
+    assert.deepEqual((await srv.tool(AGENT, 'find_requirements', { tags: ['backup-window'] })).value.map((x: any) => x.id), [c.id]);
+  });
+
   test('people correct wording or retire; agents cannot', async () => {
     const r = (await srv.call('GET', '/api/requirements?tag=search-results', ALICE)).body[0];
     assert.equal((await srv.call('PATCH', `/api/requirements/${r.id}`, AGENT, { justification: 'x' })).status, 403);
