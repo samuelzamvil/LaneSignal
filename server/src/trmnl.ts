@@ -21,11 +21,22 @@ const HEARTBEAT_MS = 3_600_000;
 /** TRMNL's limit is 5 KB of stored data; stay well under it. */
 const MAX_BYTES = 4_500;
 const MAX_ROWS = 12;
+/** A lane update stays on the card this long; after that the newest open question takes it. */
+const UPDATE_CARD_MS = 24 * 3_600_000;
 
+/**
+ * One line of at most `max` characters. Control characters and lone surrogates go: JSON writes
+ * each as six bytes, which would break the size budget, and the screen can't show them anyway.
+ */
 const clip = (s: string | null | undefined, max: number) => {
   if (!s) return null;
-  const flat = s.replace(/\s+/g, ' ').trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+  const flat = s
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const chars = [...flat];
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : flat;
 };
 const epoch = (iso: string) => Math.floor(Date.parse(iso) / 1000);
 
@@ -46,6 +57,10 @@ export function checkWebhookUrl(raw: string, hosts: string[]): string {
   }
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && !own)) throw new ValidationError('The webhook URL must use https');
   if (url.username || url.password) throw new ValidationError('The webhook URL must not contain a user name or password');
+  url.pathname = url.pathname.replace(/\/+$/, '');
+  if (own && (url.port || !/^\/api\/custom_plugins\/[A-Za-z0-9-]+$/.test(url.pathname) || url.search || url.hash)) {
+    throw new ValidationError("That isn't a plugin's webhook URL: copy it from the plugin's settings in TRMNL (https://trmnl.com/api/custom_plugins/…)");
+  }
   return url.toString();
 }
 
@@ -54,6 +69,7 @@ export function maskWebhookUrl(raw: string): string {
   try {
     const url = new URL(raw);
     const parts = url.pathname.split('/');
+    while (parts.length > 1 && parts.at(-1) === '') parts.pop();
     const last = parts.pop() ?? '';
     parts.push(last.length > 4 ? `…${last.slice(-4)}` : '…');
     return `${url.origin}${parts.join('/')}`;
@@ -93,7 +109,7 @@ export interface TrmnlPayload {
   pending: Row[];
   /** Pending escalations beyond `pending`'s rows. */
   more: number;
-  /** When LaneSignal sent it (epoch seconds); the screen shows how long ago. */
+  /** When LaneSignal sent it (epoch seconds); the screen shows the time. */
   asOf: number;
 }
 
@@ -153,7 +169,7 @@ export function buildPayload(store: Store, setup: TrmnlSetup, now: Date): TrmnlP
   if (stored?.kind === 'escalation') {
     const e = open.find((x) => x.id === stored.id);
     if (e) [card, cardId] = [escalationCard(store, e), e.id];
-  } else if (stored && setup.includeNotifications) {
+  } else if (stored && setup.includeNotifications && now.getTime() - Date.parse(stored.at) < UPDATE_CARD_MS) {
     const label = stored.kind === 'completed' ? 'Completed' : stored.kind === 'blocked' ? 'Blocked' : 'Update';
     card = {
       type: stored.kind,
@@ -184,23 +200,28 @@ export function buildPayload(store: Store, setup: TrmnlSetup, now: Date): TrmnlP
     status: statusOf(e),
   }));
   const payload: TrmnlPayload = {
-    project: project?.name ?? setup.project,
+    project: clip(project?.name ?? setup.project, 60) ?? setup.project,
     card,
     pending: rows,
     more: rest.length - rows.length,
     asOf: Math.floor(now.getTime() / 1000),
   };
 
-  // Fit TRMNL's size limit: drop list rows first (they're counted in "more"), then trim the card.
+  // Fit TRMNL's size limit: drop list rows first (they're counted in "more"), then trim the card
+  // field by field, most expendable first.
   const size = () => Buffer.byteLength(JSON.stringify(payload));
   while (size() > MAX_BYTES && payload.pending.length) {
     payload.pending.pop();
     payload.more++;
   }
-  if (size() > MAX_BYTES && payload.card) {
-    payload.card.context = clip(payload.card.context, 120);
-    payload.card.message = clip(payload.card.message, 120);
-    payload.card.recommendation = clip(payload.card.recommendation, 120);
+  const c = payload.card;
+  if (c) {
+    const fields = ['context', 'message', 'recommendation', 'accept', 'reject'] as const;
+    for (const max of [120, 40]) {
+      for (const f of fields) if (size() > MAX_BYTES) c[f] = clip(c[f], max);
+    }
+    for (const f of fields) if (size() > MAX_BYTES) c[f] = null;
+    if (size() > MAX_BYTES) c.title = clip(c.title, 80) ?? '';
   }
   return payload;
 }
@@ -248,12 +269,17 @@ interface State {
   timer: NodeJS.Timeout | null;
   /** When the last push was attempted (successful or not), for spacing them out. */
   lastAttempt: number;
-  /** The last data TRMNL accepted (without its time), to skip pushes that change nothing. */
+  /** The last data sent (without its time), to skip pushes that change nothing. */
   lastBody: string | null;
   lastSuccess: number;
-  sending: boolean;
+  /** TRMNL refused the last push (wrong URL, no Developer Edition...): no heartbeats until something changes. */
+  refused: boolean;
+  /** The push in flight, if any; pushes for a project never overlap. */
+  inflight: Promise<PushResult> | null;
   /** A change arrived while sending. */
   dirty: boolean;
+  /** Bumped when the setup's URL changes, so a push to the old plugin doesn't count for the new one. */
+  generation: number;
 }
 
 export interface TrmnlOptions {
@@ -290,12 +316,19 @@ export class TrmnlPusher {
   start() {
     this.store.events.on('change', this.onChange);
     this.store.events.on('notice', this.onNotice);
-    // Bring every screen up to date after a restart, then keep them fresh.
-    for (const s of this.store.listTrmnlSetups()) this.touch(s.project);
+    // Bring every screen up to date after a restart, still spacing pushes from the ones before it.
+    for (const s of this.store.listTrmnlSetups()) {
+      const st = this.state(s.project);
+      st.lastAttempt = Math.max(...[s.lastPushAt, s.lastErrorAt].map((t) => (t ? Date.parse(t) : 0)));
+      st.lastSuccess = s.lastPushAt ? Date.parse(s.lastPushAt) : 0;
+      this.touch(s.project);
+    }
     this.heartbeat = setInterval(() => {
       for (const s of this.store.listTrmnlSetups()) {
-        const st = this.states.get(s.project);
-        if (s.enabled && (!st || this.now().getTime() - st.lastSuccess >= this.heartbeatMs)) this.touch(s.project);
+        const st = this.state(s.project);
+        if (s.enabled && !st.refused && this.now().getTime() - Math.max(st.lastSuccess, st.lastAttempt) >= this.heartbeatMs) {
+          this.touch(s.project);
+        }
       }
     }, Math.min(this.heartbeatMs, 300_000));
     this.heartbeat.unref();
@@ -310,12 +343,18 @@ export class TrmnlPusher {
     this.states.clear();
   }
 
-  /** The setup changed (new URL, switched on): forget what was sent and push soon. */
-  reset(project: string) {
-    const st = this.states.get(project);
-    if (st) {
-      st.lastBody = null;
-      st.lastSuccess = 0;
+  /**
+   * The setup changed: forget what was sent and push soon. A new URL is a new plugin, which owes
+   * nothing to the old one's rate limit, and a push still out to the old one no longer counts.
+   */
+  reset(project: string, newPlugin: boolean) {
+    const st = this.state(project);
+    st.lastBody = null;
+    st.lastSuccess = 0;
+    st.refused = false;
+    if (newPlugin) {
+      st.generation++;
+      st.lastAttempt = 0;
     }
     this.touch(project);
   }
@@ -323,45 +362,56 @@ export class TrmnlPusher {
   private state(project: string): State {
     let st = this.states.get(project);
     if (!st) {
-      st = { timer: null, lastAttempt: 0, lastBody: null, lastSuccess: 0, sending: false, dirty: false };
+      st = { timer: null, lastAttempt: 0, lastBody: null, lastSuccess: 0, refused: false, inflight: null, dirty: false, generation: 0 };
       this.states.set(project, st);
     }
     return st;
   }
 
+  // Store events are handled inside the store's own calls: a problem here must not fail them.
   private change(e: StreamEvent) {
-    const project = projectOfEvent(e);
-    if (!project) return;
-    const setup = this.store.trmnlSetup(project);
-    if (!setup) return;
-    const card = cardFor(e, setup.includeNotifications);
-    if (card) this.store.setTrmnlCard(project, card);
-    this.touch(project);
+    try {
+      const project = projectOfEvent(e);
+      if (!project) return;
+      const setup = this.store.trmnlSetup(project);
+      if (!setup) return;
+      const card = cardFor(e, setup.includeNotifications);
+      if (card) this.store.setTrmnlCard(project, card);
+      this.touch(project);
+    } catch (err) {
+      log.error('trmnl: cannot handle a change', { error: String(err) });
+    }
   }
 
   private notice(n: { project: string; laneId: string; message: string }) {
-    const setup = this.store.trmnlSetup(n.project);
-    if (!setup?.includeNotifications) return;
-    this.store.setTrmnlCard(n.project, {
-      kind: 'notice',
-      laneId: n.laneId,
-      title: where(this.store, n.laneId),
-      body: n.message,
-      at: this.now().toISOString(),
-    });
-    this.touch(n.project);
+    try {
+      const setup = this.store.trmnlSetup(n.project);
+      if (!setup?.includeNotifications) return;
+      this.store.setTrmnlCard(n.project, {
+        kind: 'notice',
+        laneId: n.laneId,
+        title: where(this.store, n.laneId),
+        body: n.message,
+        at: this.now().toISOString(),
+      });
+      this.touch(n.project);
+    } catch (err) {
+      log.error('trmnl: cannot handle a notice', { error: String(err) });
+    }
   }
 
   /** Schedules a push for the project: soon, but no sooner than TRMNL's rate limit allows. */
   private touch(project: string) {
     const st = this.state(project);
-    if (st.sending) {
+    if (st.inflight) {
       st.dirty = true;
       return;
     }
     if (st.timer) return;
     const wait = Math.max(this.debounce, st.lastAttempt + this.minGap - this.now().getTime());
-    st.timer = setTimeout(() => void this.flush(project), wait);
+    st.timer = setTimeout(() => {
+      this.flush(project).catch((err) => log.error('trmnl push crashed', { project, error: String(err) }));
+    }, wait);
     st.timer.unref();
   }
 
@@ -372,25 +422,37 @@ export class TrmnlPusher {
     if (!setup?.enabled) return;
     const payload = buildPayload(this.store, setup, this.now());
     const body = JSON.stringify({ ...payload, asOf: 0 });
-    const due = this.now().getTime() - st.lastSuccess >= this.heartbeatMs;
+    const due = !st.refused && this.now().getTime() - Math.max(st.lastSuccess, st.lastAttempt) >= this.heartbeatMs;
     if (body === st.lastBody && !due) return;
     await this.send(setup, payload, body);
   }
 
-  /** Pushes right away, whatever was sent before (Settings → Send now). */
+  /** Pushes right away, whatever was sent before (Settings → Send now). Waits for a push already out. */
   async sendNow(project: string): Promise<PushResult> {
-    const setup = this.store.trmnlSetup(project);
-    if (!setup) throw new ValidationError('This project has no TRMNL screen set up');
     const st = this.state(project);
     if (st.timer) clearTimeout(st.timer);
     st.timer = null;
+    if (st.inflight) await st.inflight.catch(() => undefined);
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = null;
+    const setup = this.store.trmnlSetup(project);
+    if (!setup) throw new ValidationError('This project has no TRMNL screen set up');
     const payload = buildPayload(this.store, setup, this.now());
     return this.send(setup, payload, JSON.stringify({ ...payload, asOf: 0 }));
   }
 
-  private async send(setup: TrmnlSetup, payload: TrmnlPayload, body: string): Promise<PushResult> {
+  private send(setup: TrmnlSetup, payload: TrmnlPayload, body: string): Promise<PushResult> {
     const st = this.state(setup.project);
-    st.sending = true;
+    const run = this.push(setup, payload, body, st).finally(() => {
+      st.inflight = null;
+      if (st.dirty) this.touch(setup.project);
+    });
+    st.inflight = run;
+    return run;
+  }
+
+  private async push(setup: TrmnlSetup, payload: TrmnlPayload, body: string, st: State): Promise<PushResult> {
+    const generation = st.generation;
     st.dirty = false;
     st.lastAttempt = this.now().getTime();
     let result: PushResult;
@@ -400,9 +462,12 @@ export class TrmnlPusher {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ merge_variables: payload }),
+        // Only the checked URL: a redirect could lead anywhere.
+        redirect: 'error',
         signal: AbortSignal.timeout(15_000),
       });
       if (res.ok) {
+        await res.body?.cancel().catch(() => undefined);
         result = { ok: true, status: res.status };
       } else {
         const raw = await res.text().catch(() => '');
@@ -425,21 +490,25 @@ export class TrmnlPusher {
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
       result = { ok: false, error: `Couldn't reach TRMNL: ${cause ?? (err instanceof Error ? err.message : String(err))}` };
       retry = true;
-    } finally {
-      st.sending = false;
     }
+    // The URL changed or the setup was removed while the push was out: it was for another plugin.
+    const current = this.store.trmnlSetup(setup.project);
+    if (st.generation !== generation || current?.webhookUrl !== setup.webhookUrl) return result;
     const at = this.now();
-    // The setup may have been removed while the push was out.
-    if (this.store.trmnlSetup(setup.project)) this.store.recordTrmnlPush(setup.project, at, result.ok ? null : result.error!);
+    this.store.recordTrmnlPush(setup.project, at, result.ok ? null : result.error!);
     if (result.ok) {
       st.lastBody = body;
       st.lastSuccess = at.getTime();
+      st.refused = false;
     } else {
       log.warn('trmnl push failed', { project: setup.project, error: result.error });
-      // Not retried: the same data is skipped until it changes or the setup is fixed.
-      if (!retry) st.lastBody = body;
+      // Refused: the same data isn't sent again (no heartbeats either) until it changes or the setup is fixed.
+      if (!retry) {
+        st.lastBody = body;
+        st.refused = true;
+      }
     }
-    if (st.dirty || retry) this.touch(setup.project);
+    if (retry) st.dirty = true;
     return result;
   }
 }

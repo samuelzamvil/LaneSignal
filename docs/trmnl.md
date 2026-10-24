@@ -4,9 +4,9 @@ A [TRMNL](https://trmnl.com) e-ink display can act as a notifications channel fo
 
 - **Left, the card:** the latest notification. For an escalation that's the same as its inbox card: code, lane, question, the first lines of context, the agent's latest message, the recommendation, and what **Accept** and **Reject** would do. There are no buttons on e-ink, so you answer in the app.
 - **Right, the list:** the project's other pending escalations, condensed to code, question, lane and age, in inbox order. A new notification never pushes the others off the screen.
-- **Bottom:** the project's name and when LaneSignal last sent anything. After two hours with nothing sent, it says so, so a stopped server doesn't leave a screen that looks fine.
+- **Bottom:** the project's name and when LaneSignal last sent data, as a day and time in your TRMNL account's time zone. LaneSignal sends at least once an hour, so a time more than an hour old means it has stopped. Ages on the screen ("25m ago") are as of that time: TRMNL only redraws when new data arrives.
 
-Once the card's escalation is answered, the card moves to the newest escalation still open, or says **All clear** when there are none.
+Once the card's escalation is answered, the card moves to the newest escalation still open, or says **All clear** when there are none. A lane update (when they're on, see below) keeps the card for up to a day, until something newer arrives.
 
 ## How it works
 
@@ -54,18 +54,20 @@ Each push sends the project's name, and for each pending escalation its code, qu
 
 ## Self-hosted TRMNL servers
 
-LaneSignal only pushes to `trmnl.com` (and `usetrmnl.com`) over HTTPS unless told otherwise, so a project admin can't point it at another machine. If you run your own TRMNL server ([BYOS](https://docs.trmnl.com/go/diy/byos), e.g. Terminus) that accepts private-plugin webhooks, add its host name to `LANESIGNAL_TRMNL_HOSTS` (comma-separated). Plain `http://` works for those hosts.
+LaneSignal only pushes to `trmnl.com` (and `usetrmnl.com`) over HTTPS unless told otherwise, so a project admin can't point it at another machine. If you run your own TRMNL server ([BYOS](https://docs.trmnl.com/go/diy/byos), e.g. Terminus) that accepts private-plugin webhooks, add its host name to `LANESIGNAL_TRMNL_HOSTS` (comma-separated, without a port; an IPv6 address in brackets, e.g. `[fd00::1]`). Plain `http://` and any port work for those hosts. For TRMNL's own servers, the URL must be a plugin's webhook URL (`https://trmnl.com/api/custom_plugins/<id>`). LaneSignal doesn't follow redirects.
 
 ## Troubleshooting
 
 | What you see | What to do |
 |---|---|
+| A refused push (403, 404, 422) | LaneSignal doesn't resend the same data until it changes or you fix the setup. **Send now** tries again at once |
 | *TRMNL answered 403* | The account needs Developer Edition or a BYOD license, or the plugin isn't set to the Webhook strategy |
 | *TRMNL answered 404* | The plugin was deleted or the URL is wrong. Copy the Webhook URL again |
 | *TRMNL answered 422* | TRMNL refused the data. The message says why; [open an issue](https://github.com/samuelzamvil/LaneSignal/issues) with it |
 | *TRMNL says too many pushes (429)* | Usually after a few **Send now** clicks. LaneSignal tries again by itself |
 | *Couldn't reach TRMNL* | The server has no outbound HTTPS to `trmnl.com`. Check its firewall or proxy; LaneSignal keeps retrying |
-| The screen says *no update for 2h* | LaneSignal stopped pushing: check the server is running and the setting's last problem |
+| *Updated* on the screen is more than an hour old | LaneSignal stopped pushing: check the server is running, and the last problem in the settings |
+| *That isn't a plugin's webhook URL* | Copy the **Webhook URL** from the plugin's settings in TRMNL, not the address of the page you're on |
 | The screen is blank in TRMNL's preview | Click **Send now** in LaneSignal, then **Force Refresh** in TRMNL |
 
 ## Changing the layout

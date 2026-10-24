@@ -280,7 +280,6 @@ export interface Requirement {
   updatedAt: string;
 }
 
-/** A milestone an overseer tells the owner about: a quiet push, kept in the lane's history. */
 /** What the TRMNL screen's card shows: an escalation (drawn from its current state), or a notification. */
 export type TrmnlCard =
   | { kind: 'escalation'; id: string; at: string }
@@ -313,6 +312,7 @@ export interface TrmnlPushResult {
   error?: string;
 }
 
+/** A milestone an overseer tells the owner about: a quiet push, kept in the lane's history. */
 export interface Notice {
   project: string;
   laneId: string;

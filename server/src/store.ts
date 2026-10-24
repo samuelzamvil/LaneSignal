@@ -2819,12 +2819,14 @@ export class Store {
     const now = this.now().toISOString();
     // A new URL is a new plugin: its last push and error belong to the old one.
     const fresh = !current || url !== current.webhookUrl;
+    // Switching lane updates on or off: an update kept from before shouldn't come back.
+    const dropCard = !!current && current.includeNotifications !== input.includeNotifications;
     this.db
       .prepare(
         `INSERT INTO trmnl_setups (project_id, webhook_url, enabled, include_notifications, updated_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(project_id) DO UPDATE SET webhook_url = excluded.webhook_url, enabled = excluded.enabled,
            include_notifications = excluded.include_notifications, updated_at = excluded.updated_at
-           ${fresh ? ', last_push_at = NULL, last_error = NULL, last_error_at = NULL' : ''}`,
+           ${fresh ? ', last_push_at = NULL, last_error = NULL, last_error_at = NULL' : ''}${dropCard ? ', card = NULL' : ''}`,
       )
       .run(project, url, input.enabled ? 1 : 0, input.includeNotifications ? 1 : 0, now);
     return this.trmnlSetup(project)!;

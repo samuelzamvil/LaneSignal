@@ -18,14 +18,23 @@ function newStore() {
 }
 
 /** A stand-in for TRMNL: records pushes and answers with the given statuses in turn (200 once they run out). */
-function fakeTrmnl(statuses: number[] = []) {
+function fakeTrmnl(statuses: number[] = [], delayMs = 0) {
   const pushes: any[] = [];
-  const fetch = (async (_url: string, init: RequestInit) => {
+  const urls: string[] = [];
+  const redirects: (string | undefined)[] = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const fetch = (async (url: string, init: RequestInit) => {
     pushes.push(JSON.parse(String(init.body)).merge_variables);
+    urls.push(String(url));
+    redirects.push(init.redirect);
+    maxInFlight = Math.max(maxInFlight, ++inFlight);
+    await sleep(delayMs);
+    inFlight--;
     const status = statuses.shift() ?? 200;
     return new Response(status === 200 ? '{}' : 'nope', { status });
   }) as typeof globalThis.fetch;
-  return { pushes, fetch };
+  return { pushes, urls, redirects, fetch, maxInFlight: () => maxInFlight };
 }
 
 describe('webhook URLs', () => {
@@ -38,10 +47,16 @@ describe('webhook URLs', () => {
     assert.throws(() => checkWebhookUrl('https://127.0.0.1/x', hosts), /LANESIGNAL_TRMNL_HOSTS/);
     assert.throws(() => checkWebhookUrl('https://a:b@trmnl.com/x', hosts), /user name/);
     assert.throws(() => checkWebhookUrl('not a url', hosts), /valid URL/);
+    // TRMNL's own servers: only a plugin's webhook URL.
+    assert.equal(checkWebhookUrl(`${URL_}/`, hosts), URL_);
+    assert.throws(() => checkWebhookUrl('https://trmnl.com/plugin_settings/123/edit', hosts), /plugin's webhook URL/);
+    assert.throws(() => checkWebhookUrl(`https://trmnl.com:8443/api/custom_plugins/x`, hosts), /plugin's webhook URL/);
+    assert.throws(() => checkWebhookUrl(`${URL_}?next=https://evil.example`, hosts), /plugin's webhook URL/);
   });
 
   test('settings show the URL with the plugin id hidden', () => {
     assert.equal(maskWebhookUrl(URL_), 'https://trmnl.com/api/custom_plugins/…6666');
+    assert.equal(maskWebhookUrl(`${URL_}/`), 'https://trmnl.com/api/custom_plugins/…6666');
   });
 });
 
@@ -106,7 +121,10 @@ describe('screen data', () => {
     store.setTrmnlCard('default', notice);
     assert.equal(buildPayload(store, store.trmnlSetup('default')!, new Date()).card?.code, q.ref);
 
+    // Switching lane updates on drops whatever card was kept from before.
     store.saveTrmnlSetup('default', { enabled: true, includeNotifications: true });
+    assert.equal(store.trmnlSetup('default')!.card, null);
+    store.setTrmnlCard('default', notice);
     const p = buildPayload(store, store.trmnlSetup('default')!, new Date());
     assert.equal(p.card?.type, 'notice');
     assert.equal(p.card?.title, 'Tests green');
@@ -115,6 +133,10 @@ describe('screen data', () => {
       p.pending.map((r) => r.code),
       [q.ref],
     );
+
+    // A day later the update gives the card back to the open question.
+    const later = new Date(Date.now() + 25 * 3_600_000);
+    assert.equal(buildPayload(store, store.trmnlSetup('default')!, later).card?.code, q.ref);
   });
 
   test('stays under TRMNL’s size limit, counting what it leaves out', () => {
@@ -127,6 +149,25 @@ describe('screen data', () => {
     assert.ok(Buffer.byteLength(JSON.stringify(p)) <= 4500);
     assert.equal(p.pending.length + p.more, 39);
     assert.ok(p.card!.title.length <= 200);
+  });
+
+  test('control characters and broken surrogates cannot push it over the limit', () => {
+    const store = newStore();
+    const junk = '\u0001'.repeat(400) + '\ud800';
+    escalate(
+      store,
+      { laneId: 'default/e2e', question: junk, context: junk, recommendation: junk, acceptMeans: junk, rejectMeans: junk },
+      'bot',
+    );
+    store.updateProject('default', { name: '\u0002'.repeat(100) });
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    const json = JSON.stringify(buildPayload(store, store.trmnlSetup('default')!, new Date()));
+    assert.ok(Buffer.byteLength(json) <= 4500);
+    assert.ok(!/\\u00|\\ud8/.test(json), 'no escaped control characters or lone surrogates');
+    // An emoji is never cut in half.
+    escalate(store, { laneId: 'default/auth', question: '🚀'.repeat(300) }, 'bot');
+    const emoji = buildPayload(store, store.trmnlSetup('default')!, new Date());
+    assert.ok(!/\\ud8/.test(JSON.stringify(emoji)));
   });
 });
 
@@ -217,6 +258,89 @@ describe('pushing', () => {
       assert.equal(refusing.pushes.length, 2);
     } finally {
       pusher2.stop();
+    }
+  });
+
+  test('a refused push is not repeated by the hourly heartbeat', async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    const refusing = fakeTrmnl([404, 404, 404, 404]);
+    const pusher = new TrmnlPusher(store, { fetch: refusing.fetch, minGapMs: 20, debounceMs: 5, heartbeatMs: 50 }).start();
+    try {
+      await sleep(400);
+      assert.equal(refusing.pushes.length, 1);
+      // New data is tried again, once.
+      escalate(store, { laneId: 'default/e2e', question: 'Ship it?' }, 'bot');
+      await sleep(400);
+      assert.equal(refusing.pushes.length, 2);
+    } finally {
+      pusher.stop();
+    }
+  });
+
+  test('without changes, it pushes once per heartbeat to show it is alive', async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    const trmnl = fakeTrmnl();
+    const pusher = new TrmnlPusher(store, { fetch: trmnl.fetch, minGapMs: 20, debounceMs: 5, heartbeatMs: 120 }).start();
+    try {
+      await sleep(420);
+      assert.ok(trmnl.pushes.length >= 2 && trmnl.pushes.length <= 4, `pushes: ${trmnl.pushes.length}`);
+      assert.ok(trmnl.redirects.every((r) => r === 'error'), 'never follows redirects');
+    } finally {
+      pusher.stop();
+    }
+  });
+
+  test('a new URL while a push is out: the new plugin still gets the data', async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    const trmnl = fakeTrmnl([], 80);
+    const pusher = new TrmnlPusher(store, opts(trmnl.fetch)).start();
+    try {
+      await sleep(30); // the first push is out
+      const other = 'https://trmnl.com/api/custom_plugins/new-plugin-0000';
+      store.saveTrmnlSetup('default', { webhookUrl: other, enabled: true, includeNotifications: false });
+      pusher.reset('default', true);
+      await sleep(250);
+      assert.deepEqual(trmnl.urls, [URL_, other]);
+      assert.ok(store.trmnlSetup('default')!.lastPushAt);
+    } finally {
+      pusher.stop();
+    }
+  });
+
+  test('Send now waits for a push already out instead of overlapping it', async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    const trmnl = fakeTrmnl([], 60);
+    const pusher = new TrmnlPusher(store, opts(trmnl.fetch)).start();
+    try {
+      await sleep(25);
+      const r = await pusher.sendNow('default');
+      assert.equal(r.ok, true);
+      assert.equal(trmnl.pushes.length, 2);
+      assert.equal(trmnl.maxInFlight(), 1);
+      await sleep(250);
+      assert.equal(trmnl.pushes.length, 2, 'nothing extra afterwards');
+    } finally {
+      pusher.stop();
+    }
+  });
+
+  test('after a restart, pushes stay spaced from the ones before it', async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    store.recordTrmnlPush('default', new Date(), null);
+    const trmnl = fakeTrmnl();
+    const pusher = new TrmnlPusher(store, { fetch: trmnl.fetch, minGapMs: 300, debounceMs: 5, heartbeatMs: 3_600_000 }).start();
+    try {
+      await sleep(100);
+      assert.equal(trmnl.pushes.length, 0);
+      await sleep(300);
+      assert.equal(trmnl.pushes.length, 1);
+    } finally {
+      pusher.stop();
     }
   });
 });

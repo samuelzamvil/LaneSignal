@@ -53,9 +53,13 @@
       {% endif %}
     </div>
   </div>
-  {% assign quiet = now | minus: asOf %}
+  {% comment %}
+    TRMNL only redraws when new data arrives, so "ago" would freeze. The clock time stays true: LaneSignal
+    pushes at least hourly, so a time more than an hour old means it stopped.
+  {% endcomment %}
+  {% assign offset = trmnl.user.utc_offset | default: 0 %}
   <div class="ls-foot">
     <span><b>LaneSignal</b> · {{ project | escape }}</span>
-    <span>{% if quiet > 7200 %}<b>No update for {{ quiet | divided_by: 3600 | floor }}h. Is LaneSignal running?</b>{% else %}Updated {% render "ago", now: now, at: asOf %}{% endif %}</span>
+    <span>Updated {{ asOf | plus: offset | date: "%a %H:%M" }}</span>
   </div>
 </div>

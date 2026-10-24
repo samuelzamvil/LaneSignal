@@ -367,8 +367,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const project = requireProjectAdmin(res, String(req.params.id));
     const input = parse(s.trmnlInput, req.body);
     const webhookUrl = input.webhookUrl === undefined ? undefined : checkWebhookUrl(input.webhookUrl, config.trmnlHosts);
-    store.saveTrmnlSetup(project, { ...input, webhookUrl });
-    trmnl?.reset(project);
+    const before = store.trmnlSetup(project)?.webhookUrl;
+    const saved = store.saveTrmnlSetup(project, { ...input, webhookUrl });
+    trmnl?.reset(project, saved.webhookUrl !== before);
     res.json(trmnlView(project));
   });
 

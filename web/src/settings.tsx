@@ -388,10 +388,8 @@ function TrmnlSettings({ client, project }: { client: Client; project: ProjectAc
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (view?.configured) {
-      setEnabled(view.enabled);
-      setIncludeNotifications(view.includeNotifications);
-    }
+    setEnabled(view?.configured ? view.enabled : true);
+    setIncludeNotifications(view?.configured ? view.includeNotifications : false);
   }, [view]);
 
   async function run(fn: () => Promise<string | null>) {
@@ -419,6 +417,21 @@ function TrmnlSettings({ client, project }: { client: Client; project: ProjectAc
       const r = await client.sendTrmnl(project.id);
       return r.ok ? 'Sent. TRMNL shows it on its next refresh.' : (r.error ?? 'TRMNL refused the push.');
     });
+  const download = (
+    <button
+      type="button"
+      className="ghost"
+      disabled={busy}
+      onClick={() =>
+        void run(async () => {
+          await client.download(`/api/projects/${encodeURIComponent(project.id)}/trmnl/plugin.zip`, `lanesignal-trmnl-${project.id}.zip`);
+          return null;
+        })
+      }
+    >
+      lanesignal-trmnl-{project.id}.zip
+    </button>
+  );
   const remove = () =>
     confirm(`Stop pushing ${project.name} to TRMNL and forget its webhook URL?`) &&
     void run(async () => {
@@ -437,29 +450,7 @@ function TrmnlSettings({ client, project }: { client: Client; project: ProjectAc
       {view && !view.configured && (
         <ol className="hint steps">
           <li>
-            {isNative ? (
-              'Download the plugin from the web app (Settings → Projects).'
-            ) : (
-              <>
-                Download the plugin:{' '}
-                <button
-                  type="button"
-                  className="ghost"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      await client.download(
-                        `/api/projects/${encodeURIComponent(project.id)}/trmnl/plugin.zip`,
-                        `lanesignal-trmnl-${project.id}.zip`,
-                      );
-                      return null;
-                    })
-                  }
-                >
-                  lanesignal-trmnl-{project.id}.zip
-                </button>
-              </>
-            )}
+            {isNative ? 'Download the plugin from the web app (Settings → Projects).' : <>Download the plugin: {download}</>}
           </li>
           <li>In TRMNL, open Plugins → Private Plugin → Import new, and choose that file.</li>
           <li>Open the new plugin's settings, copy its Webhook URL and paste it below.</li>
@@ -506,6 +497,7 @@ function TrmnlSettings({ client, project }: { client: Client; project: ProjectAc
           </div>
         </form>
       )}
+      {view?.configured && !isNative && <p className="hint">Plugin file for TRMNL: {download}</p>}
       {view?.configured && (
         <p className="muted small">
           {view.lastPushAt ? `Last push ${ago(view.lastPushAt, Date.now())}.` : 'Nothing pushed yet.'}

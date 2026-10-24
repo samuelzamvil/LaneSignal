@@ -65,4 +65,4 @@ See [Android and push](android.md).
 
 | Env var | JSON key | Default | Notes |
 |---|---|---|---|
-| `LANESIGNAL_TRMNL_HOSTS` | | | Extra hosts a project's [TRMNL screen](trmnl.md) webhook may point at, comma-separated, for a self-hosted TRMNL server. `trmnl.com` and `usetrmnl.com` (HTTPS only) are always allowed |
+| `LANESIGNAL_TRMNL_HOSTS` | | | Extra hosts a project's [TRMNL screen](trmnl.md) webhook may point at, comma-separated host names without a port (IPv6 in brackets), for a self-hosted TRMNL server. `trmnl.com` and `usetrmnl.com` (HTTPS only) are always allowed |
