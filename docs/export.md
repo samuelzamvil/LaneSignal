@@ -5,6 +5,7 @@ LaneSignal keeps everything needed for analysis:
 - every escalation, including decided, acknowledged and withdrawn ones
 - every requirement, including superseded and retired ones
 - every agent position
+- every conversation, on escalations and on lanes
 - every lane and group, including ones that were removed from the dashboard (they're archived, not deleted)
 - each lane's full status and escalation history
 
@@ -29,10 +30,10 @@ curl -fsS -H "authorization: Bearer $KEY" "https://lanesignal.example.com/api/ex
 
 | Parameter | Applies to | Format |
 |---|---|---|
-| `from` | escalations (by creation time), positions (by when each was taken), events (by time) | `YYYY-MM-DD` (midnight UTC), or an ISO timestamp with a zone such as `2026-10-01T09:00:00Z` or `…+02:00`. Inclusive |
+| `from` | escalations (by creation time), positions (by when each was taken), messages and lane_messages (by when each was written), events (by time), requirements (by creation time) | `YYYY-MM-DD` (midnight UTC), or an ISO timestamp with a zone such as `2026-10-01T09:00:00Z` or `…+02:00`. Inclusive |
 | `to` | same | same, exclusive. Must be after `from` |
 | `project` | everything | a project id or key. Without it, every project you can see. Requirements for all projects are always included |
-| `lane` (`lane_id` in MCP) | escalations, positions, events, lanes | a lane id (with `project`, if you can see several) |
+| `lane` (`lane_id` in MCP) | escalations, positions, messages, lane_messages, events, lanes | a lane id (with `project`, if you can see several) |
 
 Unknown parameters, timestamps without a zone, and impossible dates (`2026-02-30`) are rejected with `400`, rather than silently ignored or reinterpreted.
 

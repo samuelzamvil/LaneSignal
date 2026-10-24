@@ -113,7 +113,7 @@ describe('lane conversations', () => {
     );
     // Handed over: the next wait doesn't repeat it.
     const next = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'chatty', wait_seconds: 0 })).value;
-    assert.deepEqual(next.laneMessages, []);
+    assert.equal(next.laneMessages, undefined, 'left out when empty');
     // The HTTP wait hands notes over too.
     await write('talk-4', 'One more thing');
     const http = await srv.call('GET', '/api/wait?group=chatty&timeout=0', AGENT);

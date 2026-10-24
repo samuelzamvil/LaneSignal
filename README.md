@@ -8,7 +8,7 @@ A small, self-hosted dashboard for watching autonomous coding-agent **lanes** an
 - You see **what needs you first**, kept apart from routine status, and every connected browser and phone updates live over SSE.
 - You **answer on your phone or the dashboard**; the agent waits for the answer, acknowledges it and carries on. Answering in the agent's own session (e.g. Claude Remote Control) works too. (`LANESIGNAL_DECISIONS=false` turns LaneSignal into alerts only.)
 - **Requirements** keep your product decisions as a durable record outside the repository that agents can search (`LANESIGNAL_REQUIREMENTS`, on by default).
-- Android **push notifications** fire only for new escalations by default.
+- Android **push notifications** fire for new escalations and agents' milestone notices by default. A project can also show its latest notification and pending questions on a [TRMNL](docs/trmnl.md) e-ink screen.
 - It runs as **one Docker container** (API, MCP, SSE and the web app) with a SQLite file on a volume.
 
 LaneSignal is an observability and intervention surface, not an orchestrator. Claude Remote Control stays the conversational interface. LaneSignal tells you *which* lane needs you and links straight to its session, ticket, PR and CI run.
@@ -16,7 +16,7 @@ LaneSignal is an observability and intervention surface, not an orchestrator. Cl
 ```
  agents ──MCP /mcp──┐                         ┌── browser (React)
  agents ──HTTP /api─┼─► LaneSignal server ──SSE┼── Android app (same React build, Capacitor)
-                    │   Express + SQLite      └── FCM / ntfy push (escalations only)
+                    │   Express + SQLite      └── FCM / ntfy push, TRMNL
                     └─► /data/lanesignal.db (volume)
 ```
 

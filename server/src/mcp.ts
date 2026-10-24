@@ -323,7 +323,7 @@ function buildServer(
           'lanes, groups, events (status changes and escalation history)' +
           (features.requirements ? ', requirements. ' : '. ') +
           '`from`/`to` (YYYY-MM-DD or ISO) filter ' +
-          'escalations, positions, events and requirements by creation time. Results come in pages (default 100 rows, and cut short to stay under ' +
+          'escalations, positions, messages, lane_messages, events and requirements by creation time. Results come in pages (default 100 rows, and cut short to stay under ' +
           'about 60 KB); the first line says which rows you got and the offset for the next page. For everything at ' +
           'once as files, the HTTP API serves a zip at GET /api/export.',
         inputSchema: {
@@ -588,7 +588,7 @@ function buildServer(
           `are unchanged. ${STATUS_HELP} \`group\`: your group, registered first with update_group. While a blocking ` +
           'escalation is open the lane stays blocked_human. Tickets look like "gh:42" or "redmine:1234".' +
           (features.decisions
-            ? ' `ownerMessages` in the result: the owner wrote to you on this lane; act on them, and answer with notify_owner if useful.'
+            ? ' Result `ownerMessages`: the owner\'s notes on this lane; act on them.'
             : ''),
         inputSchema: { lane_id: s.laneId, ...s.lanePatch.shape, group_id: s.lanePatch.shape.group, ...PROJECT_WRITE },
       },
@@ -648,17 +648,13 @@ function buildServer(
       {
         description:
           'Write to the owner in the lane\'s conversation, with a quiet phone notification that opens the lane: a ' +
-          'milestone ("Merged PR #311", "Starting gh:42"), with any detail or screenshots in `attachments`. ' +
-          `At most ${AGENT_MESSAGE_MAX} characters; one per lane per minute. Not for routine progress, and not for ` +
-          'questions (create_escalation).' +
-          (features.decisions
-            ? ' The owner can write back on the lane: their notes come back once, as `ownerMessages` here and in ' +
-              'update_lane, and as `laneMessages` in wait_for_decisions.'
-            : ''),
+          'milestone ("Merged PR #311", "Starting gh:42"). One per lane per minute. Not for routine progress, and not ' +
+          'for questions (create_escalation).' +
+          (features.decisions ? ' May return `ownerMessages`, as update_lane does.' : ''),
         inputSchema: {
           lane_id: s.laneId,
-          message: s.notice.shape.message.describe(`At most ${AGENT_MESSAGE_MAX} characters.`),
-          attachments: s.notice.shape.attachments.describe('Ids returned by POST /api/attachments (curl -F file=@screenshot.png).'),
+          message: s.notice.shape.message,
+          attachments: s.notice.shape.attachments.describe('Screenshots or detail: ids from POST /api/attachments.'),
           ...PROJECT_WRITE,
         },
       },

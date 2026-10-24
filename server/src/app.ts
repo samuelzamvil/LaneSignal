@@ -473,10 +473,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const id = parse(s.laneId, req.params.id);
     const group = typeof req.body?.group === 'string' ? req.body.group : undefined;
     const project = acc(res).pick(projectQuery(req), { lane: id, group });
-    const lane = pub.lane(store.upsertLane(q(project, id), lanePatchOf(project, req.body), principalOf(res).name));
+    // The dashboard's message bookkeeping is no use to the agent publishing.
+    const { lastMessageId, lastAgentMessageId, unreadByAgent, ...lane } = pub.lane(
+      store.upsertLane(q(project, id), lanePatchOf(project, req.body), principalOf(res).name),
+    );
     // The owner's notes on the lane reach a working agent the next time it publishes.
     const unread = store.takeUnreadForAgent(q(project, id));
-    res.json(unread.length ? { ...lane, unreadByAgent: 0, ownerMessages: briefMessages(unread) } : lane);
+    res.json(unread.length ? { ...lane, ownerMessages: briefMessages(unread) } : lane);
   });
 
   // Humans remove lanes from the dashboard; overseers remove lanes whose work is over.
@@ -551,8 +554,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const laneId = q(project, String(req.params.id));
     const from = p.role === 'agent' ? 'agent' : 'owner';
     const message = store.postLaneMessage(laneId, { from, author: p.name, body: body.body, attachments: body.attachments }, ownerOf(p));
-    const unread = from === 'agent' ? store.takeUnreadForAgent(laneId) : [];
-    res.status(201).json(unread.length ? { ...message, ownerMessages: briefMessages(unread) } : message);
+    if (from === 'owner') {
+      res.status(201).json(message);
+      return;
+    }
+    // Agents get what they need back, as from notify_owner.
+    const unread = store.takeUnreadForAgent(laneId);
+    res.status(201).json({ id: message.id, at: message.at, ...(unread.length ? { ownerMessages: briefMessages(unread) } : {}) });
   });
 
   // The agent's message on a lane, as notify_owner sends it: `message` and any `attachments`.

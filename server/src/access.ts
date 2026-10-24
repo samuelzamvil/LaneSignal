@@ -316,7 +316,8 @@ export const briefWait = (w: WaitResult) => ({
   decided: w.decided.map(brief),
   replies: w.replies.map((r) => ({ ...r, messages: briefMessages(r.messages) })),
   closed: w.closed.map(brief),
-  laneMessages: w.laneMessages.map((l) => ({ ...l, messages: briefMessages(l.messages) })),
+  // Only when there are some: the wait is the call agents make most.
+  laneMessages: w.laneMessages.length ? w.laneMessages.map((l) => ({ ...l, messages: briefMessages(l.messages) })) : undefined,
 });
 
 /**

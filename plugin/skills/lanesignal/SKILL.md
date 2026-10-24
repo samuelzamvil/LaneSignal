@@ -70,7 +70,7 @@ curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api
 ```
 
 - Markdown (`.md`) and text (`.txt`) files, and PNG, JPEG, WebP or GIF images. Nothing else (no SVG, HTML or PDF).
-- At most 5 MB each and 5 per escalation (the server may set other limits; its error says).
+- At most 5 MB each and 5 per escalation or message (the server may set other limits; its error says).
 - Attach an upload once, from the key that uploaded it. Uploads not attached within a day are deleted.
 
 ## The lane's conversation: milestones, and the owner's notes
@@ -78,7 +78,7 @@ curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api
 `notify_owner` writes to the owner in the lane's conversation, with a quiet phone notification that opens the lane, e.g. `"Merged PR #311"` or `"Starting gh:42"`.
 
 - **Milestones only:** a PR merged, or a new ticket started, unless your owner's policy names others. Never for routine progress, and never to ask something (that's an escalation).
-- **Short:** at most 500 characters, first line written for a lock screen. Detail or screenshots go in `attachments` (uploaded as for escalations, below the same limits). One per lane per minute: put several things in one message.
+- **Short:** at most 500 characters, first line written for a lock screen. Detail or screenshots go in `attachments` (uploaded as for escalations, with the same limits). One per lane per minute: put several things in one message.
 
 ## When the owner answers
 
@@ -107,9 +107,7 @@ Answers can take minutes or a day.
   - `replies`: the owner answered Other; `messages` are theirs since you last wrote. Acknowledge and act, or reply (above). They come back on every wait until you do.
   - `closed`: withdrawn by someone else. "Lane removed by …" means the lane was taken off the dashboard.
   - `removedLanes`: lanes someone else took off the dashboard (including ones with nothing open). Stop work on them and don't publish to them again; publishing brings a lane back.
-  - `laneMessages`: the owner wrote on lanes in scope, outside any escalation (`messages` per lane, each returned once). Act on them; answer with `notify_owner` if useful.
-
-The owner can also write on a lane while you work (the lane's conversation, where `notify_owner` posts). Nothing blocks: their notes come back once, as `ownerMessages` in the result of your next `update_lane` or `notify_owner` on that lane, or in `laneMessages` from a wait. Act on them like instructions from the owner; answer with `notify_owner` when they asked something or you changed course.
+  - `laneMessages`: the owner's notes on lanes in scope, outside any escalation. Each note comes back once: here, or as `ownerMessages` from your next `update_lane` or `notify_owner` on that lane. Act on them like the owner's instructions; answer with `notify_owner` if useful.
   - `open`: still waiting.
   - `ready: false`: the wait ran out. Call again.
   - `ready: true` with everything empty: nothing is waiting on the owner. Stop waiting.

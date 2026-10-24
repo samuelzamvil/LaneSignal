@@ -3,7 +3,7 @@
 A [TRMNL](https://trmnl.com) e-ink display can act as a notifications channel for a project. Each project gets its own screen:
 
 - **Left, the card:** the latest notification. For an escalation that's the same as its inbox card: code, lane, question, the first lines of context, the agent's latest message, the recommendation, and what **Accept** and **Reject** would do. There are no buttons on e-ink, so you answer in the app.
-- **Right, the list:** the project's other pending escalations, condensed to code, question, lane and age, in inbox order. A new notification never pushes the others off the screen.
+- **Right, the list:** the project's other pending escalations, condensed to code, question, lane, age and status (Needs you, Replied, Agent's turn, FYI), in inbox order, at most 12 rows. A new notification never pushes the others off the screen.
 - **Bottom:** the project's name and when LaneSignal last sent data, as a day and time in your TRMNL account's time zone. LaneSignal sends at least once an hour, so a time more than an hour old means it has stopped. Ages on the screen ("25m ago") are as of that time: TRMNL only redraws when new data arrives.
 
 Once the card's escalation is answered, the card moves to the newest escalation still open, or says **All clear** when there are none. A lane update (when they're on, see below) keeps the card for up to a day, until something newer arrives.
@@ -50,7 +50,7 @@ Below the settings, LaneSignal shows when it last pushed and the last problem, i
 
 ## What leaves your server
 
-Each push sends the project's name, and for each pending escalation its code, question, lane name and age. The card adds the lane's group, the escalation's context, latest message, recommendation, and Accept and Reject lines, or a lane update's text. Everything is cut down to fit the screen. TRMNL keeps the latest push for each plugin, not a history ([TRMNL's architecture](https://docs.trmnl.com/go/how-it-works)).
+Each push sends the project's name, and for each pending escalation its code, question, lane name, age and status. The card adds its status, the lane's group, the escalation's context, latest message (yours or the agent's), recommendation, Accept and Reject lines and how many files it has, or a lane update's text. Everything is cut down to fit the screen. TRMNL keeps the latest push for each plugin, not a history ([TRMNL's architecture](https://docs.trmnl.com/go/how-it-works)).
 
 ## Self-hosted TRMNL servers
 
