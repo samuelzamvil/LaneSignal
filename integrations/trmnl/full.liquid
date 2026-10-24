@@ -1,73 +1,61 @@
 {% assign now = "now" | date: "%s" | plus: 0 %}
-<div class="layout layout--top layout--stretch-x">
-  <div class="grid grid--cols-5" style="height: 100%;">
-    <div class="col--span-3">
+<div class="ls">
+  <div class="ls-main">
+    <div class="ls-card-col">
       {% if card %}
-      <div class="ls-card">
+      {% if card.type == 'escalation' %}{% if card.label == 'FYI' %}{% assign kind = 'fyi' %}{% else %}{% assign kind = 'open' %}{% endif %}{% else %}{% assign kind = 'update' %}{% endif %}
+      <div class="ls-card {{ kind }}">
         <div class="ls-head">
-          <span class="label label--inverted">{{ card.label | escape }}</span>
-          {% if card.code %}<span class="title">{{ card.code | escape }}</span>{% endif %}
-          <span class="label label--small" data-clamp="1">{{ card.where | escape }}</span>
+          {% if card.code %}<span class="ls-ref">{{ card.code | escape }}</span>{% endif %}
+          <span class="ls-lane">{{ card.lane | escape }}</span>
+          {% if card.group %}<span class="ls-tag">{{ card.group | escape }}</span>{% endif %}
+          <span class="ls-when">{% render "ago", now: now, at: card.at %}</span>
         </div>
-        <span class="title title--large" data-clamp="3">{{ card.title | escape }}</span>
-        {% if card.context %}<span class="description" data-clamp="6">{{ card.context | escape }}</span>{% endif %}
-        {% if card.message %}<span class="description" data-clamp="2"><b>{{ card.message | escape }}</b></span>{% endif %}
-        {% if card.recommendation %}
-        <div class="ls-means">
-          <span class="label label--small label--underline">Recommends</span>
-          <span class="description" data-clamp="2">{{ card.recommendation | escape }}</span>
-        </div>
-        {% endif %}
-        {% if card.accept %}
-        <div class="ls-means">
-          <span class="label label--small">Accept</span>
-          <span class="description" data-clamp="1">{{ card.accept | escape }}</span>
+        <span><span class="ls-pill{% if kind == 'open' %} strong{% endif %}">{{ card.label | escape }}</span></span>
+        <p class="ls-question">{{ card.title | escape }}</p>
+        {% if card.context %}<p class="ls-context">{{ card.context | escape }}</p>{% endif %}
+        {% if card.files > 0 %}<span class="ls-files">{{ card.files }} file{% if card.files > 1 %}s{% endif %} attached</span>{% endif %}
+        {% if card.message %}<p class="ls-message">{{ card.message | escape }}</p>{% endif %}
+        {% if card.recommendation %}<p class="ls-rec"><span class="ls-label">Recommends</span> {{ card.recommendation | escape }}</p>{% endif %}
+        {% if card.accept or card.reject %}
+        <div class="ls-answers">
+          <div class="ls-answer"><b>Accept</b>{% if card.accept %}<span>{{ card.accept | escape }}</span>{% endif %}</div>
+          {% if card.reject %}<div class="ls-answer"><b>Reject</b><span>{{ card.reject | escape }}</span></div>{% endif %}
         </div>
         {% endif %}
-        {% if card.reject %}
-        <div class="ls-means">
-          <span class="label label--small">Reject</span>
-          <span class="description" data-clamp="1">{{ card.reject | escape }}</span>
-        </div>
-        {% endif %}
-        <span class="label label--small label--gray">
-          {% render "ago", now: now, at: card.at %}{% if card.files > 0 %} · {{ card.files }} file{% if card.files > 1 %}s{% endif %} attached{% endif %}
-        </span>
       </div>
       {% else %}
-      <div class="ls-card" style="justify-content: center;">
-        <span class="title title--xlarge">All clear</span>
-        <span class="description">Nothing needs you right now.</span>
+      <div class="ls-clear">
+        <b>All clear</b>
+        <span>Nothing needs you right now.</span>
       </div>
       {% endif %}
     </div>
-    <div class="col--span-2 ls-side">
+    <div class="ls-list-col">
       {% assign pending_count = pending | size | plus: more %}
-      <span class="title title--small">Also pending{% if pending_count > 0 %} · {{ pending_count }}{% endif %}</span>
+      <div class="ls-list-head"><span>Also pending</span><span>{{ pending_count }}</span></div>
       {% if pending_count == 0 %}
-      <span class="description">No other questions.</span>
+      <div class="ls-empty">No other questions.</div>
       {% else %}
-      <div data-overflow="true" data-overflow-counter="true">
+      <div class="ls-rows">
         {% for row in pending %}
-        <div class="item">
-          <div class="content">
-            <span class="title title--small" data-clamp="2">{{ row.code | escape }} · {{ row.q | escape }}</span>
-            <span class="label label--small" data-clamp="1">
-              {{ row.lane | escape }} · {% render "ago", now: now, at: row.at %}{% if row.agent %} · agent's turn{% elsif row.fyi %} · FYI{% endif %}
-            </span>
-          </div>
+        <div class="ls-row">
+          <span class="ls-ref">{{ row.code | escape }}</span>
+          <span class="ls-row-main">
+            <span class="ls-row-q">{{ row.q | escape }}</span>
+            <span class="ls-row-where">{{ row.lane | escape }} · {% render "ago", now: now, at: row.at %}</span>
+          </span>
+          <span class="ls-pill{% if row.status == 'Needs you' or row.status == 'Replied' %} strong{% endif %}">{{ row.status | escape }}</span>
         </div>
         {% endfor %}
       </div>
-      {% if more > 0 %}<span class="label label--small">+{{ more }} more in LaneSignal</span>{% endif %}
+      {% if more > 0 %}<div class="ls-more">+{{ more }} more in LaneSignal</div>{% endif %}
       {% endif %}
     </div>
   </div>
-</div>
-<div class="title_bar">
-  <span class="title">LaneSignal</span>
   {% assign quiet = now | minus: asOf %}
-  <span class="instance">
-    {{ project | escape }} · {% if quiet > 7200 %}no update for {{ quiet | divided_by: 3600 | floor }}h, is LaneSignal running?{% else %}updated {% render "ago", now: now, at: asOf %}{% endif %}
-  </span>
+  <div class="ls-foot">
+    <span><b>LaneSignal</b> · {{ project | escape }}</span>
+    <span>{% if quiet > 7200 %}<b>No update for {{ quiet | divided_by: 3600 | floor }}h. Is LaneSignal running?</b>{% else %}Updated {% render "ago", now: now, at: asOf %}{% endif %}</span>
+  </div>
 </div>

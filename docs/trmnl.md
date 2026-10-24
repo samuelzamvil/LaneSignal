@@ -70,4 +70,4 @@ LaneSignal only pushes to `trmnl.com` (and `usetrmnl.com`) over HTTPS unless tol
 
 ## Changing the layout
 
-The plugin's files are in [`integrations/trmnl/`](../integrations/trmnl/) in the repository: `settings.yml`, `shared.liquid` (a helper for "12m ago" and the styles) and `full.liquid` (the screen). They use TRMNL's [Framework](https://trmnl.com/framework) and Liquid. You can also edit the markup in TRMNL's plugin editor; the data LaneSignal sends is visible there under *Your Variables*, and from the API at `GET /api/projects/<id>/trmnl/preview`.
+The plugin's files are in [`integrations/trmnl/`](../integrations/trmnl/) in the repository: `settings.yml`, `shared.liquid` (the styles, and a helper for "12m ago") and `full.liquid` (the screen), in TRMNL's Liquid. The styles are the app's inbox card and list rows (`web/src/styles.css`), redrawn in black and white for e-ink. You can also edit the markup in TRMNL's plugin editor; the data LaneSignal sends is visible there under *Your Variables*, and from the API at `GET /api/projects/<id>/trmnl/preview`.

@@ -71,17 +71,18 @@ describe('screen data', () => {
     assert.equal(p.project, 'Main');
     assert.equal(p.card?.code, latest.ref);
     assert.equal(p.card?.label, 'Needs you');
-    assert.equal(p.card?.where, 'Auth rework');
+    assert.equal(p.card?.lane, 'Auth rework');
+    assert.equal(p.card?.group, null);
     assert.equal(p.card?.title, 'Drop the legacy table?');
     assert.equal(p.card?.recommendation, 'Drop it in 0042');
     assert.equal(p.card?.accept, 'Write migration 0042');
     assert.equal(p.card?.reject, 'Keep it');
     // Blocking questions waiting on you first, FYIs last.
     assert.deepEqual(
-      p.pending.map((r) => [r.code, r.fyi]),
+      p.pending.map((r) => [r.code, r.status]),
       [
-        [first.ref, false],
-        [fyi.ref, true],
+        [first.ref, 'Needs you'],
+        [fyi.ref, 'FYI'],
       ],
     );
     assert.equal(p.more, 0);
@@ -109,6 +110,7 @@ describe('screen data', () => {
     const p = buildPayload(store, store.trmnlSetup('default')!, new Date());
     assert.equal(p.card?.type, 'notice');
     assert.equal(p.card?.title, 'Tests green');
+    assert.equal(p.card?.lane, 'Auth rework');
     assert.deepEqual(
       p.pending.map((r) => r.code),
       [q.ref],

@@ -1,8 +1,57 @@
 {% comment %} How long ago an epoch-seconds time was, at render time: "12m ago". {% endcomment %}
 {% template ago %}{% assign s = now | minus: at %}{% if s < 60 %}just now{% elsif s < 3600 %}{{ s | divided_by: 60 | floor }}m ago{% elsif s < 86400 %}{{ s | divided_by: 3600 | floor }}h ago{% else %}{{ s | divided_by: 86400 | floor }}d ago{% endif %}{% endtemplate %}
+{% comment %}
+  The LaneSignal app's inbox card and list rows (web/src/styles.css), redrawn for black-and-white
+  e-ink: no colours or greys, so emphasis comes from borders, weight and inverted pills.
+{% endcomment %}
 <style>
-  .ls-card { display: flex; flex-direction: column; gap: 8px; height: 100%; overflow: hidden; }
-  .ls-head { display: flex; align-items: center; gap: 8px; }
-  .ls-side { display: flex; flex-direction: column; gap: 6px; border-left: 1px solid black; padding-left: 12px; height: 100%; overflow: hidden; }
-  .ls-means { display: flex; gap: 6px; align-items: baseline; }
+  .ls { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 14px 16px 10px; gap: 10px;
+    font-family: Inter, system-ui, sans-serif; color: #000; background: #fff; line-height: 1.3; }
+  .ls * { box-sizing: border-box; }
+  .ls-main { flex: 1; min-height: 0; display: flex; gap: 16px; }
+  .ls-card-col { flex: 0 0 56%; min-width: 0; display: flex; }
+  .ls-list-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  .ls-card { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 14px 16px;
+    border: 3px solid #000; border-radius: 14px; overflow: hidden; }
+  .ls-card.fyi, .ls-card.update { border-width: 1px; }
+  .ls-head { display: flex; align-items: center; gap: 8px; font-size: 15px; min-width: 0; }
+  .ls-ref { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .ls-lane { padding: 3px 9px; border: 1px solid #000; border-radius: 8px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .ls-tag { font-size: 13px; padding: 1px 7px; border: 1px solid #000; border-radius: 6px; white-space: nowrap; }
+  .ls-when { margin-left: auto; white-space: nowrap; font-size: 14px; }
+  .ls-question { margin: 2px 0 0; font-size: 24px; font-weight: 700; line-height: 1.2;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .ls-context { margin: 0; font-size: 16px;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .ls-message { margin: 0; padding: 6px 10px; border: 1px solid #000; border-radius: 10px; font-size: 15px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ls-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
+  .ls-rec { margin: 0; font-size: 16px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ls-answers { margin-top: auto; display: flex; gap: 8px; }
+  .ls-answer { flex: 1; min-width: 0; padding: 6px 10px; border: 2px solid #000; border-radius: 10px; font-size: 14px; }
+  .ls-answer b { display: block; font-size: 15px; }
+  .ls-answer span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ls-files { font-size: 13px; }
+  .ls-clear { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 14px 16px;
+    border: 1px solid #000; border-radius: 14px; }
+  .ls-clear b { font-size: 26px; }
+
+  .ls-list-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 2px 6px;
+    border-bottom: 2px solid #000; font-size: 15px; font-weight: 700; }
+  .ls-rows { flex: 1; min-height: 0; overflow: hidden; }
+  .ls-row { display: flex; align-items: center; gap: 8px; padding: 8px 2px; border-bottom: 1px solid #000; }
+  .ls-row .ls-ref { min-width: 2.6em; font-size: 15px; }
+  .ls-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .ls-row-q { font-weight: 600; font-size: 15px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ls-row-where { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ls-pill { flex: none; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; border: 1px solid #000; white-space: nowrap; }
+  .ls-pill.strong { background: #000; color: #fff; }
+  .ls-more { padding-top: 6px; font-size: 13px; }
+  .ls-empty { padding: 10px 2px; font-size: 15px; }
+
+  .ls-foot { display: flex; justify-content: space-between; font-size: 13px; border-top: 1px solid #000; padding-top: 6px; }
+  .ls-foot b { font-weight: 700; }
 </style>

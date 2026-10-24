@@ -66,7 +66,8 @@ interface CardData {
   type: 'escalation' | 'notice' | 'completed' | 'blocked';
   label: string;
   code: string | null;
-  where: string;
+  lane: string;
+  group: string | null;
   title: string;
   context: string | null;
   message: string | null;
@@ -82,8 +83,8 @@ interface Row {
   q: string;
   lane: string;
   at: number;
-  fyi: boolean;
-  agent: boolean;
+  /** The app's status pill: Needs you, Replied, Agent's turn or FYI. */
+  status: string;
 }
 
 export interface TrmnlPayload {
@@ -96,10 +97,23 @@ export interface TrmnlPayload {
   asOf: number;
 }
 
-function where(store: Store, laneId: string) {
+/** The lane's name and its group's, as the app's card head shows them. */
+function laneAndGroup(store: Store, laneId: string) {
   const lane = store.getLane(laneId);
   const group = lane?.group ? store.getGroup(lane.group) : null;
-  return [group?.name, lane?.name ?? localId(laneId)].filter(Boolean).join(' / ');
+  return { lane: clip(lane?.name ?? localId(laneId), 40) ?? '', group: clip(group?.name, 30) };
+}
+
+function where(store: Store, laneId: string) {
+  const { lane, group } = laneAndGroup(store, laneId);
+  return [group, lane].filter(Boolean).join(' / ');
+}
+
+/** The status pill of the app's list rows. */
+function statusOf(e: Escalation) {
+  if (e.turn === 'agent') return "Agent's turn";
+  if (e.lastMessage?.from === 'agent') return 'Replied';
+  return e.blocking ? 'Needs you' : 'FYI';
 }
 
 /** Inbox order: blocking questions waiting on you, then the agent's turn, then FYIs; oldest first within each. */
@@ -109,13 +123,11 @@ function rank(e: Escalation) {
 }
 
 function escalationCard(store: Store, e: Escalation): CardData {
-  const agentSpoke = e.lastMessage?.from === 'agent';
-  const label = e.turn === 'agent' ? "Agent's turn" : agentSpoke ? 'Reply' : e.blocking ? 'Needs you' : 'FYI';
   return {
     type: 'escalation',
-    label,
+    label: statusOf(e),
     code: e.ref,
-    where: clip(where(store, e.laneId), 60) ?? '',
+    ...laneAndGroup(store, e.laneId),
     title: clip(e.question, 200) ?? '',
     context: clip(e.context, 360),
     message: e.lastMessage ? clip(`${e.lastMessage.from === 'agent' ? 'Agent' : 'You'}: ${e.lastMessage.body}`, 300) : null,
@@ -123,7 +135,7 @@ function escalationCard(store: Store, e: Escalation): CardData {
     accept: clip(e.acceptMeans, 120),
     reject: e.allowReject ? clip(e.rejectMeans, 120) : null,
     files: e.attachments.length,
-    at: epoch(e.lastMessage?.at ?? e.createdAt),
+    at: epoch(e.createdAt),
   };
 }
 
@@ -147,7 +159,7 @@ export function buildPayload(store: Store, setup: TrmnlSetup, now: Date): TrmnlP
       type: stored.kind,
       label,
       code: null,
-      where: clip(stored.title, 60) ?? '',
+      ...laneAndGroup(store, stored.laneId),
       title: clip(stored.body, 200) ?? '',
       context: null,
       message: null,
@@ -168,9 +180,8 @@ export function buildPayload(store: Store, setup: TrmnlSetup, now: Date): TrmnlP
     code: e.ref,
     q: clip(e.question, 100) ?? '',
     lane: clip(store.getLane(e.laneId)?.name ?? localId(e.laneId), 30) ?? '',
-    at: epoch(e.createdAt),
-    fyi: !e.blocking,
-    agent: e.turn === 'agent',
+    at: epoch(e.updatedAt),
+    status: statusOf(e),
   }));
   const payload: TrmnlPayload = {
     project: project?.name ?? setup.project,
