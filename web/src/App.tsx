@@ -23,6 +23,7 @@ import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { HistoryPane } from './history.tsx';
 import { RequirementsPane } from './requirements.tsx';
+import { useSeenVersion } from './seen.ts';
 import { Toaster } from './toast.tsx';
 import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection, ProjectsSection } from './settings.tsx';
 
@@ -200,6 +201,8 @@ function Dashboard({
   // History refreshes when an escalation closes (leaves the live set), not on every update.
   const unresolvedIds = useMemo(() => [...live.escalations.keys()].sort().join(','), [live.escalations]);
   const now = useNow();
+  // Lane cards mark new agent messages until the lane is opened.
+  useSeenVersion();
   const [route, navigate] = useRoute();
   const [filters, setFilters] = useFilters();
 
@@ -344,6 +347,8 @@ function Dashboard({
   const laneVersion = routeLaneKey
     ? [
         live.lanes.get(routeLaneKey)?.updatedAt,
+        live.lanes.get(routeLaneKey)?.lastMessageId,
+        live.lanes.get(routeLaneKey)?.unreadByAgent,
         ...[...live.escalations.values()]
           .filter((e) => keyOf(e.project, e.laneId) === routeLaneKey)
           .map((e) => e.id + e.state),
@@ -848,6 +853,7 @@ function Dashboard({
           version={laneVersion}
           now={now}
           canDelete={me?.role === 'human'}
+          canWrite={me?.role === 'human' && config.decisions}
           group={groupOfLane(live.lanes.get(routeLaneKey))}
           groupLabel={config.groupLabel}
           onClose={() => closeTo('#/lanes')}

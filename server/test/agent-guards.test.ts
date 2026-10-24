@@ -165,9 +165,9 @@ describe('notices', () => {
     assert.ok(events.some((e: any) => e.kind === 'notice' && e.message === 'Merged PR #311'));
     const again = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Starting gh:42' });
     assert.equal(again.isError, true);
-    assert.match(again.text, /One notice per lane per minute/);
+    assert.match(again.text, /One message per lane per minute/);
     assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'Starting gh:42' })).status, 201);
-    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'x'.repeat(141) })).status, 400);
+    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'x'.repeat(501) })).status, 400);
     assert.equal((await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-l', message: 'typo' })).isError, true);
     assert.equal((await srv.call('POST', '/api/lanes/pay-1/notices', ALICE, { message: 'not an agent' })).status, 403);
   });
@@ -205,9 +205,8 @@ describe('an FYI that now needs the owner', () => {
   });
 });
 
-test('a notice is one line', async () => {
-  const res = await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #311\nAlso lots more' });
-  assert.equal(res.status, 400);
-  assert.equal((await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #311' })).status, 201);
+test('a notice can run to several lines; a retry returns it, another within the minute is refused', async () => {
+  assert.equal((await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #311\nAlso lots more' })).status, 201);
+  assert.equal((await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #311\nAlso lots more' })).status, 201);
   assert.equal((await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #312' })).status, 409);
 });

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
-import { accessFor, briefWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, briefMessages, briefWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { oversizedImage, readUpload, sniff } from './attachments.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
@@ -20,6 +20,7 @@ import {
   ForbiddenError,
   localId,
   NotFoundError,
+  projectOf,
   ValidationError,
   type ExportDataset,
   type RecordResult,
@@ -464,6 +465,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         .listEscalations({ laneId: lane.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 50 })
         .map(pub.escalation),
       events: store.laneEvents(lane.id, 100).map((e) => ({ ...e, laneId: localId(e.laneId) })),
+      messages: store.laneMessages(lane.id),
     });
   });
 
@@ -471,7 +473,10 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const id = parse(s.laneId, req.params.id);
     const group = typeof req.body?.group === 'string' ? req.body.group : undefined;
     const project = acc(res).pick(projectQuery(req), { lane: id, group });
-    res.json(pub.lane(store.upsertLane(q(project, id), lanePatchOf(project, req.body), principalOf(res).name)));
+    const lane = pub.lane(store.upsertLane(q(project, id), lanePatchOf(project, req.body), principalOf(res).name));
+    // The owner's notes on the lane reach a working agent the next time it publishes.
+    const unread = store.takeUnreadForAgent(q(project, id));
+    res.json(unread.length ? { ...lane, unreadByAgent: 0, ownerMessages: briefMessages(unread) } : lane);
   });
 
   // Humans remove lanes from the dashboard; overseers remove lanes whose work is over.
@@ -518,7 +523,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const notFound = () => new NotFoundError(`Attachment ${req.params.id} not found`);
     if (!file) throw notFound();
     if (file.escalationId) acc(res).escalation(file.escalationId);
-    else if (file.owner !== ownerOf(principalOf(res))) throw notFound();
+    else if (file.laneId) {
+      if (!acc(res).projects.includes(projectOf(file.laneId))) throw notFound();
+    } else if (file.owner !== ownerOf(principalOf(res))) throw notFound();
     res.set({
       'content-type': file.type.startsWith('text/') ? `${file.type}; charset=utf-8` : file.type,
       'x-content-type-options': 'nosniff',
@@ -529,12 +536,34 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.send(Buffer.from(file.data));
   });
 
-  // Overseers tell the owner about milestones (merged, started a ticket): a quiet push.
+  /**
+   * A message in a lane's conversation. From the agent, a milestone with any files (a quiet push);
+   * from a person, a note the agent gets the next time it publishes, writes on or waits on the lane.
+   * The reply carries the owner's messages the agent hadn't seen.
+   */
+  app.post('/api/lanes/:id/messages', any, (req, res) => {
+    const body = parse(s.message, req.body ?? {});
+    const p = principalOf(res);
+    if (p.role !== 'agent' && !config.decisions) {
+      throw new NotFoundError("Writing to agents in LaneSignal is off on this server (LANESIGNAL_DECISIONS): write in the agent's session");
+    }
+    const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
+    const laneId = q(project, String(req.params.id));
+    const from = p.role === 'agent' ? 'agent' : 'owner';
+    const message = store.postLaneMessage(laneId, { from, author: p.name, body: body.body, attachments: body.attachments }, ownerOf(p));
+    const unread = from === 'agent' ? store.takeUnreadForAgent(laneId) : [];
+    res.status(201).json(unread.length ? { ...message, ownerMessages: briefMessages(unread) } : message);
+  });
+
+  // The agent's message on a lane, as notify_owner sends it: `message` and any `attachments`.
   app.post('/api/lanes/:id/notices', agent, (req, res) => {
     const body = parse(s.notice, req.body ?? {});
+    const p = principalOf(res);
     const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
-    const r = store.postNotice(q(project, String(req.params.id)), body.message, principalOf(res).name);
-    res.status(201).json({ ...r, laneId: localId(r.laneId) });
+    const laneId = q(project, String(req.params.id));
+    const r = store.postNotice(laneId, body.message, p.name, body.attachments, ownerOf(p));
+    const unread = store.takeUnreadForAgent(laneId);
+    res.status(201).json({ ...r, laneId: localId(r.laneId), ...(unread.length ? { ownerMessages: briefMessages(unread) } : {}) });
   });
 
   // ---- escalations ----
@@ -601,7 +630,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
-        res.json(briefWait(pub.wait(now)));
+        res.json(briefWait(pub.wait(store.handOver(now))));
         return;
       }
       const abort = new AbortController();
@@ -853,7 +882,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   }));
 
   app.get('/api/export/:file', any, oneAtATime, h(async (req, res) => {
-    const match = /^([a-z]+)\.(csv|json)$/.exec(String(req.params.file));
+    const match = /^([a-z_]+)\.(csv|json)$/.exec(String(req.params.file));
     const dataset = match?.[1] as ExportDataset | undefined;
     if (!match || !dataset || !datasets.includes(dataset)) {
       throw new NotFoundError(`Unknown export; use one of ${datasets.map((d) => `${d}.csv`).join(', ')} (or .json)`);

@@ -12,6 +12,7 @@ import {
   type Link,
   type AttachmentMeta,
   type AttachmentType,
+  type LaneMessage,
   type Message,
   type Notice,
   type Position,
@@ -132,11 +133,13 @@ export interface WaitResult {
   open: { id: string; ref: string; laneId: string; question: string }[];
   /** Lanes in scope that someone else took off the dashboard since `since`: stop work on them. */
   removedLanes: { laneId: string; removedBy: string | null; at: string }[];
+  /** The owner wrote on lanes in scope (not about an escalation): their messages the agent hasn't seen. */
+  laneMessages: { laneId: string; messages: LaneMessage[] }[];
   /** Server time of this result; pass it as `since` on the next wait. */
   checkedAt: string;
 }
 
-export const EXPORT_DATASETS = ['escalations', 'positions', 'messages', 'lanes', 'groups', 'events', 'requirements'] as const;
+export const EXPORT_DATASETS = ['escalations', 'positions', 'messages', 'lane_messages', 'lanes', 'groups', 'events', 'requirements'] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
 
 /** Fixed column order per dataset, so a CSV's header never depends on whether it has rows. */
@@ -158,6 +161,7 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
   groups: ['id', 'project', 'name', 'ticket', 'ticket_url', 'links', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
   events: ['id', 'project', 'lane_id', 'at', 'kind', 'message', 'actor'],
   messages: ['id', 'escalation_id', 'escalation_ref', 'project', 'lane_id', 'from', 'author', 'body', 'attachments', 'at'],
+  lane_messages: ['id', 'project', 'lane_id', 'from', 'author', 'body', 'attachments', 'at'],
   requirements: [
     'id', 'project', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'decided_by',
     'source_escalation', 'recorded_by', 'created_at', 'updated_at',
@@ -222,7 +226,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -435,6 +439,31 @@ export class Store {
             updated_at TEXT NOT NULL
           );
         `);
+      }
+      if (version < 13) {
+        // v13: a conversation on each lane (the agent's notices, now with files, and the owner's notes
+        // back), and how far the agent has read. Earlier notices become its first messages.
+        const fresh = !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lane_messages'").get();
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS lane_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+            author_kind TEXT NOT NULL,
+            author TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS lane_messages_lane ON lane_messages(lane_id, id);
+        `);
+        if (!this.hasColumn('attachments', 'lane_message_id')) this.db.exec('ALTER TABLE attachments ADD COLUMN lane_message_id INTEGER');
+        this.db.exec('CREATE INDEX IF NOT EXISTS attachments_lane_message ON attachments(lane_message_id) WHERE lane_message_id IS NOT NULL');
+        if (!this.hasColumn('lanes', 'agent_read_id')) this.db.exec('ALTER TABLE lanes ADD COLUMN agent_read_id INTEGER NOT NULL DEFAULT 0');
+        if (fresh) {
+          this.db.exec(`
+            INSERT INTO lane_messages (lane_id, author_kind, author, body, created_at)
+              SELECT lane_id, 'agent', COALESCE(actor, 'agent'), message, at FROM lane_events WHERE kind = 'notice' ORDER BY id;
+          `);
+        }
       }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
@@ -762,6 +791,9 @@ export class Store {
       openEscalations: Number(r.open_escalations ?? 0),
       blockingEscalations: Number(r.open_blocking ?? 0),
       agentWaiting: (this.waiting.get(r.id as string) ?? 0) > 0,
+      lastMessageId: r.last_message_id == null ? null : Number(r.last_message_id),
+      lastAgentMessageId: r.last_agent_message_id == null ? null : Number(r.last_agent_message_id),
+      unreadByAgent: Number(r.unread_by_agent ?? 0),
     };
   }
 
@@ -769,7 +801,10 @@ export class Store {
     SELECT l.*,
       (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open') AS open_escalations,
       (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open' AND e.blocking = 1 AND e.turn = 'owner') AS open_blocking,
-      (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived
+      (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived,
+      (SELECT MAX(m.id) FROM lane_messages m WHERE m.lane_id = l.id) AS last_message_id,
+      (SELECT MAX(m.id) FROM lane_messages m WHERE m.lane_id = l.id AND m.author_kind = 'agent') AS last_agent_message_id,
+      (SELECT COUNT(*) FROM lane_messages m WHERE m.lane_id = l.id AND m.author_kind = 'owner' AND m.id > l.agent_read_id) AS unread_by_agent
     FROM lanes l`;
 
   /** Active lanes (archived ones are kept for export but hidden). */
@@ -1275,7 +1310,7 @@ export class Store {
   addAttachment(file: { name: string; type: AttachmentType; data: Uint8Array }, owner: string, uploadedBy: string): AttachmentMeta {
     const now = this.now();
     this.db
-      .prepare('DELETE FROM attachments WHERE escalation_id IS NULL AND created_at < ?')
+      .prepare('DELETE FROM attachments WHERE escalation_id IS NULL AND lane_message_id IS NULL AND created_at < ?')
       .run(new Date(now.getTime() - UNREFERENCED_TTL_MS).toISOString());
     this.checkUploadRoom(owner);
     const id = randomUUID();
@@ -1290,7 +1325,11 @@ export class Store {
   /** Throws when the uploader already has the most uploads waiting to be attached (checked before reading a body). */
   checkUploadRoom(owner: string) {
     const pending = Number(
-      (this.db.prepare('SELECT COUNT(*) AS n FROM attachments WHERE escalation_id IS NULL AND owner = ?').get(owner) as Row).n,
+      (
+        this.db
+          .prepare('SELECT COUNT(*) AS n FROM attachments WHERE escalation_id IS NULL AND lane_message_id IS NULL AND owner = ?')
+          .get(owner) as Row
+      ).n,
     );
     if (pending >= MAX_PENDING_UPLOADS) {
       throw new ConflictError(`${MAX_PENDING_UPLOADS} uploads are waiting to be attached; attach them or wait a day`);
@@ -1305,13 +1344,13 @@ export class Store {
     if (!ids.length) return;
     let have = messageId === null ? this.attachmentsOf(escalationId).length : 0;
     for (const id of new Set(ids)) {
-      const r = this.db.prepare('SELECT owner, escalation_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
+      const r = this.db.prepare('SELECT owner, escalation_id, lane_message_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
       if (!r || r.owner !== owner) {
         throw new NotFoundError(`Attachment ${id} not found: upload it first (POST /api/attachments), with the same key`);
       }
       // Already here (a retry sending the same ids): nothing to add.
       if (r.escalation_id === escalationId && messageId === null) continue;
-      if (r.escalation_id) throw new ConflictError(`Attachment ${id} is already attached; upload it again`);
+      if (r.escalation_id || r.lane_message_id != null) throw new ConflictError(`Attachment ${id} is already attached; upload it again`);
       if (have >= this.attachmentsPerItem) {
         throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per ${messageId === null ? 'escalation' : 'message'}`);
       }
@@ -1321,12 +1360,30 @@ export class Store {
     }
   }
 
+  /** Attaches uploads to a lane message (inside a transaction): each the uploader's, not attached elsewhere. */
+  private linkLaneAttachments(laneMessageId: number, ids: string[], owner: string) {
+    let have = 0;
+    for (const id of new Set(ids)) {
+      const r = this.db.prepare('SELECT owner, escalation_id, lane_message_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
+      if (!r || r.owner !== owner) {
+        throw new NotFoundError(`Attachment ${id} not found: upload it first (POST /api/attachments), with the same key`);
+      }
+      if (r.escalation_id || r.lane_message_id != null) throw new ConflictError(`Attachment ${id} is already attached; upload it again`);
+      if (have >= this.attachmentsPerItem) throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per message`);
+      this.db.prepare('UPDATE attachments SET lane_message_id = ?, position = ? WHERE id = ?').run(laneMessageId, have++, id);
+    }
+  }
+
   /**
-   * An attachment's file, and the escalation it's on (null while unreferenced, when only its uploader
-   * may read it). Callers check that the reader can see that escalation.
+   * An attachment's file, and the escalation or lane it's on (both null while unreferenced, when only
+   * its uploader may read it). Callers check that the reader can see that escalation or lane.
    */
-  getAttachment(id: string): (AttachmentMeta & { data: Uint8Array; escalationId: string | null; owner: string }) | null {
-    const r = this.db.prepare('SELECT * FROM attachments WHERE id = ?').get(id) as Row | undefined;
+  getAttachment(
+    id: string,
+  ): (AttachmentMeta & { data: Uint8Array; escalationId: string | null; laneId: string | null; owner: string }) | null {
+    const r = this.db
+      .prepare('SELECT a.*, m.lane_id AS message_lane_id FROM attachments a LEFT JOIN lane_messages m ON m.id = a.lane_message_id WHERE a.id = ?')
+      .get(id) as Row | undefined;
     if (!r) return null;
     return {
       id: r.id as string,
@@ -1335,6 +1392,7 @@ export class Store {
       size: Number(r.size),
       data: r.data as Uint8Array,
       escalationId: (r.escalation_id as string | null) ?? null,
+      laneId: (r.message_lane_id as string | null) ?? null,
       owner: r.owner as string,
     };
   }
@@ -1517,29 +1575,139 @@ export class Store {
     return escalation;
   }
 
+  // ---- lane conversations ----------------------------------------------
+
+  private laneMessageFromRow(r: Row, readId?: number): LaneMessage {
+    const attachments = (
+      this.db.prepare('SELECT id, name, type, size FROM attachments WHERE lane_message_id = ? ORDER BY position').all(Number(r.id)) as Row[]
+    ).map((a) => ({ id: a.id as string, name: a.name as string, type: a.type as AttachmentType, size: Number(a.size) }));
+    const from = r.author_kind === 'agent' ? 'agent' : 'owner';
+    return {
+      id: Number(r.id),
+      from,
+      author: r.author as string,
+      body: r.body as string,
+      at: r.created_at as string,
+      attachments,
+      ...(from === 'owner' && readId !== undefined ? { seen: Number(r.id) <= readId } : {}),
+    };
+  }
+
+  private agentReadId(laneId: string): number {
+    return Number((this.db.prepare('SELECT agent_read_id FROM lanes WHERE id = ?').get(laneId) as Row | undefined)?.agent_read_id ?? 0);
+  }
+
+  /** A lane's conversation, oldest first: its latest `limit` messages. */
+  laneMessages(laneId: string, limit = 100): LaneMessage[] {
+    const readId = this.agentReadId(laneId);
+    return (
+      this.db.prepare('SELECT * FROM lane_messages WHERE lane_id = ? ORDER BY id DESC LIMIT ?').all(laneId, limit) as Row[]
+    )
+      .reverse()
+      .map((r) => this.laneMessageFromRow(r, readId));
+  }
+
+  /** The owner's messages on a lane that its agent hasn't been handed yet, oldest first. */
+  private unreadByAgent(laneId: string): LaneMessage[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT m.* FROM lane_messages m JOIN lanes l ON l.id = m.lane_id
+           WHERE m.lane_id = ? AND m.author_kind = 'owner' AND m.id > l.agent_read_id ORDER BY m.id`,
+        )
+        .all(laneId) as Row[]
+    ).map((r) => this.laneMessageFromRow(r));
+  }
+
   /**
-   * A milestone the agent tells the owner about ("Merged PR #311", "Starting gh:42"): kept in the
-   * lane's history and pushed quietly. One per lane per minute, so a looping agent can't flood a phone.
+   * Hands the owner's unread messages on a lane to its agent: returns them and marks them seen.
+   * Called wherever an agent hears back (publishing the lane, writing on it, a wait that returns).
    */
-  postNotice(laneId: string, message: string, actor: string): { laneId: string; message: string; at: string } {
-    if (!this.laneExists(laneId)) {
-      throw new NotFoundError(`Lane "${localId(laneId)}" not found: publish it first (update_lane with its group)`);
+  takeUnreadForAgent(laneId: string): LaneMessage[] {
+    const unread = this.unreadByAgent(laneId);
+    if (unread.length) this.markSeenByAgent(laneId, unread.at(-1)!.id);
+    return unread;
+  }
+
+  private markSeenByAgent(laneId: string, upTo: number) {
+    const res = this.db.prepare('UPDATE lanes SET agent_read_id = ? WHERE id = ? AND agent_read_id < ?').run(upTo, laneId, upTo);
+    if (res.changes > 0) {
+      const lane = this.getLane(laneId);
+      if (lane) this.emit({ type: 'lane', lane });
+    }
+  }
+
+  /**
+   * Writes in a lane's conversation. Nothing here blocks the lane or changes its status.
+   * - The agent's message (a milestone, with any files) is kept in the lane's history and pushed
+   *   quietly; one per lane per minute, so a looping agent can't flood a phone.
+   * - The owner's waits for the agent, which gets it the next time it publishes the lane, writes on
+   *   it, or waits on it. Not on removed lanes.
+   * A retry (same author, same text, within the minute) returns the message already sent.
+   */
+  postLaneMessage(
+    laneId: string,
+    message: { from: 'owner' | 'agent'; author: string; body: string; attachments?: string[] },
+    owner: string,
+  ): LaneMessage {
+    const max = message.from === 'agent' ? AGENT_MESSAGE_MAX : OWNER_MESSAGE_MAX;
+    const body = message.body.trim();
+    if (!body) throw new ValidationError('The message is empty');
+    if (body.length > max) {
+      throw new ValidationError(
+        message.from === 'agent'
+          ? `Keep messages under ${max} characters: attach a file (POST /api/attachments) for anything longer`
+          : `Messages are limited to ${max} characters`,
+      );
+    }
+    const found = this.laneIncludingArchived(laneId);
+    if (!found) throw new NotFoundError(`Lane "${localId(laneId)}" not found: publish it first (update_lane with its group)`);
+    if (message.from === 'owner' && found.archived) {
+      throw new ConflictError(`Lane "${localId(laneId)}" was removed from the dashboard: its conversation is closed`);
     }
     const at = this.now();
-    const last = this.db
-      .prepare("SELECT at FROM lane_events WHERE lane_id = ? AND kind = 'notice' ORDER BY id DESC LIMIT 1")
-      .get(laneId) as Row | undefined;
-    if (last && at.getTime() - Date.parse(last.at as string) < 60_000) {
-      throw new ConflictError('One notice per lane per minute: put everything in one message');
-    }
-    const lane = this.tx(() => {
-      this.addEvent(laneId, at.toISOString(), 'notice', message, actor);
-      this.db.prepare('UPDATE lanes SET updated_at = ? WHERE id = ?').run(at.toISOString(), laneId);
-      return this.requireLane(laneId);
+    const { posted, duplicate } = this.tx(() => {
+      const recent = this.db
+        .prepare('SELECT * FROM lane_messages WHERE lane_id = ? AND author_kind = ? ORDER BY id DESC LIMIT 1')
+        .get(laneId, message.from) as Row | undefined;
+      const fresh = recent && at.getTime() - Date.parse(recent.created_at as string) < 60_000;
+      if (fresh && recent.author === message.author && recent.body === body) {
+        return { posted: this.laneMessageFromRow(recent), duplicate: true };
+      }
+      if (message.from === 'agent' && fresh) {
+        throw new ConflictError('One message per lane per minute: put everything in one message');
+      }
+      const id = Number(
+        this.db
+          .prepare('INSERT INTO lane_messages (lane_id, author_kind, author, body, created_at) VALUES (?, ?, ?, ?, ?)')
+          .run(laneId, message.from, message.author, body, at.toISOString()).lastInsertRowid,
+      );
+      if (message.attachments?.length) this.linkLaneAttachments(id, message.attachments, owner);
+      this.addEvent(laneId, at.toISOString(), message.from === 'agent' ? 'notice' : 'message', body, message.author);
+      // The agent writing is the agent being alive; the owner's note says nothing about the lane's freshness.
+      if (message.from === 'agent') this.db.prepare('UPDATE lanes SET updated_at = ? WHERE id = ?').run(at.toISOString(), laneId);
+      const row = this.db.prepare('SELECT * FROM lane_messages WHERE id = ?').get(id) as Row;
+      return { posted: this.laneMessageFromRow(row, this.agentReadId(laneId)), duplicate: false };
     });
-    this.emit({ type: 'lane', lane });
-    this.events.emit('notice', { project: projectOf(laneId), laneId, message, by: actor });
-    return { laneId, message, at: at.toISOString() };
+    if (duplicate) return posted;
+    const lane = this.getLane(laneId);
+    if (lane) this.emit({ type: 'lane', lane, messaged: message.from });
+    if (message.from === 'agent') {
+      this.events.emit('notice', {
+        project: projectOf(laneId),
+        laneId,
+        message: body,
+        by: message.author,
+        attachments: posted.attachments,
+      });
+    }
+    return posted;
+  }
+
+  /** The agent's message on a lane, as notify_owner sends it. */
+  postNotice(laneId: string, message: string, actor: string, attachments: string[] = [], owner = actor): { laneId: string; message: string; at: string } {
+    const m = this.postLaneMessage(laneId, { from: 'agent', author: actor, body: message, attachments }, owner);
+    return { laneId, message: m.body, at: m.at };
   }
 
   /**
@@ -1862,7 +2030,10 @@ export class Store {
     const closedById = new Map<string, Escalation>();
     for (const e of named) if (e.state === 'acknowledged' || e.state === 'withdrawn') closedById.set(e.id, e);
     const removedLanes: WaitResult['removedLanes'] = [];
+    const laneMessages: WaitResult['laneMessages'] = [];
     for (const laneId of laneIds) {
+      const unread = this.unreadByAgent(laneId);
+      if (unread.length && this.getLane(laneId)) laneMessages.push({ laneId, messages: unread });
       if (scope.since) {
         // Covers lanes removed with nothing open on them, which leave no withdrawn escalation behind.
         const removed = this.db
@@ -1902,14 +2073,27 @@ export class Store {
         return { id: e.id, ref: e.ref, laneId: e.laneId, question: e.question, messages: thread.slice(lastAgent + 1) };
       });
     return {
-      ready: decided.length > 0 || replies.length > 0 || closed.length > 0 || removedLanes.length > 0 || open.length === 0,
+      ready:
+        decided.length > 0 ||
+        replies.length > 0 ||
+        laneMessages.length > 0 ||
+        closed.length > 0 ||
+        removedLanes.length > 0 ||
+        open.length === 0,
       decided,
       replies,
       closed,
       open,
       removedLanes,
+      laneMessages,
       checkedAt,
     };
+  }
+
+  /** Marks the lane messages in a wait result as handed to the agent, once it's actually returned to it. */
+  handOver(w: WaitResult): WaitResult {
+    for (const l of w.laneMessages) this.markSeenByAgent(l.laneId, l.messages.at(-1)!.id);
+    return w;
   }
 
   /**
@@ -1922,7 +2106,7 @@ export class Store {
   waitForDecisions(scope: WaitScope, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
     scope = { ...scope, since: scope.since ?? this.now().toISOString() };
     const first = this.decisionsFor(scope);
-    if (first.ready || timeoutMs <= 0 || signal?.aborted) return Promise.resolve(first);
+    if (first.ready || timeoutMs <= 0 || signal?.aborted) return Promise.resolve(signal?.aborted ? first : this.handOver(first));
     const held = new Set<string>();
     const releases: (() => void)[] = [];
     const hold = (laneIds: Iterable<string>) => {
@@ -1939,13 +2123,15 @@ export class Store {
         signal?.removeEventListener('abort', finish);
         for (const release of releases) release();
         try {
-          resolve(this.decisionsFor(scope));
+          const result = this.decisionsFor(scope);
+          // A caller that went away gets nothing, so its messages stay unread.
+          resolve(signal?.aborted ? result : this.handOver(result));
         } catch (err) {
           reject(err);
         }
       };
       const onChange = (e: StreamEvent) => {
-        if (e.type !== 'escalation' && e.type !== 'lane_deleted') return;
+        if (e.type !== 'escalation' && e.type !== 'lane_deleted' && !(e.type === 'lane' && e.messaged === 'owner')) return;
         try {
           const now = this.decisionsFor(scope);
           if (now.ready) finish();
@@ -2130,6 +2316,24 @@ export class Store {
           id: m.id,
           escalation_id: r.escalation_id,
           escalation_ref: this.codeOf(r),
+          project: projectOf(r.lane_id as string),
+          lane_id: local(r.lane_id),
+          from: m.from,
+          author: m.author,
+          body: m.body,
+          attachments: m.attachments.map((f) => `${f.name} (${f.type}, ${f.size} bytes)`).join(' | '),
+          at: m.at,
+        };
+      });
+    }
+
+    if (dataset === 'lane_messages') {
+      const w = where('id', 'lane_id', 'created_at');
+      const raw = this.db.prepare(`SELECT id AS _rid, * FROM lane_messages ${w.sql}`).all(...w.params) as Row[];
+      return page(raw, (r) => {
+        const m = this.laneMessageFromRow(r);
+        return {
+          id: m.id,
           project: projectOf(r.lane_id as string),
           lane_id: local(r.lane_id),
           from: m.from,

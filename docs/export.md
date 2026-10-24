@@ -98,6 +98,10 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 `id`, `escalation_id`, `escalation_ref`, `project`, `lane_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message, oldest first.
 
+### `lane_messages.csv` (lane conversations)
+
+`id`, `project`, `lane_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message in a lane's conversation (the agent's notices and the owner's notes), oldest first.
+
 ### `events.csv` (lane history)
 
 `id`, `lane_id`, `at`, `kind`, `message`, `actor`. The `kind` column is one of:
@@ -105,7 +109,8 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 - **`status`:** every status change, plus lane created, removed and restored
 - **`escalation`:** asked, positions, decided, acknowledged, withdrawn
 - **`activity`:** the agent's activity lines, only the most recent ones per lane
-- **`notice`:** milestones the overseer sent the owner with `notify_owner` ("Merged PR #311")
+- **`notice`:** the agent's messages in the lane's conversation (`notify_owner`, "Merged PR #311")
+- **`message`:** the owner's notes in the lane's conversation
 
 To rebuild blocked time per lane over a period, pair the status changes in `status` rows.
 

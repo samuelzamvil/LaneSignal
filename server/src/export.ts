@@ -81,13 +81,14 @@ export async function exportZip(
       [
         `LaneSignal export, generated ${generatedAt.toISOString()}`,
         filter.from || filter.to
-          ? `Escalations, positions and events from ${filter.from ?? 'the start'} to ${filter.to ?? 'now'} (lanes and groups complete).`
-          : 'All escalations, positions and events.',
+          ? `Escalations, positions, messages and events from ${filter.from ?? 'the start'} to ${filter.to ?? 'now'} (lanes and groups complete).`
+          : 'All escalations, positions, messages and events.',
         filter.laneId ? `Only lane "${filter.laneId}" (groups complete).` : 'Includes archived lanes and groups.',
         '',
         'escalations.csv  one row per escalation, with decision timings and position counts',
         'positions.csv    one row per agent position on an escalation',
         'messages.csv     the conversations on escalations (Other answers and agent replies)',
+        'lane_messages.csv the conversations on lanes (the agent\'s notices and the owner\'s notes)',
         'lanes.csv        every lane, including archived ones (archived_at set)',
         'groups.csv       every group (epic/train/overseer), including archived ones',
         'events.csv       lane history: status changes, escalation steps, recent activity text',

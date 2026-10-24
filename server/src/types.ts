@@ -74,6 +74,12 @@ export interface Lane {
   blockingEscalations: number;
   /** An agent is waiting on this lane's escalations right now, so an answer reaches it at once. */
   agentWaiting: boolean;
+  /** The latest message in the lane's conversation (either side), for spotting new ones. */
+  lastMessageId: number | null;
+  /** The agent's latest message, for marking the lane as having something new to read. */
+  lastAgentMessageId: number | null;
+  /** The owner's messages the agent hasn't been handed yet. */
+  unreadByAgent: number;
 }
 
 export type EscalationState = 'open' | 'decided' | 'acknowledged' | 'withdrawn';
@@ -166,6 +172,15 @@ export interface Message {
   attachments: AttachmentMeta[];
 }
 
+/**
+ * One message in a lane's conversation: the agent's updates (a milestone, with files) and the
+ * owner's notes back. Nothing in it blocks the lane.
+ */
+export interface LaneMessage extends Message {
+  /** Owner messages: whether the agent has been handed it yet. */
+  seen?: boolean;
+}
+
 /** A file on an escalation: Markdown or plain text, or a PNG, JPEG, WebP or GIF image. */
 export interface AttachmentMeta {
   id: string;
@@ -180,8 +195,8 @@ export interface LaneEvent {
   id: number;
   laneId: string;
   at: string;
-  /** `notice`: a milestone the agent told the owner about (merged, started a ticket). */
-  kind: 'status' | 'activity' | 'escalation' | 'notice';
+  /** `notice`: the agent's message in the lane's conversation; `message`: the owner's. */
+  kind: 'status' | 'activity' | 'escalation' | 'notice' | 'message';
   message: string;
   actor: string | null;
 }
@@ -312,19 +327,23 @@ export interface TrmnlPushResult {
   error?: string;
 }
 
-/** A milestone an overseer tells the owner about: a quiet push, kept in the lane's history. */
+/** The agent's message on a lane (a milestone, with any files): a quiet push that opens the lane. */
 export interface Notice {
   project: string;
   laneId: string;
   message: string;
   by: string;
+  attachments?: AttachmentMeta[];
 }
 
 export type StreamEvent =
   | { type: 'group'; group: Group }
   | { type: 'group_deleted'; id: string; project: string }
-  /** `statusChanged` is set when this event is the lane's status transition (drives notifications). */
-  | { type: 'lane'; lane: Lane; statusChanged?: boolean }
+  /**
+   * `statusChanged` is set when this event is the lane's status transition (drives notifications);
+   * `messaged` when someone wrote in the lane's conversation.
+   */
+  | { type: 'lane'; lane: Lane; statusChanged?: boolean; messaged?: 'owner' | 'agent' }
   | { type: 'lane_deleted'; id: string; project: string }
   /** `raised`: an FYI that now needs the owner, notified like a new question. `replied`: the agent answered the owner's Other (`reply`) or posted an update while they decide. */
   | { type: 'escalation'; escalation: Escalation; raised?: boolean; replied?: 'reply' | 'update' }

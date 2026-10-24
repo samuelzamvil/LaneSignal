@@ -1006,9 +1006,19 @@ textarea {
   font-weight: 600;
 }
 
-/* Milestones the overseer sent the owner ("Merged PR #311"). */
-.timeline .kind-notice span:first-of-type::before {
-  content: '🔔 ';
+/* A lane's conversation: the agent's milestones and the owner's notes. */
+.lane-composer {
+  margin-top: 10px;
+}
+
+.msg-seen {
+  font-weight: 400;
+}
+
+.new-message {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent);
 }
 
 .settings .danger {

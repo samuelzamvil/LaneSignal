@@ -111,13 +111,14 @@ export function ntfyLinks(config: Pick<Config, 'publicUrl' | 'ntfyOpen'>, route:
   };
 }
 
-/** A milestone from an overseer: quiet, and opens the lane. */
+/** The agent's message on a lane (a milestone, maybe with files): quiet, and opens the lane. */
 export function noticeNotification(store: Store, n: Notice): Notification {
   const lane = store.getLane(n.laneId);
   const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? localId(n.laneId)].filter(Boolean).join(' / ');
+  const files = n.attachments?.length ?? 0;
   return {
     title: where,
-    body: n.message,
+    body: files ? `${n.message}\n📎 ${files === 1 ? n.attachments![0].name : `${files} files`}` : n.message,
     data: { laneId: localId(n.laneId), project: n.project },
     route: `#/lane/${encodeURIComponent(n.project)}/${encodeURIComponent(localId(n.laneId))}`,
     urgent: false,

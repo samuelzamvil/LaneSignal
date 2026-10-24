@@ -20,6 +20,9 @@ export const lane = (over: Partial<Lane> = {}): Lane => ({
   openEscalations: 0,
   blockingEscalations: 0,
   agentWaiting: false,
+  lastMessageId: null,
+  lastAgentMessageId: null,
+  unreadByAgent: 0,
   ...over,
 });
 
