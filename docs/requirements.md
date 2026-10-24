@@ -47,7 +47,7 @@ The service doesn't decide *when* agents record requirements; that's the project
 
 ## In the app
 
-**Requirements** (bottom bar on phones, top bar on desktop) lists pending and active requirements, newest first, with search, a group filter, and tag filters (tap a tag). Pending ones carry a **Pending approval** badge, and one with a replacement waiting shows **Replacement R… pending**; tick **Pending approval only** to work through them. Tick **Superseded & retired** to see the history. **Cards / List** switches between full cards and one line per requirement (tap a line to open its card); the choice is remembered on the device.
+**Requirements** (bottom bar on phones, top bar on desktop) lists pending and active requirements, newest first, with search, a group filter, and tag filters (tap a tag). Pending ones carry a **Pending approval** badge, and one with a replacement waiting shows **Replacement R… pending**; tick **Pending approval only** to work through them (it lists only pending ones, not the approved requirements they would replace). Tick **Superseded & retired** to see the history. **Cards / List** switches between full cards and one line per requirement (tap a line to open its card); the choice is remembered on the device.
 
 People **approve** a pending requirement (or **reject** it, which retires it), **edit wording** (fix phrasing, justification or tags without changing the meaning) and **retire** a requirement. Restoring a retired one makes it active again. A change of decision is a supersede, recorded like any other decision.
 
