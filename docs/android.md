@@ -22,14 +22,22 @@ cd web && npm run android:apk      # → web/android/app/build/outputs/apk/debug
 
 For FCM push in a local build, put `google-services.json` in `web/android/app/` and set `VITE_FCM_ENABLED=true` for the build (`VITE_FCM_ENABLED=true npm run android:apk`). CI does both when the secret exists.
 
-### Signed release builds
+### Signed release builds (install updates in place)
 
-Add these repository secrets and CI also builds a release-signed APK, which the Releases page then carries instead (and which updates in place):
+Without a signing key, every build is signed with a throwaway debug key, so Android refuses to install it over the previous one. Set up a key once and CI signs every APK on the Releases page with it:
 
-- `ANDROID_KEYSTORE_BASE64`
-- `ANDROID_KEYSTORE_PASSWORD`
-- `ANDROID_KEY_ALIAS`
-- `ANDROID_KEY_PASSWORD`
+```bash
+scripts/android-signing-setup.sh            # or: scripts/android-signing-setup.sh owner/repo
+```
+
+Run it on your own machine (it needs a JDK's `keytool`, `openssl` and the GitHub CLI signed in with admin rights on the repository). It:
+
+- creates a self-signed key (RSA 4096, valid about 27 years);
+- creates the GitHub environment **android-signing**, which only `main` and `v*` tags may use, so pull request builds never see the key;
+- stores the keystore and its passwords there as secrets (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`);
+- keeps a backup in `~/.lanesignal-signing/`. Keep a copy somewhere safe: if the key is lost, phones need one more uninstall.
+
+The first signed build still needs the old (debug-signed) app uninstalled once; every build after that updates in place. The script refuses to replace an existing key, since that would mean another uninstall everywhere.
 
 ## Signing in
 

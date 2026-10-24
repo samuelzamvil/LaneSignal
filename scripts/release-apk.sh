@@ -24,7 +24,7 @@ if [ "$signed" = true ]; then
 
 1. Open this page on the phone and download \`$asset\`.
 2. Open it. When Android asks, allow installs from your browser (or Files app).
-3. Later versions install over this one.
+3. Later versions install over this one. If you have an older, unsigned build installed, uninstall it once first.
 EOF
 else
   cat > "$notes" <<EOF
