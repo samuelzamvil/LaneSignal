@@ -84,6 +84,30 @@ describe('wait digest', () => {
     assert.deepEqual((await wait('digest-gone', { since: w.checkedAt })).items, []);
   });
 
+  test('a wait on named escalations goes quiet once the agent has acknowledged them', async () => {
+    await srv.publish('d-ids', { group: 'digest-ids' });
+    const e = await ask('d-ids', 'Named?');
+    const other = await ask('d-ids', 'Withdrawn by someone else?');
+    await srv.call('POST', `/api/escalations/${e.id}/decide`, ALICE, { decision: 'Accept' });
+    const w = (await srv.tool(AGENT, 'wait_for_decisions', { ids: [e.ref, other.ref], wait_seconds: 0 })).value;
+    assert.deepEqual(kinds(w), [['decided', e.ref]]);
+    await srv.tool(AGENT, 'acknowledge_escalation', { id: e.ref });
+    const started = Date.now();
+    const quiet = (await srv.tool(AGENT, 'wait_for_decisions', { ids: [e.ref, other.ref], since: w.checkedAt, wait_seconds: 1 })).value;
+    assert.equal(quiet.ready, false);
+    assert.deepEqual(quiet.items, []);
+    assert.ok(Date.now() - started >= 900, 'it waited instead of returning at once');
+    // Someone else withdrawing a named one is reported, once per since.
+    await srv.call('POST', `/api/escalations/${other.id}/withdraw`, ALICE, { resolution: 'Not needed' });
+    const gone = (await srv.tool(AGENT, 'wait_for_decisions', { ids: [e.ref, other.ref], since: quiet.checkedAt, wait_seconds: 0 })).value;
+    assert.deepEqual(kinds(gone), [['closed', other.ref]]);
+    const after = (await srv.tool(AGENT, 'wait_for_decisions', { ids: [e.ref, other.ref], since: gone.checkedAt, wait_seconds: 0 })).value;
+    assert.deepEqual(after.items, []);
+    // The full format keeps reporting named closed ones, as before.
+    const full = (await srv.tool(AGENT, 'wait_for_decisions', { ids: [e.ref], wait_seconds: 0, format: 'full' })).value;
+    assert.deepEqual(full.closed.map((x: any) => x.ref), [e.ref]);
+  });
+
   test('over HTTP the wait is a digest too; format=full keeps the older shape', async () => {
     await srv.publish('d-http', { group: 'digest-http' });
     const e = await ask('d-http', 'HTTP?');

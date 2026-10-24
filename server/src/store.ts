@@ -2063,7 +2063,16 @@ export class Store {
       for (const r of rows) laneIds.add(r.id as string);
     }
     const closedById = new Map<string, Escalation>();
-    for (const e of named) if (e.state === 'acknowledged' || e.state === 'withdrawn') closedById.set(e.id, e);
+    for (const e of named) {
+      if (e.state !== 'acknowledged' && e.state !== 'withdrawn') continue;
+      // A digest reports a named one once, and only when someone else withdrew it: the agent's own
+      // acknowledgement would otherwise wake every later wait at once.
+      if (digest) {
+        const by = (this.db.prepare('SELECT withdrawn_by FROM escalations WHERE id = ?').get(e.id) as Row).withdrawn_by;
+        if (e.state !== 'withdrawn' || !scope.since || e.updatedAt < scope.since || (by ?? '') === (scope.viewer ?? '')) continue;
+      }
+      closedById.set(e.id, e);
+    }
     const removedLanes: WaitResult['removedLanes'] = [];
     // The owner's notes on every lane in scope, the lanes of escalations named in `ids` included.
     const laneMessages: WaitResult['laneMessages'] = [];

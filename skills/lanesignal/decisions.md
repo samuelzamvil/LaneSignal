@@ -44,9 +44,9 @@ Answers can take minutes or a day.
       "$base/api/wait?group=$LANESIGNAL_GROUP&timeout=86400${since:+&since=$since}${LANESIGNAL_PROJECT:+&project=$LANESIGNAL_PROJECT}" 2>/dev/null)
     case "$code" in
       200) # A connection cut mid-wait, or a server error, has no checkedAt: keep the old since.
-           # Something to handle: print it and stop, leaving the saved since alone until the agent has handled it.
-           grep -q '"ready":true' "$out" && { cat "$out"; echo; break; }
            s=$(grep -o '"checkedAt":"[^"]*"' "$out" | cut -d'"' -f4)
+           # Something to handle: print it and stop. Its since goes to .next until the agent has handled it.
+           grep -q '"ready":true' "$out" && { mkdir -p .claude; [ -n "$s" ] && echo "$s" > "$sincefile.next"; cat "$out"; echo; break; }
            if [ -n "$s" ]; then since=$s; fails=0; mkdir -p .claude && echo "$s" > "$sincefile"; else fails=$((fails + 1)); fi ;;
       400|401|403|404) cat "$out"; echo; exit 1 ;;
       *) fails=$((fails + 1)) ;;
@@ -56,10 +56,10 @@ Answers can take minutes or a day.
   done
   ```
 
-  If your key reaches several projects, also set `LANESIGNAL_PROJECT`. It starts from the `checkedAt` saved in `.claude/lanesignal-since` (or `LANESIGNAL_SINCE`, if set), saves each new one there while nothing needs you, prints the same JSON as `wait_for_decisions` when something does, and gives up after about 10 minutes of failures. After handling the items, save that result's `checkedAt` to `.claude/lanesignal-since`, then start the loop again.
+  If your key reaches several projects, also set `LANESIGNAL_PROJECT`. It starts from the `checkedAt` saved in `.claude/lanesignal-since` (or `LANESIGNAL_SINCE`, if set), saves each new one there while nothing needs you, prints the same JSON as `wait_for_decisions` when something does, and gives up after about 10 minutes of failures. After handling the items, run `mv .claude/lanesignal-since.next .claude/lanesignal-since`, then start the loop again.
 
 ## After a restart
 
 1. Call `update_group` (as at any session start).
-2. Call `get_updates` with your `group_id` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything in `decided` or `replies`, and the owner's `laneMessages`, from while you were away. Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
+2. Call `get_updates` with your `group_id` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything in `decided` or `replies`, and the owner's `laneMessages`, from while you were away, then save its `checkedAt` to `.claude/lanesignal-since` (otherwise the next wait returns the same notes again). Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
 3. Call `list_lanes` with your `group_id`. A lane you were running that's missing was removed: stop work on it.

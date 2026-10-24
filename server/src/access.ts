@@ -331,7 +331,8 @@ export const digestWait = (w: WaitResult) => {
     ...w.laneMessages.map((l) => ({ kind: 'lane_note', lane: l.laneId, messages: briefMessages(l.messages) })),
   ];
   return {
-    ready: w.ready,
+    // From the items themselves: `pub.wait` may have dropped some the caller no longer sees.
+    ready: items.length > 0,
     items,
     counts: { open: w.open.length, decidedUnacknowledged: w.decided.length, waitingOnYou: w.replies.length },
     checkedAt: w.checkedAt,
@@ -342,7 +343,7 @@ export const digestWait = (w: WaitResult) => {
 export const briefWait = (w: WaitResult) => ({
   ...w,
   decided: w.decided.map(brief),
-  replies: w.replies.map((r) => ({ ...r, messages: briefMessages(r.messages) })),
+  replies: w.replies.map(({ projectKey: _key, ...r }) => ({ ...r, messages: briefMessages(r.messages) })),
   closed: w.closed.map(brief),
   // Only when there are some: the wait is the call agents make most.
   laneMessages: w.laneMessages.length ? w.laneMessages.map((l) => ({ ...l, messages: briefMessages(l.messages) })) : undefined,
