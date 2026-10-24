@@ -206,6 +206,64 @@ describe('pushing', () => {
     }
   });
 
+  test('a burst of escalations: the first goes out at once, the latest after the gap, nothing queued', async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    const trmnl = fakeTrmnl();
+    const pusher = new TrmnlPusher(store, { fetch: trmnl.fetch, minGapMs: 300, debounceMs: 10, heartbeatMs: 3_600_000 }).start();
+    try {
+      await sleep(350); // the start-up push, and its gap, are behind us
+      assert.equal(trmnl.pushes.length, 1);
+      const first = escalate(store, { laneId: 'default/e2e', question: 'Q1?' }, 'bot');
+      await sleep(40);
+      assert.equal(trmnl.pushes.length, 2, 'the first escalation goes out right away');
+      assert.equal(trmnl.pushes[1].card.title, 'Q1?');
+      const refs = [first.ref];
+      for (let i = 2; i <= 6; i++) {
+        refs.push(escalate(store, { laneId: 'default/auth', question: `Q${i}?` }, 'bot').ref);
+        await sleep(20);
+      }
+      await sleep(100);
+      assert.equal(trmnl.pushes.length, 2, 'the follow-ups wait out the gap');
+      await sleep(250);
+      assert.equal(trmnl.pushes.length, 3, 'one push for all five follow-ups');
+      assert.equal(trmnl.pushes[2].card.title, 'Q6?');
+      assert.deepEqual(trmnl.pushes[2].pending.map((x: any) => x.code).sort(), refs.slice(0, 5).sort());
+      await sleep(350);
+      assert.equal(trmnl.pushes.length, 3, 'no queued pushes after it');
+    } finally {
+      pusher.stop();
+    }
+  });
+
+  test('TRMNL+ spaces pushes by its shorter gap, also right after turning it on', async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    const trmnl = fakeTrmnl();
+    const pusher = new TrmnlPusher(store, { fetch: trmnl.fetch, minGapMs: 2_000, plusGapMs: 150, debounceMs: 10, heartbeatMs: 3_600_000 }).start();
+    try {
+      await sleep(40);
+      assert.equal(trmnl.pushes.length, 1);
+      escalate(store, { laneId: 'default/e2e', question: 'Q1?' }, 'bot'); // waiting out the free tier's gap
+      await sleep(100);
+      assert.equal(trmnl.pushes.length, 1);
+      // Leaving `plus` out keeps it; turning it on reschedules the waiting push.
+      store.saveTrmnlSetup('default', { enabled: true, includeNotifications: false, plus: true });
+      assert.equal(store.saveTrmnlSetup('default', { enabled: true, includeNotifications: false }).plus, true);
+      pusher.reset('default', false);
+      await sleep(100);
+      assert.equal(trmnl.pushes.length, 2, 'sent once the TRMNL+ gap passed');
+      escalate(store, { laneId: 'default/auth', question: 'Q2?' }, 'bot');
+      await sleep(20);
+      assert.equal(trmnl.pushes.length, 2);
+      await sleep(150);
+      assert.equal(trmnl.pushes.length, 3);
+      assert.equal(trmnl.pushes[2].card.title, 'Q2?');
+    } finally {
+      pusher.stop();
+    }
+  });
+
   test('lane milestones take the card when asked; paused setups push nothing', async () => {
     const store = newStore();
     store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: true });
@@ -429,6 +487,9 @@ describe('settings API', () => {
       // Keeping the saved URL while changing the options.
       const kept = await srv.call('PUT', '/api/projects/default/trmnl', ALICE, { enabled: true, includeNotifications: true });
       assert.equal(kept.body.includeNotifications, true);
+      assert.equal(kept.body.plus, false);
+      const plus = await srv.call('PUT', '/api/projects/default/trmnl', ALICE, { enabled: true, includeNotifications: true, plus: true });
+      assert.equal(plus.body.plus, true);
       assert.equal(srv.store.trmnlSetup('default')!.webhookUrl, URL_);
 
       await srv.publish('auth');

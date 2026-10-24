@@ -189,7 +189,7 @@ export function createClient(conn: Connection) {
       request<void>('PUT', `/api/projects/${encodeURIComponent(id)}/notifications`, { enabled }),
     // A project's TRMNL screen (project admins).
     trmnl: (id: string) => request<TrmnlView>('GET', `/api/projects/${encodeURIComponent(id)}/trmnl`),
-    saveTrmnl: (id: string, input: { webhookUrl?: string; enabled: boolean; includeNotifications: boolean }) =>
+    saveTrmnl: (id: string, input: { webhookUrl?: string; enabled: boolean; includeNotifications: boolean; plus?: boolean }) =>
       request<TrmnlView>('PUT', `/api/projects/${encodeURIComponent(id)}/trmnl`, input),
     removeTrmnl: (id: string) => request<void>('DELETE', `/api/projects/${encodeURIComponent(id)}/trmnl`),
     sendTrmnl: (id: string) =>

@@ -308,6 +308,8 @@ export interface TrmnlSetup {
   enabled: boolean;
   /** Lane milestones, completions and blocks take the card too, not only escalations. */
   includeNotifications: boolean;
+  /** The TRMNL account has TRMNL+: 30 pushes per hour instead of 12. */
+  plus: boolean;
   card: TrmnlCard | null;
   lastPushAt: string | null;
   lastError: string | null;
@@ -318,7 +320,7 @@ export interface TrmnlSetup {
 /** A project's TRMNL setup as its admins see it: the webhook URL is masked. */
 export type TrmnlView =
   | { configured: false }
-  | ({ configured: true } & Pick<TrmnlSetup, 'webhookUrl' | 'enabled' | 'includeNotifications' | 'lastPushAt' | 'lastError' | 'lastErrorAt' | 'updatedAt'>);
+  | ({ configured: true } & Pick<TrmnlSetup, 'webhookUrl' | 'enabled' | 'includeNotifications' | 'plus' | 'lastPushAt' | 'lastError' | 'lastErrorAt' | 'updatedAt'>);
 
 /** How TRMNL answered a push. */
 export interface TrmnlPushResult {
