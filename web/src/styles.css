@@ -1294,9 +1294,20 @@ textarea {
 
 .date-range {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* Side by side when they fit; stacked on narrow screens or with large system text. */
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 8px;
   margin: 10px 0;
+}
+
+.date-range input {
+  min-width: 0;
+  width: 100%;
+}
+
+/* Long URLs and key prefixes (e.g. the export address in the app) wrap instead of widening the page. */
+.settings {
+  overflow-wrap: anywhere;
 }
 
 .date-range label {
