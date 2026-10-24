@@ -221,6 +221,7 @@ export const pub = {
       ...w,
       decided: w.decided.filter((e) => keep(e.laneId)).map(pub.escalation),
       closed: w.closed.filter((e) => keep(e.laneId)).map(pub.escalation),
+      replies: w.replies.filter((r) => keep(r.laneId)).map((r) => ({ ...r, laneId: localId(r.laneId) })),
       open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: localId(o.laneId) })),
       removedLanes: w.removedLanes.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
     };
@@ -255,6 +256,7 @@ export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean 
     ref: e.ref,
     duplicate: e.duplicate,
     upgraded: e.upgraded,
+    turn: e.state === 'open' && e.turn === 'agent' ? 'agent' : undefined,
     projectKey: e.projectKey,
     laneId: e.laneId,
     state: e.state,
@@ -304,7 +306,12 @@ export const briefRequirement = (r: Requirement) =>
   });
 
 /** A wait result with its escalations in brief. */
-export const briefWait = (w: WaitResult) => ({ ...w, decided: w.decided.map(brief), closed: w.closed.map(brief) });
+export const briefWait = (w: WaitResult) => ({
+  ...w,
+  decided: w.decided.map(brief),
+  replies: w.replies.map((r) => ({ ...r, messages: r.messages.map((m) => compact({ body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined })) })),
+  closed: w.closed.map(brief),
+});
 
 /**
  * The identity an escalation records as its raiser: the key (its account and name, so overseers whose
@@ -317,7 +324,7 @@ export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}
  * Only the agent that raised an escalation acknowledges or dismisses it (or a person, on its behalf):
  * codes repeat across groups, and another overseer closing it by mistake would swallow the decision.
  */
-export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss') {
+export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss' | 'reply to') {
   if (a.principal.role !== 'agent') return;
   const owner = store.escalationOwner(e.id);
   // Older rows recorded the account alone ("user:<id>"); those match any key of that account.

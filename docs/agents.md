@@ -79,8 +79,9 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 | `dismiss_escalation` | agent | Close an alert once it's dealt with (the owner answered in the session, or it's moot), with a required `justification` saying what was decided. `status` and `activity` publish the lane's next state. Only the agent that raised it can dismiss it |
 | `get_escalation` | any | Read one escalation in full |
 | `add_position` | agent | Decisions on: agree, disagree or stay neutral on an open escalation's recommendation, with a reason |
-| `wait_for_decisions` | any | Decisions on: wait on a group, lanes or escalations; returns as soon as one is decided. `wait_seconds` up to 3600 |
-| `acknowledge_escalation` | agent | Decisions on: closes a decided escalation and returns the final decision; `status` and `activity` publish the lane's next state. Only the agent that raised it can acknowledge it |
+| `wait_for_decisions` | any | Decisions on: wait on a group, lanes or escalations; returns as soon as one is decided or the owner answers Other (`replies`, with their new messages). `wait_seconds` up to 3600 |
+| `reply_to_escalation` | agent | Decisions on: write in an open escalation's conversation, at most 500 characters (attach files for more): a reply after the owner's Other, or a short update while they decide. Notifies the owner. Only the agent that raised it |
+| `acknowledge_escalation` | agent | Decisions on: closes a decided escalation (or one the owner answered Other, taking their latest message as the decision) and returns the final decision; `status` and `activity` publish the lane's next state. Only the agent that raised it can acknowledge it |
 | `list_lanes` / `list_groups` / `list_escalations` | any | Read state. `list_escalations` returns escalations in brief, filtered by `group_id` or `lane_id`, latest 50 by default (`limit` up to 500) |
 | `find_requirements` / `get_requirement` / `list_requirement_tags` | any | Search the owner's product decisions before asking again. See [Requirements](requirements.md) |
 | `record_requirement` / `supersede_requirement` | any | Record a decision the owner made (citing the escalation or the person), or replace one they changed. `all_projects: true` for decisions that cover every project |

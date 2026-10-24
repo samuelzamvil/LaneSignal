@@ -85,11 +85,19 @@ function AnswerBar({
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const choices: { choice: Choice; means: string | null; tone: string }[] = [
-    { choice: 'Accept', means: esc.acceptMeans, tone: 'accept' },
-    ...(esc.allowReject ? [{ choice: 'Reject' as const, means: esc.rejectMeans, tone: 'reject' }] : []),
-    { choice: 'Other', means: 'Tell the agent what to do instead', tone: 'other' },
+  // Once there's a conversation, Other is how you reply in it.
+  const otherLabel = esc.messageCount > 0 && !change ? 'Reply' : 'Other';
+  const choices: { choice: Choice; label: string; means: string | null; tone: string }[] = [
+    { choice: 'Accept', label: 'Accept', means: esc.acceptMeans, tone: 'accept' },
+    ...(esc.allowReject ? [{ choice: 'Reject' as const, label: 'Reject', means: esc.rejectMeans, tone: 'reject' }] : []),
+    {
+      choice: 'Other',
+      label: otherLabel,
+      means: otherLabel === 'Reply' ? 'Answer the agent' : 'Tell the agent what to do instead',
+      tone: 'other',
+    },
   ];
+  const labelOf = (c: Choice) => choices.find((x) => x.choice === c)?.label ?? c;
   const needsNote = picked === 'Other';
   const code = esc.ref;
 
@@ -99,7 +107,11 @@ function AnswerBar({
     setError(null);
     try {
       await client.decide(esc.id, picked, note.trim(), change);
-      toast({ text: `Sent “${picked}” to ${code}`, action: { label: 'Change', href: `#/esc/${esc.id}` } });
+      toast(
+        picked === 'Other' && !change
+          ? { text: `Sent to the agent on ${code}` }
+          : { text: `Sent “${picked}” to ${code}`, action: { label: 'Change', href: `#/esc/${esc.id}` } },
+      );
       setPicked(null);
       setNote('');
       onDone?.();
@@ -113,9 +125,9 @@ function AnswerBar({
   if (!picked) {
     return (
       <div className={`answer-bar${compact ? ' compact' : ''}`} onClick={(e) => e.stopPropagation()}>
-        {choices.map(({ choice, means, tone }) => (
+        {choices.map(({ choice, label, means, tone }) => (
           <button key={choice} className={`answer-choice ${tone}`} onClick={() => setPicked(choice)}>
-            <span className="answer-label">{choice}</span>
+            <span className="answer-label">{label}</span>
             {means && !compact && <span className="answer-means">{means}</span>}
           </button>
         ))}
@@ -132,7 +144,15 @@ function AnswerBar({
   return (
     <div className={`answer-confirm tone-${picked.toLowerCase()}`} onClick={(e) => e.stopPropagation()}>
       <p>
-        {change ? 'Change the answer to' : 'Answer'} <strong>{picked}</strong> to {code}?
+        {picked === 'Other' && !change ? (
+          <>
+            {labelOf(picked)} to the agent on {code}
+          </>
+        ) : (
+          <>
+            {change ? 'Change the answer to' : 'Answer'} <strong>{picked}</strong> to {code}?
+          </>
+        )}
         {means && picked !== 'Other' && <span className="answer-means"> {means}</span>}
       </p>
       <textarea
@@ -145,7 +165,7 @@ function AnswerBar({
       {error && <p className="error">{error}</p>}
       <div className="actions">
         <button className="primary" disabled={busy || (needsNote && !note.trim())} onClick={() => void send()}>
-          {busy ? 'Sending…' : `Send ${picked}`}
+          {busy ? 'Sending…' : picked === 'Other' && !change ? 'Send to the agent' : `Send ${picked}`}
         </button>
         <button className="ghost" disabled={busy} onClick={() => (setPicked(null), setError(null))}>
           Back
@@ -401,7 +421,7 @@ export function EscalationCard({
   const open = () => (location.hash = `#/esc/${esc.id}`);
   return (
     <article
-      className={`esc-card ${esc.state}${esc.blocking ? '' : ' fyi'}`}
+      className={`esc-card ${esc.state}${esc.blocking ? '' : ' fyi'}${esc.state === 'open' && esc.turn === 'agent' ? ' agent-turn' : ''}`}
       onClick={open}
       role="button"
       tabIndex={0}
@@ -420,6 +440,16 @@ export function EscalationCard({
           📎 {esc.attachments.map((f) => f.name).join(', ')}
         </p>
       )}
+      {esc.state === 'open' && esc.lastMessage && (
+        <p className={`last-message from-${esc.lastMessage.from}`}>
+          <span className="label">
+            {esc.lastMessage.from === 'agent' ? 'Agent' : 'You'}
+            {esc.messageCount > 1 ? ` · ${esc.messageCount} messages` : ''}
+          </span>{' '}
+          {esc.lastMessage.body}
+        </p>
+      )}
+      {esc.state === 'open' && esc.turn === 'agent' && <p className="hint">Waiting for the agent to reply or act.</p>}
       {esc.state === 'decided' ? (
         <>
           <p className="decision">
@@ -555,7 +585,9 @@ export function EscalationDetail({
             <h2>{esc ? (showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref) : error ? id : 'Loading…'}</h2>
           </div>
           {esc &&
-            (esc.state === 'open' && !esc.blocking ? (
+            (esc.state === 'open' && esc.turn === 'agent' ? (
+              <span className="pill tone-info">Agent's turn</span>
+            ) : esc.state === 'open' && !esc.blocking ? (
               <span className="pill tone-info">FYI · lane keeps working</span>
             ) : (
               <span className={`pill ${esc.state === 'open' ? 'tone-danger' : 'tone-muted'}`}>{esc.state === 'open' && !decisions ? 'Needs you' : STATE_LABEL[esc.state]}</span>
@@ -660,6 +692,23 @@ export function EscalationDetail({
               </section>
             )}
 
+            {(esc.messages?.length ?? 0) > 0 && (
+              <section className="esc-section">
+                <h4>Conversation</h4>
+                <ol className="thread">
+                  {esc.messages!.map((m) => (
+                    <li key={m.id} className={`msg from-${m.from}`}>
+                      <div className="msg-meta">
+                        {m.author} <span title={absolute(m.at)}>· {ago(m.at, now)}</span>
+                      </div>
+                      <RichText text={m.body} />
+                      {m.attachments.length > 0 && <AttachmentList client={client} files={m.attachments} />}
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
+
             {esc.state === 'open' && !decisions ? (
               <section className="esc-section answer">
                 <h4>Answer</h4>
@@ -698,7 +747,11 @@ export function EscalationDetail({
             ) : esc.state === 'open' ? (
               <section className="esc-section answer">
                 <h4>{esc.blocking ? 'Your decision' : 'Your reply (optional)'}</h4>
-                <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
+                {esc.turn === 'agent' ? (
+                  <p className="hint">The agent has your message. It replies here, or acts on it and closes this.</p>
+                ) : (
+                  <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
+                )}
                 <DecisionForm key={esc.id} esc={esc} client={client} />
               </section>
             ) : esc.state === 'decided' && changing ? (

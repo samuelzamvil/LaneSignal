@@ -77,6 +77,12 @@ export const decision = z.object({
   change: z.boolean().optional(),
 });
 
+/** A message in an escalation's conversation (length limits depend on who writes it). */
+export const message = z.object({
+  body: z.string().max(5000),
+  attachments: z.array(z.string().min(1).max(64)).max(20).optional(),
+});
+
 export const resolution = z.object({
   note: z.string().max(5000).nullable().optional(),
 });

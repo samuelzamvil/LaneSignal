@@ -46,7 +46,9 @@ describe('answers', () => {
     assert.equal((await decide(e.id, 'Other', '  ')).status, 400);
     const other = await decide(e.id, 'Other', 'Rotate after the release');
     assert.equal(other.status, 200);
-    assert.equal(other.body.decisionNote, 'Rotate after the release');
+    assert.equal(other.body.state, 'open');
+    assert.equal(other.body.turn, 'agent');
+    assert.equal(other.body.lastMessage.body, 'Rotate after the release');
   });
 });
 
@@ -109,7 +111,7 @@ describe('attachments', () => {
     assert.match(stolen.text, /not found: upload it first/);
     assert.equal((await ask('First use?', { attachments: [mine] })).isError, false);
     const again = await ask('Second use?', { attachments: [mine] });
-    assert.match(again.text, /already on another escalation/);
+    assert.match(again.text, /already attached/);
   });
 
   test('re-sending the same files on a retry or an upgrade is fine; new ones are added', async () => {

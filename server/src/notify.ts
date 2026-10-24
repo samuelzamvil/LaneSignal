@@ -189,6 +189,22 @@ export function startNotifier(
   }
 
   function toNotification(e: StreamEvent): Notification | null {
+    // The agent wrote in a conversation: every message reaches the owner.
+    if (e.type === 'escalation' && e.replied && e.escalation.lastMessage && config.notifyOn.has('escalation')) {
+      const esc = e.escalation;
+      const lane = store.getLane(esc.laneId);
+      const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? localId(esc.laneId)].filter(Boolean).join(' / ');
+      const code = store.listProjects().length > 1 ? `${esc.projectKey}·${esc.ref}` : esc.ref;
+      const urgent = esc.blocking && esc.turn === 'owner';
+      return {
+        title: `${urgent ? 'Reply' : 'Update'} ${code} · ${where}`,
+        body: esc.lastMessage!.body,
+        data: { escalationId: esc.id, laneId: localId(esc.laneId), project: esc.project },
+        route: `#/esc/${esc.id}`,
+        urgent,
+        project: esc.project,
+      };
+    }
     // New questions, and FYIs that now need the owner.
     const created = e.type === 'escalation' && (e.raised || e.escalation.createdAt === e.escalation.updatedAt);
     if (e.type === 'escalation' && created && config.notifyOn.has('escalation')) {

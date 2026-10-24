@@ -23,7 +23,7 @@ import { principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import { log } from './log.ts';
 import * as s from './schemas.ts';
 import { toCsv } from './export.ts';
-import { ConflictError, EXPORT_COLUMNS, EXPORT_DATASETS, localId, NotFoundError, type ExportDataset, type RecordResult, type Store } from './store.ts';
+import { AGENT_MESSAGE_MAX, ConflictError, EXPORT_COLUMNS, EXPORT_DATASETS, localId, NotFoundError, type ExportDataset, type RecordResult, type Store } from './store.ts';
 import { LANE_STATUSES, type Requirement } from './types.ts';
 
 // Compact JSON: agents pay for every character.
@@ -256,7 +256,7 @@ function buildServer(
         if (wait_seconds && !accessFor(store, a.principal).projects.includes(value.project)) {
           return fail(new NotFoundError(`Escalation "${id}" not found`));
         }
-        return json(pub.escalation(value));
+        return json(pub.escalation({ ...value, messages: store.messagesOf(value.id) }));
       } catch (err) {
         return fail(err);
       }
@@ -269,7 +269,8 @@ function buildServer(
       {
         description:
           'Wait for human answers across your group, some lanes, or specific escalations, and return as soon as ' +
-          'any of them needs you. Returns `decided` (answered, not yet acknowledged: act on each), `closed` ' +
+          'any of them needs you. Returns `decided` (answered, not yet acknowledged: act on each), `replies` ' +
+          '(the owner answered Other: their new messages; act on them and acknowledge, or reply_to_escalation), `closed` ' +
           '(withdrawn by someone else, e.g. "Lane removed by …": the lane was taken off the dashboard, stop work on it; or named ones already ' +
           'acknowledged), `removedLanes` (taken off the dashboard by someone else: stop work on them), `open` (still ' +
           'waiting) and `checkedAt` (pass it as `since` next time). ' +
@@ -729,7 +730,9 @@ function buildServer(
         {
           description:
             'Call as soon as an escalation is decided, before acting: it closes the escalation and returns the final ' +
-            '`decision` and `decisionNote` to act on (a human may correct a mis-tap until you acknowledge). ' +
+            '`decision` and `decisionNote` to act on. On one the owner answered Other, it takes their latest message as ' +
+            'the decision (`Other`). ' +
+            'A human may correct a mis-tap until you acknowledge. ' +
             'Pass `status` and `activity` to publish what the lane does next in the same call; otherwise the lane ' +
             'keeps its current status (usually awaiting_agent). Repeating it returns the same result. Only the agent that ' +
             'raised the escalation (or a person) can acknowledge it.',
@@ -746,6 +749,34 @@ function buildServer(
             const target = a.escalation(id, project);
             requireRaiser(store, a, target, 'acknowledge');
             return json(brief(pub.escalation(store.acknowledgeEscalation(target.id, note ?? null, who.name, { status, activity }))));
+          } catch (err) {
+            return fail(err);
+          }
+        },
+      );
+
+      server.registerTool(
+        'reply_to_escalation',
+        {
+          description:
+            `Write in an open escalation's conversation: a short reply after the owner answered Other (a question back, ` +
+            `or what you'll do), or a short update while they decide, only when something changed. At most ` +
+            `${AGENT_MESSAGE_MAX} characters, plain and to the point: put anything longer in a file and pass its id in ` +
+            '`attachments`. Notifies the owner. Only the agent that raised the escalation can reply.',
+          inputSchema: {
+            id: z.string().describe(ID_HELP),
+            message: z.string().min(1).max(5000),
+            attachments: s.escalationFields.attachments.describe('Ids returned by POST /api/attachments.'),
+            ...PROJECT,
+          },
+        },
+        async ({ id, message, attachments, project }) => {
+          try {
+            const target = a.escalation(id, project);
+            requireRaiser(store, a, target, 'reply to');
+            return json(
+              brief(pub.escalation(store.postMessage(target.id, { from: 'agent', author: who.name, body: message, attachments }, ownerOf(who)))),
+            );
           } catch (err) {
             return fail(err);
           }

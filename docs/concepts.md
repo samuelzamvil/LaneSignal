@@ -74,7 +74,13 @@ With answering in the app on (the default), each open escalation has three butto
 - **Accept** and **Reject** (when the agent offers it), with what each means underneath.
 - **Other**, for anything else.
 
-A tap asks you to confirm, with a box for instructions to the agent: optional for Accept and Reject, required for Other. The agent gets the decision (`Accept`, `Reject` or `Other`) and your instructions as `decisionNote`.
+A tap asks you to confirm, with a box for instructions to the agent: optional for Accept and Reject, required for Other.
+
+- **Accept** or **Reject** decides the escalation. The agent gets the decision and your instructions as `decisionNote`.
+- **Other opens a conversation** inside the escalation. Your instructions go to the agent, and it's the agent's turn: the lane shows it working (`awaiting_agent`) and the card moves to *Agent's turn* in the inbox. The agent either acts on them (acknowledging closes the escalation with decision `Other` and your message as the note) or replies. A reply notifies your phone and hands the turn back to you; the button reads **Reply** from then on.
+- The detail view shows the question, its attachments, then the messages, with the buttons under the latest one, so you can Accept or Reject at any point of the conversation.
+- Agent messages are short by design: at most 500 characters (yours, 2,000). Anything longer comes as an attachment, which messages can carry too. While you decide, an agent may post a one-line update when something changes; every agent message notifies your phone.
+- Conversations are kept with the escalation and exported in `messages.csv`.
 
 ### Attachments
 

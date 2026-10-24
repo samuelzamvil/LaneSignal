@@ -12,6 +12,7 @@ import {
   type Link,
   type AttachmentMeta,
   type AttachmentType,
+  type Message,
   type Notice,
   type Position,
   type Project,
@@ -120,6 +121,11 @@ export interface WaitResult {
    * the lanes/group that someone else withdrew since `since` ("Lane removed by …" means stop that lane).
    */
   closed: Escalation[];
+  /**
+   * The owner answered Other: their messages since the agent last wrote. Act on them and acknowledge,
+   * or reply (reply_to_escalation).
+   */
+  replies: { id: string; ref: string; laneId: string; question: string; messages: Message[] }[];
   /** Still waiting on a human. */
   open: { id: string; ref: string; laneId: string; question: string }[];
   /** Lanes in scope that someone else took off the dashboard since `since`: stop work on them. */
@@ -128,7 +134,7 @@ export interface WaitResult {
   checkedAt: string;
 }
 
-export const EXPORT_DATASETS = ['escalations', 'positions', 'lanes', 'groups', 'events', 'requirements'] as const;
+export const EXPORT_DATASETS = ['escalations', 'positions', 'messages', 'lanes', 'groups', 'events', 'requirements'] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
 
 /** Fixed column order per dataset, so a CSV's header never depends on whether it has rows. */
@@ -149,6 +155,7 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
   ],
   groups: ['id', 'project', 'name', 'ticket', 'ticket_url', 'links', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
   events: ['id', 'project', 'lane_id', 'at', 'kind', 'message', 'actor'],
+  messages: ['id', 'escalation_id', 'escalation_ref', 'project', 'lane_id', 'from', 'author', 'body', 'attachments', 'at'],
   requirements: [
     'id', 'project', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'decided_by',
     'source_escalation', 'recorded_by', 'created_at', 'updated_at',
@@ -213,7 +220,11 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
+
+/** Agent messages stay short: anything longer belongs in an attached file. */
+export const AGENT_MESSAGE_MAX = 500;
+export const OWNER_MESSAGE_MAX = 2000;
 
 /** Uploads nothing references after this long are deleted. */
 const UNREFERENCED_TTL_MS = 24 * 60 * 60 * 1000;
@@ -384,6 +395,26 @@ export class Store {
           );
           CREATE INDEX IF NOT EXISTS attachments_escalation ON attachments(escalation_id, position);
           CREATE INDEX IF NOT EXISTS attachments_pending ON attachments(owner, created_at) WHERE escalation_id IS NULL;
+        `);
+      }
+      // v11: conversations on escalations (the owner's Other, the agent's replies) and whose turn it is.
+      if (version < 11 && !this.hasColumn('escalations', 'turn')) {
+        this.db.exec(`
+          ALTER TABLE escalations ADD COLUMN turn TEXT NOT NULL DEFAULT 'owner';
+          ALTER TABLE attachments ADD COLUMN message_id INTEGER;
+        `);
+      }
+      if (version < 11) {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            escalation_id TEXT NOT NULL REFERENCES escalations(id),
+            author_kind TEXT NOT NULL,
+            author TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS messages_escalation ON messages(escalation_id, id);
         `);
       }
       this.db
@@ -718,7 +749,7 @@ export class Store {
   private static LANE_SELECT = `
     SELECT l.*,
       (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open') AS open_escalations,
-      (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open' AND e.blocking = 1) AS open_blocking,
+      (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open' AND e.blocking = 1 AND e.turn = 'owner') AS open_blocking,
       (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived
     FROM lanes l`;
 
@@ -971,6 +1002,8 @@ export class Store {
       rejectMeans: (r.reject_means as string | null) ?? null,
       allowReject: Number(r.allow_reject ?? 1) === 1,
       attachments: this.attachmentsOf(r.id as string),
+      turn: r.turn === 'agent' ? 'agent' : 'owner',
+      ...this.threadSummary(r.id as string),
       links: JSON.parse(r.links as string) as Link[],
       blocking: Number(r.blocking ?? 1) === 1,
       state: r.state as EscalationState,
@@ -1049,9 +1082,112 @@ export class Store {
   private attachmentsOf(escalationId: string): AttachmentMeta[] {
     return (
       this.db
-        .prepare('SELECT id, name, type, size FROM attachments WHERE escalation_id = ? ORDER BY position')
+        .prepare('SELECT id, name, type, size FROM attachments WHERE escalation_id = ? AND message_id IS NULL ORDER BY position')
         .all(escalationId) as Row[]
     ).map((r) => ({ id: r.id as string, name: r.name as string, type: r.type as AttachmentType, size: Number(r.size) }));
+  }
+
+  // ---- conversations ----------------------------------------------------
+
+  private messageFromRow(r: Row): Message {
+    const attachments = (
+      this.db.prepare('SELECT id, name, type, size FROM attachments WHERE message_id = ? ORDER BY position').all(Number(r.id)) as Row[]
+    ).map((a) => ({ id: a.id as string, name: a.name as string, type: a.type as AttachmentType, size: Number(a.size) }));
+    return {
+      id: Number(r.id),
+      from: r.author_kind === 'agent' ? 'agent' : 'owner',
+      author: r.author as string,
+      body: r.body as string,
+      at: r.created_at as string,
+      attachments,
+    };
+  }
+
+  /** How many messages an escalation has, and the latest. */
+  private threadSummary(escalationId: string): { messageCount: number; lastMessage: Message | null } {
+    const n = Number((this.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE escalation_id = ?').get(escalationId) as Row).n);
+    if (!n) return { messageCount: 0, lastMessage: null };
+    const last = this.db.prepare('SELECT * FROM messages WHERE escalation_id = ? ORDER BY id DESC LIMIT 1').get(escalationId) as Row;
+    return { messageCount: n, lastMessage: this.messageFromRow(last) };
+  }
+
+  /** The conversation, oldest first. */
+  messagesOf(escalationId: string): Message[] {
+    return (this.db.prepare('SELECT * FROM messages WHERE escalation_id = ? ORDER BY id').all(escalationId) as Row[]).map((r) =>
+      this.messageFromRow(r),
+    );
+  }
+
+  /** One escalation with its whole conversation. */
+  escalationWithThread(id: string): Escalation {
+    const e = this.requireEscalation(id);
+    return { ...e, messages: this.messagesOf(e.id) };
+  }
+
+  /**
+   * Adds a message to an open escalation's conversation.
+   * - The owner's (an answer of Other, or a follow-up) hands the turn to the agent: a blocking
+   *   escalation stops holding its lane, which shows the agent working.
+   * - The agent's reply hands it back, blocking the lane again and notifying the owner. The agent
+   *   may also post a short update while it's the owner's turn.
+   */
+  postMessage(
+    id: string,
+    message: { from: 'owner' | 'agent'; author: string; body: string; attachments?: string[] },
+    owner: string,
+  ): Escalation {
+    const max = message.from === 'agent' ? AGENT_MESSAGE_MAX : OWNER_MESSAGE_MAX;
+    const body = message.body.trim();
+    if (!body) throw new ValidationError('The message is empty');
+    if (body.length > max) {
+      throw new ValidationError(
+        message.from === 'agent'
+          ? `Keep messages under ${max} characters: attach a file (POST /api/attachments) for anything longer`
+          : `Messages are limited to ${max} characters`,
+      );
+    }
+    const { escalation, lane, statusChanged } = this.tx(() => {
+      const current = this.requireEscalation(id);
+      if (current.state !== 'open') {
+        throw new ConflictError(`Escalation ${current.ref} is ${current.state}: the conversation is closed`);
+      }
+      const at = this.now().toISOString();
+      const turn = message.from === 'owner' ? 'agent' : 'owner';
+      const messageId = Number(
+        this.db
+          .prepare('INSERT INTO messages (escalation_id, author_kind, author, body, created_at) VALUES (?, ?, ?, ?, ?)')
+          .run(current.id, message.from, message.author, body, at).lastInsertRowid,
+      );
+      this.linkAttachments(current.id, message.attachments ?? [], owner, messageId);
+      this.db.prepare('UPDATE escalations SET turn = ?, updated_at = ? WHERE id = ?').run(turn, at, current.id);
+      this.addEvent(
+        current.laneId,
+        at,
+        'escalation',
+        `${message.from === 'owner' ? `${message.author} on ${current.ref}` : `Reply on ${current.ref}`}: ${body}`,
+        message.author,
+      );
+      const found = this.laneIncludingArchived(current.laneId);
+      let statusChanged = false;
+      if (found && !found.archived && current.blocking) {
+        const lane = found.lane;
+        if (turn === 'agent' && lane.status === 'blocked_human' && this.openBlockingCount(lane.id) === 0) {
+          this.applyLaneUpdate(lane, { status: 'awaiting_agent' }, null, at);
+          statusChanged = true;
+        } else if (turn === 'owner' && current.turn === 'agent' && lane.status !== 'blocked_human') {
+          this.applyLaneUpdate(lane, { status: 'blocked_human' }, null, at);
+          statusChanged = true;
+        }
+      }
+      return {
+        escalation: this.requireEscalation(current.id),
+        lane: found && !found.archived ? this.requireLane(current.laneId) : null,
+        statusChanged,
+      };
+    });
+    this.emit({ type: 'escalation', escalation, ...(message.from === 'agent' ? { replied: true } : {}) });
+    if (lane) this.emit({ type: 'lane', lane, statusChanged });
+    return escalation;
   }
 
   /**
@@ -1083,20 +1219,27 @@ export class Store {
     }
   }
 
-  /** Attaches uploads to an escalation (inside its transaction). Each must be the owner's and not attached yet. */
-  private linkAttachments(escalationId: string, ids: string[], owner: string) {
+  /**
+   * Attaches uploads to an escalation, or to one of its messages (inside a transaction). Each must be the
+   * uploader's and not attached elsewhere yet.
+   */
+  private linkAttachments(escalationId: string, ids: string[], owner: string, messageId: number | null = null) {
     if (!ids.length) return;
-    let have = this.attachmentsOf(escalationId).length;
+    let have = messageId === null ? this.attachmentsOf(escalationId).length : 0;
     for (const id of new Set(ids)) {
       const r = this.db.prepare('SELECT owner, escalation_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
       if (!r || r.owner !== owner) {
         throw new NotFoundError(`Attachment ${id} not found: upload it first (POST /api/attachments), with the same key`);
       }
       // Already here (a retry sending the same ids): nothing to add.
-      if (r.escalation_id === escalationId) continue;
-      if (r.escalation_id) throw new ConflictError(`Attachment ${id} is already on another escalation; upload it again`);
-      if (have >= this.attachmentsPerItem) throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per escalation`);
-      this.db.prepare('UPDATE attachments SET escalation_id = ?, position = ? WHERE id = ?').run(escalationId, have++, id);
+      if (r.escalation_id === escalationId && messageId === null) continue;
+      if (r.escalation_id) throw new ConflictError(`Attachment ${id} is already attached; upload it again`);
+      if (have >= this.attachmentsPerItem) {
+        throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per ${messageId === null ? 'escalation' : 'message'}`);
+      }
+      this.db
+        .prepare('UPDATE attachments SET escalation_id = ?, message_id = ?, position = ? WHERE id = ?')
+        .run(escalationId, messageId, have++, id);
     }
   }
 
@@ -1331,6 +1474,10 @@ export class Store {
       if (choice === 'reject' && !target.allowReject) throw new ValidationError("The agent didn't offer Reject on this escalation");
       if (choice === 'other' && !note?.trim()) throw new ValidationError('Other needs instructions for the agent');
       decision = choice[0].toUpperCase() + choice.slice(1);
+      // Other opens a conversation: the instructions go to the agent, which acts on them or replies.
+      if (choice === 'other' && target.state === 'open') {
+        return this.postMessage(target.id, { from: 'owner', author: by, body: note!, attachments: [] }, by);
+      }
     }
     if (change) {
       const current = this.requireEscalation(id);
@@ -1398,6 +1545,31 @@ export class Store {
       );
     // A repeated acknowledgement changes nothing, so a late retry can't roll the lane back.
     if (current.state === 'acknowledged') return current;
+    // The owner answered Other and it's the agent's turn: acknowledging takes those instructions as the decision.
+    if (current.state === 'open' && current.turn === 'agent') {
+      const last = this.db
+        .prepare("SELECT * FROM messages WHERE escalation_id = ? AND author_kind = 'owner' ORDER BY id DESC LIMIT 1")
+        .get(current.id) as Row;
+      const escalation = this.closeHumanStep(
+        current.id,
+        ['open'],
+        (at, eid) => {
+          this.db
+            .prepare(
+              `UPDATE escalations SET state = 'acknowledged', decision = 'Other', decision_note = ?, decided_by = ?, decided_at = ?,
+                 acknowledged_at = ?, resolution = COALESCE(?, resolution), updated_at = ? WHERE id = ?`,
+            )
+            .run(last.body as string, last.author as string, last.created_at as string, at, note, at, eid);
+          return `Instructions on ${current.ref} acknowledged`;
+        },
+        actor,
+        false,
+      );
+      if (lane && (lane.status || lane.activity !== undefined) && this.getLane(escalation.laneId)) {
+        this.upsertLane(escalation.laneId, lane, actor);
+      }
+      return escalation;
+    }
     const escalation = close();
     // Only for lanes still on the dashboard: publishing would otherwise restore a removed lane.
     if (lane && (lane.status || lane.activity !== undefined) && this.getLane(escalation.laneId)) {
@@ -1445,9 +1617,10 @@ export class Store {
     return escalation;
   }
 
+  /** Open blocking escalations waiting on the owner (not ones where the agent is replying). */
   private openBlockingCount(laneId: string) {
     const r = this.db
-      .prepare("SELECT COUNT(*) AS n FROM escalations WHERE lane_id = ? AND state = 'open' AND blocking = 1")
+      .prepare("SELECT COUNT(*) AS n FROM escalations WHERE lane_id = ? AND state = 'open' AND blocking = 1 AND turn = 'owner'")
       .get(laneId) as Row;
     return Number(r.n);
   }
@@ -1632,11 +1805,19 @@ export class Store {
     const decided = all.filter((e) => e.state === 'decided');
     const closed = [...closedById.values()].sort(byAge);
     const open = all
-      .filter((e) => e.state === 'open')
+      .filter((e) => e.state === 'open' && e.turn === 'owner')
       .map((e) => ({ id: e.id, ref: e.ref, laneId: e.laneId, question: e.question }));
+    const replies = all
+      .filter((e) => e.state === 'open' && e.turn === 'agent')
+      .map((e) => {
+        const thread = this.messagesOf(e.id);
+        const lastAgent = thread.findLastIndex((m) => m.from === 'agent');
+        return { id: e.id, ref: e.ref, laneId: e.laneId, question: e.question, messages: thread.slice(lastAgent + 1) };
+      });
     return {
-      ready: decided.length > 0 || closed.length > 0 || removedLanes.length > 0 || open.length === 0,
+      ready: decided.length > 0 || replies.length > 0 || closed.length > 0 || removedLanes.length > 0 || open.length === 0,
       decided,
+      replies,
       closed,
       open,
       removedLanes,
@@ -1847,6 +2028,30 @@ export class Store {
         message: r.message,
         actor: r.actor,
       }));
+    }
+
+    if (dataset === 'messages') {
+      const w = where('m.id', 'e.lane_id', 'm.created_at', "substr(e.lane_id, 1, instr(e.lane_id, '/') - 1)");
+      const raw = this.db
+        .prepare(
+          `SELECT m.id AS _rid, m.*, e.lane_id, e.ref, e.letter_index, e.seq FROM messages m JOIN escalations e ON e.id = m.escalation_id ${w.sql}`,
+        )
+        .all(...w.params) as Row[];
+      return page(raw, (r) => {
+        const m = this.messageFromRow(r);
+        return {
+          id: m.id,
+          escalation_id: r.escalation_id,
+          escalation_ref: this.codeOf(r),
+          project: projectOf(r.lane_id as string),
+          lane_id: local(r.lane_id),
+          from: m.from,
+          author: m.author,
+          body: m.body,
+          attachments: m.attachments.map((f) => `${f.name} (${f.type}, ${f.size} bytes)`).join(' | '),
+          at: m.at,
+        };
+      });
     }
 
     if (dataset === 'positions') {

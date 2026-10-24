@@ -129,6 +129,16 @@ export interface Escalation {
   allowReject: boolean;
   /** Files the agent attached (plans, screenshots). Fetch each from /api/attachments/:id. */
   attachments: AttachmentMeta[];
+  /**
+   * Whose move it is while open: the owner's (the question, or the agent's latest reply, waits on
+   * them), or the agent's (the owner answered Other and the agent hasn't replied yet).
+   */
+  turn: 'owner' | 'agent';
+  /** Messages in its conversation, and the latest one. */
+  messageCount: number;
+  lastMessage: Message | null;
+  /** The whole conversation, oldest first: only when one escalation is fetched. */
+  messages?: Message[];
   links: Link[];
   /** Holds the lane in blocked_human while open; false for FYI questions. */
   blocking: boolean;
@@ -143,6 +153,17 @@ export interface Escalation {
   acknowledgedAt: string | null;
   /** Agent note when acknowledging or withdrawing. */
   resolution: string | null;
+}
+
+/** One message in an escalation's conversation: the owner's instructions or the agent's short reply. */
+export interface Message {
+  id: number;
+  from: 'owner' | 'agent';
+  /** Who wrote it: the person, or the agent's key name. */
+  author: string;
+  body: string;
+  at: string;
+  attachments: AttachmentMeta[];
 }
 
 /** A file on an escalation: Markdown or plain text, or a PNG, JPEG, WebP or GIF image. */
@@ -271,6 +292,6 @@ export type StreamEvent =
   /** `statusChanged` is set when this event is the lane's status transition (drives notifications). */
   | { type: 'lane'; lane: Lane; statusChanged?: boolean }
   | { type: 'lane_deleted'; id: string; project: string }
-  /** `raised`: an FYI that now needs the owner, notified like a new question. */
-  | { type: 'escalation'; escalation: Escalation; raised?: boolean }
+  /** `raised`: an FYI that now needs the owner, notified like a new question. `replied`: the agent wrote in its conversation. */
+  | { type: 'escalation'; escalation: Escalation; raised?: boolean; replied?: boolean }
   | { type: 'requirement'; requirement: Requirement };
