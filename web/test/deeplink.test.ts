@@ -9,3 +9,10 @@ test('app links open the screen they name', () => {
   assert.equal(routeFromAppLink('lanesignal://somewhere-else'), '#/');
   assert.equal(routeFromAppLink('https://ls.example/#/esc/abc'), null);
 });
+
+test('crafted links only ever reach the home screen', () => {
+  assert.equal(routeFromAppLink('lanesignal://lane/%E0'), '#/');
+  assert.equal(routeFromAppLink('lanesignal://esc/<script>'), '#/');
+  assert.equal(routeFromAppLink('lanesignal://esc/a b'), '#/');
+  assert.equal(routeFromAppLink('lanesignal://lane/default/a%20b'), '#/lane/default/a%20b');
+});
