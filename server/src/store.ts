@@ -1815,11 +1815,14 @@ export class Store {
       );
     // A repeated acknowledgement changes nothing, so a late retry can't roll the lane back.
     if (current.state === 'acknowledged') return current;
-    // The owner answered Other and it's the agent's turn: acknowledging takes those instructions as the decision.
-    if (current.state === 'open' && current.turn === 'agent') {
-      // Everything the owner wrote since the agent last did, so earlier instructions aren't lost.
-      const thread = this.messagesOf(current.id);
-      const pending = thread.slice(thread.findLastIndex((m) => m.from === 'agent') + 1);
+    // The owner answered Other: acknowledging takes their instructions as the decision. That holds
+    // after the agent replied too (it's the owner's turn again), so an agent that replied and then
+    // decided to act isn't left with a conversation it can only dismiss.
+    const thread = current.state === 'open' ? this.messagesOf(current.id) : [];
+    const lastOwner = thread.findLastIndex((m) => m.from === 'owner');
+    if (lastOwner >= 0) {
+      // The owner's latest run of messages, so earlier instructions in it aren't lost.
+      const pending = thread.slice(thread.slice(0, lastOwner).findLastIndex((m) => m.from === 'agent') + 1, lastOwner + 1);
       const last = pending[pending.length - 1];
       const escalation = this.closeHumanStep(
         current.id,
@@ -1834,7 +1837,8 @@ export class Store {
           return `Instructions on ${current.ref} acknowledged`;
         },
         actor,
-        false,
+        // After the agent's reply the escalation holds its lane blocked again; acknowledging releases it.
+        current.turn === 'owner',
       );
       if (lane && (lane.status || lane.activity !== undefined) && this.getLane(escalation.laneId)) {
         this.upsertLane(escalation.laneId, lane, actor);
