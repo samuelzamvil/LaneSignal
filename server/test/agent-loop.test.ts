@@ -160,7 +160,7 @@ describe('waiting on many escalations', () => {
     const a = await ask('w-1', 'A?');
     const b = await ask('w-2', 'B?');
     const t0 = Date.now();
-    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'wait-group', wait_seconds: 30 });
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'wait-group', wait_seconds: 30 });
     await sleep(150);
     await decide(b.id, 'yes');
     const res = (await waiting).value;
@@ -171,28 +171,28 @@ describe('waiting on many escalations', () => {
   });
 
   test('returns at once while a decision is unacknowledged, and once nothing is open', async () => {
-    const now = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'wait-group', wait_seconds: 30 })).value;
+    const now = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'wait-group', wait_seconds: 30 })).value;
     assert.equal(now.ready, true);
     assert.equal(now.decided.length, 1);
     await srv.tool(AGENT, 'acknowledge_escalation', { id: now.decided[0].id });
     const [open] = now.open;
     await decide(open.id, 'yes');
     await srv.tool(AGENT, 'acknowledge_escalation', { id: open.id });
-    const empty = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'wait-group', wait_seconds: 30 })).value;
+    const empty = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'wait-group', wait_seconds: 30 })).value;
     assert.deepEqual({ ...empty, checkedAt: undefined }, { ready: true, decided: [], replies: [], closed: [], open: [], removedLanes: [], checkedAt: undefined });
     assert.ok(Date.parse(empty.checkedAt));
   });
 
   test('times out with ready: false when nothing changes', async () => {
     const e = await ask('w-1', 'Quiet?');
-    const res = (await srv.tool(AGENT, 'wait_for_decisions', { lane_ids: ['w-1'], wait_seconds: 1 })).value;
+    const res = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', lane_ids: ['w-1'], wait_seconds: 1 })).value;
     assert.equal(res.ready, false);
     assert.deepEqual(res.open.map((x: any) => x.id), [e.id]);
   });
 
   test('named escalations report being closed, e.g. by a lane removal', async () => {
     const e = await ask('w-gone', 'Gone?');
-    const waiting = srv.tool(AGENT, 'wait_for_decisions', { ids: [`#${e.ref}`], wait_seconds: 30 });
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { format: 'full', ids: [`#${e.ref}`], wait_seconds: 30 });
     await sleep(150);
     await srv.call('DELETE', '/api/lanes/w-gone', ALICE);
     const res = (await waiting).value;
@@ -207,7 +207,7 @@ describe('waiting on many escalations', () => {
     const b = await ask('g-b', 'B?');
     const own = await ask('g-b', 'Mine to withdraw?');
     const t0 = Date.now();
-    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'removals', wait_seconds: 30 });
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'removals', wait_seconds: 30 });
     await sleep(150);
     await srv.tool(AGENT, 'dismiss_escalation', { id: own.id, justification: 'moot' });
     await sleep(100);
@@ -224,10 +224,10 @@ describe('waiting on many escalations', () => {
     await srv.publish('quiet-1', { group: 'quiet' });
     await srv.publish('quiet-2', { group: 'quiet' });
     await ask('quiet-2', 'Keeps the wait open?');
-    const start = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'quiet', wait_seconds: 0 })).value;
+    const start = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'quiet', wait_seconds: 0 })).value;
     await srv.publish('quiet-3', { group: 'quiet' });
     await srv.tool(AGENT, 'remove_lane', { lane_id: 'quiet-3' });
-    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'quiet', since: start.checkedAt, wait_seconds: 30 });
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'quiet', since: start.checkedAt, wait_seconds: 30 });
     await sleep(150);
     await srv.call('DELETE', '/api/lanes/quiet-1', ALICE);
     const res = (await waiting).value;
@@ -236,37 +236,37 @@ describe('waiting on many escalations', () => {
   });
 
   test('since catches withdrawals that happened between two waits', async () => {
-    const before = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'removals', wait_seconds: 0 })).value;
+    const before = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'removals', wait_seconds: 0 })).value;
     await srv.publish('g-c', { group: 'removals' });
     await ask('g-c', 'C?');
     await srv.call('DELETE', '/api/lanes/g-c', ALICE);
-    const later = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'removals', since: before.checkedAt, wait_seconds: 5 })).value;
+    const later = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'removals', since: before.checkedAt, wait_seconds: 5 })).value;
     assert.equal(later.ready, true);
     assert.deepEqual(later.closed.map((e: any) => e.laneId), ['g-c']);
-    const http = await srv.call('GET', `/api/wait?group=removals&since=${encodeURIComponent(before.checkedAt)}&timeout=5`, AGENT);
+    const http = await srv.call('GET', `/api/wait?format=full&group=removals&since=${encodeURIComponent(before.checkedAt)}&timeout=5`, AGENT);
     assert.deepEqual(http.body.closed.map((e: any) => e.laneId), ['g-c']);
   });
 
   test('scope is required; unknown groups, lanes and ids are errors', async () => {
     assert.equal((await srv.tool(AGENT, 'wait_for_decisions', {})).isError, true);
-    assert.equal((await srv.tool(AGENT, 'wait_for_decisions', { ids: ['#99999'] })).isError, true);
-    const typo = await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'wait-gruop' });
+    assert.equal((await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', ids: ['#99999'] })).isError, true);
+    const typo = await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'wait-gruop' });
     assert.equal(typo.isError, true);
     assert.match(typo.text, /Group "wait-gruop" not found/);
     assert.equal((await srv.call('GET', '/api/wait', AGENT)).status, 400);
-    assert.equal((await srv.call('GET', '/api/wait?ids=99999', AGENT)).status, 404);
-    assert.equal((await srv.call('GET', '/api/wait?group=nope', AGENT)).status, 404);
-    assert.equal((await srv.call('GET', '/api/wait?lane=nope', AGENT)).status, 404);
-    assert.equal((await srv.call('GET', '/api/wait?group=g&bogus=1', AGENT)).status, 400);
-    assert.equal((await srv.call('GET', '/api/wait?group=g&timeout=100000', AGENT)).status, 400);
-    assert.equal((await srv.call('GET', '/api/wait?group=wait-group&since=yesterday', AGENT)).status, 400);
+    assert.equal((await srv.call('GET', '/api/wait?format=full&ids=99999', AGENT)).status, 404);
+    assert.equal((await srv.call('GET', '/api/wait?format=full&group=nope', AGENT)).status, 404);
+    assert.equal((await srv.call('GET', '/api/wait?format=full&lane=nope', AGENT)).status, 404);
+    assert.equal((await srv.call('GET', '/api/wait?format=full&group=g&bogus=1', AGENT)).status, 400);
+    assert.equal((await srv.call('GET', '/api/wait?format=full&group=g&timeout=100000', AGENT)).status, 400);
+    assert.equal((await srv.call('GET', '/api/wait?format=full&group=wait-group&since=yesterday', AGENT)).status, 400);
   });
 });
 
 describe('the HTTP wait for long waits', () => {
   test('answers at once with JSON when something is ready', async () => {
     await srv.tool(AGENT, 'update_lane', { lane_id: 'empty-lane' });
-    const res = await srv.call('GET', '/api/wait?lane=empty-lane&timeout=60', AGENT);
+    const res = await srv.call('GET', '/api/wait?format=full&lane=empty-lane&timeout=60', AGENT);
     assert.equal(res.status, 200);
     assert.equal(res.body.ready, true);
     assert.deepEqual(res.body.open, []);
@@ -274,7 +274,7 @@ describe('the HTTP wait for long waits', () => {
 
   test('sends headers and keepalive bytes at once, then the JSON when decided', async () => {
     const e = await ask('http-wait', 'Long wait?');
-    const res = await fetch(`${srv.base}/api/wait?lane=http-wait&timeout=3600`, { headers: { authorization: `Bearer ${AGENT}` } });
+    const res = await fetch(`${srv.base}/api/wait?format=full&lane=http-wait&timeout=3600`, { headers: { authorization: `Bearer ${AGENT}` } });
     assert.equal(res.status, 200, 'the 200 is sent before anything is decided');
     const reader = res.body!.getReader();
     const first = await reader.read();
@@ -296,7 +296,7 @@ describe('whether an agent is listening', () => {
   test('lanes show agentWaiting while an agent waits on them, briefly after', async () => {
     const e = await ask('listening', 'Anyone there?');
     assert.equal((await srv.call('GET', '/api/lanes/listening', ALICE)).body.lane.agentWaiting, false);
-    const waiting = srv.tool(AGENT, 'wait_for_decisions', { lane_ids: ['listening'], wait_seconds: 30 });
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { format: 'full', lane_ids: ['listening'], wait_seconds: 30 });
     await sleep(150);
     assert.equal((await srv.call('GET', '/api/lanes/listening', ALICE)).body.lane.agentWaiting, true);
     await decide(e.id, 'yes');
@@ -310,7 +310,7 @@ describe('whether an agent is listening', () => {
     await srv.publish('join-1', { group: 'joining' });
     await srv.publish('join-2', { group: 'joining' });
     const first = await ask('join-1', 'First?');
-    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'joining', wait_seconds: 30 });
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'joining', wait_seconds: 30 });
     await sleep(150);
     const second = await ask('join-2', 'Second?');
     await sleep(50);

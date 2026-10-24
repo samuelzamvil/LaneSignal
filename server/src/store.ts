@@ -116,6 +116,12 @@ export interface WaitScope {
   since?: string;
   /** Who is waiting: their own withdrawals aren't reported back to them. */
   viewer?: string;
+  /**
+   * `digest` (the default): ready only when there's something to handle, and the owner's lane notes
+   * since `since` come back again, so a crashed wait that repeats its `since` loses nothing. `full`:
+   * the older behaviour, ready at once when nothing is open, notes handed over once.
+   */
+  mode?: 'digest' | 'full';
 }
 
 export interface WaitResult {
@@ -132,7 +138,7 @@ export interface WaitResult {
    * The owner answered Other: their messages since the agent last wrote. Act on them and acknowledge,
    * or reply (reply_to_escalation).
    */
-  replies: { id: string; ref: string; laneId: string; question: string; messages: Message[] }[];
+  replies: { id: string; ref: string; projectKey: string; laneId: string; question: string; messages: Message[] }[];
   /** Still waiting on a human. */
   open: { id: string; ref: string; laneId: string; question: string }[];
   /** Lanes in scope that someone else took off the dashboard since `since`: stop work on them. */
@@ -1622,15 +1628,18 @@ export class Store {
       .map((r) => this.laneMessageFromRow(r, readId));
   }
 
-  /** The owner's messages on a lane that its agent hasn't been handed yet, oldest first. */
-  private unreadByAgent(laneId: string): LaneMessage[] {
+  /**
+   * The owner's messages on a lane that its agent hasn't been handed yet, oldest first, plus (with
+   * `since`) those written at or after it, handed over or not.
+   */
+  private unreadByAgent(laneId: string, since?: string): LaneMessage[] {
     return (
       this.db
         .prepare(
           `SELECT m.* FROM lane_messages m JOIN lanes l ON l.id = m.lane_id
-           WHERE m.lane_id = ? AND m.author_kind = 'owner' AND m.id > l.agent_read_id ORDER BY m.id`,
+           WHERE m.lane_id = ? AND m.author_kind = 'owner' AND (m.id > l.agent_read_id OR m.created_at >= ?) ORDER BY m.id`,
         )
-        .all(laneId) as Row[]
+        .all(laneId, since ?? '\uffff') as Row[]
     ).map((r) => this.laneMessageFromRow(r));
   }
 
@@ -2038,6 +2047,7 @@ export class Store {
   /** Where things stand for a wait scope right now. Unknown groups and lanes are errors (likely typos). */
   decisionsFor(scope: WaitScope): WaitResult {
     const checkedAt = this.now().toISOString();
+    const digest = scope.mode !== 'full';
     const named = (scope.ids ?? []).map((id) => this.requireEscalation(id));
     const byId = new Map<string, Escalation>(named.map((e) => [e.id, e]));
     const laneIds = new Set<string>();
@@ -2053,12 +2063,21 @@ export class Store {
       for (const r of rows) laneIds.add(r.id as string);
     }
     const closedById = new Map<string, Escalation>();
-    for (const e of named) if (e.state === 'acknowledged' || e.state === 'withdrawn') closedById.set(e.id, e);
+    for (const e of named) {
+      if (e.state !== 'acknowledged' && e.state !== 'withdrawn') continue;
+      // A digest reports a named one once, and only when someone else withdrew it: the agent's own
+      // acknowledgement would otherwise wake every later wait at once.
+      if (digest) {
+        const by = (this.db.prepare('SELECT withdrawn_by FROM escalations WHERE id = ?').get(e.id) as Row).withdrawn_by;
+        if (e.state !== 'withdrawn' || !scope.since || e.updatedAt < scope.since || (by ?? '') === (scope.viewer ?? '')) continue;
+      }
+      closedById.set(e.id, e);
+    }
     const removedLanes: WaitResult['removedLanes'] = [];
     // The owner's notes on every lane in scope, the lanes of escalations named in `ids` included.
     const laneMessages: WaitResult['laneMessages'] = [];
     for (const laneId of new Set([...laneIds, ...named.map((e) => e.laneId)])) {
-      const unread = this.unreadByAgent(laneId);
+      const unread = this.unreadByAgent(laneId, digest ? scope.since : undefined);
       if (unread.length && this.getLane(laneId)) laneMessages.push({ laneId, messages: unread });
     }
     for (const laneId of laneIds) {
@@ -2098,7 +2117,7 @@ export class Store {
       .map((e) => {
         const thread = this.messagesOf(e.id);
         const lastAgent = thread.findLastIndex((m) => m.from === 'agent');
-        return { id: e.id, ref: e.ref, laneId: e.laneId, question: e.question, messages: thread.slice(lastAgent + 1) };
+        return { id: e.id, ref: e.ref, projectKey: e.projectKey, laneId: e.laneId, question: e.question, messages: thread.slice(lastAgent + 1) };
       });
     return {
       ready:
@@ -2107,7 +2126,8 @@ export class Store {
         laneMessages.length > 0 ||
         closed.length > 0 ||
         removedLanes.length > 0 ||
-        open.length === 0,
+        // The full format also returns when nothing is left to wait for; a digest waits for a change.
+        (!digest && open.length === 0),
       decided,
       replies,
       closed,
@@ -2131,8 +2151,9 @@ export class Store {
 
   /**
    * Waits until anything in scope needs the agent: an escalation was decided
-   * (and isn't acknowledged yet), one was closed by someone else, or nothing
-   * is left open. Returns at once if that's already so. While it waits, the
+   * (and isn't acknowledged yet) or answered Other, one was closed by someone
+   * else, a lane was removed, or the owner wrote on a lane (in the full format,
+   * also when nothing is left open). Returns at once if that's already so. While it waits, the
    * lanes it covers show that an agent is listening, including lanes that get
    * a new question during the wait.
    */

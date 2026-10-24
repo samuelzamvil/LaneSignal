@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
-import { accessFor, approvesRequirements, briefMessages, briefWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, approvesRequirements, briefMessages, briefWait, digestWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { oversizedImage, readUpload, sniff } from './attachments.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
@@ -25,6 +25,7 @@ import {
   type ExportDataset,
   type RecordResult,
   type Store,
+  type WaitResult,
 } from './store.ts';
 import {
   LANE_STATUSES,
@@ -623,6 +624,18 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.status(escalation.duplicate ? 200 : 201).json(pub.escalation(escalation));
   });
 
+  /** Everything in scope that involves the agent, without waiting (after a restart, or when it lost track). */
+  app.get('/api/updates', any, decisionsOnly, (req, res) => {
+    const query = parse(s.waitQuery, req.query);
+    const scope = waitScopeFor(
+      acc(res),
+      parse(s.waitScope, { ids: query.ids, laneIds: query.lane, groupId: query.group, since: query.since }),
+      query.project,
+    );
+    const { ready: _ready, ...all } = briefWait(pub.wait(store.handOver(store.decisionsFor(scope), acc(res).projects)));
+    res.json(all);
+  });
+
   /**
    * Waits on a group, lanes and/or escalations until something needs the agent
    * (see Store.waitForDecisions). Up to 24 hours: once it has to wait, it sends
@@ -635,15 +648,19 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     decisionsOnly,
     h(async (req, res) => {
       const query = parse(s.waitQuery, req.query);
-      const scope = waitScopeFor(
-        acc(res),
-        parse(s.waitScope, { ids: query.ids, laneIds: query.lane, groupId: query.group, since: query.since }),
-        query.project,
-      );
+      const scope = {
+        ...waitScopeFor(
+          acc(res),
+          parse(s.waitScope, { ids: query.ids, laneIds: query.lane, groupId: query.group, since: query.since }),
+          query.project,
+        ),
+        mode: query.format ?? 'digest',
+      };
+      const shape = (w: WaitResult) => (query.format === 'full' ? briefWait(w) : digestWait(w));
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
-        res.json(briefWait(pub.wait(store.handOver(now, acc(res).projects))));
+        res.json(shape(pub.wait(store.handOver(now, acc(res).projects))));
         return;
       }
       const abort = new AbortController();
@@ -665,7 +682,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         const visible = accessFor(store, principalOf(res)).projects;
         // Notes are handed over only when they're actually sent: not to a revoked key or a client that left.
         if (!revoked && !abort.signal.aborted) store.handOver(result, visible);
-        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : briefWait(pub.wait(result, visible))));
+        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : shape(pub.wait(result, visible))));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));
       } finally {

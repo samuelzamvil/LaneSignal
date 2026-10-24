@@ -13,7 +13,7 @@ after(() => srv.close());
 const ask = async (question: string) => (await srv.tool(AGENT, 'create_escalation', { lane_id: 'chat', question })).value;
 const lane = async () => (await srv.call('GET', '/api/lanes/chat', ALICE)).body.lane;
 const other = (id: string, note: string) => srv.call('POST', `/api/escalations/${id}/decide`, ALICE, { decision: 'Other', note });
-const wait = async () => (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'payments', wait_seconds: 0 })).value;
+const wait = async () => (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'payments', wait_seconds: 0 })).value;
 
 describe('conversations', () => {
   test('Other hands the turn to the agent, and its reply hands it back', async () => {
