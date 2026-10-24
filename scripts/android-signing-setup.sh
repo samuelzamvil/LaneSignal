@@ -2,7 +2,9 @@
 # One-time setup of the Android signing key, run on your own machine so the private key never
 # leaves it except into GitHub's encrypted secrets.
 #
-#   scripts/android-signing-setup.sh [owner/repo]
+#   scripts/android-signing-setup.sh [--yes] [owner/repo]
+#
+# Or without a computer: the "Android signing setup" workflow (Actions tab) runs this in a runner.
 #
 # - Creates a self-signed release key (RSA 4096, valid ~27 years), or reuses the one from an earlier
 #   run kept in ~/.lanesignal-signing/.
@@ -16,6 +18,8 @@
 # Needs: a JDK (keytool), openssl, and the GitHub CLI signed in with admin rights on the repo.
 set -euo pipefail
 
+yes=false
+if [ "${1:-}" = --yes ]; then yes=true; shift; fi
 for tool in keytool openssl gh; do command -v "$tool" >/dev/null || { echo "Needs $tool"; exit 1; }; done
 repo=${1:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}
 env=android-signing
@@ -24,8 +28,10 @@ dir="$HOME/.lanesignal-signing"
 keystore="$dir/lanesignal-release.jks"
 secrets=(ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_KEYSTORE_PASSWORD ANDROID_KEYSTORE_BASE64)
 
-read -r -p "Set up Android signing for $repo? [y/N] " ok
-[[ "$ok" == [yY]* ]] || exit 1
+if [ "$yes" != true ]; then
+  read -r -p "Set up Android signing for $repo? [y/N] " ok
+  [[ "$ok" == [yY]* ]] || exit 1
+fi
 
 # The keystore secret is uploaded last, so its presence means a finished setup.
 if gh secret list --env "$env" --repo "$repo" 2>/dev/null | awk '$1 == "ANDROID_KEYSTORE_BASE64" { found = 1 } END { exit !found }'; then
@@ -83,4 +89,8 @@ fi
 
 echo
 echo "Done. The next build of main (or a v* tag) publishes a signed APK."
-echo "Backup: $dir (keystore and password). Keep a copy somewhere safe, e.g. a password manager."
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+  echo "The key exists only in the environment's secrets (no backup). If they're ever deleted, phones uninstall once."
+else
+  echo "Backup: $dir (keystore and password). Keep a copy somewhere safe, e.g. a password manager."
+fi

@@ -24,7 +24,16 @@ For FCM push in a local build, put `google-services.json` in `web/android/app/` 
 
 ### Signed release builds (install updates in place)
 
-Without a signing key, every build is signed with a throwaway debug key, so Android refuses to install it over the previous one. Set up a key once and CI signs every APK on the Releases page with it:
+Without a signing key, every build is signed with a throwaway debug key, so Android refuses to install it over the previous one. Set up a key once and CI signs every APK on the Releases page with it. Either way below creates the same thing.
+
+**From GitHub, no computer needed** (the key is made in a runner and goes straight into encrypted secrets):
+
+1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new): repository access *Only select repositories* → this one; permissions **Administration**, **Environments** and **Secrets**: *Read and write*; a short expiry (e.g. 1 day).
+2. In the repository: Settings → Secrets and variables → Actions → New repository secret, named `SIGNING_SETUP_TOKEN`, with the token as its value.
+3. Actions → **Android signing setup** → Run workflow (on `main`).
+4. When it's green, delete the `SIGNING_SETUP_TOKEN` secret and the token. No backup of the key is kept this way; if the environment's secrets are ever deleted, phones need one more uninstall.
+
+**From your computer** (also keeps a backup of the key):
 
 ```bash
 scripts/android-signing-setup.sh            # or: scripts/android-signing-setup.sh owner/repo
