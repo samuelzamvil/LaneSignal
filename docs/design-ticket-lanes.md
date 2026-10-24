@@ -1,6 +1,6 @@
 # Plan: tickets, epics and explicit lane filling
 
-Status: **proposal for review, revision 2** (after review by two overseers). Nothing here is built yet. It ships over several PRs (see [Delivery](#delivery)).
+Status: **signed off by both overseers, revision 3**. Nothing here is built yet. It ships over several PRs (see [Delivery](#delivery)).
 
 ## Why
 
@@ -59,6 +59,8 @@ None of these claim anything about the ticket's real status.
 Rules:
 
 - **Created on first use.** Filling a lane with an unknown ref creates the ticket. There's no separate call.
+- **PRs go in `links`, never `ticket`.** The skill says so. The server warns when a lane's ticket switches from a ticket-system ref to a `gh:` ref. Otherwise the compatibility path would park the real ticket and create a ticket for the PR.
+- **`waiting_on` clears itself** when the ticket it names becomes `done` or `dropped`.
 - **At most one lane per ticket.** Filling a lane with a ticket another lane holds is refused with `409`, naming that lane. Lanes are slots, not seats: a worker and a reviewer on the same ticket share one lane.
 - **Any lane can take a parked ticket.** The ticket keeps its escalations and status history when it moves.
 - **Closed tickets can come back.** Filling a lane with a `done` or `dropped` ticket reopens it, history intact.
@@ -132,12 +134,13 @@ New read tools:
   - Today, only the agent that raised an escalation can acknowledge or dismiss it (any key of the same account with the same key name), or a person on its behalf.
   - Under this plan, the overseer of the ticket's *current* group can too. So when product takes over an L&A ticket, product's overseer can close out its decided questions.
   - `wait_for_decisions` follows the same rule.
+  - Overseers sharing one agent key count as the same agent, so this rule doesn't keep them apart. Group-scoped waits do that.
 - **Acknowledging after a reply.** If the owner answered **Other** and the agent then replied, acknowledging accepts the owner's latest instruction. Today it fails with "open; expected decided". This is a bug in today's code, fixed in PR 0.
 - **New filter:** **Active tickets only**, on the inbox and History, hides escalations whose ticket isn't in a lane. It's off by default, and remembered per device.
 
 ## Waiting
 
-**What changes:** `wait_for_decisions` returns a **digest of what changed** since the last call (`since`), and nothing it already reported. This keeps the call agents make most cheap in tokens.
+**What changes:** `wait_for_decisions` returns a **digest**: what changed since the `since` the agent passes. This keeps the call agents make most cheap in tokens.
 
 **What it returns today, every call:**
 
@@ -146,21 +149,28 @@ New read tools:
 
 **What the digest returns:**
 
-- **Changes, one item each:** `{code, kind, id, text}`. Kinds:
-  - `decided`: the decision and the note
-  - `reply`: the owner's new message
-  - `lane_note`: an owner note on a lane
-  - `board_note`: an owner note on an epic's board
-  - `closed`
-  - `lane_removed`
-  - `ticket_moved`: another overseer filled a lane with one of this group's tickets
+- **Items, one per thing to handle:** `{code, kind, id, text}`.
+  - `decided` and `reply` **repeat on every wait until handled**: acknowledged, or replied to. A wait killed mid-way or a context compaction can't lose a decision.
+  - Everything else is reported once per `since`: `lane_note`, `board_note`, `closed`, `lane_removed`, `ticket_moved`.
 - **The owner's words in full.** That text is the change, and fetching it in a second call would cost more. Agent text and unchanged fields are left out.
 - **Counts:** `open`, `decidedUnacknowledged` and `waitingOnYou`, so the agent knows what's pending without the list.
-- **No early return when nothing is open.** It returns as soon as something changes, or at its timeout.
+- **Computed from `since`, not from a server-side "delivered" mark.** Calling again with the same `since` returns the same items, so a crashed wait loses nothing. The "seen by the agent" mark on notes is display-only.
+- **`ready` and `checkedAt` keep their meaning:**
+  - `ready: true` when there's at least one item
+  - `checkedAt` always present, to pass as the next `since`
+
+  Today's background loops keep working unchanged.
+- **No early return when nothing is open.** It returns as soon as there's an item, or at its timeout.
 
 **Full state, on demand:** a new `get_updates(scope, since?)` returns everything in scope, as `wait_for_decisions` does today: open escalations, decided ones awaiting acknowledgement, unread notes. Agents call it after a restart or when they've lost track. `get_escalation`, `get_ticket` and `list_*` still return single records in full.
 
 **Compatibility:** `GET /api/wait` and the MCP tool take `format: "full"` for one release, for agents written against today's shape.
+
+**Skill updates, in the same PR:**
+
+- The sample background loop, checked against the digest.
+- **When nothing is open, wait in the background,** or pass `wait_seconds: 0` for a quick check. A tool-call wait now holds the session for its whole `wait_seconds`, and Remote Control can't reach a session while it's held.
+- **If the counts show something pending and the digest has nothing to act on, call `get_updates`.**
 
 **Phone pushes are separate from waits:** each agent post on an epic board still sends a quiet push, as lane milestones do.
 
