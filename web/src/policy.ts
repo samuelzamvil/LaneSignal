@@ -10,6 +10,7 @@ Project: \`<project-id>\` (pass it as \`project\` on every LaneSignal call; dele
 - Register the group at the start of every session, and give each ticket or work stream its own lane.
 - Publish when a lane's situation changes, not on a timer.
 - Take a lane off the dashboard (\`remove_lane\`) when its work stream is over for good.
+- Notify me (\`notify_owner\`) when a PR merges or you start a new ticket. Nothing else.
 
 **Escalate to me** (I answer in LaneSignal, or here in this session):
 - destructive or irreversible changes (data deletion, migrations without a rollback, force pushes)

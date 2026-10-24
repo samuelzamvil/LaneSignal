@@ -53,6 +53,10 @@ export const escalationFields = {
   blocking: z.boolean().optional(),
 };
 
+/** A notice is one line for a phone notification. */
+export const NOTICE_MAX = 140;
+export const notice = z.object({ message: z.string().trim().min(1).max(NOTICE_MAX) });
+
 export const escalationInput = z
   .object(escalationFields)
   .refine((e) => !e.recommendedOption || (e.options ?? []).includes(e.recommendedOption), {

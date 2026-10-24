@@ -57,3 +57,11 @@ Call `create_escalation` once per decision. Four questions in a plan means four 
 
 - **Codes:** each escalation gets a code, its `ref`, like **A12** (the lane's letter and a number). The owner uses it when they answer you ("A12: drop it"); use it too. Every tool accepts it in place of the id.
 - **Retries are safe:** re-sending the same open question on the same lane returns the existing escalation (`duplicate: true`).
+- **An FYI that now blocks you:** raise the same open FYI again with `blocking: true`. It keeps its code, blocks the lane and notifies the owner as a new question (`upgraded: true`).
+
+## Telling the owner about milestones
+
+`notify_owner` sends a quiet phone notification and keeps it in the lane's history, e.g. `"Merged PR #311"` or `"Starting gh:42"`.
+
+- **Milestones only:** a PR merged, a new ticket started, a lane finished, something broke after a merge. Your owner's policy may say which. Never for routine progress, and never to ask something (that's an escalation).
+- **One line,** at most 140 characters, written for a lock screen. One per lane per minute: put several things in one message.

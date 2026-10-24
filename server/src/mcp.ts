@@ -632,6 +632,24 @@ function buildServer(
     );
 
     server.registerTool(
+      'notify_owner',
+      {
+        description:
+          'Tell the owner about a milestone with a quiet phone notification, e.g. "Merged PR #311" or "Starting gh:42". ' +
+          'One line, kept in the lane\'s history. Not for routine progress or questions; one per lane per minute.',
+        inputSchema: { lane_id: s.laneId, message: s.notice.shape.message, ...PROJECT_WRITE },
+      },
+      async ({ lane_id, message, project }) => {
+        try {
+          const r = store.postNotice(q(a.pick(project, { lane: lane_id }), lane_id), message.trim(), who.name);
+          return json({ laneId: localId(r.laneId), sent: true });
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
       'create_escalation',
       {
         description:
@@ -639,7 +657,7 @@ function buildServer(
           'the lane must be published first. Write it to be understood from a phone: `question`, `context`, ' +
           '`recommendation`, `cost`, `alternatives`, and 2-4 short `options` with `recommended_option` when it\'s a choice. ' +
           'Returns its code (`ref`, e.g. "A12"), usable in every tool. The same open question again returns the first ' +
-          '(`duplicate: true`). ' +
+          '(`duplicate: true`); raising an open FYI again with `blocking: true` makes it block and notifies the owner (`upgraded: true`). ' +
           (features.decisions
             ? 'Then wait with wait_for_decisions and acknowledge_escalation as soon as one is decided.'
             : 'The owner answers in your session, quoting the code; then dismiss_escalation with what they decided.'),

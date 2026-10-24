@@ -156,3 +156,19 @@ describe('small results', () => {
     assert.equal(all.length, 2);
   });
 });
+
+describe('notices', () => {
+  test('an overseer tells the owner about a milestone; it lands in the lane history, one per minute', async () => {
+    const res = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Merged PR #311' });
+    assert.equal(res.isError, false, res.text);
+    const events = (await srv.call('GET', '/api/lanes/pay-1', ALICE)).body.events;
+    assert.ok(events.some((e: any) => e.kind === 'notice' && e.message === 'Merged PR #311'));
+    const again = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Starting gh:42' });
+    assert.equal(again.isError, true);
+    assert.match(again.text, /One notice per lane per minute/);
+    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'Starting gh:42' })).status, 201);
+    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'x'.repeat(141) })).status, 400);
+    assert.equal((await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-l', message: 'typo' })).isError, true);
+    assert.equal((await srv.call('POST', '/api/lanes/pay-1/notices', ALICE, { message: 'not an agent' })).status, 403);
+  });
+});

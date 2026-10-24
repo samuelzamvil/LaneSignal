@@ -10,6 +10,7 @@ import {
   type LaneEvent,
   type LaneStatus,
   type Link,
+  type Notice,
   type Position,
   type Project,
   type ProjectRole,
@@ -211,7 +212,7 @@ type Row = Record<string, unknown>;
  * feeds SSE clients, long-polling agents, and push notifications.
  */
 export class Store {
-  readonly events = new EventEmitter<{ change: [StreamEvent] }>();
+  readonly events = new EventEmitter<{ change: [StreamEvent]; notice: [Notice] }>();
   private db: DatabaseSync;
   private resolveTicketUrl: (ticket: string) => string | null;
   private broadTags: Set<string>;
@@ -1013,7 +1014,11 @@ export class Store {
    * dismiss or acknowledge it: the raising key ("user:<account>:<key name>") or config token
    * ("token:<name>").
    */
-  createEscalation(input: EscalationInput, actor: string, owner: string | null = null): Escalation & { duplicate?: boolean } {
+  createEscalation(
+    input: EscalationInput,
+    actor: string,
+    owner: string | null = null,
+  ): Escalation & { duplicate?: boolean; upgraded?: boolean } {
     projectOf(input.laneId);
     // A typo would otherwise create a new lane outside the group, which the overseer's wait never sees.
     if (!this.laneExists(input.laneId)) {
@@ -1031,7 +1036,12 @@ export class Store {
         )
         .all(input.laneId, owner ?? actor) as Row[]
     ).find((r) => norm(r.question as string) === norm(input.question));
-    if (existing) return { ...this.requireEscalation(existing.id as string), duplicate: true };
+    if (existing) {
+      const id = existing.id as string;
+      // Raising an open FYI again with `blocking: true` makes it need the owner now (same code).
+      if (input.blocking === true && !this.requireEscalation(id).blocking) return { ...this.makeBlocking(id, actor), duplicate: true, upgraded: true };
+      return { ...this.requireEscalation(id), duplicate: true };
+    }
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
       this.restoreLane(input.laneId, actor, at);
@@ -1090,6 +1100,48 @@ export class Store {
     this.emit({ type: 'escalation', escalation });
     this.emit({ type: 'lane', lane, statusChanged: blocks });
     return escalation;
+  }
+
+  /** An open FYI becomes blocking: the lane blocks, and the owner is notified as for a new question. */
+  private makeBlocking(id: string, actor: string): Escalation {
+    const { escalation, lane, blocks } = this.tx(() => {
+      const at = this.now().toISOString();
+      const before = this.requireEscalation(id);
+      this.db.prepare('UPDATE escalations SET blocking = 1, updated_at = ? WHERE id = ?').run(at, id);
+      this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${before.question}`, actor);
+      const lane = this.requireLane(before.laneId);
+      const blocks = lane.status !== 'blocked_human';
+      if (blocks) this.applyLaneUpdate(lane, { status: 'blocked_human' }, actor, at);
+      return { escalation: this.requireEscalation(id), lane: this.requireLane(before.laneId), blocks };
+    });
+    this.emit({ type: 'escalation', escalation, raised: true });
+    this.emit({ type: 'lane', lane, statusChanged: blocks });
+    return escalation;
+  }
+
+  /**
+   * A milestone the agent tells the owner about ("Merged PR #311", "Starting gh:42"): kept in the
+   * lane's history and pushed quietly. One per lane per minute, so a looping agent can't flood a phone.
+   */
+  postNotice(laneId: string, message: string, actor: string): { laneId: string; message: string; at: string } {
+    if (!this.laneExists(laneId)) {
+      throw new NotFoundError(`Lane "${localId(laneId)}" not found: publish it first (update_lane with its group)`);
+    }
+    const at = this.now();
+    const last = this.db
+      .prepare("SELECT at FROM lane_events WHERE lane_id = ? AND kind = 'notice' ORDER BY id DESC LIMIT 1")
+      .get(laneId) as Row | undefined;
+    if (last && at.getTime() - Date.parse(last.at as string) < 60_000) {
+      throw new ConflictError('One notice per lane per minute: put everything in one message');
+    }
+    const lane = this.tx(() => {
+      this.addEvent(laneId, at.toISOString(), 'notice', message, actor);
+      this.db.prepare('UPDATE lanes SET updated_at = ? WHERE id = ?').run(at.toISOString(), laneId);
+      return this.requireLane(laneId);
+    });
+    this.emit({ type: 'lane', lane });
+    this.events.emit('notice', { project: projectOf(laneId), laneId, message, by: actor });
+    return { laneId, message, at: at.toISOString() };
   }
 
   /**

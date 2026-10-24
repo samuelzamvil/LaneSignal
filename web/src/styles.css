@@ -1005,6 +1005,11 @@ textarea {
   font-weight: 600;
 }
 
+/* Milestones the overseer sent the owner ("Merged PR #311"). */
+.timeline .kind-notice span:first-of-type::before {
+  content: '🔔 ';
+}
+
 .settings .danger {
   margin-top: 16px;
 }
