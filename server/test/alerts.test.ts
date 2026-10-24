@@ -1,5 +1,5 @@
-// The default: LaneSignal alerts. The owner answers in the agent's own session, and the agent
-// dismisses the alert with a justification. Nothing is answered or waited on in LaneSignal.
+// Alerts only (LANESIGNAL_DECISIONS=false): the owner answers in the agent's own session, and the
+// agent dismisses the alert with a justification. Nothing is answered or waited on in LaneSignal.
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { AGENT, ALICE, REVIEWER, startServer } from './helpers.ts';

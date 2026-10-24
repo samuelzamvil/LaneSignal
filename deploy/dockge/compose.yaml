@@ -26,7 +26,7 @@ services:
     environment:
       # Features (docs/configuration.md#features). Answering on the dashboard is off: you answer in
       # the agent's session and the agent dismisses the alert. The requirements register is on.
-      LANESIGNAL_DECISIONS: "${LANESIGNAL_DECISIONS:-false}"
+      LANESIGNAL_DECISIONS: "${LANESIGNAL_DECISIONS:-true}"
       LANESIGNAL_REQUIREMENTS: "${LANESIGNAL_REQUIREMENTS:-true}"
     volumes:
       # Named volume: Docker creates it owned by the container's user, so it

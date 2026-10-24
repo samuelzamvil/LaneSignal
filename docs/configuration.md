@@ -8,7 +8,7 @@ Set these in the stack's environment (Compose / `.env`); there's no switch in th
 
 | Env var | Default | Notes |
 |---|---|---|
-| `LANESIGNAL_DECISIONS` | `false` | Answering in LaneSignal. Off (the default), LaneSignal only **alerts**: you answer in the agent's own session (e.g. Remote Control), so the conversation and the decision stay in one place, and the agent dismisses the alert with a justification. The dashboard is read-only apart from dismissing stale alerts. `true` adds decision buttons on the dashboard, and the agent tools to wait for and acknowledge decisions. See [Lanes, groups and escalations](concepts.md#escalations) |
+| `LANESIGNAL_DECISIONS` | `true` | Answering in LaneSignal. On (the default), escalations get answer buttons on the dashboard and phone app, and agents wait for and acknowledge the decision. `false` makes LaneSignal alerts only: you answer in the agent's own session (e.g. Remote Control) and the agent dismisses the alert with a justification; the dashboard is read-only apart from dismissing stale alerts. See [Lanes, groups and escalations](concepts.md#escalations) |
 | `LANESIGNAL_REQUIREMENTS` | `true` | The [requirements](requirements.md) register: a durable, searchable record of the owner's decisions outside the repository. `false` removes its tools, page, API and export |
 
 ## Server
@@ -43,7 +43,7 @@ In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "t
 
 | Env var | JSON key | Default | Notes |
 |---|---|---|---|
-| `LANESIGNAL_GROUP_LABEL` | `groupLabel` | `Epic` | What a group (one overseer's epic/train) is called in the UI |
+| `LANESIGNAL_GROUP_LABEL` | `groupLabel` | `Group` | What a group (one overseer session's lanes) is called in the app, e.g. `Train` |
 | `LANESIGNAL_TICKET_TEMPLATES` | `ticketTemplates` | | `key=url-with-{id},…`, e.g. `redmine=https://redmine/issues/{id},gh=https://github.com/o/r/issues/{id}`. In JSON, an object |
 | `LANESIGNAL_TICKET_DEFAULT` | `defaultTicketSystem` | first template | Used for plain refs like `1234` or `#1234` |
 | `LANESIGNAL_STALE_MINUTES` | `staleMinutes` | `30` | A lane that is `active`, `pending_ci` or `awaiting_agent` and hasn't published for this long is flagged stale. `0` turns this off |

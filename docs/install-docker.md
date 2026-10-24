@@ -51,5 +51,5 @@ The server serves the compiled web app from `web/dist`.
 1. Create the admin account with the setup code: [accounts](accounts.md).
 2. Put HTTPS in front: [reverse proxy](reverse-proxy.md).
 3. Connect your overseers: [agents](agents.md).
-4. Optionally change the two [feature switches](configuration.md#features) in `.env`: `LANESIGNAL_DECISIONS` (answering on the dashboard, off by default) and `LANESIGNAL_REQUIREMENTS` (on).
+4. Optionally change the two [feature switches](configuration.md#features) in `.env`: `LANESIGNAL_DECISIONS` (answering on the dashboard, on by default) and `LANESIGNAL_REQUIREMENTS` (on).
 5. Install the Android app from the [Releases page](https://github.com/samuelzamvil/LaneSignal/releases): [Android](android.md).

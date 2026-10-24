@@ -1,7 +1,7 @@
 {
   "name": "LaneSignal",
   "publicUrl": "https://lanesignal.example.com",
-  "groupLabel": "Epic",
+  "groupLabel": "Group",
   "ticketTemplates": {
     "redmine": "https://redmine.example.com/issues/{id}",
     "gh": "https://github.com/example/app/issues/{id}",

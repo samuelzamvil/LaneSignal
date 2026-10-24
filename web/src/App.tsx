@@ -17,6 +17,7 @@ import { routeFromAppLink } from './deeplink.ts';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { keyOf } from './merge.ts';
 import { useLiveData, useNow } from './live.ts';
+import { backLabel, closeTo, trackEntry } from './nav.ts';
 import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { RequirementsPane } from './requirements.tsx';
@@ -54,21 +55,11 @@ function parseRoute(hash: string): Route {
   return { view: 'inbox' };
 }
 
-// History entries created inside the app are tagged, so closing a sheet only goes
-// "back" when back stays in the app (not to whatever site linked here).
-if (history.state === null) history.replaceState({ inApp: false }, '');
-
-/** Close a sheet: step back if we navigated here in-app, otherwise go to `fallback`. */
-export function closeTo(fallback: string) {
-  if ((history.state as { inApp?: boolean } | null)?.inApp) history.back();
-  else location.replace(fallback);
-}
-
 function useRoute(): [Route, (r: string) => void] {
   const [route, setRoute] = useState(() => parseRoute(location.hash));
   useEffect(() => {
     const on = () => {
-      if (history.state === null) history.replaceState({ inApp: true }, '');
+      trackEntry();
       setRoute(parseRoute(location.hash));
     };
     addEventListener('hashchange', on);
@@ -250,7 +241,11 @@ function Dashboard({
   useEffect(() => {
     if (!isNative) return;
     const h = CapApp.addListener('backButton', () => {
-      if (location.hash && location.hash !== '#/') history.back();
+      // Sheets close the way their back button says; other screens step back.
+      const r = parseRoute(location.hash);
+      if (r.escId) closeTo('#/');
+      else if (r.laneId) closeTo('#/lanes');
+      else if (location.hash && location.hash !== '#/') history.back();
       else void CapApp.minimizeApp();
     });
     return () => void h.then((x) => x.remove());
@@ -596,7 +591,7 @@ function Dashboard({
             : !pushSupported
               ? 'Not included in this build'
               : config.push.fcm
-                ? 'Enabled for alerts'
+                ? 'Enabled for escalations'
                 : 'Server has no FCM credentials'}
           {config.push.ntfy && ' · ntfy enabled on server'}
         </dd>
@@ -725,6 +720,7 @@ function Dashboard({
           now={now}
           staleMinutes={config.staleMinutes}
           onClose={() => closeTo('#/')}
+          backTo={backLabel('#/')}
         />
       )}
       {route.laneId && routeLaneProject && (
@@ -738,6 +734,7 @@ function Dashboard({
           group={groupOfLane(live.lanes.get(routeLaneKey))}
           groupLabel={config.groupLabel}
           onClose={() => closeTo('#/lanes')}
+          backTo={backLabel('#/lanes')}
         />
       )}
     </div>

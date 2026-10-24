@@ -41,9 +41,9 @@ Any client that supports Streamable HTTP with custom headers works. Point it at 
 
 LaneSignal ships a Claude Code skill that teaches agents **how** to use the tools:
 - publishing state, and structuring an alert (escalation)
-- dismissing it once you've answered in the session, and recovering after a restart
+- waiting for and acknowledging decisions, or dismissing an escalation you answered in the session
+- recovering after a restart
 - finding and recording the owner's requirements (when they're on)
-- waiting for and acknowledging decisions (only when answering on the dashboard is on)
 
 Claude Code loads it whenever an agent works with LaneSignal. Your LaneSignal server hands it out, matching its [features](configuration.md#features):
 
@@ -52,9 +52,9 @@ mkdir -p .claude/skills/lanesignal
 curl -fsS https://lanesignal.example.com/api/skill -o .claude/skills/lanesignal/SKILL.md
 ```
 
-Use `~/.claude/skills/lanesignal/` instead to install it for every project on that machine. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, plus `requirements.md` and `decisions.md`, which the server appends when those features are on. Re-run the command after upgrading LaneSignal or changing its features.
+Use `~/.claude/skills/lanesignal/` instead to install it for every project on that machine. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, then `decisions.md` (answering on the dashboard, the default) or `alerts.md` (`LANESIGNAL_DECISIONS=false`), then `requirements.md` when requirements are on. The server joins them. Re-run the command after upgrading LaneSignal or changing its features.
 
-With answering on the dashboard on, the skill runs long waits in the background over HTTP. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
+The skill runs long waits in the background over HTTP. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
 
 ## 4. Set your policy (when to use it)
 
@@ -87,9 +87,9 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 | `decide_escalation` | human | Decisions on: answer from your own Claude session. `change: true` corrects a decision the agent hasn't acknowledged yet |
 | `dismiss_escalation` | human | Dismiss an alert that no longer needs an answer, e.g. its session ended |
 
-## Waiting for decisions (answering on the dashboard only)
+## Waiting for decisions
 
-This section applies only with `LANESIGNAL_DECISIONS=true`. By default you answer in the agent's session and nothing waits.
+This section applies with answering on the dashboard on (the default). With `LANESIGNAL_DECISIONS=false` you answer in the agent's session and nothing waits.
 
 Answers can take minutes or a day. An overseer waits on its whole group with one call:
 
