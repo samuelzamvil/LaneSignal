@@ -52,7 +52,18 @@ mkdir -p .claude/skills/lanesignal
 curl -fsS https://lanesignal.example.com/api/skill -o .claude/skills/lanesignal/SKILL.md
 ```
 
-Use `~/.claude/skills/lanesignal/` instead to install it for every project on that machine. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, then `decisions.md` (answering on the dashboard, the default) or `alerts.md` (`LANESIGNAL_DECISIONS=false`), then `requirements.md` when requirements are on. The server joins them. Re-run the command after upgrading LaneSignal or changing its features.
+Use `~/.claude/skills/lanesignal/` instead to install it for every project on that machine.
+
+**As a plugin.** This repository is also a Claude Code plugin marketplace, so you can subscribe once and get skill updates with the plugin:
+
+```
+/plugin marketplace add samuelzamvil/LaneSignal
+/plugin install lanesignal@lanesignal
+```
+
+The plugin carries the skill for a server with the default features (answering in LaneSignal and requirements on). If your server turns either off, install the skill from the server instead, as above, since that copy matches its configuration. Update with `/plugin marketplace update lanesignal`.
+
+**Codex** reads skills in the same `SKILL.md` format. Install it from your server into Codex's skills folder: `mkdir -p ~/.codex/skills/lanesignal && curl -fsS https://lanesignal.example.com/api/skill -o ~/.codex/skills/lanesignal/SKILL.md`, and re-run that after upgrading LaneSignal. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, then `decisions.md` (answering on the dashboard, the default) or `alerts.md` (`LANESIGNAL_DECISIONS=false`), then `requirements.md` when requirements are on. The server joins them. Re-run the command after upgrading LaneSignal or changing its features.
 
 The skill runs long waits in the background over HTTP, and uploads attachments with `curl`. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
 
