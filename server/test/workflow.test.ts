@@ -5,6 +5,7 @@
 //
 // The tests are one scenario and run in order: later steps build on the
 // lanes and escalations earlier ones create.
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { AGENT, ALICE, REVIEWER, startServer } from './helpers.ts';
@@ -340,6 +341,12 @@ describe('agent skill', () => {
     assert.doesNotMatch(text, /owner answers \*\*in this session\*\*/);
     // Requirements come after how answers arrive.
     assert.ok(text.indexOf('## Requirements') > text.indexOf('## After a restart'));
+  });
+
+  test('the Claude Code plugin carries the skill a default server hands out', async () => {
+    const served = await (await fetch(`${srv.base}/api/skill`)).text();
+    const plugin = readFileSync(new URL('../../plugin/skills/lanesignal/SKILL.md', import.meta.url), 'utf8');
+    assert.equal(plugin, served, 'run node scripts/build-plugin-skill.mjs');
   });
 
   test('requirements can be turned off', async () => {
