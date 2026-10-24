@@ -21,7 +21,7 @@ Project: `<project-id>` (pass it as `project` on every LaneSignal call; delete t
 
 **Escalate to me** (I answer in LaneSignal, or here in this session):
 - destructive or irreversible changes (data deletion, migrations without a rollback, force pushes)
-- product and scope questions that no active requirement answers
+- product and scope questions that no pending or active requirement answers
 - credentials, access and spending
 - conflicting instructions
 

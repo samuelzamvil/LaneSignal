@@ -1,14 +1,60 @@
 import { useEffect, useState } from 'react';
 import type { Client, Group, ProjectAccess, Requirement } from './api.ts';
-import { RichText } from './components.tsx';
+import { LayoutToggle, RichText, useLayout } from './components.tsx';
 import { absolute } from './format.ts';
 import { keyOf } from './merge.ts';
 
 const STATUS_LABEL: Record<Requirement['status'], string> = {
+  pending: 'Pending approval',
   active: 'Active',
   superseded: 'Superseded',
   retired: 'Retired',
 };
+
+/** Still applies: approved, or waiting for a person's approval. */
+const inForce = (r: Requirement) => r.status === 'pending' || r.status === 'active';
+
+/**
+ * Pending, superseded or retired (nothing for active, the usual case), and a replacement
+ * waiting for approval: a requirement in force that names its successor.
+ */
+function StatusBadge({ req, onOpen }: { req: Requirement; onOpen?: (id: string) => void }) {
+  const ref = (id: string) =>
+    onOpen ? (
+      <button className="link" onClick={() => onOpen(id)}>
+        {id}
+      </button>
+    ) : (
+      id
+    );
+  return (
+    <>
+      {req.status !== 'active' && (
+        <span className={`pill ${req.status === 'pending' ? 'tone-info' : 'tone-muted'}`}>
+          {STATUS_LABEL[req.status]}
+          {req.status === 'superseded' && req.supersededBy && <> by {ref(req.supersededBy)}</>}
+        </span>
+      )}
+      {inForce(req) && req.supersededBy && (
+        <span className="pill tone-info">Replacement {ref(req.supersededBy)} pending</span>
+      )}
+    </>
+  );
+}
+
+/** One line per requirement in the list layout; tapping it opens the full card in place. */
+function RequirementRow({ req, scopeName, onToggle }: { req: Requirement; scopeName: string; onToggle: () => void }) {
+  return (
+    <button className={`req-row ${req.status}`} onClick={onToggle}>
+      <span className="ref">{req.id}</span>
+      <span className="req-row-main">
+        <span className="req-row-text">{req.requirement}</span>
+        <span className="muted req-row-scope">{scopeName}</span>
+      </span>
+      <StatusBadge req={req} />
+    </button>
+  );
+}
 
 /** Wording, justification and tags; a change of meaning is a supersede, which agents record. */
 function EditForm({ req, client, onDone }: { req: Requirement; client: Client; onDone: () => void }) {
@@ -78,19 +124,7 @@ function RequirementCard({
       <header className="esc-head">
         <span className="ref">{req.id}</span>
         <span className={`tag${req.project === null ? ' all-projects' : ''}`}>{scopeName}</span>
-        {req.status !== 'active' && (
-          <span className="pill tone-muted">
-            {STATUS_LABEL[req.status]}
-            {req.supersededBy && (
-              <>
-                {' by '}
-                <button className="link" onClick={() => onOpen(req.supersededBy!)}>
-                  {req.supersededBy}
-                </button>
-              </>
-            )}
-          </span>
-        )}
+        <StatusBadge req={req} onOpen={onOpen} />
       </header>
       {editing ? (
         <EditForm req={req} client={client} onDone={() => setEditing(false)} />
@@ -115,20 +149,27 @@ function RequirementCard({
             )}{' '}
             · recorded by {req.recordedBy} · {absolute(req.createdAt)}
           </p>
-          {canEdit && req.status === 'active' && (
+          {canEdit && inForce(req) && (
             <div className="actions">
+              {req.status === 'pending' && (
+                <button className="primary" onClick={() => client.approveRequirement(req.id).catch((e: Error) => setError(e.message))}>
+                  Approve
+                </button>
+              )}
               <button className="ghost" onClick={() => setEditing(true)}>
                 Edit wording
               </button>
               <button
                 className="ghost danger"
                 onClick={() => {
-                  if (confirm(`Retire ${req.id}? It no longer applies, and nothing replaces it.`)) {
-                    client.retireRequirement(req.id).catch((e: Error) => setError(e.message));
-                  }
+                  const ask =
+                    req.status === 'pending'
+                      ? `Reject ${req.id}? It's retired: kept for history, but agents stop following it.`
+                      : `Retire ${req.id}? It no longer applies, and nothing replaces it.`;
+                  if (confirm(ask)) client.retireRequirement(req.id).catch((e: Error) => setError(e.message));
                 }}
               >
-                Retire
+                {req.status === 'pending' ? 'Reject' : 'Retire'}
               </button>
             </div>
           )}
@@ -182,6 +223,10 @@ export function RequirementsPane({
   }, [project, group, chosen?.project]);
   const [tags, setTags] = useState<string[]>([]);
   const [showOld, setShowOld] = useState(false);
+  const [pendingOnly, setPendingOnly] = useState(false);
+  const [layout, setLayout] = useLayout('lanesignal.requirementsLayout');
+  /** The row opened into a full card, in the list layout. */
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [items, setItems] = useState<Requirement[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -198,14 +243,14 @@ export function RequirementsPane({
         tags,
         project: chosen?.project ?? (project || undefined),
         group: chosen?.id,
-        statuses: showOld ? ['active', 'superseded', 'retired'] : ['active'],
+        statuses: pendingOnly ? ['pending'] : showOld ? ['pending', 'active', 'superseded', 'retired'] : ['pending', 'active'],
       })
       .then((r) => !cancelled && (setItems(r), setError(null)))
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
-  }, [client, debounced, chosen?.project, chosen?.id, project, tags, showOld, version]);
+  }, [client, debounced, chosen?.project, chosen?.id, project, tags, showOld, pendingOnly, version]);
 
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
   const scopeOf = (r: Requirement) => {
@@ -217,14 +262,22 @@ export function RequirementsPane({
   const open = (id: string) => {
     setQuery(id);
     setShowOld(true);
+    setPendingOnly(false);
+    setExpanded(id);
   };
 
   return (
     <section className="pane requirements" aria-label="Requirements">
-      <h2>
-        Requirements <span className="count">{items ? (items.length >= LIMIT ? `${LIMIT}+` : items.length) : '…'}</span>
-      </h2>
-      <p className="hint">Product decisions made by the owner, recorded by agents with the reasoning behind them.</p>
+      <div className="pane-head">
+        <h2>
+          Requirements <span className="count">{items ? (items.length >= LIMIT ? `${LIMIT}+` : items.length) : '…'}</span>
+        </h2>
+        <LayoutToggle layout={layout} onChange={setLayout} />
+      </div>
+      <p className="hint">
+        Product decisions made by the owner, recorded by agents with the reasoning behind them. An agent's record stays
+        pending until a person approves it.
+      </p>
       <div className="filters">
         <input type="search" placeholder="Search decisions…" value={query} onChange={(e) => setQuery(e.target.value)} />
         <div className="filter-row">
@@ -240,8 +293,20 @@ export function RequirementsPane({
             </select>
           </label>
           <label className="check">
-            <input type="checkbox" checked={showOld} onChange={(e) => setShowOld(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={showOld}
+              onChange={(e) => (setShowOld(e.target.checked), e.target.checked && setPendingOnly(false))}
+            />
             Superseded &amp; retired
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={pendingOnly}
+              onChange={(e) => (setPendingOnly(e.target.checked), e.target.checked && setShowOld(false))}
+            />
+            Pending approval only
           </label>
         </div>
         {tags.length > 0 && (
@@ -259,22 +324,33 @@ export function RequirementsPane({
       {items && items.length >= LIMIT && (
         <p className="hint">Showing the first {LIMIT}. Search or filter to narrow it down.</p>
       )}
-      {items?.map((r) => (
-        <RequirementCard
-          key={r.id}
-          req={r}
-          scopeName={scopeOf(r)}
-          sourceCode={
-            r.sourceEscalation && r.project && !/[·:-]/.test(r.sourceEscalation)
-              ? `${projects.find((p) => p.id === r.project)?.key ?? r.project}-${r.sourceEscalation}`
-              : r.sourceEscalation
-          }
-          client={client}
-          canEdit={canEdit}
-          onTag={(t) => setTags(tags.includes(t) ? tags : [...tags, t])}
-          onOpen={open}
-        />
-      ))}
+      <div className={layout === 'list' ? 'req-list' : undefined}>
+        {items?.map((r) => {
+          const card = (
+            <RequirementCard
+              key={r.id}
+              req={r}
+              scopeName={scopeOf(r)}
+              sourceCode={
+                r.sourceEscalation && r.project && !/[·:-]/.test(r.sourceEscalation)
+                  ? `${projects.find((p) => p.id === r.project)?.key ?? r.project}-${r.sourceEscalation}`
+                  : r.sourceEscalation
+              }
+              client={client}
+              canEdit={canEdit}
+              onTag={(t) => setTags(tags.includes(t) ? tags : [...tags, t])}
+              onOpen={open}
+            />
+          );
+          if (layout === 'cards') return card;
+          return (
+            <div key={r.id}>
+              <RequirementRow req={r} scopeName={scopeOf(r)} onToggle={() => setExpanded(expanded === r.id ? null : r.id)} />
+              {expanded === r.id && card}
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }

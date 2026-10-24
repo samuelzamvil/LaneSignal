@@ -286,6 +286,7 @@ export async function createAccounts(config: Config, dbPath: string) {
               email: owner.email,
               admin: false,
               superuser: isAdminRole(owner.role),
+              personalKey: true,
             };
           }
           return {

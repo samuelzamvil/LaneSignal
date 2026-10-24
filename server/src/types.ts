@@ -261,9 +261,15 @@ export interface Principal {
   superuser?: boolean;
   /** An agent key bound to one project. */
   project?: string;
+  /** A personal key: acts as its owner, but from a Claude session, so its requirements still wait for approval. */
+  personalKey?: boolean;
 }
 
-export type RequirementStatus = 'active' | 'superseded' | 'retired';
+/**
+ * `pending` until a person approves it (agents' records start there), then `active`;
+ * `superseded` or `retired` once it no longer applies.
+ */
+export type RequirementStatus = 'pending' | 'active' | 'superseded' | 'retired';
 
 /**
  * A product decision made by the owner, kept so it can be found later without
