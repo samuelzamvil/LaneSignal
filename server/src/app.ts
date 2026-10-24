@@ -462,8 +462,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     if (!lane) throw new NotFoundError('Lane not found');
     res.json({
       lane: pub.lane(lane),
-      escalations: store
-        .listEscalations({ laneId: lane.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 50 })
+      // Every unresolved escalation, however many closed ones came after it, plus the latest 50 closed ones.
+      escalations: [
+        ...store.listEscalations({ laneId: lane.id }),
+        ...store.listEscalations({ laneId: lane.id, states: ['acknowledged', 'withdrawn'], limit: 50 }),
+      ]
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
         .map(pub.escalation),
       events: store.laneEvents(lane.id, 100, false).map((e) => ({ ...e, laneId: localId(e.laneId) })),
       messages: store.laneMessages(lane.id),

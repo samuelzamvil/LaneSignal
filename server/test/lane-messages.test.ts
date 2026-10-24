@@ -185,3 +185,16 @@ test('lane conversations export as lane_messages', async () => {
     s.close();
   }
 });
+
+test('the lane page keeps every unresolved escalation, however many closed ones follow', async () => {
+  await srv.publish('busy-lane');
+  const open = (await srv.call('POST', '/api/escalations', AGENT, { laneId: 'busy-lane', question: 'Still open?' })).body;
+  for (let i = 0; i < 51; i++) {
+    const e = (await srv.call('POST', '/api/escalations', AGENT, { laneId: 'busy-lane', question: `Done ${i}?`, blocking: false })).body;
+    await srv.call('POST', `/api/escalations/${e.id}/withdraw`, AGENT, { note: 'Settled.' });
+  }
+  const escs = (await srv.call('GET', '/api/lanes/busy-lane', ALICE)).body.escalations;
+  assert.equal(escs.length, 51, 'the open one plus the latest 50 closed');
+  assert.equal(escs[0].id, open.id, 'oldest first');
+  assert.equal(escs.filter((e: { state: string }) => e.state === 'withdrawn').length, 50);
+});
