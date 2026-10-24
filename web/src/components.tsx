@@ -5,6 +5,44 @@ import { ago, absolute, blockedMs, duration, isStale, needsHuman, STATUS_META } 
 import { hasNewMessage, markMessagesSeen } from './seen.ts';
 import { toast } from './toast.tsx';
 
+export type Layout = 'cards' | 'list';
+
+/** Cards or a compact list, for the inbox, the lanes or the requirements; remembered on this device. */
+export function useLayout(key: string): [Layout, (l: Layout) => void] {
+  const [layout, setLayout] = useState<Layout>(() => {
+    try {
+      return localStorage.getItem(key) === 'list' ? 'list' : 'cards';
+    } catch {
+      return 'cards';
+    }
+  });
+  return [
+    layout,
+    (l) => {
+      setLayout(l);
+      try {
+        localStorage.setItem(key, l);
+      } catch {
+        /* storage unavailable: keep it for this visit */
+      }
+    },
+  ];
+}
+
+/** The Cards / List switch in a pane's heading. */
+export function LayoutToggle({ layout, onChange }: { layout: Layout; onChange: (l: Layout) => void }) {
+  return (
+    <span className="layout-toggle" role="group" aria-label="Show as">
+      <button className={layout === 'cards' ? 'on' : ''} aria-pressed={layout === 'cards'} onClick={() => onChange('cards')}>
+        Cards
+      </button>
+      <button className={layout === 'list' ? 'on' : ''} aria-pressed={layout === 'list'} onClick={() => onChange('list')}>
+        List
+      </button>
+    </span>
+  );
+}
+
 export function StatusPill({ status }: { status: LaneStatus }) {
   const meta = STATUS_META[status];
   return <span className={`pill tone-${meta.tone}`}>{meta.label}</span>;

@@ -93,7 +93,7 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 ### `requirements.csv` (the owner's product decisions)
 
-`id` (`R14`), `group_id` (empty for product-wide), `requirement`, `justification`, `tags`, `status` (`active`, `superseded`, `retired`), `superseded_by`, `decided_by`, `source_escalation`, `recorded_by`, `created_at`, `updated_at`. Every requirement is included, whatever its status; `from`/`to` filter by creation time. See [Requirements](requirements.md).
+`id` (`R14`), `group_id` (empty for product-wide), `requirement`, `justification`, `tags`, `status` (`pending`, `active`, `superseded`, `retired`), `superseded_by`, `decided_by`, `source_escalation`, `recorded_by`, `created_at`, `updated_at`. Every requirement is included, whatever its status; `from`/`to` filter by creation time. See [Requirements](requirements.md).
 
 ### `messages.csv` (conversations)
 

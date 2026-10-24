@@ -15,7 +15,7 @@ Project: \`<project-id>\` (pass it as \`project\` on every LaneSignal call; dele
 
 **Escalate to me** (I answer in LaneSignal, or here in this session):
 - destructive or irreversible changes (data deletion, migrations without a rollback, force pushes)
-- product and scope questions that no active requirement answers
+- product and scope questions that no pending or active requirement answers
 - credentials, access and spending
 - conflicting instructions
 
@@ -52,5 +52,5 @@ export function policyFor(group: string, project: string | null, requirements = 
   let text = POLICY_TEMPLATE.replace('<group-id>', group || '<group-id>');
   if (!decisions) for (const [from, to] of ALERTS_ONLY) text = text.replace(from, to);
   text = project ? text.replace('<project-id>', project) : text.replace(PROJECT_LINE, '');
-  return requirements ? text : text.replace(REQUIREMENTS_PART, '\n').replace(' that no active requirement answers', '');
+  return requirements ? text : text.replace(REQUIREMENTS_PART, '\n').replace(' that no pending or active requirement answers', '');
 }

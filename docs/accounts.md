@@ -51,6 +51,7 @@ Pick **Personal key** instead of **Agent key** to use LaneSignal from your own C
 - It gets the human tools (`dismiss_escalation`, the read tools, and `decide_escalation` when answering on the dashboard is on), and what it does shows your name.
 - It can't publish lanes or raise escalations.
 - It can't manage accounts, even if you're an admin.
+- [Requirements](requirements.md) it records are *pending*, like an agent's, and it can't approve them: you approve them signed in.
 
 Keys are marked *personal* in the list.
 

@@ -595,3 +595,25 @@ test('upgrading to lane conversations keeps earlier notices as the agent\'s mess
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('upgrading to approvals leaves earlier requirements pending; history keeps its status', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v14-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    const input = { requirement: 'Payouts retry 5 times.', justification: 'Incident.', tags: ['payout-retries'], decidedBy: 'Sam', project: 'default' };
+    const old = store.recordRequirement(input, 'alice', true).requirement;
+    const current = store.supersedeRequirement(old.id, { ...input, requirement: 'Payouts retry 3 times.' }, 'alice', true).requirement;
+    assert.equal(current.status, 'active');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec("UPDATE meta SET value = '14' WHERE key = 'schema_version'");
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    assert.equal(store.getRequirement(current.id)?.status, 'pending');
+    assert.equal(store.getRequirement(old.id)?.status, 'superseded');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

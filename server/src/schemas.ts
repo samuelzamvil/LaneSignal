@@ -234,9 +234,9 @@ export const requirementEdit = z
   })
   .strict();
 
-const REQUIREMENT_STATUSES = ['active', 'superseded', 'retired'] as const;
+export const REQUIREMENT_STATUSES = ['pending', 'active', 'superseded', 'retired'] as const;
 
-/** GET /api/requirements: ?q=&tag=a,b&group=&status=active,superseded&limit= */
+/** GET /api/requirements: ?q=&tag=a,b&group=&status=pending,active,superseded&limit= */
 export const requirementQuery = z
   .object({
     q: z.string().max(500).optional(),

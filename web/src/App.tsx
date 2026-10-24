@@ -12,7 +12,7 @@ import {
   type Principal,
   type PublicConfig,
 } from './api.ts';
-import { Chips, GroupHeader, LaneCard, LaneDetail, LaneRow } from './components.tsx';
+import { Chips, GroupHeader, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout } from './components.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
 import { routeFromAppLink } from './deeplink.ts';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
@@ -111,28 +111,6 @@ function useFilters(): [Filters, (f: Partial<Filters>) => void] {
 const toggle = <T,>(list: T[], v: T) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
 /** Which project the views show: '' for all of them (the combined view). Remembered per device. */
-/** Cards or a compact list, for the inbox or the lanes; remembered on this device. */
-function useLayout(key: string): ['cards' | 'list', (l: 'cards' | 'list') => void] {
-  const [layout, setLayout] = useState<'cards' | 'list'>(() => {
-    try {
-      return localStorage.getItem(key) === 'list' ? 'list' : 'cards';
-    } catch {
-      return 'cards';
-    }
-  });
-  return [
-    layout,
-    (l) => {
-      setLayout(l);
-      try {
-        localStorage.setItem(key, l);
-      } catch {
-        /* storage unavailable: keep it for this visit */
-      }
-    },
-  ];
-}
-
 const PROJECT_KEY = 'lanesignal.project';
 function useProjectFilter(): [string, (p: string) => void] {
   const [p, setP] = useState(() => {
@@ -484,14 +462,7 @@ function Dashboard({
         <h2>
           Needs you <span className={`count${open.length ? ' hot' : ''}`}>{open.length}</span>
         </h2>
-        <span className="layout-toggle" role="group" aria-label="Show as">
-          <button className={inboxLayout === 'cards' ? 'on' : ''} aria-pressed={inboxLayout === 'cards'} onClick={() => setInboxLayout('cards')}>
-            Cards
-          </button>
-          <button className={inboxLayout === 'list' ? 'on' : ''} aria-pressed={inboxLayout === 'list'} onClick={() => setInboxLayout('list')}>
-            List
-          </button>
-        </span>
+        <LayoutToggle layout={inboxLayout} onChange={setInboxLayout} />
       </div>
       {open.length === 0 && blockedLanes.length === 0 && (
         isLive && live.projects.length === 0 ? (
@@ -559,14 +530,7 @@ function Dashboard({
         <h2>
           Lanes <span className="count">{visible.length}</span>
         </h2>
-        <span className="layout-toggle" role="group" aria-label="Show as">
-          <button className={laneLayout === 'cards' ? 'on' : ''} aria-pressed={laneLayout === 'cards'} onClick={() => setLaneLayout('cards')}>
-            Cards
-          </button>
-          <button className={laneLayout === 'list' ? 'on' : ''} aria-pressed={laneLayout === 'list'} onClick={() => setLaneLayout('list')}>
-            List
-          </button>
-        </span>
+        <LayoutToggle layout={laneLayout} onChange={setLaneLayout} />
       </div>
       <div className="filters">
         {(groupIds.length > 1 || activeGroups.length > 0) && (

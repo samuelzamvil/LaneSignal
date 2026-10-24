@@ -36,8 +36,8 @@ Every request carries one bearer credential, which gets one of two roles:
 - **Dismissing and acknowledging:** only the agent that raised an escalation (the same key, or a newer key with the same name on the same account) can dismiss or acknowledge it, and an agent must give a justification to dismiss. People can dismiss any escalation they can see.
 - **Requirements:** any agent key can record or supersede a requirement and must name the human decision behind it.
   - A cited escalation is checked: the agent must have raised it, or it must come from a lane in the requirement's group, and it must be in the requirement's project. If it was decided on the dashboard, its decider is recorded; otherwise the agent names who decided with `decided_by`.
-  - A `decided_by` name is the agent's attestation, which the server can't verify. People review requirements in the app and can retire them.
-- **Personal keys** act as their owner (dismissing, and deciding when that's on). They can't publish lanes or manage accounts. Key metadata is limited to this role flag.
+  - A `decided_by` name is the agent's attestation, which the server can't verify. Agents' requirements stay *pending* until a person approves them in the app (or rejects them, which retires them); an agent's supersede leaves the old requirement in force until its replacement is approved.
+- **Personal keys** act as their owner (dismissing, and deciding when that's on), except that requirements they record stay pending and they can't approve requirements: that takes a signed-in person (or a static human token). They can't publish lanes or manage accounts. Key metadata is limited to this role flag.
 
 ## Revocation reaches open connections
 

@@ -170,6 +170,7 @@ export function createClient(conn: Connection) {
     requirementTags: () => request<{ tag: string; count: number }[]>('GET', '/api/requirements/tags'),
     editRequirement: (id: string, patch: { requirement?: string; justification?: string; tags?: string[] }) =>
       request<Requirement>('PATCH', `/api/requirements/${encodeURIComponent(id)}`, patch),
+    approveRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/approve`, {}),
     retireRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/retire`, {}),
     restoreRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/restore`, {}),
     deleteLane: (project: string, id: string) =>

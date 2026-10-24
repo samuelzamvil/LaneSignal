@@ -325,6 +325,12 @@ export const briefWait = (w: WaitResult) => ({
  * keys one person created stay apart, while a rotated key of the same name still matches), or the
  * config token.
  */
+/**
+ * Whether what this caller records about requirements counts as approved, and whether it may
+ * approve: people, but not agents or personal keys (Claude writing in someone's session).
+ */
+export const approvesRequirements = (p: Principal) => p.role === 'human' && !p.personalKey;
+
 export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);
 
 /**

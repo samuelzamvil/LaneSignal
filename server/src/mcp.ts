@@ -6,6 +6,7 @@ import type { Request, Response } from 'express';
 import { z, ZodError } from 'zod';
 import {
   accessFor,
+  approvesRequirements,
   brief,
   briefLane,
   briefRequirement,
@@ -459,13 +460,15 @@ function buildServer(
         description:
           'Search the owner\'s past decisions. Check before escalating a product or scope question; if one answers it, ' +
           'follow it and cite its id. `query` is free text; `tags` must all match; `group_id` adds the train/epic\'s ' +
-          'requirements to the project-wide ones. Active only unless you set `statuses`.',
+          'requirements to the project-wide ones. Returns pending and active ones unless you set `statuses`. ' +
+          '`status: "pending"` means the owner hasn\'t approved the record yet: follow it, but it may still be corrected. ' +
+          'A requirement in force with `supersededBy` has a replacement waiting for approval.',
         inputSchema: {
           query: z.string().max(500).optional(),
           tags: z.array(s.requirementTag).max(5).optional(),
           group_id: s.groupId.optional(),
           group: GROUP_ALIAS,
-          statuses: z.array(z.enum(['active', 'superseded', 'retired'])).optional(),
+          statuses: z.array(z.enum(s.REQUIREMENT_STATUSES)).optional(),
           limit: z.number().int().min(1).max(100).optional(),
           ...PROJECT,
         },
@@ -505,7 +508,7 @@ function buildServer(
     server.registerTool(
       'list_requirement_tags',
       {
-        description: 'Tags in use on active requirements, with counts, so you reuse them instead of inventing near-synonyms.',
+        description: 'Tags in use on pending and active requirements, with counts, so you reuse them instead of inventing near-synonyms.',
         inputSchema: { group_id: s.groupId.optional(), group: GROUP_ALIAS, ...PROJECT },
         annotations: { readOnlyHint: true },
       },
@@ -532,12 +535,15 @@ function buildServer(
             : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
           'Search first so you don\'t ' +
           'record it twice; the same requirement from the same escalation returns the first (`duplicate: true`). ' +
-          '`similar` lists ones that read alike: if the owner changed their mind, supersede_requirement the old one.',
+          '`similar` lists ones that read alike: if the owner changed their mind, supersede_requirement the old one.' +
+          (approvesRequirements(who) ? '' : ' What you record is `pending` until a person approves it.'),
         inputSchema: { ...requirementFields, ...PROJECT_WRITE },
       },
       async (args) => {
         try {
-          return json(pubRecord(a, store.recordRequirement(toInput(args), who.name, who.role === 'human', ownerOf(who))));
+          return json(
+            pubRecord(a, store.recordRequirement(toInput(args), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who))),
+          );
         } catch (err) {
           return fail(err);
         }
@@ -549,13 +555,21 @@ function buildServer(
       {
         description:
           'The owner changed a decision: record the new one and mark the old one superseded (kept for history). ' +
-          'Fields as in record_requirement; scope defaults to the old one\'s.',
+          'Fields as in record_requirement; scope defaults to the old one\'s.' +
+          (approvesRequirements(who)
+            ? ''
+            : ' The new one is `pending`; the old one stays in force, its `supersededBy` naming the replacement, until a person approves it.'),
         inputSchema: { id: z.string().describe(REQ_ID_HELP), ...supersedeFields, ...PROJECT_WRITE },
       },
       async ({ id, ...args }) => {
         try {
           const current = visibleRequirement(id);
-          return json(pubRecord(a, store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human', ownerOf(who))));
+          return json(
+            pubRecord(
+              a,
+              store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who)),
+            ),
+          );
         } catch (err) {
           return fail(err);
         }
