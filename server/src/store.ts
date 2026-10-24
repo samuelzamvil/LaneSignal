@@ -415,6 +415,7 @@ export class Store {
             created_at TEXT NOT NULL
           );
           CREATE INDEX IF NOT EXISTS messages_escalation ON messages(escalation_id, id);
+          CREATE INDEX IF NOT EXISTS attachments_message ON attachments(message_id) WHERE message_id IS NOT NULL;
         `);
       }
       this.db
@@ -1118,12 +1119,6 @@ export class Store {
     );
   }
 
-  /** One escalation with its whole conversation. */
-  escalationWithThread(id: string): Escalation {
-    const e = this.requireEscalation(id);
-    return { ...e, messages: this.messagesOf(e.id) };
-  }
-
   /**
    * Adds a message to an open escalation's conversation.
    * - The owner's (an answer of Other, or a follow-up) hands the turn to the agent: a blocking
@@ -1146,12 +1141,24 @@ export class Store {
           : `Messages are limited to ${max} characters`,
       );
     }
-    const { escalation, lane, statusChanged } = this.tx(() => {
+    const { escalation, lane, statusChanged, duplicate, reply } = this.tx(() => {
       const current = this.requireEscalation(id);
       if (current.state !== 'open') {
         throw new ConflictError(`Escalation ${current.ref} is ${current.state}: the conversation is closed`);
       }
       const at = this.now().toISOString();
+      const recent = this.db
+        .prepare('SELECT author, body, created_at FROM messages WHERE escalation_id = ? ORDER BY id DESC LIMIT 1')
+        .get(current.id) as Row | undefined;
+      const fresh = recent && Date.parse(at) - Date.parse(recent.created_at as string) < 60_000;
+      // A retried call (same author, same text, just now) returns the message already sent.
+      if (fresh && recent.author === message.author && recent.body === body) {
+        return { escalation: current, lane: null, statusChanged: false, duplicate: true, reply: false };
+      }
+      // Updates while it's the owner's turn: at most one a minute, so a loop can't page the phone.
+      if (message.from === 'agent' && current.turn === 'owner' && current.lastMessage?.from === 'agent' && fresh) {
+        throw new ConflictError('One update a minute while the owner decides: put everything in one message');
+      }
       const turn = message.from === 'owner' ? 'agent' : 'owner';
       const messageId = Number(
         this.db
@@ -1183,9 +1190,13 @@ export class Store {
         escalation: this.requireEscalation(current.id),
         lane: found && !found.archived ? this.requireLane(current.laneId) : null,
         statusChanged,
+        duplicate: false,
+        reply: current.turn === 'agent',
       };
     });
-    this.emit({ type: 'escalation', escalation, ...(message.from === 'agent' ? { replied: true } : {}) });
+    if (duplicate) return escalation;
+    // A reply to the owner's Other is their move; an update while they decide is quieter.
+    this.emit({ type: 'escalation', escalation, ...(message.from === 'agent' ? { replied: reply ? 'reply' : 'update' } : {}) });
     if (lane) this.emit({ type: 'lane', lane, statusChanged });
     return escalation;
   }
@@ -1307,6 +1318,11 @@ export class Store {
       if (input.blocking !== false && !this.requireEscalation(id).blocking) {
         return { ...this.makeBlocking(id, input, actor, owner), duplicate: true, upgraded: true };
       }
+      if (this.requireEscalation(id).turn === 'agent') {
+        throw new ConflictError(
+          `${this.requireEscalation(id).ref} is open and the owner answered Other: reply with reply_to_escalation, or acknowledge it`,
+        );
+      }
       // A retry may bring files the first call didn't: attach them rather than leave them unused.
       if (input.attachments?.length) {
         const before = this.attachmentsOf(id).length;
@@ -1395,7 +1411,7 @@ export class Store {
       const newOptions = given(input.options) !== null;
       this.db
         .prepare(
-          `UPDATE escalations SET blocking = 1, updated_at = ?,
+          `UPDATE escalations SET blocking = 1, turn = 'owner', updated_at = ?,
              context = COALESCE(?, context), recommendation = COALESCE(?, recommendation), cost = COALESCE(?, cost),
              ticket = COALESCE(?, ticket), alternatives = COALESCE(?, alternatives), links = COALESCE(?, links),
              options = COALESCE(?, options), recommended_option = CASE WHEN ? THEN ? ELSE COALESCE(?, recommended_option) END,
@@ -1547,9 +1563,10 @@ export class Store {
     if (current.state === 'acknowledged') return current;
     // The owner answered Other and it's the agent's turn: acknowledging takes those instructions as the decision.
     if (current.state === 'open' && current.turn === 'agent') {
-      const last = this.db
-        .prepare("SELECT * FROM messages WHERE escalation_id = ? AND author_kind = 'owner' ORDER BY id DESC LIMIT 1")
-        .get(current.id) as Row;
+      // Everything the owner wrote since the agent last did, so earlier instructions aren't lost.
+      const thread = this.messagesOf(current.id);
+      const pending = thread.slice(thread.findLastIndex((m) => m.from === 'agent') + 1);
+      const last = pending[pending.length - 1];
       const escalation = this.closeHumanStep(
         current.id,
         ['open'],
@@ -1559,7 +1576,7 @@ export class Store {
               `UPDATE escalations SET state = 'acknowledged', decision = 'Other', decision_note = ?, decided_by = ?, decided_at = ?,
                  acknowledged_at = ?, resolution = COALESCE(?, resolution), updated_at = ? WHERE id = ?`,
             )
-            .run(last.body as string, last.author as string, last.created_at as string, at, note, at, eid);
+            .run(pending.map((m) => m.body).join('\n\n'), last.author, last.at, at, note, at, eid);
           return `Instructions on ${current.ref} acknowledged`;
         },
         actor,
@@ -1608,7 +1625,9 @@ export class Store {
     byAgent = true,
   ): Escalation {
     const before = this.requireEscalation(id);
-    const wasBlocked = this.getLane(before.laneId)?.status === 'blocked_human';
+    const laneBefore = this.getLane(before.laneId)?.status;
+    // A lane showing the agent working on the owner's Other counts as unblocked by the dismissal too.
+    const wasBlocked = laneBefore === 'blocked_human' || (before.state === 'open' && before.turn === 'agent' && laneBefore === 'awaiting_agent');
     const escalation = this.withdrawEscalation(id, justification, actor);
     const after = this.getLane(escalation.laneId);
     if (!after) return escalation;
@@ -1731,7 +1750,8 @@ export class Store {
   /** Resolves when the escalation leaves `open`, or with the current value on timeout. */
   waitForDecision(id: string, timeoutMs: number, signal?: AbortSignal): Promise<Escalation> {
     const current = this.requireEscalation(id);
-    if (current.state !== 'open' || timeoutMs <= 0) return Promise.resolve(current);
+    // The agent's turn (the owner answered Other) needs the agent as much as a decision does.
+    if (current.state !== 'open' || current.turn === 'agent' || timeoutMs <= 0) return Promise.resolve(current);
     id = current.id;
     const release = this.holdWaiting([current.laneId]);
     return new Promise((resolve, reject) => {
@@ -1746,7 +1766,7 @@ export class Store {
         else reject(new NotFoundError(`Escalation "${id}" no longer exists`));
       };
       const onChange = (e: StreamEvent) => {
-        if (e.type === 'escalation' && e.escalation.id === id && e.escalation.state !== 'open') done();
+        if (e.type === 'escalation' && e.escalation.id === id && (e.escalation.state !== 'open' || e.escalation.turn === 'agent')) done();
         if (e.type === 'lane_deleted' && e.id === current.laneId) done();
       };
       const timer = setTimeout(done, timeoutMs);

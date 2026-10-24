@@ -159,6 +159,7 @@ function AnswerBar({
         autoFocus={needsNote}
         placeholder={needsNote ? 'Instructions for the agent (required)' : 'Instructions for the agent (optional)'}
         value={note}
+        maxLength={2000}
         rows={needsNote ? 3 : 2}
         onChange={(e) => setNote(e.target.value)}
       />

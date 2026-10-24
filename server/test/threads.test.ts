@@ -76,6 +76,61 @@ describe('conversations', () => {
     assert.match(late.text, /the conversation is closed/);
   });
 
+  test('a single-escalation wait wakes on Other', async () => {
+    const e = await ask('Wait on me?');
+    const waiting = srv.call('GET', `/api/escalations/${e.id}?wait=5`, AGENT);
+    await new Promise((r) => setTimeout(r, 50));
+    await other(e.id, 'Do it on Monday');
+    const started = Date.now();
+    const res = await waiting;
+    assert.ok(Date.now() - started < 2000);
+    assert.equal(res.body.turn, 'agent');
+    await srv.tool(AGENT, 'acknowledge_escalation', { id: e.ref });
+  });
+
+  test('acknowledging keeps every instruction since the agent last wrote', async () => {
+    const e = await ask('Tidy the schema?');
+    await other(e.id, 'Drop the unused index');
+    await srv.call('POST', `/api/escalations/${e.id}/messages`, ALICE, { body: 'And rename the column' });
+    const ack = await srv.tool(AGENT, 'acknowledge_escalation', { id: e.ref });
+    assert.equal(ack.value.decisionNote, 'Drop the unused index\n\nAnd rename the column');
+  });
+
+  test("dismissing during the agent's turn puts the lane back to work", async () => {
+    await srv.publish('quiet', { group: 'payments' });
+    const e = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'quiet', question: 'Dismiss me?' })).value;
+    await other(e.id, 'Not needed');
+    const quiet = async () => (await srv.call('GET', '/api/lanes/quiet', ALICE)).body.lane.status;
+    assert.equal(await quiet(), 'awaiting_agent');
+    await srv.tool(AGENT, 'dismiss_escalation', { id: e.ref, justification: 'Owner: not needed' });
+    assert.equal(await quiet(), 'active');
+  });
+
+  test("an FYI raised as blocking during the agent's turn goes back to the owner", async () => {
+    const fyi = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'chat', question: 'FYI: slow CI', blocking: false })).value;
+    await other(fyi.id, 'Why?');
+    const upgraded = await srv.tool(AGENT, 'create_escalation', { lane_id: 'chat', question: 'FYI: slow CI' });
+    assert.equal(upgraded.value.upgraded, true);
+    const got = (await srv.call('GET', `/api/escalations/${fyi.id}`, ALICE)).body;
+    assert.equal(got.turn, 'owner');
+    assert.equal((await lane()).status, 'blocked_human');
+    // Asking a blocking question again during the agent's turn points at replying instead.
+    const e = await ask('Again?');
+    await other(e.id, 'Explain');
+    const again = await srv.tool(AGENT, 'create_escalation', { lane_id: 'chat', question: 'Again?' });
+    assert.match(again.text, /reply with reply_to_escalation/);
+  });
+
+  test('a retried reply is sent once; updates are one a minute', async () => {
+    const e = await ask('Retry me?');
+    await other(e.id, 'Explain');
+    await srv.tool(AGENT, 'reply_to_escalation', { id: e.ref, message: 'Because of X.' });
+    await srv.tool(AGENT, 'reply_to_escalation', { id: e.ref, message: 'Because of X.' });
+    assert.equal((await srv.call('GET', `/api/escalations/${e.id}`, ALICE)).body.messageCount, 2);
+    const flood = await srv.tool(AGENT, 'reply_to_escalation', { id: e.ref, message: 'Also Y.' });
+    assert.match(flood.text, /One update a minute/);
+  });
+
   test('conversations are exported', async () => {
     const csv = (await srv.call('GET', '/api/export/messages.csv', ALICE)).body as string;
     assert.ok(csv.startsWith('id,escalation_id,escalation_ref,project,lane_id,from,author,body,attachments,at'));

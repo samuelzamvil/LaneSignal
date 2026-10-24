@@ -62,6 +62,7 @@ An escalation is a question for humans, attached to a lane. Only `question` is r
 | `acceptMeans` | One line: what the agent does if you answer **Accept** |
 | `rejectMeans` | One line: what it does if you answer **Reject** |
 | `allowReject` | `false` hides **Reject**, for questions where it makes no sense. Default `true` |
+| `turn`, `messageCount`, `lastMessage` | Whose move it is in the conversation (`owner` or `agent`), and its size and latest message. Fetching one escalation adds `messages` |
 | `attachments` | Files to read or look at: Markdown or text (rendered in the app) and PNG, JPEG, WebP or GIF images (thumbnails, and a full view you can zoom). See [Attachments](#attachments) |
 | `options`, `recommendedOption` | Older escalations: short answers shown as buttons. New ones use Accept / Reject / Other |
 | `positions` | Other agents' views on the recommendation: `{agent, stance: agree / disagree / neutral, note}`, one per agent |

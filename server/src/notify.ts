@@ -195,9 +195,10 @@ export function startNotifier(
       const lane = store.getLane(esc.laneId);
       const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? localId(esc.laneId)].filter(Boolean).join(' / ');
       const code = store.listProjects().length > 1 ? `${esc.projectKey}·${esc.ref}` : esc.ref;
-      const urgent = esc.blocking && esc.turn === 'owner';
+      const reply = e.replied === 'reply';
+      const urgent = esc.blocking && reply;
       return {
-        title: `${urgent ? 'Reply' : 'Update'} ${code} · ${where}`,
+        title: `${reply ? 'Reply' : 'Update'} ${code} · ${where}`,
         body: esc.lastMessage!.body,
         data: { escalationId: esc.id, laneId: localId(esc.laneId), project: esc.project },
         route: `#/esc/${esc.id}`,

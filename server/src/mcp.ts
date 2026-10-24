@@ -236,7 +236,8 @@ function buildServer(
     {
       description:
         features.decisions
-          ? 'Get one escalation in full. Pass wait_seconds to block until a human decides (long-poll, max 300). ' +
+          ? 'Get one escalation in full, with its conversation. Pass wait_seconds to block until a human decides or ' +
+            'answers Other (long-poll, max 300). ' +
             'To wait on several escalations, lanes or your whole group at once, use wait_for_decisions.'
           : 'Get one escalation in full.',
       inputSchema: {
