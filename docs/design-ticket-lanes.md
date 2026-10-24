@@ -1,103 +1,200 @@
-# Design: tickets, parking and filling lanes
+# Plan: tickets, epics and explicit lane filling
 
-Status: **proposal**, for review before any schema change.
+Status: **proposal for review**. Nothing here is built yet. It ships over three PRs (see [Delivery](#delivery)).
 
-## Problem
+## Why
 
-Today a lane's ticket is just a column. When an overseer moves lane A from ticket 500 to bug fix 501, the column is overwritten. 500's escalations, status history and blocked time then read as 501's, and nothing can bring 500 back once 501 is done.
+1. **A lane loses a ticket's history when it switches.** A lane's ticket is a single column, overwritten on each switch. When lane A parks ticket 500 to fix bug 501:
+   - 500's escalations, status history and blocked time get mixed into 501's.
+   - Nothing brings 500 back afterwards.
+2. **Overseers have nowhere to put group-level conversation and status.** Today they invent lanes for it, like "Free lanes (0 of 5 open)". The group header only shows a name, a ticket link and a session link.
 
-## Model
+## The model in one paragraph
 
-**Ticket** (new `tickets` table): one row per ticket ref per project. It carries:
+A **ticket** owns its escalations and its status history, and moves between lanes. A **lane** is a slot that holds at most one ticket and keeps its own activity feed and messages. An **epic** is a long-lived ticket attached to one group. It has its own card, message board and questions, and it steers the work rather than being worked in a lane. Every group has at least one epic: if none was given, the group stands in as its epic.
 
-- its escalations, coded with the ticket ref: **500A**, **500B** … **500Z**, **500AA**
-- its status, status history and blocked time
-- its state: `in_lane`, `parked` (with a reason), `done` or `dropped`
-- which lane holds it, if any
+## Tickets
 
-**Lane**: a slot on the dashboard. It keeps its id, name, group and agent, its **activity feed** and its **messages** (`notify_owner` and the owner's notes). It holds at most one ticket. Its status is its ticket's status, or `idle` when it holds none.
+New `tickets` table, one row per (project, ref):
 
-Filling a lane is always explicit. Nothing is recalled automatically.
+| Column | Meaning |
+|---|---|
+| `id`, `project_id`, `ref` | `ref` as agents write it today (`500`, `gh:500`, a URL) |
+| `group_id` | The group the ticket was last worked in |
+| `lane_id` | The lane that holds it, or null |
+| `state` | `in_lane`, `parked`, `done`, `dropped` |
+| `park_reason` | Why it was parked |
+| `status`, `status_since`, `blocked_since`, `blocked_total_ms` | The status fields that move off the lane |
+| `next_seq` | For escalation codes |
+| `created_at`, `updated_at`, `closed_at` | |
 
-## Agent API
+Rules:
 
-A new tool, `fill_lane`, does the whole switch in one call:
+- **Created on first use.** Filling a lane with an unknown ref creates the ticket. There's no separate call.
+- **At most one lane per ticket.** Filling a lane with a ticket another lane holds is refused with `409`, naming that lane.
+- **Any lane can take a parked ticket.** The ticket keeps its escalations and status history when it moves.
+- **Closed tickets can come back.** Filling a lane with a `done` or `dropped` ticket reopens it, history intact.
+- **Status history goes to the ticket.** Status changes and escalation steps are recorded against the ticket, and the lane's feed shows a one-line copy.
+
+## Lanes
+
+- A lane keeps its id, name, letter, group, agent, links, **activity feed** and **messages**.
+- `lanes.ticket_id` points at its ticket, or null.
+- **A lane with no ticket is allowed and shows `idle`.**
+- A lane holding a ticket shows that ticket's status.
+- Lane letters (A, B …) stay as card labels, and no longer feed escalation codes.
+
+## Filling lanes (agents)
+
+New MCP tool and endpoint, one call per switch:
 
 ```
-fill_lane(lane, ticket, previous: "park" | "done" | "drop", reason?, status?, activity?)
+fill_lane(lane, ticket?, previous?: "park" | "done" | "drop", reason?, status?, activity?, name?, group?, links?)
+PUT /api/lanes/:id/fill
 ```
 
-- Whatever ticket the lane holds leaves it as `parked` (`reason` required), `done` or `dropped`.
-- `ticket` moves into the lane. It's created on first use, so there's no separate call. It can be a parked ticket from **any** lane, and it comes back with its escalations and history.
-- Filling with a ticket another lane holds is refused (`409`).
-- `remove_lane` also takes `previous`, so the agent can clear a lane and decide its ticket's fate in one call.
+- `previous` decides what happens to the ticket the lane holds now. It's required when the lane holds one, and `park` requires a `reason`.
+- `ticket` is what moves in. Leaving it out empties the lane, so it goes `idle`.
+- It creates the lane if it doesn't exist, as `update_lane` does today.
+- It's one transaction, and it emits one lane event and one ticket event per ticket touched.
+- `remove_lane` gains `previous`, defaulting to `park` with the reason "Lane removed". This keeps escalations on the ticket rather than withdrawing them (see [Escalations](#escalations)).
 
-Example: lane A holds 500 and hits a blocker. The agent calls `fill_lane(A, 501, previous: park, reason: "blocked on vendor API")`. When 501 merges, it calls `fill_lane(A, 500, previous: done)`.
+**Compatibility:**
 
-Compatibility: `update_lane` with a different ticket behaves like `fill_lane` with `previous: done`, so agents written for today's model keep working.
+- `update_lane` with a different `ticket` behaves like `fill_lane` with `previous: "done"`.
+- `update_lane` with `ticket: null` empties the lane the same way.
+
+Agents written for today's model keep working, and the skill and agent instructions move to `fill_lane`.
+
+New read tools:
+
+- `list_tickets(group?, state?)`: parked tickets are what overseers look for
+- `get_ticket(ref)`: escalations, status history, and the lanes the ticket passed through
 
 ## Escalations
 
-- They behave the same whether their ticket is in a lane or parked: they stay in the inbox, and they block, notify and get answered as now.
-- **Change:** a blocking escalation holds its *ticket* blocked. A lane shows blocked only while its current ticket is blocked. Without this, a parked blocker would mark lane A blocked while it's working 501.
-- A new inbox and History filter, **Active tickets only**, hides escalations whose ticket isn't in a lane.
+- **Every escalation belongs to exactly one ticket or epic:**
+  - raised on a lane that holds a ticket → that ticket
+  - raised on a lane with no ticket → the group's epic (`epic` names one when the group has several, and it's optional when there's one)
+  - raised on an epic directly → that epic
 
-## Codes
-
-- New codes are the ticket ref plus a letter per ticket: 500A, 500B … 500Z, 500AA. A code never changes when its ticket moves lanes.
-- Every tool and endpoint keeps accepting the code, case-insensitively, wherever it accepts an id today.
-- Existing escalations keep their old codes (A12, SH·A1) as aliases, so exports and past conversations still resolve.
-- Lanes keep their letters as card labels, but the letters no longer feed codes.
-
-## Migration
-
-Each existing lane with a ticket gets a ticket record that holds:
-
-- its escalations
-- its status history, and its blocked time
-- a state of `in_lane`, or `done` if the lane is completed or archived
-
-The lane keeps its activity feed and messages. Past ticket switches were never recorded, so legacy history can't be split by ticket.
-
-## Dashboard
-
-- The lane card shows its ticket, and the ticket's escalations as now.
-- A **Parked** list per group shows each parked ticket with its reason, open questions and the lane it left.
-- Opening a ticket shows its escalations and status history across every lane it passed through.
-- The lane sheet shows the lane's feed and messages, with a marker at each switch ("Parked 500: blocked on vendor API · filled with 501").
-
-## Export
-
-- A new `tickets.csv`.
-- A ticket column on `escalations.csv` and `lane_events.csv`.
-
-## Settled
-
-- **Lanes with no ticket** are allowed and show `idle`: work is often blocked, or can't run in parallel.
-- **Refs from different systems** keep their prefix in codes when they have one (**gh:500A**). The default system's refs use the bare number (**500A**).
+  `escalations.lane_id` stays as the lane it was raised in, for history and export.
+- **Codes are the ref plus a letter**, numbered per ticket or epic: **500A**, **500B** … **500Z**, **500AA**.
+  - Refs from a non-default system keep their prefix: **gh:500A**.
+  - A group standing in as its epic uses the group's ticket (**680A**), or its id when it has none (**product-trainA**).
+  - Codes are matched case-insensitively.
+  - Within a project, a ref can't be both an epic and a ticket.
+- **Old codes keep working.** Existing escalations keep their codes (A12, SH·A1) as aliases, and every tool and endpoint still accepts them.
+- **Behaviour is unchanged:** open questions stay in the inbox, and they block, notify and get answered as today, whether or not their ticket is in a lane.
+- **Blocking moves to the ticket.**
+  - A blocking escalation holds its *ticket* in `blocked_human`. A lane shows blocked only while its current ticket is blocked.
+  - An escalation on an epic blocks nothing. It counts in the epic card's "needs you".
+  - Today's rule "a lane stays blocked while any blocking escalation is open" becomes the same rule for tickets.
+- **New filter:** **Active tickets only**, on the inbox and History, hides escalations whose ticket isn't in a lane. It's off by default, and remembered per device.
 
 ## Epics
 
-A group can be linked to one or more epic tickets. Epics are long-lived and aren't worked in a lane, so they get their own table and rules.
+New `epics` table:
 
-- **`epics` table:** ref, name, state and links, linked many-to-many with groups.
-- **Epic card:** sits alongside the lane cards. It shows the combined status updates of the lanes under it, and has its own message board, separate from any lane's messages.
+| Column | Meaning |
+|---|---|
+| `id`, `project_id`, `group_id` | One group per epic. A group can have several |
+| `ref` | The epic's ticket, or null for the group's stand-in epic |
+| `name`, `links` | |
+| `status_line` | One line the overseer sets, e.g. "3 of 5 lanes busy; next up #966" |
+| `state` | `open`, `close_requested`, `closed` |
+| `next_seq`, `agent_read_id` | Codes, and how far the overseer has read the board |
+| `created_at`, `updated_at`, `closed_at` | |
 
-### Settled for epics
+Rules:
 
-- **One behaviour for every escalation:** an escalation raised on a lane with no ticket belongs to its group's epic and takes the epic's code (**900A**).
-- **An epic belongs to one group.** A group can have several epics.
-- **The epic card shows every lane in its group.** If a group has two epics, both cards show the same lanes.
-- **Agents can raise questions on an epic.** The epic is where durable conversations happen: steering current and future work, and deciding which tickets to create.
+- **Every group has an epic.** Creating a group creates its stand-in epic.
+  - Adding the first real epic retires the stand-in. Its escalations move to the real epic and keep their codes.
+  - Closing the last real epic brings the stand-in back.
+- **Message board:** `epic_messages`, with the same rules as lane messages: 500 characters for agents and 2,000 for people, attachments allowed, at most one agent post per minute, and a quiet push on each agent post. People's notes go to the group's overseer, whichever key last published the group.
+- **Questions:** agents raise escalations on an epic (`create_escalation` with `epic`). They're for durable conversations: direction, scope, and which tickets to create.
+- **Closing:** an overseer calls `request_epic_close(epic, reason)`, and a person approves or declines in the app, as with requirements. On close, the epic's open escalations are withdrawn, as when a lane is removed.
+- **Lanes:** every lane in the group shows on each of the group's epic cards. Tickets aren't linked to epics.
+- **Requirements** stay separate from epics.
 
-- **Every group has an epic.** If none is supplied, the group stands in as its epic, so the same rules hold whether or not there are real epic refs. When a group has several epics, the agent names one.
-- **Requirements stay separate** from epics for now.
-- **The epic message board works like lane messages:** same limits, attachments and quiet pushes. The owner's notes go to the group's overseer, since it's the one changing status.
-- **Closing an epic:** the overseer can request it, and a person approves, the same way as requirements.
-- **Placement:** epic cards replace the group header on the Lanes page (name, ticket link, overseer session, "needs you" count), with the group's lanes below.
+Agent tools:
+
+- `update_epic(epic, name?, ref?, links?, status_line?)`
+- `notify_epic(epic, message, attachments?)`
+- `request_epic_close(epic, reason)`
+- `list_epics(group?)`
+
+REST equivalents live under `/api/epics`.
+
+## Dashboard
+
+**Lanes page**
+
+- **Epic card in place of the group header.** It shows the name, ticket link, overseer session, status line and "needs you" count, plus 💬 for unread board posts. Tapping it opens the epic sheet, and the group's lanes stay listed below.
+- **Lane cards and rows:** a lane shows its current ticket, and **Idle · no ticket** when empty.
+- **Parked tickets:** a collapsible **Parked (n)** row under each group lists each ticket with its reason, open question count, and the lane it left.
+
+**Sheets**
+
+- **Epic sheet:** the epic's escalations, its message board, and a combined feed of its group's lanes (status changes and activity across lanes, latest first).
+- **Ticket sheet** (opened from a lane, a parked row, or an escalation's ticket): its escalations, status history and the lanes it passed through.
+- **Lane sheet:** its feed and messages as now, plus a marker at each switch ("Parked 500: blocked on vendor API · filled with 501").
+
+**Inbox and History**
+
+- Codes and the epic or ticket they belong to show on each item.
+- The **Active tickets only** filter.
+- History search also matches ticket refs.
+
+**Close approval:** an epic waiting for close approval shows **Close requested** on its card, with Approve and Decline.
+
+## Export
+
+| File | Change |
+|---|---|
+| `tickets.csv` | New: one row per ticket |
+| `epics.csv` | New: one row per epic |
+| `epic_messages.csv` | New: each epic's message board |
+| `escalations.csv` | Adds `ticket_id`, `epic_id`, `legacy_ref` |
+| `events.csv` | Adds `ticket_id` |
+| `lanes.csv` | Adds `ticket_id` |
+
+## Migration (schema v16)
+
+All in one transaction at startup:
+
+1. Each group gets a stand-in epic. A group with a `ticket` gets a real epic for it instead (its ref, the group's name and links).
+2. Each lane with a ticket gets a ticket record:
+   - state `in_lane` if the lane is live, else `done`
+   - the lane's status fields
+   - the lane's escalations and status and escalation events
+3. A lane without a ticket has its escalations moved to its group's epic (or a stand-in epic for an ungrouped lane), and it's set to `idle`.
+4. Existing codes move to `legacy_ref`. New codes start at A for each ticket and epic.
+5. The `groups.ticket` and `lanes.ticket` columns stay, read-only, for one release, then are dropped.
+
+Ungrouped lanes are allowed today. They get a per-project stand-in group, named "Ungrouped", so every lane has an epic.
 
 ## Delivery
 
-1. **Tickets:** schema, migration, ticket codes, `fill_lane`, filters, export. Server and agent tools first, with the dashboard following.
-2. **Dashboard for tickets:** the Parked list, the ticket view and switch markers.
-3. **Epics:** the table, group links, the epic card and its message board.
+Each PR is shippable on its own, with tests, wiki updates and an adversarial review before it opens.
+
+1. **Tickets (server):**
+   - the `tickets` table, migration and codes
+   - `fill_lane`, `list_tickets` and `get_ticket`, plus the `update_lane` and `remove_lane` compatibility
+   - blocking moved to the ticket
+   - export
+   - minimal web changes so nothing breaks: codes, and **Idle · no ticket**
+2. **Tickets (app):** the Parked row, ticket sheet, switch markers in the lane sheet, the **Active tickets only** filter, and the Android check.
+3. **Epics:**
+   - the table and migration, with stand-in epics
+   - epic escalations and the message board
+   - close requests and approval
+   - the epic card and sheet
+   - the agent tools
+   - skill and agent-instruction updates, so overseers use the status line instead of placeholder lanes
+
+## Risks
+
+- **Codes change for new escalations.** People used to typing "A3" will type "500A". Old codes keep resolving, and push titles carry the new code.
+- **Migration on live data.** Escalations re-home to tickets and epics. The step runs in one transaction, and tests cover it with a copy of a seeded v15 database.
+- **Agents that ignore `fill_lane`.** The compatibility path treats every ticket change as `done`, so parked work isn't recorded until the overseer's instructions are updated.
