@@ -11,6 +11,7 @@ import {
   briefLane,
   briefRequirement,
   briefWait,
+  digestWait,
   briefMessages,
   compact,
   ownerOf,
@@ -267,38 +268,48 @@ function buildServer(
   );
 
   if (features.decisions) {
+    const waitInput = {
+      group_id: s.groupId.optional().describe('Wait on every lane in this group (your epic/train).'),
+      group: s.groupId.optional().describe('Same as group_id.'),
+      lane_ids: z.array(s.laneId).max(100).optional(),
+      ids: z.array(z.string()).max(100).optional().describe('Escalation ids or codes such as "A12".'),
+      since: z
+        .string()
+        .optional()
+        .describe('Pass the previous result\'s `checkedAt`: what changed since then comes back, again if you repeat it.'),
+      ...PROJECT,
+    };
+
     server.registerTool(
       'wait_for_decisions',
       {
         description:
-          'Wait for human answers across your group, some lanes, or specific escalations, and return as soon as ' +
-          'any of them needs you. Returns `decided` (answered, not yet acknowledged: act on each), `replies` ' +
-          '(the owner answered Other: their new messages; act on them and acknowledge, or reply_to_escalation), `closed` ' +
-          '(withdrawn by someone else, e.g. "Lane removed by …": the lane was taken off the dashboard, stop work on it; or named ones already ' +
-          'acknowledged), `removedLanes` (taken off the dashboard by someone else: stop work on them), `laneMessages` ' +
-          '(the owner wrote on lanes in scope, outside any escalation: act on them, answer with notify_owner if useful), `open` (still ' +
-          'waiting) and `checkedAt` (pass it as `since` next time). ' +
-          '`ready` is false only when the wait ran out with nothing new; call again. Returns at once if something is ' +
-          'already decided or nothing is open. Decisions can take hours: loop on this tool, or for long waits in ' +
-          'Claude Code run the HTTP version (GET /api/wait) as a background shell command so your session stays free. ' +
-          'Default wait 300s; up to 3600s if your MCP client allows calls that long.',
+          'Wait for what needs you across your group, some lanes, or specific escalations. Returns a digest: ' +
+          '`items`, one per thing to handle, each with a `kind`: `decided` (answered: acknowledge, then act on `decision` ' +
+          'and `note`), `reply` (the owner answered Other: their `messages`; acknowledge and act, or reply_to_escalation), ' +
+          '`closed` (withdrawn by someone else; "Lane removed by …" means stop that lane), `lane_removed` (stop work on ' +
+          'it), `lane_note` (the owner wrote on a lane: act on it, answer with notify_owner if useful). `decided` and ' +
+          '`reply` come back on every wait until you handle them; the rest once per `since`. `counts` says how many are ' +
+          '`open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies). If counts show something ' +
+          'and items don\'t, call get_updates. `ready` is true when there are items; false means the wait ran out: call ' +
+          'again with `since` set to `checkedAt`. It waits for a change even when nothing is open, and holds your session ' +
+          'meanwhile: with nothing open, wait in the background (GET /api/wait as a shell command) or pass ' +
+          '`wait_seconds: 0` for a quick check. Default wait 300s; up to 3600s if your MCP client allows calls that long. ' +
+          '`format: "full"` returns the older shape (decided, replies, closed, open, removedLanes, laneMessages), which ' +
+          'also returns at once when nothing is open.',
         inputSchema: {
-          group_id: s.groupId.optional().describe('Wait on every lane in this group (your epic/train).'),
-          group: s.groupId.optional().describe('Same as group_id.'),
-          lane_ids: z.array(s.laneId).max(100).optional(),
-          ids: z.array(z.string()).max(100).optional().describe('Escalation ids or codes such as "A12".'),
+          ...waitInput,
           wait_seconds: z.number().int().min(0).max(3600).optional(),
-          since: z
-            .string()
-            .optional()
-            .describe('Pass the previous result\'s `checkedAt` so withdrawals between calls are still reported.'),
-          ...PROJECT,
+          format: z.enum(['digest', 'full']).optional().describe('Default `digest`. `full` is kept for older agents.'),
         },
         annotations: { readOnlyHint: true },
       },
-      async ({ group_id, group, lane_ids, ids, wait_seconds, since, project }, extra) => {
+      async ({ group_id, group, lane_ids, ids, wait_seconds, since, format, project }, extra) => {
         try {
-          const scope = waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project);
+          const scope = {
+            ...waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project),
+            mode: format ?? 'digest',
+          };
           const timeout = wait_seconds ?? 300;
           const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
             store.waitForDecisions(scope, timeout * 1000, signal),
@@ -307,7 +318,34 @@ function buildServer(
           const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
           // A cancelled call never reaches the agent: its notes stay unread.
           if (!extra.signal.aborted) store.handOver(value, visible);
-          return json(briefWait(pub.wait(value, timeout ? visible : undefined)));
+          const result = pub.wait(value, timeout ? visible : undefined);
+          return json(format === 'full' ? briefWait(result) : digestWait(result));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'get_updates',
+      {
+        description:
+          'Everything in scope that involves you, without waiting: escalations decided and not yet acknowledged ' +
+          '(`decided`), ones the owner answered Other (`replies`), ones still waiting on the owner (`open`), the owner\'s ' +
+          'unread notes on lanes (`laneMessages`, plus any since `since`), and, with `since`, escalations withdrawn and ' +
+          'lanes removed by someone else since then. Call it after a restart, or when you\'ve lost track of what ' +
+          'wait_for_decisions reported.',
+        inputSchema: waitInput,
+        annotations: { readOnlyHint: true },
+      },
+      async ({ group_id, group, lane_ids, ids, since, project }) => {
+        try {
+          const scope = waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project);
+          // Digest rules (notes since `since` included), the full shape.
+          const value = store.decisionsFor(scope);
+          store.handOver(value, a.projects);
+          const { ready: _ready, ...all } = briefWait(pub.wait(value));
+          return json(all);
         } catch (err) {
           return fail(err);
         }

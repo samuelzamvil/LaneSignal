@@ -90,7 +90,8 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 | `dismiss_escalation` | agent | Close an alert once it's dealt with (the owner answered in the session, or it's moot), with a required `justification` saying what was decided. `status` and `activity` publish the lane's next state. Only the agent that raised it can dismiss it |
 | `get_escalation` | any | Read one escalation in full |
 | `add_position` | agent | Decisions on: agree, disagree or stay neutral on an open escalation's recommendation, with a reason |
-| `wait_for_decisions` | any | Decisions on: wait on a group, lanes or escalations; returns as soon as one is decided, the owner answers Other (`replies`, with their new messages) or the owner writes on a lane in scope (`laneMessages`). `wait_seconds` up to 3600 |
+| `wait_for_decisions` | any | Decisions on: wait on a group, lanes or escalations. Returns a digest of what needs you (decisions, the owner's Other answers and lane notes, withdrawals, removed lanes) as soon as there is any, with counts of the rest. `wait_seconds` up to 3600; `format: "full"` for the older shape |
+| `get_updates` | any | Decisions on: everything in scope that involves you, without waiting (open, decided, replies, unread notes). For after a restart, or when you've lost track |
 | `reply_to_escalation` | agent | Decisions on: write in an open escalation's conversation, at most 500 characters (attach files for more): a reply after the owner's Other, or a short update while they decide. Notifies the owner. Only the agent that raised it |
 | `acknowledge_escalation` | agent | Decisions on: closes a decided escalation (or one the owner answered Other, taking their latest messages as the decision; acknowledge instead of replying when you'll act on them, though it still works after a reply) and returns the final decision; `status` and `activity` publish the lane's next state. Only the agent that raised it can acknowledge it |
 | `list_lanes` / `list_groups` / `list_escalations` | any | Read state. `list_escalations` returns escalations in brief, filtered by `group_id` or `lane_id`, latest 50 by default (`limit` up to 500) |
@@ -106,11 +107,22 @@ This section applies with answering on the dashboard on (the default). With `LAN
 
 Answers can take minutes or a day. An overseer waits on its whole group with one call:
 
-- `wait_for_decisions` with `group_id` returns as soon as any escalation in the group is decided or answered Other, or straight away if one already is. Its result lists `decided` (act on these), `replies` (the owner answered Other: their new messages; acknowledge and act, or reply; they keep coming back until you do), `closed` (withdrawn by someone else, e.g. because a human removed the lane), `removedLanes` (lanes someone else took off the dashboard, even with nothing open), `laneMessages` (the owner wrote on lanes in scope, outside any escalation; each note comes back once) and `open`. A note on a lane in scope wakes the wait.
-- `ready: false` means the wait ran out with nothing new; call again. Decided escalations stay decided until acknowledged, so a dropped call or a server restart loses nothing: call again.
+- `wait_for_decisions` with `group_id` returns a **digest** as soon as anything in the group needs the agent. It waits for a change even when nothing is open, so one loop covers the whole session:
+  - `items`, one per thing to handle, each with a `kind`:
+    - `decided`: answered; act on `decision` and `note`
+    - `reply`: the owner answered Other; their `messages`
+    - `closed`: withdrawn by someone else, e.g. because a person removed the lane
+    - `lane_removed`: a lane someone else took off the dashboard, even with nothing open
+    - `lane_note`: the owner wrote on a lane in scope, outside any escalation
+  - The owner's words come in full. The agent's own question is shortened to its first 80 characters, enough to recognise it.
+  - `decided` and `reply` come back on every wait until the agent acknowledges or replies. The others come back once per `since`, and again if the agent repeats a `since`, so a wait that crashed before acting loses nothing.
+  - `counts`: `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies).
+- `ready: true` means there are items. `ready: false` means the wait ran out with nothing new: call again.
+- `get_updates` returns the whole picture without waiting: open escalations, decided ones, replies, unread notes. Use it after a restart, or if `counts` show something the digest doesn't.
+- `format: "full"` returns the older shape (`decided`, `replies`, `closed`, `open`, `removedLanes`, `laneMessages`), which also returns at once when nothing is open. It's kept for agents written against it.
 - While an agent waits, its lanes show **agent waiting** on the dashboard. A person answering at hour 20 can see whether the answer reaches someone now.
 - During a wait the server sends a notification every 20 seconds (progress, if the client asked for it), so proxies and clients see that the call is alive. Clients that cut calls off after a fixed time (the MCP SDK's default is 60 seconds unless progress resets it) should pass a `wait_seconds` below that and call again.
-- Pass the previous result's `checkedAt` as `since`, so a lane removed between two calls is still reported.
+- Pass the previous result's `checkedAt` as `since`, so what changed between two calls is still reported.
 - An unknown `group_id` or lane is an error, so a typo doesn't look like "nothing to wait for".
 
 **Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. For waits that may last hours, the [skill](#3-install-the-skill-how-to-use-lanesignal) runs the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
