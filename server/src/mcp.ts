@@ -767,8 +767,9 @@ function buildServer(
         {
           description:
             'Call as soon as an escalation is decided, before acting: it closes the escalation and returns the final ' +
-            '`decision` and `decisionNote` to act on. On one the owner answered Other, it takes their latest message as ' +
-            'the decision (`Other`). ' +
+            '`decision` and `decisionNote` to act on. On one the owner answered Other, it takes their latest messages as ' +
+            'the decision (`Other`). To act on them, acknowledge instead of replying; reply only to ask or object. If you did ' +
+            'reply and their instructions still stand, acknowledging takes them. ' +
             'A human may correct a mis-tap until you acknowledge. ' +
             'Pass `status` and `activity` to publish what the lane does next in the same call; otherwise the lane ' +
             'keeps its current status (usually awaiting_agent). Repeating it returns the same result. Only the agent that ' +
