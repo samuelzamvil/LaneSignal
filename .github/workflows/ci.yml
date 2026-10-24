@@ -132,10 +132,11 @@ jobs:
           if-no-files-found: error
 
   # Publishes the APK to the Releases page: main updates the "latest" pre-release, a v* tag gets its own.
+  # A manual run (Actions → CI → Run workflow) republishes too, e.g. right after the signing key is set up.
   # A separate job, so the build above (npm, Gradle) never holds a token that can write to the repo.
   release:
     needs: android
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
