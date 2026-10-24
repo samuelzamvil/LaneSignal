@@ -310,7 +310,7 @@ describe('agent skill', () => {
     return toolNames;
   }
 
-  test('by default the skill and tools are for alerts: no waiting or answering in LaneSignal', async () => {
+  test('alerts only: the skill and tools have no waiting or answering in LaneSignal', async () => {
     const plain = await startServer({ LANESIGNAL_DECISIONS: 'false' });
     try {
       const { text, tools } = await skillAndTools(plain);
@@ -322,16 +322,24 @@ describe('agent skill', () => {
         assert.ok(!names.includes(off), `${off} is off by default`);
         assert.ok(!text.includes(off), `the skill doesn't mention ${off}`);
       }
+      assert.match(text, /owner answers \*\*in this session\*\*/);
     } finally {
       plain.close();
     }
   });
 
-  test('with answering in LaneSignal on, the skill covers waiting too', async () => {
+  test('by default people answer in LaneSignal, and the skill covers waiting and acknowledging', async () => {
+    assert.equal((await srv.call('GET', '/api/config', ALICE)).body.decisions, true);
     const { text, tools } = await skillAndTools(srv);
     const names = namesOnlyRealTools(text, tools);
-    assert.ok(names.includes('wait_for_decisions'));
-    assert.match(text, /## Answering in LaneSignal/);
+    for (const on of ['wait_for_decisions', 'acknowledge_escalation', 'add_position', 'dismiss_escalation']) {
+      assert.ok(names.includes(on), on);
+      assert.ok(text.includes(on), `the skill covers ${on}`);
+    }
+    assert.match(text, /## Waiting for answers/);
+    assert.doesNotMatch(text, /owner answers \*\*in this session\*\*/);
+    // Requirements come after how answers arrive.
+    assert.ok(text.indexOf('## Requirements') > text.indexOf('## After a restart'));
   });
 
   test('requirements can be turned off', async () => {

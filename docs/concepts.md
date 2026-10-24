@@ -2,7 +2,7 @@
 
 ## Groups: one overseer, many lanes
 
-An overseer agent session runs several lanes for a body of tickets, an epic or a train, and the group is named after it. Overseer, epic/train and group are the same thing. `LANESIGNAL_GROUP_LABEL` only sets what the UI calls it.
+An overseer agent session runs several lanes for a body of tickets, an epic or a train, and the group is named after it. Overseer, epic/train and group are the same thing. The app calls it a **Group**; `LANESIGNAL_GROUP_LABEL` changes that (e.g. to `Train`).
 
 A group has:
 
@@ -71,37 +71,36 @@ A lane can have any number of open escalations. A plan with four questions raise
 - The inbox lists them together, in order, as "Question 1 of 4 from this lane".
 - The detail view has **Previous** and **Next** for stepping through them.
 
-### Lifecycle (default: alerts)
+### Lifecycle (default: answer in the app)
 
-By default LaneSignal only **alerts** (`LANESIGNAL_DECISIONS=false`):
-
-```
-open ──(the agent dismisses it, saying what was decided)──► dismissed
-```
-
-1. The agent raises the escalation. Your phone is notified, and the lane shows as blocked.
-2. You answer **in the agent's own session** (e.g. Remote Control), quoting the code ("A12: drop it"). The conversation and the decision stay in one place; the alert card links to the session when the overseer published it.
-3. The agent dismisses the alert with a justification ("Sam: drop it, in session") and usually its next status. The justification is the record on the dashboard and in exports.
-
-- The dashboard is read-only, apart from **Dismiss** for a stale alert whose session ended. A lane whose alert a person dismisses shows as waiting on its agent (`awaiting_agent`) until the agent publishes again.
-- Only the agent that raised an alert (any key of the same account) dismisses it, so an overseer can't close another's by reusing a code.
-- Raising the same question again on the same lane while it's still open (ignoring spacing and case) returns the existing escalation, so agent retries don't create duplicates.
-- A lane stays **blocked** while any of its blocking escalations is open, whatever status its agent publishes. Dismissing the last one puts the lane back to `active`, unless the agent says otherwise.
-
-### Answering on the dashboard (optional)
-
-With `LANESIGNAL_DECISIONS=true`, people can also answer on the dashboard, and agents wait for the answer:
+By default you answer on the dashboard or the phone app, and the agent waits for the answer:
 
 ```
 open ──(human decides)──► decided ──(agent acknowledges)──► acknowledged
   └──────(dismissed: answered in the session / moot)──────► dismissed
 ```
 
-- Escalations get one-tap answer buttons. Decided ones stay under *Decided · awaiting agent* until the agent acknowledges; one that waits longer than `LANESIGNAL_STALE_MINUTES` is flagged.
-- If two humans answer at once, the second gets `409 Conflict`. **Change decision** replaces the answer until the agent acknowledges, e.g. after a mis-tap. Agents acknowledge before acting, and the acknowledgement returns the final answer.
-- Only the agent that raised an escalation acknowledges it; a person can on its behalf.
+1. The agent raises the escalation. Your phone is notified, and the lane shows as blocked.
+2. You answer with one tap (or a note). Decided ones stay under *Decided · awaiting agent* until the agent acknowledges; one that waits longer than `LANESIGNAL_STALE_MINUTES` is flagged.
+3. The agent acknowledges before acting, and the acknowledgement returns the final answer. It usually publishes its next status in the same call.
+
+- If two humans answer at once, the second gets `409 Conflict`. **Change decision** replaces the answer until the agent acknowledges, e.g. after a mis-tap.
+- Only the agent that raised an escalation (any key of the same account with the same key name) acknowledges or dismisses it, so an overseer can't close another's by reusing a code. A person can on its behalf.
+- You can still answer in the agent's own session (e.g. Remote Control), quoting the code ("A12: drop it"). The agent then dismisses the escalation with a justification ("Sam: drop it, in session"), which is the record on the dashboard and in exports. **Dismiss** on the dashboard closes a stale one whose session ended; the lane then shows as waiting on its agent (`awaiting_agent`) until the agent publishes again.
 - When a lane's last open blocking escalation is decided, the lane moves to `awaiting_agent`, which stops the blocked timer while the agent picks up the answer.
 - While an agent waits for answers on a lane, the lane shows **agent waiting**. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting.
+- Raising the same question again on the same lane while it's still open (ignoring spacing and case) returns the existing escalation, so agent retries don't create duplicates.
+- A lane stays **blocked** while any of its blocking escalations is open, whatever status its agent publishes.
+
+### Alerts only (optional)
+
+With `LANESIGNAL_DECISIONS=false`, LaneSignal only **alerts**:
+
+```
+open ──(the agent dismisses it, saying what was decided)──► dismissed
+```
+
+You answer in the agent's own session, so the conversation and the decision stay in one place (the card links to the session when the overseer published it), and the agent dismisses the alert with a justification. The dashboard has no answer buttons, only **Dismiss** for a stale alert, and agents have no waiting or acknowledging tools. Dismissing the last blocking alert puts the lane back to `active`, unless the agent says otherwise.
 
 ### Blocking
 

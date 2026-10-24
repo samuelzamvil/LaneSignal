@@ -1,6 +1,6 @@
 # LaneSignal wiki
 
-LaneSignal is a self-hosted dashboard for autonomous coding-agent **lanes** and the **alerts** (escalations) that need you. Agents publish over MCP or HTTP, and your phone is notified. You see lane progress and blockers in the browser or the Android app, answer in the agent's own session, and the agent dismisses the alert with a justification. Optional [features](configuration.md#features) add answering on the dashboard, or turn off the requirements register.
+LaneSignal is a self-hosted dashboard for autonomous coding-agent **lanes** and the **escalations** that need you. Agents publish over MCP or HTTP, and your phone is notified. You see lane progress and blockers in the browser or the Android app and answer there; the agent waits for your answer, acknowledges it and carries on. [Features](configuration.md#features) switch LaneSignal to alerts only (you answer in the agent's session), or turn off the requirements register.
 
 ## Set up
 

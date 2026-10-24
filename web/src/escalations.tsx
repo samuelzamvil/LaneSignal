@@ -347,6 +347,7 @@ export function EscalationDetail({
   currentId,
   showProject,
   decisions,
+  backTo,
 }: {
   id: string;
   /** The escalation's id when the route names it by number. */
@@ -363,6 +364,8 @@ export function EscalationDetail({
   onClose: () => void;
   showProject: boolean;
   decisions: boolean;
+  /** Where closing goes, named on the back button. */
+  backTo: string;
 }) {
   const [loaded, setLoaded] = useState<Escalation | null>(null);
   const [changing, setChanging] = useState(false);
@@ -413,12 +416,20 @@ export function EscalationDetail({
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <section ref={sheet} className="sheet" onClick={(e) => e.stopPropagation()} aria-label="Escalation details">
+      <section
+        ref={sheet}
+        className={`sheet sheet-esc ${!esc || esc.state !== 'open' ? 'is-closed' : esc.blocking ? 'is-blocking' : 'is-fyi'}`}
+        onClick={(e) => e.stopPropagation()}
+        aria-label="Escalation details"
+      >
         <header className="sheet-head">
-          <button className="back" onClick={onClose} aria-label="Close">
-            ←
+          <button className="back" onClick={onClose} aria-label={`Back to ${backTo}`}>
+            ← {backTo}
           </button>
-          <h2>Escalation</h2>
+          <div className="sheet-title">
+            <span className="sheet-kind">{esc && !esc.blocking ? 'FYI' : 'Escalation'}</span>
+            <h2>{esc ? (showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref) : 'Loading…'}</h2>
+          </div>
           {esc &&
             (esc.state === 'open' && !esc.blocking ? (
               <span className="pill tone-info">FYI · lane keeps working</span>

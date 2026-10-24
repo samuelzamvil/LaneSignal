@@ -1,18 +1,18 @@
 ---
 name: lanesignal
-description: How to report to LaneSignal through its MCP tools (the `lanesignal` server): publishing lane and group state, alerting the owner when you need a decision, and dismissing the alert once it's dealt with. Use whenever you publish to LaneSignal, need the owner's decision, or have a product or scope question.
+description: How to report to LaneSignal through its MCP tools (the `lanesignal` server): publishing lane and group state, asking the owner for a decision, and acting on their answer. Use whenever you publish to LaneSignal, need the owner's decision, or have a product or scope question.
 ---
 
 # Using LaneSignal
 
-LaneSignal is the owner's dashboard for agent work. You publish what your lanes are doing and raise an alert (an *escalation*) when you need the owner. Their phone is notified, the dashboard shows the lane as blocked, and **they answer you here, in your session** (usually through Remote Control), so the conversation and the decision stay in one place. When it's dealt with, you dismiss the alert, saying what was decided.
+LaneSignal is the owner's dashboard for agent work. You publish what your lanes are doing and raise an *escalation* when you need the owner. Their phone is notified, the dashboard shows the lane as blocked, and they answer (see [When the owner answers](#when-the-owner-answers)).
 
-This skill covers **how** to use the tools. **When** to use them (what deserves an alert, which lanes to run, whether to record requirements) is the project owner's policy, usually in `CLAUDE.md`. Follow that policy where it says more than this.
+This skill covers **how** to use the tools. **When** to use them (what deserves an escalation, which lanes to run, whether to record requirements) is the project owner's policy, usually in `CLAUDE.md`. Follow that policy where it says more than this.
 
 Vocabulary:
 - A **group** is your epic or train (one overseer runs one group).
 - A **lane** is one ticket or work stream in it.
-- An **escalation** is an alert for the owner: a question or something they must know.
+- An **escalation** is a question for the owner, or something they must know.
 
 ## Projects
 
@@ -26,7 +26,7 @@ A server can host several independent projects (apps), each with its own groups,
 
 - **Start of a session:** call `update_group` once, with your `group_id` (the one your owner's policy gives you), your epic/train `name`, its `ticket`, and your Remote Control session URL in `links` (`{label: "Overseer session", url: …, kind: "session"}`). Register it before publishing lanes in it.
 - **Lane ids:** give each lane a stable `lane_id`, and pass `group` on its first `update_lane`. Publish a lane before raising escalations on it; unknown lanes and groups are errors, so a typo can't create a stray lane.
-- **Blocked lanes:** a lane with an open blocking escalation stays `blocked_human` whatever status you publish, until you dismiss it.
+- **Blocked lanes:** a lane with an open blocking escalation stays `blocked_human` whatever status you publish, until the escalation is closed.
 - **Status:** publish *changes*, not heartbeats.
 
   | Status | When |
@@ -57,18 +57,3 @@ Call `create_escalation` once per decision. Four questions in a plan means four 
 
 - **Codes:** each escalation gets a code, its `ref`, like **A12** (the lane's letter and a number). The owner uses it when they answer you ("A12: drop it"); use it too. Every tool accepts it in place of the id.
 - **Retries are safe:** re-sending the same open question on the same lane returns the existing escalation (`duplicate: true`).
-
-## When the owner answers
-
-The owner answers in this session, usually quoting the code ("A12: drop it").
-
-1. **Dismiss the alert** with `dismiss_escalation`: `justification` says what was decided and where, e.g. `"Sam: drop the column (in session, 2026-10-23)"`. It's the record on the dashboard and in exports.
-2. **Publish the next state in the same call:** pass `status` and `activity`, e.g. `status: "active", activity: "Dropping the column (A12)"`. A lane the dismissal unblocks goes back to `active` if you don't say.
-3. **Moot alerts:** dismiss them the same way, saying why ("Superseded by A14").
-4. **Only you can dismiss your alerts.** The owner may also dismiss a stale one from the dashboard.
-
-## After a restart
-
-1. Call `update_group` (as at any session start).
-2. Call `list_escalations` with your `group_id`: these are still unresolved. Dismiss the ones whose answer you can see in this conversation; leave the rest (they're still waiting on the owner) and never raise them again.
-3. Call `list_lanes` with your `group_id`. A lane you were running that's missing was removed: stop work on it.

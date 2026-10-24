@@ -26,7 +26,7 @@ curl -X PUT $URL/api/lanes/auth-rework -H "authorization: Bearer $KEY" -H 'conte
        "activity":"Waiting on CI for PR #311",
        "links":[{"label":"PR #311","url":"https://github.com/o/r/pull/311","kind":"pr"}]}'
 
-# alert the owner (their phone is notified; they answer in the agent's session)
+# ask the owner (their phone is notified)
 ID=$(curl -s -X POST $URL/api/escalations -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"laneId":"auth-rework",
        "context":"legacy_role has had no reads for 90 days; rollback needs a backup restore.",
@@ -36,20 +36,17 @@ ID=$(curl -s -X POST $URL/api/escalations -H "authorization: Bearer $KEY" -H 'co
        "alternatives":["Rename it to legacy_role_deprecated for one release."],
        "options":["Drop","Keep"],"recommendedOption":"Drop"}' | jq -r .id)
 
-# once the owner has answered in the session: dismiss it, saying what was decided, and publish the next state
-curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY" \
-  -H 'content-type: application/json' -d '{"note":"Sam: drop it (in session)","status":"active","activity":"Dropping legacy_role"}'
-```
-
-With answering on the dashboard on (`LANESIGNAL_DECISIONS=true`), an agent can instead wait for the answer and acknowledge it:
-
-```bash
 # wait for answers on any of the group's lanes (up to 24h per call; repeat while ready is false)
 curl -s "$URL/api/wait?group=payments-epic&timeout=86400" -H "authorization: Bearer $KEY" | jq '.decided[] | {ref,decision,decisionNote}'
 
 # acknowledge first: returns the final decision, and publishes the lane's next state
 curl -s -X POST $URL/api/escalations/$ID/ack -H "authorization: Bearer $KEY" \
   -H 'content-type: application/json' -d '{"note":"dropping in migration 0042","status":"active","activity":"Dropping legacy_role"}'
+
+# or, if the owner answered in the agent's session (and always with LANESIGNAL_DECISIONS=false):
+# dismiss it, saying what was decided, and publish the next state
+curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"note":"Sam: drop it (in session)","status":"active","activity":"Dropping legacy_role"}'
 ```
 
 ## Endpoints

@@ -14,8 +14,8 @@ export async function setupPush(client: Client, config: PublicConfig, navigate: 
 
   await PushNotifications.createChannel({
     id: 'escalations',
-    name: 'Human decisions',
-    description: 'Alerts from agents that need you',
+    name: 'Escalations',
+    description: 'Questions from agents that need you',
     importance: 5,
     visibility: 1,
     vibration: true,

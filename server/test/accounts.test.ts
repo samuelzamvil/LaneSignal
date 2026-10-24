@@ -23,7 +23,6 @@ before(async () => {
     LANESIGNAL_AUTH_SECRET: 'test-secret-0123456789-0123456789-0123',
     // Room for this file's legitimate sign-ins (one client IP); the last test exhausts it.
     LANESIGNAL_SIGNIN_RATE_MAX: '12',
-    LANESIGNAL_DECISIONS: 'true',
   });
   const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
   const accounts = await createAccounts(config, ':memory:');

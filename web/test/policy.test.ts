@@ -19,3 +19,11 @@ test('the requirements part is left out when the server has no requirements', ()
   assert.doesNotMatch(without, /requirement/i);
   assert.match(without, /When I answer/);
 });
+
+test('an alerts-only server gets the dismiss wording', () => {
+  assert.match(policyFor('g', null), /acknowledge before acting/);
+  const alerts = policyFor('g', null, true, false);
+  assert.doesNotMatch(alerts, /acknowledge/);
+  assert.match(alerts, /dismiss the alert, with what I decided/);
+  assert.match(alerts, /I answer you here, in this session/);
+});

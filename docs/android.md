@@ -62,4 +62,4 @@ With the Dockge stack, add the config mount to `volumes:`:
       - ./config:/config:ro
 ```
 
-Settings shows whether push is available: "Enabled for human decisions", "Not included in this build", or "Server has no FCM credentials". In the browser it shows "Android app only".
+Settings shows whether push is available: "Enabled for escalations", "Not included in this build", or "Server has no FCM credentials". In the browser it shows "Android app only".
