@@ -1,0 +1,36 @@
+# One-time: creates the Android signing key in a runner and stores it in the "android-signing"
+# environment's secrets, so release APKs install over each other. Run it from the Actions tab.
+#
+# The workflow's own token can't create environments or secrets, so this needs a short-lived
+# fine-grained personal access token, saved as the repository secret SIGNING_SETUP_TOKEN:
+#   repository access: only this repository;
+#   permissions: Administration, Environments and Secrets: read and write.
+# Delete the token and the SIGNING_SETUP_TOKEN secret afterwards. See docs/android.md.
+name: Android signing setup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Create the key and store it
+        env:
+          GH_TOKEN: ${{ secrets.SIGNING_SETUP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Add the SIGNING_SETUP_TOKEN repository secret first (see the top of this workflow file)."
+            exit 1
+          fi
+          # The key only exists in this runner and in the environment's secrets: no artifacts, no logs.
+          HOME="$RUNNER_TEMP/signing" scripts/android-signing-setup.sh --yes "$GITHUB_REPOSITORY"
+          rm -rf "$RUNNER_TEMP/signing"

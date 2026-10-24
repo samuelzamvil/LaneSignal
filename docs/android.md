@@ -22,14 +22,34 @@ cd web && npm run android:apk      # → web/android/app/build/outputs/apk/debug
 
 For FCM push in a local build, put `google-services.json` in `web/android/app/` and set `VITE_FCM_ENABLED=true` for the build (`VITE_FCM_ENABLED=true npm run android:apk`). CI does both when the secret exists.
 
-### Signed release builds
+### Signed release builds (install updates in place)
 
-Add these repository secrets and CI also builds a release-signed APK, which the Releases page then carries instead (and which updates in place):
+Without a signing key, every build is signed with a throwaway debug key, so Android refuses to install it over the previous one. Set up a key once and CI signs every APK on the Releases page with it. Either way below creates the same thing.
 
-- `ANDROID_KEYSTORE_BASE64`
-- `ANDROID_KEYSTORE_PASSWORD`
-- `ANDROID_KEY_ALIAS`
-- `ANDROID_KEY_PASSWORD`
+**From GitHub, no computer needed** (the key is made in a runner and goes straight into encrypted secrets):
+
+1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new): repository access *Only select repositories* → this one; permissions **Administration**, **Environments** and **Secrets**: *Read and write*; a short expiry (e.g. 1 day).
+2. In the repository: Settings → Secrets and variables → Actions → New repository secret, named `SIGNING_SETUP_TOKEN`, with the token as its value.
+3. Actions → **Android signing setup** → Run workflow (on `main`).
+4. When it's green, delete the `SIGNING_SETUP_TOKEN` secret and the token. No backup of the key is kept this way; if the environment's secrets are ever deleted, phones need one more uninstall.
+
+**From your computer** (also keeps a backup of the key):
+
+```bash
+scripts/android-signing-setup.sh            # or: scripts/android-signing-setup.sh owner/repo
+```
+
+Run it on your own machine (it needs a JDK's `keytool`, `openssl` and the GitHub CLI signed in with admin rights on the repository). It:
+
+- creates a self-signed key (RSA 4096, valid about 27 years);
+- creates the GitHub environment **android-signing**, which only `main` and `v*` tags may use, so pull request builds never see the key;
+- stores the keystore and its passwords there as secrets (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`);
+- keeps a backup in `~/.lanesignal-signing/`. Keep a copy somewhere safe: if the key is lost, phones need one more uninstall.
+
+The first signed build still needs the old (debug-signed) app uninstalled once; every build after that updates in place. The script refuses to replace an existing key, since that would mean another uninstall everywhere. If it fails part-way, run it again: it reuses the saved key.
+
+- **Remove old repository secrets.** If you added `ANDROID_KEYSTORE_*` / `ANDROID_KEY_*` as repository secrets before, delete them: repository secrets reach every build, pull requests included. The script warns when it finds them.
+- **Tags.** Anyone who can push a `v*` tag gets a build signed with the key. If others have write access, restrict who may create `v*` tags (a tag ruleset) or add required reviewers to the environment.
 
 ## Signing in
 
