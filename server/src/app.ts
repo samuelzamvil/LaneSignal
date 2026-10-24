@@ -398,6 +398,14 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     res.sendStatus(204);
   });
 
+  // Overseers tell the owner about milestones (merged, started a ticket): a quiet push.
+  app.post('/api/lanes/:id/notices', agent, (req, res) => {
+    const body = parse(s.notice, req.body ?? {});
+    const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
+    const r = store.postNotice(q(project, String(req.params.id)), body.message, principalOf(res).name);
+    res.status(201).json({ ...r, laneId: localId(r.laneId) });
+  });
+
   // ---- escalations ----
 
   app.get('/api/escalations', any, (req, res) => {

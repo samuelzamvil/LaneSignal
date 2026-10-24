@@ -99,6 +99,7 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 - **`status`:** every status change, plus lane created, removed and restored
 - **`escalation`:** asked, positions, decided, acknowledged, withdrawn
 - **`activity`:** the agent's activity lines, only the most recent ones per lane
+- **`notice`:** milestones the overseer sent the owner with `notify_owner` ("Merged PR #311")
 
 To rebuild blocked time per lane over a period, pair the status changes in `status` rows.
 

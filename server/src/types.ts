@@ -141,7 +141,8 @@ export interface LaneEvent {
   id: number;
   laneId: string;
   at: string;
-  kind: 'status' | 'activity' | 'escalation';
+  /** `notice`: a milestone the agent told the owner about (merged, started a ticket). */
+  kind: 'status' | 'activity' | 'escalation' | 'notice';
   message: string;
   actor: string | null;
 }
@@ -238,11 +239,20 @@ export interface Requirement {
   updatedAt: string;
 }
 
+/** A milestone an overseer tells the owner about: a quiet push, kept in the lane's history. */
+export interface Notice {
+  project: string;
+  laneId: string;
+  message: string;
+  by: string;
+}
+
 export type StreamEvent =
   | { type: 'group'; group: Group }
   | { type: 'group_deleted'; id: string; project: string }
   /** `statusChanged` is set when this event is the lane's status transition (drives notifications). */
   | { type: 'lane'; lane: Lane; statusChanged?: boolean }
   | { type: 'lane_deleted'; id: string; project: string }
-  | { type: 'escalation'; escalation: Escalation }
+  /** `raised`: an FYI that now needs the owner, notified like a new question. */
+  | { type: 'escalation'; escalation: Escalation; raised?: boolean }
   | { type: 'requirement'; requirement: Requirement };

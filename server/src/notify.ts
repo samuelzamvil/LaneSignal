@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { Config } from './config.ts';
 import { log } from './log.ts';
 import { localId, type Store } from './store.ts';
-import type { StreamEvent } from './types.ts';
+import type { Notice, StreamEvent } from './types.ts';
 
 export interface Notification {
   title: string;
@@ -109,6 +109,20 @@ export function ntfyLinks(config: Pick<Config, 'publicUrl' | 'ntfyOpen'>, route:
   };
 }
 
+/** A milestone from an overseer: quiet, and opens the lane. */
+export function noticeNotification(store: Store, n: Notice): Notification {
+  const lane = store.getLane(n.laneId);
+  const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? localId(n.laneId)].filter(Boolean).join(' / ');
+  return {
+    title: where,
+    body: n.message,
+    data: { laneId: localId(n.laneId), project: n.project },
+    route: `#/lane/${encodeURIComponent(n.project)}/${encodeURIComponent(localId(n.laneId))}`,
+    urgent: false,
+    project: n.project,
+  };
+}
+
 export function startNotifier(
   config: Config,
   store: Store,
@@ -175,7 +189,8 @@ export function startNotifier(
   }
 
   function toNotification(e: StreamEvent): Notification | null {
-    const created = e.type === 'escalation' && e.escalation.createdAt === e.escalation.updatedAt;
+    // New questions, and FYIs that now need the owner.
+    const created = e.type === 'escalation' && (e.raised || e.escalation.createdAt === e.escalation.updatedAt);
     if (e.type === 'escalation' && created && config.notifyOn.has('escalation')) {
       // Later open-state events (agent positions) don't re-notify.
       const lane = store.getLane(e.escalation.laneId);
@@ -229,6 +244,7 @@ export function startNotifier(
       const n = toNotification(e);
       if (n) void deliver(n);
     });
+    if (config.notifyOn.has('notice')) store.events.on('notice', (n) => void deliver(noticeNotification(store, n)));
   }
 
   return enabled;

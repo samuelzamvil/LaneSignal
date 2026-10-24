@@ -144,3 +144,33 @@ test('ntfy taps can open the web app instead, and the app link works without a p
   assert.deepEqual(ntfyLinks({ publicUrl: null, ntfyOpen: 'app' }, '#/lane/default/l1'), { click: 'lanesignal://lane/default/l1' });
   assert.deepEqual(ntfyLinks({ publicUrl: null, ntfyOpen: 'browser' }, '#/esc/e1'), {});
 });
+
+test('an FYI raised again as blocking notifies like a new question; notices go out quietly', async () => {
+  const sink = await ntfySink();
+  const { config, store } = setup({ LANESIGNAL_NTFY_URL: `${sink.url}/lanes-topic` });
+  startNotifier(config, store);
+  publishLane(store, 'default/lane-1', { name: 'Auth', status: 'active' }, 'bot');
+  const fyi = escalate(store, { laneId: 'default/lane-1', question: 'Heads up: CI is slow', blocking: false }, 'bot');
+  const again = store.createEscalation({ laneId: 'default/lane-1', question: 'Heads up: CI is slow', blocking: true }, 'bot');
+  assert.equal(again.id, fyi.id);
+  assert.equal(again.upgraded, true);
+  assert.equal(again.blocking, true);
+  assert.equal(store.getLane('default/lane-1')?.status, 'blocked_human');
+  // A plain retry of a blocking question changes nothing.
+  assert.equal(store.createEscalation({ laneId: 'default/lane-1', question: 'Heads up: CI is slow', blocking: true }, 'bot').upgraded, undefined);
+  store.postNotice('default/lane-1', 'Merged PR #311', 'bot');
+  await settle();
+
+  assert.deepEqual(
+    sink.received.map((r) => [r.body.title, r.body.priority]),
+    [
+      [`FYI ${fyi.ref} · Auth`, 3],
+      [`Needs you ${fyi.ref} · Auth`, 4],
+      ['Auth', 3],
+    ],
+  );
+  assert.equal(sink.received[2].body.message, 'Merged PR #311');
+  assert.equal(sink.received[2].body.click, 'lanesignal://lane/default/lane-1');
+  sink.close();
+  store.close();
+});

@@ -40,7 +40,7 @@ The server must be reachable over **HTTPS**; see [Reverse proxy](reverse-proxy.m
 
 ## Push notifications
 
-Push goes out for **new escalations** only, unless `LANESIGNAL_NOTIFY_ON` adds `blocked` or `completed`. Tapping a notification opens that escalation. Pick one backend, or use both.
+Push goes out for **new escalations** and overseers' milestone **notices**, unless `LANESIGNAL_NOTIFY_ON` says otherwise (it can also add `blocked` or `completed`). Tapping a notification opens that escalation, or the lane for a notice. Pick one backend, or use both.
 
 ### ntfy (simplest, no Google account)
 

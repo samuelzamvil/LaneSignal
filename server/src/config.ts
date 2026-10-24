@@ -40,7 +40,7 @@ export interface Config {
   defaultTicketSystem: string | null;
   staleMinutes: number;
   /** Which events trigger push notifications. */
-  notifyOn: Set<'escalation' | 'blocked' | 'completed'>;
+  notifyOn: Set<'escalation' | 'notice' | 'blocked' | 'completed'>;
   fcmServiceAccountFile: string | null;
   ntfyUrl: string | null;
   ntfyToken: string | null;
@@ -189,9 +189,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const ticketTemplates = parseTemplates(env.LANESIGNAL_TICKET_TEMPLATES) ?? file.ticketTemplates ?? {};
   const notifyOn = new Set(
-    (list(env.LANESIGNAL_NOTIFY_ON) ?? file.notifyOn ?? ['escalation']).filter(
-      (n): n is 'escalation' | 'blocked' | 'completed' =>
-        n === 'escalation' || n === 'blocked' || n === 'completed',
+    (list(env.LANESIGNAL_NOTIFY_ON) ?? file.notifyOn ?? ['escalation', 'notice']).filter(
+      (n): n is 'escalation' | 'notice' | 'blocked' | 'completed' =>
+        n === 'escalation' || n === 'notice' || n === 'blocked' || n === 'completed',
     ),
   );
 
