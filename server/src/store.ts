@@ -1050,6 +1050,55 @@ export class Store {
   }
 
   /**
+   * Closed escalations (acknowledged or dismissed), latest first, for the History view. `query`
+   * matches the code, the question, context, decision, notes and the conversation. Pages with
+   * `before` (the last result's `updatedAt` and `id`, from `next`).
+   */
+  historyEscalations(filter: {
+    projects?: string[];
+    query?: string;
+    groupId?: string;
+    states?: ('acknowledged' | 'withdrawn')[];
+    before?: { at: string; id: string };
+    limit?: number;
+  }): { items: Escalation[]; next: { at: string; id: string } | null } {
+    const states = filter.states?.length ? filter.states : ['acknowledged', 'withdrawn'];
+    const where = [`state IN (${states.map(() => '?').join(',')})`];
+    const params: (string | number)[] = [...states];
+    if (filter.groupId) {
+      where.push('lane_id IN (SELECT id FROM lanes WHERE group_id = ?)');
+      params.push(filter.groupId);
+    }
+    const text = filter.query?.trim();
+    if (text) {
+      const like = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      const fields = ['question', 'context', 'decision', 'decision_note', 'resolution', 'recommendation'];
+      const code = /^([A-Za-z]{1,4})(\d{1,9})$/.exec(text.replace(/^#/, ''));
+      where.push(
+        `(${fields.map((f) => `${f} LIKE ? ESCAPE '\\'`).join(' OR ')}
+          OR EXISTS (SELECT 1 FROM messages m WHERE m.escalation_id = escalations.id AND m.body LIKE ? ESCAPE '\\')${
+            code ? ' OR (letter_index = ? AND seq = ?)' : ''
+          })`,
+      );
+      params.push(...fields.map(() => like), like);
+      if (code) params.push(indexOfLetter(code[1].toUpperCase()), Number(code[2]));
+    }
+    if (filter.before) {
+      where.push('(updated_at < ? OR (updated_at = ? AND id < ?))');
+      params.push(filter.before.at, filter.before.at, filter.before.id);
+    }
+    const p = this.inProjects(filter.projects);
+    params.push(...p.params);
+    const limit = Math.min(filter.limit ?? 50, 200);
+    const rows = this.db
+      .prepare(`SELECT * FROM escalations WHERE ${where.join(' AND ')}${p.sql} ORDER BY updated_at DESC, id DESC LIMIT ?`)
+      .all(...params, limit + 1) as Row[];
+    const items = rows.slice(0, limit).map((r) => this.escalationFromRow(r));
+    const last = items[items.length - 1];
+    return { items, next: rows.length > limit && last ? { at: last.updatedAt, id: last.id } : null };
+  }
+
+  /**
    * By id, or by its code: "A12" within `project`, or "KEY·A12" (also "KEY-A12",
    * "KEY:A12") in any project (case-insensitive, a leading # is ignored). Without a
    * project, a bare code resolves only if one project has it. Plain numbers ("42") are

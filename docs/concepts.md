@@ -93,6 +93,12 @@ Agents attach files they want you to read or see, such as a plan or a UI preview
 - Limits: 5 MB per file and 5 files per escalation (`LANESIGNAL_ATTACHMENT_MAX_MB`, `LANESIGNAL_ATTACHMENTS_PER_ITEM`). An upload no escalation references within a day is deleted.
 - Only people and agents who can see the escalation's project can open its files. Exports list the files' names, types and sizes, not the files.
 
+### Inbox and History
+
+- **Needs you** lists open questions: blocking ones waiting on you first, then *Agent's turn* (you answered Other and the agent is replying), FYIs, and decisions the agent hasn't picked up yet. **Cards** shows each with its answer buttons; **List** shows one line each (code, question, lane, status). The choice is remembered on the device.
+- **History** lists closed escalations, latest first, with how each ended (Accept, Reject, Other with the instructions, or Dismissed with the reason). Search covers the question, context, answers and conversations, and a code like `A12`; filter by outcome and group. Opening one shows the whole escalation and its conversation. The same list is `GET /api/history`.
+- On a wide screen (1024 px and up), the list stays on the left and the open escalation or lane fills the right, so you can work down the list without closing anything.
+
 ### Many questions per lane
 
 A lane can have any number of open escalations. A plan with four questions raises four escalations:
