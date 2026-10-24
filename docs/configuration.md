@@ -62,3 +62,7 @@ In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "t
 | `LANESIGNAL_FCM_SERVICE_ACCOUNT_FILE` | `fcmServiceAccountFile` | | Path to a Firebase service-account JSON, e.g. `/config/fcm-service-account.json` |
 
 See [Android and push](android.md).
+
+| Env var | JSON key | Default | Notes |
+|---|---|---|---|
+| `LANESIGNAL_TRMNL_HOSTS` | | | Extra hosts a project's [TRMNL screen](trmnl.md) webhook may point at, comma-separated, for a self-hosted TRMNL server. `trmnl.com` and `usetrmnl.com` (HTTPS only) are always allowed |

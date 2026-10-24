@@ -1,0 +1,73 @@
+{% assign now = "now" | date: "%s" | plus: 0 %}
+<div class="layout layout--top layout--stretch-x">
+  <div class="grid grid--cols-5" style="height: 100%;">
+    <div class="col--span-3">
+      {% if card %}
+      <div class="ls-card">
+        <div class="ls-head">
+          <span class="label label--inverted">{{ card.label | escape }}</span>
+          {% if card.code %}<span class="title">{{ card.code | escape }}</span>{% endif %}
+          <span class="label label--small" data-clamp="1">{{ card.where | escape }}</span>
+        </div>
+        <span class="title title--large" data-clamp="3">{{ card.title | escape }}</span>
+        {% if card.context %}<span class="description" data-clamp="6">{{ card.context | escape }}</span>{% endif %}
+        {% if card.message %}<span class="description" data-clamp="2"><b>{{ card.message | escape }}</b></span>{% endif %}
+        {% if card.recommendation %}
+        <div class="ls-means">
+          <span class="label label--small label--underline">Recommends</span>
+          <span class="description" data-clamp="2">{{ card.recommendation | escape }}</span>
+        </div>
+        {% endif %}
+        {% if card.accept %}
+        <div class="ls-means">
+          <span class="label label--small">Accept</span>
+          <span class="description" data-clamp="1">{{ card.accept | escape }}</span>
+        </div>
+        {% endif %}
+        {% if card.reject %}
+        <div class="ls-means">
+          <span class="label label--small">Reject</span>
+          <span class="description" data-clamp="1">{{ card.reject | escape }}</span>
+        </div>
+        {% endif %}
+        <span class="label label--small label--gray">
+          {% render "ago", now: now, at: card.at %}{% if card.files > 0 %} · {{ card.files }} file{% if card.files > 1 %}s{% endif %} attached{% endif %}
+        </span>
+      </div>
+      {% else %}
+      <div class="ls-card" style="justify-content: center;">
+        <span class="title title--xlarge">All clear</span>
+        <span class="description">Nothing needs you right now.</span>
+      </div>
+      {% endif %}
+    </div>
+    <div class="col--span-2 ls-side">
+      {% assign pending_count = pending | size | plus: more %}
+      <span class="title title--small">Also pending{% if pending_count > 0 %} · {{ pending_count }}{% endif %}</span>
+      {% if pending_count == 0 %}
+      <span class="description">No other questions.</span>
+      {% else %}
+      <div data-overflow="true" data-overflow-counter="true">
+        {% for row in pending %}
+        <div class="item">
+          <div class="content">
+            <span class="title title--small" data-clamp="2">{{ row.code | escape }} · {{ row.q | escape }}</span>
+            <span class="label label--small" data-clamp="1">
+              {{ row.lane | escape }} · {% render "ago", now: now, at: row.at %}{% if row.agent %} · agent's turn{% elsif row.fyi %} · FYI{% endif %}
+            </span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% if more > 0 %}<span class="label label--small">+{{ more }} more in LaneSignal</span>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+<div class="title_bar">
+  <span class="title">LaneSignal</span>
+  {% assign quiet = now | minus: asOf %}
+  <span class="instance">
+    {{ project | escape }} · {% if quiet > 7200 %}no update for {{ quiet | divided_by: 3600 | floor }}h, is LaneSignal running?{% else %}updated {% render "ago", now: now, at: asOf %}{% endif %}
+  </span>
+</div>

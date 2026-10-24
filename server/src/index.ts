@@ -7,6 +7,7 @@ import { loadConfig } from './config.ts';
 import { log } from './log.ts';
 import { startNotifier } from './notify.ts';
 import { Store } from './store.ts';
+import { TrmnlPusher } from './trmnl.ts';
 import { ticketResolver } from './tickets.ts';
 
 const config = loadConfig();
@@ -37,7 +38,9 @@ accounts.people.on('gone', (userId, name, removed) => {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(process.env.LANESIGNAL_WEB_DIR ?? path.resolve(here, '../../web/dist'));
 const skillFile = path.resolve(process.env.LANESIGNAL_SKILL_FILE ?? path.resolve(here, '../../skills/lanesignal/SKILL.md'));
-const app = createApp({ config, store, accounts, push, webDir, skillFile });
+const trmnlDir = path.resolve(process.env.LANESIGNAL_TRMNL_DIR ?? path.resolve(here, '../../integrations/trmnl'));
+const trmnl = new TrmnlPusher(store).start();
+const app = createApp({ config, store, accounts, push, webDir, skillFile, trmnl, trmnlDir });
 
 const server = app.listen(config.port, config.host, (err?: Error) => {
   if (err) {
@@ -55,6 +58,7 @@ const server = app.listen(config.port, config.host, (err?: Error) => {
 
 function shutdown(signal: string) {
   log.info('shutting down', { signal });
+  trmnl.stop();
   server.close(() => {
     store.close();
     accounts.close();

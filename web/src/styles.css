@@ -1290,6 +1290,33 @@ textarea {
   min-height: 22px;
 }
 
+.trmnl-settings {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.trmnl-settings h4 {
+  margin: 0;
+}
+
+.trmnl-settings .steps {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.trmnl-settings code {
+  overflow-wrap: anywhere;
+}
+
+.trmnl-settings .check input {
+  flex-shrink: 0;
+}
+
+.trmnl-settings .actions {
+  flex-wrap: wrap;
+}
+
 /* ---- export ---- */
 
 .date-range {

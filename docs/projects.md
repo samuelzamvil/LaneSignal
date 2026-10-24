@@ -45,7 +45,7 @@ With more than one project, a switcher appears in the top bar:
 Settings → **Projects** lists your projects. In it:
 
 - **Notify** turns push notifications for that project on or off, for your own devices.
-- **Members and settings** shows the members. Project admins manage them there, and rename the project.
+- **Members and settings** shows the members. Project admins manage them there, rename the project, and set up its [TRMNL screen](trmnl.md).
 - **New project** (instance admins only) creates one.
 
 When creating an agent key with access to several projects, choose **All my projects** or **Only** one project. A bound key needs no `project` parameter and can't reach anything else. One overseer per project usually wants a bound key. If its owner leaves that project, the key reaches nothing.

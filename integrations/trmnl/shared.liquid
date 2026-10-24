@@ -1,0 +1,8 @@
+{% comment %} How long ago an epoch-seconds time was, at render time: "12m ago". {% endcomment %}
+{% template ago %}{% assign s = now | minus: at %}{% if s < 60 %}just now{% elsif s < 3600 %}{{ s | divided_by: 60 | floor }}m ago{% elsif s < 86400 %}{{ s | divided_by: 3600 | floor }}h ago{% else %}{{ s | divided_by: 86400 | floor }}d ago{% endif %}{% endtemplate %}
+<style>
+  .ls-card { display: flex; flex-direction: column; gap: 8px; height: 100%; overflow: hidden; }
+  .ls-head { display: flex; align-items: center; gap: 8px; }
+  .ls-side { display: flex; flex-direction: column; gap: 6px; border-left: 1px solid black; padding-left: 12px; height: 100%; overflow: hidden; }
+  .ls-means { display: flex; gap: 6px; align-items: baseline; }
+</style>
