@@ -234,6 +234,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
       push,
       decisions: config.decisions,
       requirements: config.requirements,
+      quietAlerts: store.quietAlerts(),
     };
     res.json(body);
   });
@@ -332,6 +333,14 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     const p = principalOf(res);
     if (!p.userId) throw new ValidationError('Config tokens have no notification settings');
     store.setNotify(acc(res).pick(String(req.params.id)), p.userId, parse(s.notifyInput, req.body).enabled);
+    res.sendStatus(204);
+  });
+
+  /** Instance admins choose whether alerts arrive as high priority or as regular notifications. */
+  app.put('/api/settings/push', human, (req, res) => {
+    const p = principalOf(res);
+    if (!p.superuser && !(p.admin && !p.userId)) throw new ForbiddenError('Only instance admins change push settings');
+    store.setQuietAlerts(parse(s.pushSettings, req.body).quietAlerts);
     res.sendStatus(204);
   });
 

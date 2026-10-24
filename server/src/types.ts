@@ -228,6 +228,8 @@ export interface PublicConfig {
   decisions: boolean;
   /** The requirements register is on. */
   requirements: boolean;
+  /** Alerts arrive as regular notifications instead of high priority (Settings → Push). */
+  quietAlerts: boolean;
 }
 
 export type Role = 'human' | 'agent';
