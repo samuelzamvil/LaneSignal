@@ -1,0 +1,7 @@
+{
+  "name": "lanesignal",
+  "version": "0.1.0",
+  "description": "The LaneSignal skill: publish lanes, ask the owner, act on their answers, send milestones",
+  "homepage": "https://github.com/samuelzamvil/LaneSignal",
+  "license": "MIT"
+}

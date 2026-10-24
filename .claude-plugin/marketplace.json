@@ -1,0 +1,12 @@
+{
+  "name": "lanesignal",
+  "owner": { "name": "LaneSignal" },
+  "metadata": { "description": "Skills for agents that report to a LaneSignal server" },
+  "plugins": [
+    {
+      "name": "lanesignal",
+      "source": "./plugin",
+      "description": "How to publish lanes, ask the owner, act on answers and send milestones through LaneSignal's MCP tools"
+    }
+  ]
+}
