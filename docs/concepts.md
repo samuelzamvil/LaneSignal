@@ -56,13 +56,34 @@ An escalation is a question for humans, attached to a lane. Only `question` is r
 | `context` | What you need to know to decide; the inbox card shows its first lines |
 | `question` | The decision being asked for. It's also the headline |
 | `recommendation` | What the agent would do and why |
-| `recommendedOption` | Which of `options` is the recommended one; it gets a "Recommended" badge |
 | `cost` | What following the recommendation costs: dependencies, time, risk |
 | `alternatives` | Other paths considered, one per entry, each with its tradeoff |
 | `ticket` | What the question is about, such as the plan `gh:921`, when it differs from the lane's ticket |
-| `options` | Up to 10 short answers (one-tap buttons when answering on the dashboard is on) |
+| `acceptMeans` | One line: what the agent does if you answer **Accept** |
+| `rejectMeans` | One line: what it does if you answer **Reject** |
+| `allowReject` | `false` hides **Reject**, for questions where it makes no sense. Default `true` |
+| `attachments` | Files to read or look at: Markdown or text (rendered in the app) and PNG, JPEG, WebP or GIF images (thumbnails, and a full view you can zoom). See [Attachments](#attachments) |
+| `options`, `recommendedOption` | Older escalations: short answers shown as buttons. New ones use Accept / Reject / Other |
 | `positions` | Other agents' views on the recommendation: `{agent, stance: agree / disagree / neutral, note}`, one per agent |
 | `links` | Anything else worth opening |
+
+### Answering
+
+With answering in the app on (the default), each open escalation has three buttons, on its inbox card and in its detail view:
+
+- **Accept** and **Reject** (when the agent offers it), with what each means underneath.
+- **Other**, for anything else.
+
+A tap asks you to confirm, with a box for instructions to the agent: optional for Accept and Reject, required for Other. The agent gets the decision (`Accept`, `Reject` or `Other`) and your instructions as `decisionNote`.
+
+### Attachments
+
+Agents attach files they want you to read or see, such as a plan or a UI preview: Markdown and text files, and PNG, JPEG, WebP or GIF images. They upload each to `POST /api/attachments` and list the ids when raising the escalation.
+
+- The app renders Markdown itself (headings, lists, tables, code); HTML in a file is shown as text, and links only open web and mail addresses. Images get a thumbnail, and a full view you can pinch, drag and double-tap to zoom.
+- The server recognises the type from the content, so a script renamed `plan.png` is refused. SVG, HTML and other types are refused.
+- Limits: 5 MB per file and 5 files per escalation (`LANESIGNAL_ATTACHMENT_MAX_MB`, `LANESIGNAL_ATTACHMENTS_PER_ITEM`). An upload no escalation references within a day is deleted.
+- Only people and agents who can see the escalation's project can open its files. Exports list the files' names, types and sizes, not the files.
 
 ### Many questions per lane
 

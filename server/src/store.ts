@@ -10,6 +10,8 @@ import {
   type LaneEvent,
   type LaneStatus,
   type Link,
+  type AttachmentMeta,
+  type AttachmentType,
   type Notice,
   type Position,
   type Project,
@@ -133,7 +135,8 @@ export type ExportDataset = (typeof EXPORT_DATASETS)[number];
 export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
   escalations: [
     'id', 'ref', 'project', 'lane_id', 'lane_name', 'group_id', 'group_name', 'ticket', 'ticket_url', 'question', 'context',
-    'recommendation', 'recommended_option', 'cost', 'alternatives', 'options', 'blocking', 'state', 'created_by',
+    'recommendation', 'recommended_option', 'cost', 'alternatives', 'options', 'accept_means', 'reject_means',
+    'allow_reject', 'attachments', 'blocking', 'state', 'created_by',
     'created_at', 'decided_by', 'decided_at', 'decision', 'decision_note', 'followed_recommendation',
     'acknowledged_at', 'resolution', 'closed_at', 'seconds_to_decision', 'seconds_to_acknowledge', 'seconds_open',
     'positions_agree', 'positions_disagree', 'positions_neutral', 'links',
@@ -187,6 +190,11 @@ export interface EscalationInput {
   ticket?: string | null;
   positions?: { agent: string; stance: Stance; note?: string | null }[];
   options?: string[];
+  acceptMeans?: string | null;
+  rejectMeans?: string | null;
+  allowReject?: boolean;
+  /** Ids of files uploaded to /api/attachments by the same agent. */
+  attachments?: string[];
   links?: Link[];
   /** Marks the lane blocked_human until the escalation is decided. Default true. */
   blocking?: boolean;
@@ -201,9 +209,16 @@ export interface StoreOptions {
   waitGraceMs?: number;
   /** Tags rejected as too broad (lowercase). */
   broadTags?: string[];
+  /** Most files on one escalation (default 5). */
+  attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
+
+/** Uploads nothing references after this long are deleted. */
+const UNREFERENCED_TTL_MS = 24 * 60 * 60 * 1000;
+/** Uploads one uploader may have waiting to be referenced, so nobody fills the disk. */
+const MAX_PENDING_UPLOADS = 20;
 
 type Row = Record<string, unknown>;
 
@@ -222,6 +237,7 @@ export class Store {
   private waiting = new Map<string, number>();
   private graceTimers = new Set<ReturnType<typeof setTimeout>>();
   private waitGraceMs: number;
+  private attachmentsPerItem: number;
 
   constructor(opts: StoreOptions) {
     this.db = new DatabaseSync(opts.path);
@@ -229,6 +245,7 @@ export class Store {
     this.retention = opts.eventRetention ?? 200;
     this.now = opts.now ?? (() => new Date());
     this.waitGraceMs = opts.waitGraceMs ?? WAIT_GRACE_MS;
+    this.attachmentsPerItem = opts.attachmentsPerItem ?? 5;
     this.broadTags = new Set((opts.broadTags ?? DEFAULT_BROAD_TAGS).map((t) => t.toLowerCase()));
     this.events.setMaxListeners(0);
     this.migrate();
@@ -342,6 +359,32 @@ export class Store {
       // v9: who raised each escalation (the owning account, or a config token), so only they acknowledge it.
       if (version < 9 && !this.hasColumn('escalations', 'raised_by_owner')) {
         this.db.exec('ALTER TABLE escalations ADD COLUMN raised_by_owner TEXT');
+      }
+      // v10: Accept / Reject answers with what each means, and files attached to escalations (kept in the database).
+      if (version < 10 && !this.hasColumn('escalations', 'accept_means')) {
+        this.db.exec(`
+          ALTER TABLE escalations ADD COLUMN accept_means TEXT;
+          ALTER TABLE escalations ADD COLUMN reject_means TEXT;
+          ALTER TABLE escalations ADD COLUMN allow_reject INTEGER NOT NULL DEFAULT 1;
+        `);
+      }
+      if (version < 10) {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS attachments (
+            id TEXT PRIMARY KEY,
+            escalation_id TEXT REFERENCES escalations(id),
+            position INTEGER,
+            owner TEXT NOT NULL,
+            uploaded_by TEXT NOT NULL,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            data BLOB NOT NULL,
+            created_at TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS attachments_escalation ON attachments(escalation_id, position);
+          CREATE INDEX IF NOT EXISTS attachments_pending ON attachments(owner, created_at) WHERE escalation_id IS NULL;
+        `);
       }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
@@ -924,6 +967,10 @@ export class Store {
       ticketUrl: r.ticket ? this.resolveTicketUrl(r.ticket as string) : null,
       positions: JSON.parse(r.positions as string) as Position[],
       options: JSON.parse(r.options as string) as string[],
+      acceptMeans: (r.accept_means as string | null) ?? null,
+      rejectMeans: (r.reject_means as string | null) ?? null,
+      allowReject: Number(r.allow_reject ?? 1) === 1,
+      attachments: this.attachmentsOf(r.id as string),
       links: JSON.parse(r.links as string) as Link[],
       blocking: Number(r.blocking ?? 1) === 1,
       state: r.state as EscalationState,
@@ -996,6 +1043,78 @@ export class Store {
   }
 
   /** Who raised it ("user:<id>" or "token:<name>"); null for escalations from before this was recorded. */
+  // ---- attachments ------------------------------------------------------
+
+  /** The files on an escalation, in the order the agent gave them. */
+  private attachmentsOf(escalationId: string): AttachmentMeta[] {
+    return (
+      this.db
+        .prepare('SELECT id, name, type, size FROM attachments WHERE escalation_id = ? ORDER BY position')
+        .all(escalationId) as Row[]
+    ).map((r) => ({ id: r.id as string, name: r.name as string, type: r.type as AttachmentType, size: Number(r.size) }));
+  }
+
+  /**
+   * Keeps an upload until an escalation references it. `owner` is the uploader (as in `raised_by_owner`):
+   * only they can attach it. Uploads nothing referenced within a day are deleted.
+   */
+  addAttachment(file: { name: string; type: AttachmentType; data: Uint8Array }, owner: string, uploadedBy: string): AttachmentMeta {
+    const now = this.now();
+    this.db
+      .prepare('DELETE FROM attachments WHERE escalation_id IS NULL AND created_at < ?')
+      .run(new Date(now.getTime() - UNREFERENCED_TTL_MS).toISOString());
+    const pending = Number(
+      (this.db.prepare('SELECT COUNT(*) AS n FROM attachments WHERE escalation_id IS NULL AND owner = ?').get(owner) as Row).n,
+    );
+    if (pending >= MAX_PENDING_UPLOADS) {
+      throw new ConflictError(`${MAX_PENDING_UPLOADS} uploads are waiting to be attached; attach them or wait a day`);
+    }
+    const id = randomUUID();
+    this.db
+      .prepare(
+        'INSERT INTO attachments (id, owner, uploaded_by, name, type, size, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(id, owner, uploadedBy, file.name, file.type, file.data.byteLength, file.data, now.toISOString());
+    return { id, name: file.name, type: file.type, size: file.data.byteLength };
+  }
+
+  /** Attaches uploads to an escalation (inside its transaction). Each must be the owner's and not attached yet. */
+  private linkAttachments(escalationId: string, ids: string[], owner: string) {
+    if (!ids.length) return;
+    const unique = [...new Set(ids)];
+    const have = this.attachmentsOf(escalationId).length;
+    if (have + unique.length > this.attachmentsPerItem) {
+      throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per escalation`);
+    }
+    unique.forEach((id, i) => {
+      const r = this.db.prepare('SELECT owner, escalation_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
+      if (!r || r.owner !== owner) {
+        throw new NotFoundError(`Attachment ${id} not found: upload it first (POST /api/attachments), with the same key`);
+      }
+      if (r.escalation_id === escalationId) return;
+      if (r.escalation_id) throw new ConflictError(`Attachment ${id} is already on another escalation; upload it again`);
+      this.db.prepare('UPDATE attachments SET escalation_id = ?, position = ? WHERE id = ?').run(escalationId, have + i, id);
+    });
+  }
+
+  /**
+   * An attachment's file, and the escalation it's on (null while unreferenced, when only its uploader
+   * may read it). Callers check that the reader can see that escalation.
+   */
+  getAttachment(id: string): (AttachmentMeta & { data: Uint8Array; escalationId: string | null; owner: string }) | null {
+    const r = this.db.prepare('SELECT * FROM attachments WHERE id = ?').get(id) as Row | undefined;
+    if (!r) return null;
+    return {
+      id: r.id as string,
+      name: r.name as string,
+      type: r.type as AttachmentType,
+      size: Number(r.size),
+      data: r.data as Uint8Array,
+      escalationId: (r.escalation_id as string | null) ?? null,
+      owner: r.owner as string,
+    };
+  }
+
   escalationOwner(id: string): string | null {
     const r = this.db.prepare('SELECT raised_by_owner FROM escalations WHERE id = ?').get(id) as Row | undefined;
     return (r?.raised_by_owner as string | null) ?? null;
@@ -1040,7 +1159,7 @@ export class Store {
       const id = existing.id as string;
       // Raising an open FYI again as blocking (the default) makes it need the owner now (same code).
       if (input.blocking !== false && !this.requireEscalation(id).blocking) {
-        return { ...this.makeBlocking(id, input, actor), duplicate: true, upgraded: true };
+        return { ...this.makeBlocking(id, input, actor, owner), duplicate: true, upgraded: true };
       }
       return { ...this.requireEscalation(id), duplicate: true };
     }
@@ -1063,8 +1182,9 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO escalations (id, ref, letter_index, seq, lane_id, question, context, recommendation, recommended_option, cost,
-             alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at, raised_by_owner)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
+             alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at, raised_by_owner,
+             accept_means, reject_means, allow_reject)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -1089,7 +1209,11 @@ export class Store {
           at,
           at,
           owner,
+          input.acceptMeans ?? null,
+          input.allowReject === false ? null : (input.rejectMeans ?? null),
+          input.allowReject === false ? 0 : 1,
         );
+      this.linkAttachments(id, input.attachments ?? [], owner ?? actor);
       this.addEvent(input.laneId, at, 'escalation', `Escalated ${code}: ${input.question}`, actor);
       const blocks = input.blocking !== false && lane.status !== 'blocked_human';
       if (blocks) {
@@ -1109,7 +1233,7 @@ export class Store {
    * Fields given again (context, recommendation, options, ...) replace the FYI's, so the owner has
    * what they need to answer.
    */
-  private makeBlocking(id: string, input: EscalationInput, actor: string): Escalation {
+  private makeBlocking(id: string, input: EscalationInput, actor: string, owner: string | null): Escalation {
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
       const before = this.requireEscalation(id);
@@ -1122,7 +1246,9 @@ export class Store {
           `UPDATE escalations SET blocking = 1, updated_at = ?,
              context = COALESCE(?, context), recommendation = COALESCE(?, recommendation), cost = COALESCE(?, cost),
              ticket = COALESCE(?, ticket), alternatives = COALESCE(?, alternatives), links = COALESCE(?, links),
-             options = COALESCE(?, options), recommended_option = CASE WHEN ? THEN ? ELSE COALESCE(?, recommended_option) END
+             options = COALESCE(?, options), recommended_option = CASE WHEN ? THEN ? ELSE COALESCE(?, recommended_option) END,
+             accept_means = COALESCE(?, accept_means), reject_means = COALESCE(?, reject_means),
+             allow_reject = COALESCE(?, allow_reject)
            WHERE id = ?`,
         )
         .run(
@@ -1137,8 +1263,12 @@ export class Store {
           newOptions ? 1 : 0,
           input.recommendedOption ?? null,
           given(input.recommendedOption) as string | null,
+          given(input.acceptMeans) as string | null,
+          given(input.rejectMeans) as string | null,
+          input.allowReject === undefined ? null : input.allowReject ? 1 : 0,
           id,
         );
+      this.linkAttachments(id, input.attachments ?? [], owner ?? actor);
       this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${before.question}`, actor);
       const lane = this.requireLane(before.laneId);
       const blocks = lane.status !== 'blocked_human';
@@ -1181,6 +1311,12 @@ export class Store {
    * it, a second decision is a conflict, so two people can't overwrite each other.
    */
   decideEscalation(id: string, decision: string, note: string | null, by: string, change = false): Escalation {
+    // The answer bar's choices: Reject only where the agent offered it, and Other only with instructions.
+    const choice = decision.trim().toLowerCase();
+    if (choice === 'reject' && !this.requireEscalation(id).allowReject) {
+      throw new ValidationError("The agent didn't offer Reject on this escalation");
+    }
+    if (choice === 'other' && !note?.trim()) throw new ValidationError('Other needs instructions for the agent');
     if (change) {
       const current = this.requireEscalation(id);
       if (current.state === 'acknowledged') {
@@ -1750,6 +1886,13 @@ export class Store {
         cost: e.cost,
         alternatives: (JSON.parse(e.alternatives as string) as string[]).join(' | '),
         options: (JSON.parse(e.options as string) as string[]).join(' | '),
+        accept_means: e.accept_means,
+        reject_means: e.reject_means,
+        allow_reject: Number(e.allow_reject ?? 1) === 1,
+        // Names only: exports never carry the files.
+        attachments: this.attachmentsOf(e.id as string)
+          .map((f) => `${f.name} (${f.type}, ${f.size} bytes)`)
+          .join(' | '),
         blocking: Number(e.blocking) === 1,
         state: e.state,
         created_by: e.created_by,

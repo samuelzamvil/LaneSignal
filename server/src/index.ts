@@ -17,6 +17,7 @@ const store = new Store({
   resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem),
   eventRetention: config.eventRetention,
   broadTags: config.broadTags ?? undefined,
+  attachmentsPerItem: config.attachmentsPerItem,
 });
 const accounts = await createAccounts(config, path.join(config.dataDir, 'lanesignal.db'));
 // Everyone who could see the data before projects arrived keeps seeing it (once, on upgrade).

@@ -1463,3 +1463,286 @@ a.button.primary {
   font-weight: 400;
   color: var(--muted);
 }
+
+/* ---- Accept / Reject / Other ---- */
+
+.answer-bar {
+  display: grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  gap: 8px;
+  margin: 12px 0 8px;
+}
+
+.answer-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 8px;
+  font-weight: 700;
+  border-width: 2px;
+}
+
+.answer-choice.accept {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--border));
+}
+
+.answer-choice.reject {
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.answer-means {
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.answer-confirm {
+  margin: 12px 0 8px;
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 2px solid var(--border);
+  background: var(--surface);
+}
+
+.answer-confirm.tone-accept {
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--border));
+}
+
+.answer-confirm.tone-reject {
+  border-color: var(--danger-border);
+}
+
+.answer-confirm p {
+  margin: 0 0 8px;
+}
+
+.answer-confirm .answer-means {
+  display: block;
+  margin-top: 2px;
+}
+
+.answer-confirm textarea {
+  width: 100%;
+}
+
+.dismiss-row {
+  margin-top: 4px;
+}
+
+.link-button {
+  padding: 0;
+  min-height: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-decoration: underline;
+}
+
+/* ---- attachments ---- */
+
+.attachments-line {
+  margin: 4px 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attachment {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 140px;
+  padding: 6px;
+  text-align: left;
+  font-size: 0.8rem;
+}
+
+.attachment img,
+.attachment .thumb-placeholder,
+.attachment .doc-icon {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 90px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+
+.attachment .doc-icon {
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.attachment-name {
+  width: 100%;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.viewer-image {
+  background: #000;
+  color: #fff;
+}
+
+.viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(8px + var(--safe-top)) 16px 8px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.viewer-image .viewer-head {
+  border-color: #333;
+}
+
+.viewer-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-body {
+  flex: 1;
+  margin: 0;
+  overflow: auto;
+  padding: 12px 16px calc(24px + var(--safe-bottom));
+}
+
+.plain-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+}
+
+.zoom {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.zoom img {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  transform-origin: center;
+  user-select: none;
+}
+
+/* Rendered Markdown from attachments. */
+.markdown {
+  max-width: 760px;
+  overflow-wrap: anywhere;
+}
+
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 1.1em 0 0.4em;
+}
+
+.markdown pre {
+  overflow-x: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 0.85rem;
+}
+
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+
+.markdown :not(pre) > code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.markdown blockquote {
+  margin: 0.6em 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.4em;
+}
+
+.markdown li.task {
+  list-style: none;
+  margin-left: -1.4em;
+}
+
+.markdown li.task > input {
+  width: auto;
+  height: auto;
+  min-height: 0;
+  margin: 0 6px 0 0;
+}
+
+.markdown li.task > p:first-of-type {
+  display: inline;
+}
+
+.markdown li > p {
+  margin: 0.2em 0;
+}
+
+.md-table {
+  overflow-x: auto;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.markdown th,
+.markdown td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+}

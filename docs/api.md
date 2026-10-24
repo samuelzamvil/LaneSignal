@@ -34,7 +34,8 @@ ID=$(curl -s -X POST $URL/api/escalations -H "authorization: Bearer $KEY" -H 'co
        "recommendation":"Drop it; the auth rework is simpler without it.",
        "cost":"A restore from backup if we were wrong.",
        "alternatives":["Rename it to legacy_role_deprecated for one release."],
-       "options":["Drop","Keep"],"recommendedOption":"Drop"}' | jq -r .id)
+       "acceptMeans":"Drop it in migration 0042","rejectMeans":"Keep it for one more release",
+       "attachments":["<id from POST /api/attachments>"]}' | jq -r .id)
 
 # wait for answers on any of the group's lanes (up to 24h per call; repeat while ready is false)
 curl -s "$URL/api/wait?group=payments-epic&timeout=86400" -H "authorization: Bearer $KEY" | jq '.decided[] | {ref,decision,decisionNote}'
@@ -79,10 +80,12 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `GET /api/escalations?state=open,decided&lane=<id>` | any | Defaults to unresolved (open and decided) |
 | `POST /api/escalations` | agent | See the [fields](concepts.md#escalations). `blocking: false` for FYI questions. The lane must be published first (`404` otherwise). `201` when created; `200` with `duplicate: true` when the same question (ignoring spacing and case) is already open on that lane from the same agent. If that one is an FYI and this request isn't (`blocking` left out or `true`), it becomes blocking and notifies the owner: `200` with `upgraded: true`, and fields given here replace the FYI's |
 | `GET /api/escalations/:id?wait=<s>` | any | The escalation in full. With answering on the dashboard on, `wait` (up to 300) holds the request until it's no longer open |
+| `POST /api/attachments` | any | Multipart upload with the file in the `file` field (`curl -F file=@plan.md`). Markdown or text (`.md`, `.txt`, UTF-8) or a PNG, JPEG, WebP or GIF image, recognised by content; at most `LANESIGNAL_ATTACHMENT_MAX_MB`. Returns `201 {id, name, type, size}`. List the id in an escalation's `attachments` within a day |
+| `GET /api/attachments/:id` | any | The file, to callers who can see its escalation (or its uploader, before it's attached) |
 | `POST /api/lanes/:id/notices` | agent | `{message}` (one line, at most 140 characters): a milestone for the owner, pushed quietly and kept in the lane's history (`kind: "notice"`). `404` for an unknown lane; `409` for a second one on the lane within a minute (the limit is per lane) |
 | `GET /api/wait?group=&lane=a,b&ids=1,2&timeout=<s>` | any | Decisions on (`404` otherwise). Waits until something in scope needs the agent; give at least one of `group`, `lane`, `ids`. Returns `{ready, decided, closed, open, removedLanes, checkedAt}` ([details](agents.md#waiting-for-decisions)), with escalations in brief (no context; `GET /api/escalations/:id` has everything); pass `checkedAt` back as `since`. Unknown groups, lanes or ids are `404`. `timeout` defaults to 300, max 86400. If it has to wait, it sends `200` at once and a space every 20s until the JSON follows, so proxies keep it open |
 | `POST /api/escalations/:id/positions` | agent | Decisions on. `{stance, note?, agent?}`. Open escalations only; at most 20 agents |
-| `POST /api/escalations/:id/decide` | human | Decisions on. `{decision, note?, change?}`. A second decision is `409`, unless `change: true` and the agent hasn't acknowledged yet |
+| `POST /api/escalations/:id/decide` | human | Decisions on. `{decision, note?, change?}`: the app sends `Accept`, `Reject` or `Other`. `Reject` is `400` where the agent set `allowReject: false`, and `Other` needs a `note`. A second decision is `409`, unless `change: true` and the agent hasn't acknowledged yet |
 | `POST /api/escalations/:id/ack` | any | Decisions on. `{note?, status?, activity?}`. Only the agent that raised it, or a person, can acknowledge (`403` for other agents). Returns the escalation with the final decision; `status`/`activity` update the lane. Repeating it returns the same result |
 | `POST /api/escalations/:id/withdraw` | any | Dismiss: `{note, status?, activity?}`. Agents must give `note`, the justification (what was decided and where); only the agent that raised it can dismiss it (`403` otherwise), and people may dismiss stale ones. `status`/`activity` publish the lane's next state; a lane this unblocks goes back to `active` |
 | `GET /api/export` | any | Zip of every dataset as CSV plus a README. `?from=&to=&lane=&project=` filter. One export at a time (`429` while another runs). See [Export](export.md) |

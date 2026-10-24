@@ -653,9 +653,14 @@ function buildServer(
       'create_escalation',
       {
         description:
-          'Alert the owner: notifies their phone and blocks the lane (`blocking: false` for an FYI). One per decision; ' +
+          'Ask the owner: notifies their phone and blocks the lane (`blocking: false` for an FYI). One per decision; ' +
           'the lane must be published first. Write it to be understood from a phone: `question`, `context`, ' +
-          '`recommendation`, `cost`, `alternatives`, and 2-4 short `options` with `recommended_option` when it\'s a choice. ' +
+          '`recommendation`, `cost`, `alternatives`' +
+          (features.decisions
+            ? '. The owner answers Accept, Reject or Other (with instructions): say in one line each what `accept_means` and ' +
+              '`reject_means`, or `allow_reject: false` when rejecting makes no sense. '
+            : '. ') +
+          'Files (a plan, a screenshot) go in `attachments`: ids from uploading each to /api/attachments. ' +
           'Returns its code (`ref`, e.g. "A12"), usable in every tool. The same open question again returns the first ' +
           '(`duplicate: true`); the same `question` as an open FYI of yours, raised as blocking, makes it block and notifies the owner (`upgraded: true`; fields you give replace the FYI\'s). ' +
           (features.decisions
@@ -671,15 +676,28 @@ function buildServer(
           alternatives: s.escalationFields.alternatives,
           ticket: s.escalationFields.ticket,
           positions: s.escalationFields.positions,
-          options: s.escalationFields.options,
+          ...(features.decisions
+            ? {
+                accept_means: s.escalationFields.acceptMeans.describe('One line: what you do if the owner accepts.'),
+                reject_means: s.escalationFields.rejectMeans.describe('One line: what you do if they reject.'),
+                allow_reject: s.escalationFields.allowReject.describe('false when Reject makes no sense (default true).'),
+              }
+            : {}),
+          attachments: s.escalationFields.attachments.describe('Ids returned by POST /api/attachments (curl -F file=@plan.md).'),
           links: s.escalationFields.links,
           blocking: s.escalationFields.blocking,
           ...PROJECT_WRITE,
         },
       },
-      async ({ lane_id, recommended_option, project, ...rest }) => {
+      async ({ lane_id, accept_means, reject_means, allow_reject, project, ...rest }) => {
         try {
-          const input = s.escalationInput.parse({ laneId: lane_id, recommendedOption: recommended_option, ...rest });
+          const input = s.escalationInput.parse({
+            laneId: lane_id,
+            acceptMeans: accept_means,
+            rejectMeans: reject_means,
+            allowReject: allow_reject,
+            ...rest,
+          });
           const pr = a.pick(project, { lane: input.laneId });
           return json(brief(pub.escalation(store.createEscalation({ ...input, laneId: q(pr, input.laneId) }, who.name, ownerOf(who)))));
         } catch (err) {
@@ -772,7 +790,8 @@ function buildServer(
         'decide_escalation',
         {
           description:
-            'Record a human decision on an open escalation. With `change: true`, replace the decision on one that is ' +
+            'Record a human decision on an open escalation: "Accept", "Reject" (if offered) or "Other" with instructions in ' +
+            '`note` (older escalations may list `options`). With `change: true`, replace the decision on one that is ' +
             'decided but not yet acknowledged by its agent.',
           inputSchema: {
             id: z.string().describe(ID_HELP),

@@ -218,15 +218,11 @@ export function AgentKeysSection({
             <>
               <p className="hint">2. Install the skill that teaches agents how to use LaneSignal:</p>
               <CopyBlock label="Skill command" text={skillCommand} />
-              {decisions && (
-                <>
-                  <p className="hint">
-                    For long waits, put this in the project's <code>.claude/settings.local.json</code> (not committed: it
-                    holds the key), with your group id:
-                  </p>
-                  <CopyBlock label="Settings" text={envBlock} />
-                </>
-              )}
+              <p className="hint">
+                For {decisions ? 'long waits and attachments' : 'attachments'}, put this in the project's{' '}
+                <code>.claude/settings.local.json</code> (not committed: it holds the key), with your group id:
+              </p>
+              <CopyBlock label="Settings" text={envBlock} />
               <details>
                 <summary className="hint">3. Tell the overseer when to use LaneSignal: a starter policy for its CLAUDE.md</summary>
                 <CopyBlock label="Policy" text={policyFor('', needsProject ? '<project-id>' : null, requirements, decisions)} />

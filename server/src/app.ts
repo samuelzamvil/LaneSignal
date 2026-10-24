@@ -5,6 +5,7 @@ import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
 import { accessFor, briefWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { readUpload, sniff } from './attachments.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import type { Config } from './config.ts';
@@ -396,6 +397,43 @@ export function createApp({ config, store, accounts, push, webDir, skillFile }: 
     const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
     store.deleteLane(q(project, String(req.params.id)), principalOf(res).name);
     res.sendStatus(204);
+  });
+
+  // ---- attachments: files on escalations (a plan to read, a UI preview) ----
+
+  /** `curl -F file=@plan.md`: keeps the file until an escalation lists its id in `attachments`. */
+  app.post(
+    '/api/attachments',
+    any,
+    h(async (req, res) => {
+      const file = await readUpload(req, config.attachmentMaxBytes);
+      const type = sniff(file.data, file.name);
+      if (!type) {
+        throw new ValidationError('Attach Markdown (.md) or text (.txt) files, or PNG, JPEG, WebP or GIF images');
+      }
+      const p = principalOf(res);
+      res.status(201).json(store.addAttachment({ ...file, type }, ownerOf(p), p.name));
+    }),
+  );
+
+  /**
+   * The file, for people and agents who can see its escalation (or its uploader, before it's
+   * attached). Served so a browser can't run it: its own type, no sniffing, a sandbox.
+   */
+  app.get('/api/attachments/:id', any, (req, res) => {
+    const file = store.getAttachment(String(req.params.id));
+    const notFound = () => new NotFoundError(`Attachment ${req.params.id} not found`);
+    if (!file) throw notFound();
+    if (file.escalationId) acc(res).escalation(file.escalationId);
+    else if (file.owner !== ownerOf(principalOf(res))) throw notFound();
+    res.set({
+      'content-type': file.type.startsWith('text/') ? `${file.type}; charset=utf-8` : file.type,
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+      'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+      'cache-control': 'private, max-age=86400',
+    });
+    res.send(Buffer.from(file.data));
   });
 
   // Overseers tell the owner about milestones (merged, started a ticket): a quiet push.

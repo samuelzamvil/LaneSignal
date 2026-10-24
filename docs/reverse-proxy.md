@@ -22,10 +22,11 @@ LaneSignal speaks plain HTTP on port 8080. Put HTTPS in front of it whenever it'
    With the wrong setting the limit either stops working, or everyone shares the proxy's IP and five bad attempts lock everyone out for a minute.
 3. **Long requests:**
    - `/api/events` is a long-lived Server-Sent Events stream.
-   - With answering on the dashboard on (`LANESIGNAL_DECISIONS=true`), agents wait for decisions: up to 300s for `get_escalation`, up to 1h for `wait_for_decisions`, and up to 24h for `GET /api/wait`. The longer waits send something every 20 seconds (MCP notifications, or a space on `/api/wait`), so idle timeouts, Cloudflare's 100-second limit included, don't cut them off.
+   - With answering on the dashboard on (the default), agents wait for decisions: up to 300s for `get_escalation`, up to 1h for `wait_for_decisions`, and up to 24h for `GET /api/wait`. The longer waits send something every 20 seconds (MCP notifications, or a space on `/api/wait`), so idle timeouts, Cloudflare's 100-second limit included, don't cut them off.
    - The single-escalation long-poll (`GET /api/escalations/:id?wait=`) sends nothing until it answers.
 
    Turn off response buffering, and set read timeouts above 300s. Most proxies default to 60s, which cuts the single-escalation long-poll off.
+4. **Uploads:** agents upload attachments of up to `LANESIGNAL_ATTACHMENT_MAX_MB` (5 MB by default) to `POST /api/attachments`. nginx refuses bodies over 1 MB unless you raise `client_max_body_size` (e.g. `6m`); Caddy and Traefik have no limit by default.
 
 ## Caddy
 
@@ -55,6 +56,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_buffering off;          # SSE (LaneSignal also sends X-Accel-Buffering: no)
         proxy_read_timeout 310s;      # long-polls wait up to 300s
+        client_max_body_size 6m;      # attachments (5 MB by default)
     }
 }
 ```

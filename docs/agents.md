@@ -54,7 +54,7 @@ curl -fsS https://lanesignal.example.com/api/skill -o .claude/skills/lanesignal/
 
 Use `~/.claude/skills/lanesignal/` instead to install it for every project on that machine. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, then `decisions.md` (answering on the dashboard, the default) or `alerts.md` (`LANESIGNAL_DECISIONS=false`), then `requirements.md` when requirements are on. The server joins them. Re-run the command after upgrading LaneSignal or changing its features.
 
-The skill runs long waits in the background over HTTP. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
+The skill runs long waits in the background over HTTP, and uploads attachments with `curl`. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
 
 ## 4. Set your policy (when to use it)
 
@@ -74,7 +74,7 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 | `update_group` | agent | Name the epic/train, set its ticket, link the overseer's Remote Control session |
 | `update_lane` | agent | Create or update a lane: status, group, ticket, activity, links. Omitted fields stay unchanged. The group must be registered with `update_group` first. While a blocking escalation is open, the lane stays `blocked_human` |
 | `remove_lane` | agent | Take a finished lane off the dashboard (archived; open questions withdrawn; history kept) |
-| `create_escalation` | agent | Ask the owner (see the [fields](concepts.md#escalations)). The lane must be published first. The same open question on the same lane (ignoring spacing and case) returns the existing one (`duplicate: true`), so retries are safe; the same question as an open FYI, raised without `blocking: false`, makes it blocking and notifies the owner (`upgraded: true`; fields given replace the FYI's). Returns the escalation in brief |
+| `create_escalation` | agent | Ask the owner (see the [fields](concepts.md#escalations)): with answering on, `accept_means` / `reject_means` / `allow_reject` say what the answers mean; `attachments` lists uploaded files. The lane must be published first. The same open question on the same lane (ignoring spacing and case) returns the existing one (`duplicate: true`), so retries are safe; the same question as an open FYI, raised without `blocking: false`, makes it blocking and notifies the owner (`upgraded: true`; fields given replace the FYI's). Returns the escalation in brief |
 | `notify_owner` | agent | A milestone for the owner ("Merged PR #311", "Starting gh:42"): a quiet push, kept in the lane's history. One line (140 characters), one per lane per minute. Stored even when `LANESIGNAL_NOTIFY_ON` leaves notices out or no push is set up |
 | `dismiss_escalation` | agent | Close an alert once it's dealt with (the owner answered in the session, or it's moot), with a required `justification` saying what was decided. `status` and `activity` publish the lane's next state. Only the agent that raised it can dismiss it |
 | `get_escalation` | any | Read one escalation in full |
