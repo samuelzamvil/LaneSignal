@@ -24,9 +24,11 @@ LANESIGNAL_URL=http://localhost:8080 LANESIGNAL_TOKEN=ls_… node scripts/seed-d
 | `server/src/auth.ts` | Resolves a bearer credential to a principal and role |
 | `server/src/mcp.ts` | MCP tools |
 | `server/src/notify.ts` | FCM and ntfy push |
+| `server/src/trmnl.ts` | Pushes each project's TRMNL screen, and builds its plugin zip |
 | `server/src/types.ts` | API types, shared with the web client |
-| `web/src/` | React app: `App.tsx` (layout, routing, filters), `escalations.tsx`, `components.tsx`, `live.ts` (snapshot + SSE), `login.tsx`, `settings.tsx` |
+| `web/src/` | React app: `App.tsx` (layout, routing, filters), `escalations.tsx`, `components.tsx`, `live.ts` (snapshot + SSE), `login.tsx`, `settings.tsx`, `seen.ts` (which lane messages this device has shown) |
 | `web/android/` | Capacitor Android project |
+| `integrations/trmnl/` | The TRMNL private plugin (Liquid layout, settings.yml) |
 | `deploy/dockge/` | Example Dockge / Compose stack |
 
 ## CI

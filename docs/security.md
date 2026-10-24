@@ -48,7 +48,7 @@ Event streams, long-polls and MCP waits stop as soon as their credential is revo
 - All input is validated with zod, and link URLs must be http(s).
 - The UI renders agent-supplied text as text, and only auto-links http(s) URLs.
 - Static tokens are compared in constant time against SHA-256 digests.
-- Attachments are recognised by their content: Markdown and text (valid UTF-8, named `.md` or `.txt`) and PNG, JPEG, WebP or GIF images. Everything else, SVG and HTML included, is refused. Files are served with their own type, `nosniff` and a sandboxing `Content-Security-Policy`, only to callers who can see the escalation's project (or, before it's attached, to the key that uploaded it). The app renders Markdown as its own elements, never as HTML.
+- Attachments are recognised by their content: Markdown and text (valid UTF-8, named `.md` or `.txt`) and PNG, JPEG, WebP or GIF images. Everything else, SVG and HTML included, is refused. Files are served with their own type, `nosniff` and a sandboxing `Content-Security-Policy`, only to callers who can see the escalation's project (or, for a lane message's files, the lane's project; before it's attached, only the key that uploaded it). The app renders Markdown as its own elements, never as HTML.
 - Only `/api/events` accepts a token as a query parameter (`?access_token=`), for clients that can't send headers. The bundled apps send headers.
 
 ## Your part

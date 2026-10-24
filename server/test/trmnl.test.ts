@@ -328,6 +328,58 @@ describe('pushing', () => {
     }
   });
 
+  test('two Send now at once still never overlap; a paused screen refuses Send now', async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    const trmnl = fakeTrmnl([], 60);
+    const pusher = new TrmnlPusher(store, opts(trmnl.fetch)).start();
+    try {
+      await sleep(25);
+      const [a, b] = await Promise.all([pusher.sendNow('default'), pusher.sendNow('default')]);
+      assert.equal(a.ok && b.ok, true);
+      assert.equal(trmnl.maxInFlight(), 1);
+      store.saveTrmnlSetup('default', { enabled: false, includeNotifications: false });
+      await assert.rejects(pusher.sendNow('default'), /paused/);
+    } finally {
+      pusher.stop();
+    }
+  });
+
+  test("a new URL doesn't wait out the old plugin's gap", async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });
+    const trmnl = fakeTrmnl();
+    const pusher = new TrmnlPusher(store, { fetch: trmnl.fetch, minGapMs: 2_000, debounceMs: 10, heartbeatMs: 3_600_000 }).start();
+    try {
+      await sleep(40);
+      escalate(store, { laneId: 'default/e2e', question: 'Ship it?' }, 'bot'); // now waiting out the gap
+      await sleep(20);
+      const other = 'https://trmnl.com/api/custom_plugins/new-plugin-0000';
+      store.saveTrmnlSetup('default', { webhookUrl: other, enabled: true, includeNotifications: false });
+      pusher.reset('default', true);
+      await sleep(100);
+      assert.deepEqual(trmnl.urls, [URL_, other]);
+    } finally {
+      pusher.stop();
+    }
+  });
+
+  test("a notice's files show on the card", async () => {
+    const store = newStore();
+    store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: true });
+    const trmnl = fakeTrmnl();
+    const pusher = new TrmnlPusher(store, opts(trmnl.fetch)).start();
+    try {
+      await sleep(30);
+      const shot = store.addAttachment({ name: 'shot.png', type: 'image/png', data: new Uint8Array([1]) }, 'bot', 'bot');
+      store.postNotice('default/auth', 'Merged, screenshot attached', 'bot', [shot.id]);
+      await sleep(250);
+      assert.equal(trmnl.pushes.at(-1).card.files, 1);
+    } finally {
+      pusher.stop();
+    }
+  });
+
   test('after a restart, pushes stay spaced from the ones before it', async () => {
     const store = newStore();
     store.saveTrmnlSetup('default', { webhookUrl: URL_, enabled: true, includeNotifications: false });

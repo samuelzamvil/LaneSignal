@@ -33,6 +33,7 @@ Set these in the stack's environment (Compose / `.env`); there's no switch in th
 | `LANESIGNAL_SIGNIN_RATE_WINDOW` | | `60` | Window in seconds |
 | `LANESIGNAL_SESSION_DAYS` | | `90` | Days a sign-in lasts without being used. Each use, at most daily, extends it |
 | `LANESIGNAL_SKILL_FILE` | | bundled | Path of the agent skill served at `/api/skill` |
+| `LANESIGNAL_TRMNL_DIR` | | bundled | Folder with the TRMNL plugin files (`integrations/trmnl`) served as `/api/projects/:id/trmnl/plugin.zip` |
 | `LANESIGNAL_BROAD_TAGS` | | built-in list | Comma-separated requirement tags rejected as too broad (replaces the built-in `backend, frontend, ui, ux, api, misc, …`). Empty allows any |
 | `LANESIGNAL_HUMAN_TOKENS` | `tokens[]` | | Optional static human tokens, `name:token,…` (16+ chars each), for break-glass and scripts. `LANESIGNAL_OVERSEER_TOKENS` is the old name and still works |
 | `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | Optional static agent tokens. Prefer [agent keys](accounts.md#agent-keys) |
@@ -46,8 +47,8 @@ In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "t
 | `LANESIGNAL_GROUP_LABEL` | `groupLabel` | `Group` | What a group (one overseer session's lanes) is called in the app, e.g. `Train` |
 | `LANESIGNAL_TICKET_TEMPLATES` | `ticketTemplates` | | `key=url-with-{id},…`, e.g. `redmine=https://redmine/issues/{id},gh=https://github.com/o/r/issues/{id}`. In JSON, an object |
 | `LANESIGNAL_TICKET_DEFAULT` | `defaultTicketSystem` | first template | Used for plain refs like `1234` or `#1234` |
-| `LANESIGNAL_ATTACHMENT_MAX_MB` | | `5` | Largest file an agent can attach to an escalation (1–50) |
-| `LANESIGNAL_ATTACHMENTS_PER_ITEM` | | `5` | Most files on one escalation (1–20) |
+| `LANESIGNAL_ATTACHMENT_MAX_MB` | | `5` | Largest file that can be attached to an escalation or a message (1–50) |
+| `LANESIGNAL_ATTACHMENTS_PER_ITEM` | | `5` | Most files on one escalation or one message (1–20) |
 | `LANESIGNAL_STALE_MINUTES` | `staleMinutes` | `30` | A lane that is `active`, `pending_ci` or `awaiting_agent` and hasn't published for this long is flagged stale. `0` turns this off |
 | `LANESIGNAL_EVENT_RETENTION` | `eventRetention` | `200` | Routine activity lines kept per lane. Status changes and escalation history are always kept |
 
@@ -62,6 +63,8 @@ In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "t
 | `LANESIGNAL_FCM_SERVICE_ACCOUNT_FILE` | `fcmServiceAccountFile` | | Path to a Firebase service-account JSON, e.g. `/config/fcm-service-account.json` |
 
 See [Android and push](android.md).
+
+## TRMNL screen
 
 | Env var | JSON key | Default | Notes |
 |---|---|---|---|

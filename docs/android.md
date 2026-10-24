@@ -60,7 +60,7 @@ The server must be reachable over **HTTPS**; see [Reverse proxy](reverse-proxy.m
 
 ## Push notifications
 
-Push goes out for **new escalations** and overseers' milestone **notices**, unless `LANESIGNAL_NOTIFY_ON` says otherwise (it can also add `blocked` or `completed`). Tapping a notification opens that escalation, or the lane for a notice. Pick one backend, or use both.
+Push goes out for **new escalations** and overseers' milestone **notices**, unless `LANESIGNAL_NOTIFY_ON` says otherwise (it can also add `blocked` or `completed`). Tapping a notification opens that escalation, or the lane for a notice. A notice with files shows 📎 and the file's name (or the count) under its text. Pick one backend, or use both.
 
 ### ntfy (simplest, no Google account)
 
@@ -86,4 +86,4 @@ Settings shows whether push is available: "Enabled for escalations", "Not includ
 
 ### Quiet alerts
 
-Questions that need you normally arrive as high priority: in the app's **Escalations** channel (pops up on screen and vibrates) or at ntfy priority 4. An instance admin can turn on **Settings → Alerts → Quiet** to send them as regular notifications instead: the **Lane updates** channel, or ntfy priority 3. It applies to everyone on the server and takes effect for the next notification. FCM still delivers them promptly; only how they show changes. To change just one phone instead, edit the Escalations channel in Android's settings for the app (Settings → Apps → LaneSignal → Notifications).
+Alerts (new blocking questions, the agent's replies on them, and lanes blocked without an escalation when `blocked` is on) normally arrive as high priority: in the app's **Escalations** channel (pops up on screen and vibrates) or at ntfy priority 4. An instance admin can turn on **Settings → Alerts → Quiet** to send them as regular notifications instead: the **Lane updates** channel, or ntfy priority 3. It applies to everyone on the server and takes effect for the next notification. Others see the current setting there ("High priority" or "Sent as regular notifications"). FCM still delivers them promptly; only how they show changes. To change just one phone instead, edit the Escalations channel in Android's settings for the app (Settings → Apps → LaneSignal → Notifications).
