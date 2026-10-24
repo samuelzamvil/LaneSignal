@@ -58,3 +58,11 @@ Event streams, long-polls and MCP waits stop as soon as their credential is revo
 - Create the admin account soon after first start. The setup code sits in the log until you do.
 - Treat agent keys like passwords. Keep them in environment variables, not in git.
 - Back up the data volume, including `auth-secret` ([Operations](operations.md)).
+
+## Running CI in a public repository
+
+When the repository is public (this one, or your own copy), everything in Actions is public: runs, their logs, and (to anyone signed in to GitHub) their artifacts, kept 7 days. Secrets stay masked, and the signing key is only available to `main` and `v*` tags, never to pull requests, as long as only trusted people can push those tags and no repository-level secrets shadow it ([Android](android.md)). Three settings live outside the repository:
+
+- **Settings → Actions → General → Fork pull request workflows:** require approval for all external contributors, so a stranger's pull request doesn't run on your runners until you've read it. (Fork pull requests already get no secrets and a read-only token.)
+- **The Firebase API key** in `google-services.json` ships inside every APK, as in any Android app. In the Google Cloud console, restrict it to the Firebase APIs and to Android apps with the package name `dev.lanesignal.app`. Add your release key's SHA-1 only once you sign releases ([Android](android.md)): unsigned builds each have a different key, and a certificate restriction would stop their push. Sending push needs the service-account file, which stays on your server.
+- **The container image** (`ghcr.io/<you>/lanesignal`) has its own visibility under your profile → Packages → lanesignal → Package settings.
