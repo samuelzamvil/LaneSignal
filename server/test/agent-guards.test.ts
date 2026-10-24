@@ -172,3 +172,42 @@ describe('notices', () => {
     assert.equal((await srv.call('POST', '/api/lanes/pay-1/notices', ALICE, { message: 'not an agent' })).status, 403);
   });
 });
+
+describe('an FYI that now needs the owner', () => {
+  test('raising it again as blocking keeps its code, blocks the lane and takes the new fields', async () => {
+    await srv.publish('fyi-lane', { group: 'payments' });
+    const fyi = await ask('fyi-lane', 'CI takes 40 minutes now', AGENT, { blocking: false });
+    assert.equal((await srv.call('GET', '/api/lanes/fyi-lane', ALICE)).body.lane.status, 'active');
+    // Leaving `blocking` out means blocking, as when creating.
+    const res = await srv.call('POST', '/api/escalations', AGENT, {
+      laneId: 'fyi-lane',
+      question: 'CI takes 40 minutes now',
+      recommendation: 'Split the e2e job',
+      options: ['Split', 'Leave it'],
+      recommendedOption: 'Split',
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.id, fyi.id);
+    assert.equal(res.body.upgraded, true);
+    assert.equal(res.body.blocking, true);
+    assert.deepEqual(res.body.options, ['Split', 'Leave it']);
+    assert.equal(res.body.recommendation, 'Split the e2e job');
+    assert.equal((await srv.call('GET', '/api/lanes/fyi-lane', ALICE)).body.lane.status, 'blocked_human');
+    // Again: nothing more to upgrade.
+    assert.equal((await ask('fyi-lane', 'CI takes 40 minutes now')).upgraded, undefined);
+    // A retry of the original FYI call leaves it alone.
+    const fyi2 = await ask('fyi-lane', 'Flaky test in payouts', AGENT, { blocking: false });
+    assert.equal((await ask('fyi-lane', 'Flaky test in payouts', AGENT, { blocking: false })).upgraded, undefined);
+    // Once answered, the same question is a new escalation.
+    await decide(fyi2.id, 'noted');
+    const fresh = await ask('fyi-lane', 'Flaky test in payouts', AGENT, { blocking: true });
+    assert.notEqual(fresh.id, fyi2.id);
+  });
+});
+
+test('a notice is one line', async () => {
+  const res = await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #311\nAlso lots more' });
+  assert.equal(res.status, 400);
+  assert.equal((await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #311' })).status, 201);
+  assert.equal((await srv.call('POST', '/api/lanes/other/notices', REVIEWER, { message: 'Merged #312' })).status, 409);
+});

@@ -1038,8 +1038,10 @@ export class Store {
     ).find((r) => norm(r.question as string) === norm(input.question));
     if (existing) {
       const id = existing.id as string;
-      // Raising an open FYI again with `blocking: true` makes it need the owner now (same code).
-      if (input.blocking === true && !this.requireEscalation(id).blocking) return { ...this.makeBlocking(id, actor), duplicate: true, upgraded: true };
+      // Raising an open FYI again as blocking (the default) makes it need the owner now (same code).
+      if (input.blocking !== false && !this.requireEscalation(id).blocking) {
+        return { ...this.makeBlocking(id, input, actor), duplicate: true, upgraded: true };
+      }
       return { ...this.requireEscalation(id), duplicate: true };
     }
     const { escalation, lane, blocks } = this.tx(() => {
@@ -1102,12 +1104,41 @@ export class Store {
     return escalation;
   }
 
-  /** An open FYI becomes blocking: the lane blocks, and the owner is notified as for a new question. */
-  private makeBlocking(id: string, actor: string): Escalation {
+  /**
+   * An open FYI becomes blocking: the lane blocks, and the owner is notified as for a new question.
+   * Fields given again (context, recommendation, options, ...) replace the FYI's, so the owner has
+   * what they need to answer.
+   */
+  private makeBlocking(id: string, input: EscalationInput, actor: string): Escalation {
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
       const before = this.requireEscalation(id);
-      this.db.prepare('UPDATE escalations SET blocking = 1, updated_at = ? WHERE id = ?').run(at, id);
+      const given = (v: unknown) => (v === undefined || v === null || (Array.isArray(v) && v.length === 0) ? null : v);
+      const list = (v: unknown[] | undefined) => (given(v) ? JSON.stringify(v) : null);
+      // Options and the recommended one go together, so new options also replace the recommended one.
+      const newOptions = given(input.options) !== null;
+      this.db
+        .prepare(
+          `UPDATE escalations SET blocking = 1, updated_at = ?,
+             context = COALESCE(?, context), recommendation = COALESCE(?, recommendation), cost = COALESCE(?, cost),
+             ticket = COALESCE(?, ticket), alternatives = COALESCE(?, alternatives), links = COALESCE(?, links),
+             options = COALESCE(?, options), recommended_option = CASE WHEN ? THEN ? ELSE COALESCE(?, recommended_option) END
+           WHERE id = ?`,
+        )
+        .run(
+          at,
+          given(input.context) as string | null,
+          given(input.recommendation) as string | null,
+          given(input.cost) as string | null,
+          given(input.ticket) as string | null,
+          list(input.alternatives),
+          list(input.links),
+          list(input.options),
+          newOptions ? 1 : 0,
+          input.recommendedOption ?? null,
+          given(input.recommendedOption) as string | null,
+          id,
+        );
       this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${before.question}`, actor);
       const lane = this.requireLane(before.laneId);
       const blocks = lane.status !== 'blocked_human';
