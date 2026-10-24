@@ -137,13 +137,32 @@ New read tools:
 
 ## Waiting
 
-`wait_for_decisions` returns three kinds of item:
+**What changes:** `wait_for_decisions` returns a **digest of what changed** since the last call (`since`), and nothing it already reported. This keeps the call agents make most cheap in tokens.
 
-- decisions
-- owner notes on the overseer's lanes
-- owner notes on its epics' boards
+**What it returns today, every call:**
 
-It keeps waiting until its timeout even when no escalation is open, so notes posted while nothing is pending aren't missed.
+- each decided-but-unacknowledged escalation, in brief, repeated until acknowledged
+- the whole `open` list
+
+**What the digest returns:**
+
+- **Changes, one item each:** `{code, kind, id, text}`. Kinds:
+  - `decided`: the decision and the note
+  - `reply`: the owner's new message
+  - `lane_note`: an owner note on a lane
+  - `board_note`: an owner note on an epic's board
+  - `closed`
+  - `lane_removed`
+  - `ticket_moved`: another overseer filled a lane with one of this group's tickets
+- **The owner's words in full.** That text is the change, and fetching it in a second call would cost more. Agent text and unchanged fields are left out.
+- **Counts:** `open`, `decidedUnacknowledged` and `waitingOnYou`, so the agent knows what's pending without the list.
+- **No early return when nothing is open.** It returns as soon as something changes, or at its timeout.
+
+**Full state, on demand:** a new `get_updates(scope, since?)` returns everything in scope, as `wait_for_decisions` does today: open escalations, decided ones awaiting acknowledgement, unread notes. Agents call it after a restart or when they've lost track. `get_escalation`, `get_ticket` and `list_*` still return single records in full.
+
+**Compatibility:** `GET /api/wait` and the MCP tool take `format: "full"` for one release, for agents written against today's shape.
+
+**Phone pushes are separate from waits:** each agent post on an epic board still sends a quiet push, as lane milestones do.
 
 ## Epics
 
@@ -243,7 +262,8 @@ Ungrouped lanes are allowed today. They get a per-project stand-in group, named 
 Each PR is shippable on its own, with tests, wiki updates and an adversarial review before it opens.
 
 0. **Fix: acknowledge after a reply.** A small, separate fix to today's code.
-1. **Tickets (server):**
+1. **Wait digest:** `wait_for_decisions` returns only changes; `get_updates` returns everything. Separate from tickets, so it lands first and cuts token use now.
+2. **Tickets (server):**
    - ref normalization
    - the `tickets` table, migration and codes
    - `fill_lane`, `list_tickets` and `get_ticket`, plus the compatibility defaults
@@ -252,12 +272,12 @@ Each PR is shippable on its own, with tests, wiki updates and an adversarial rev
    - `waiting_on`
    - export
    - minimal web changes so nothing breaks: codes, **Idle · no ticket**, and **waiting on**
-2. **Tickets (app):** the Parked row, ticket sheet, switch markers in the lane sheet, the **Active tickets only** filter, and the Android check. The skill and agent instructions move to slots and `fill_lane`.
-3. **Epics:**
+3. **Tickets (app):** the Parked row, ticket sheet, switch markers in the lane sheet, the **Active tickets only** filter, and the Android check. The skill and agent instructions move to slots and `fill_lane`.
+4. **Epics:**
    - the table and migration, with stand-in epics
    - the optional ticket → epic link
    - epic escalations (including blocking ones) and the message board
-   - `wait_for_decisions` returning board notes and waiting with nothing open
+   - board notes in the wait digest
    - close requests and approval
    - the epic card and sheet
    - the agent tools
