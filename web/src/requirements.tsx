@@ -106,6 +106,7 @@ function RequirementCard({
   canEdit,
   onTag,
   onOpen,
+  replaces,
 }: {
   req: Requirement;
   /** Where it applies: a group, a project, or every project. */
@@ -116,6 +117,8 @@ function RequirementCard({
   canEdit: boolean;
   onTag: (tag: string) => void;
   onOpen: (id: string) => void;
+  /** The requirement in force that this pending change would replace, if any. */
+  replaces?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -125,6 +128,14 @@ function RequirementCard({
         <span className="ref">{req.id}</span>
         <span className={`tag${req.project === null ? ' all-projects' : ''}`}>{scopeName}</span>
         <StatusBadge req={req} onOpen={onOpen} />
+        {replaces && (
+          <span className="pill tone-info">
+            Replaces{' '}
+            <button className="link" onClick={() => onOpen(replaces)}>
+              {replaces}
+            </button>
+          </span>
+        )}
       </header>
       {editing ? (
         <EditForm req={req} client={client} onDone={() => setEditing(false)} />
@@ -228,6 +239,8 @@ export function RequirementsPane({
   /** The row opened into a full card, in the list layout. */
   const [expanded, setExpanded] = useState<string | null>(null);
   const [items, setItems] = useState<Requirement[] | null>(null);
+  /** Pending change id → the requirement in force it would replace, so approving shows what goes. */
+  const [replaces, setReplaces] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -246,7 +259,12 @@ export function RequirementsPane({
         statuses: pendingOnly ? ['pending'] : showOld ? ['pending', 'active', 'superseded', 'retired'] : ['pending', 'active'],
       })
       // The server pairs a pending change with the requirement it would replace; this filter shows the pending side only.
-      .then((r) => !cancelled && (setItems(pendingOnly ? r.filter((x) => x.status === 'pending') : r), setError(null)))
+      .then((r) => {
+        if (cancelled) return;
+        setReplaces(new Map(r.filter((x) => x.supersededBy && (x.status === 'pending' || x.status === 'active')).map((x) => [x.supersededBy!, x.id])));
+        setItems(pendingOnly ? r.filter((x) => x.status === 'pending') : r);
+        setError(null);
+      })
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
@@ -341,6 +359,7 @@ export function RequirementsPane({
               canEdit={canEdit}
               onTag={(t) => setTags(tags.includes(t) ? tags : [...tags, t])}
               onOpen={open}
+              replaces={replaces.get(r.id)}
             />
           );
           if (layout === 'cards') return card;
