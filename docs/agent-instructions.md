@@ -25,7 +25,7 @@ Project: `<project-id>` (pass it as `project` on every LaneSignal call; delete t
 
 Don't escalate routine progress or choices you can reverse cheaply; escalations page my phone. Raise things I should know but that don't block you as FYI (`blocking: false`).
 
-**While you wait:** keep working on lanes that aren't blocked. When I answer, acknowledge before acting, and publish the lane's next status in the same call.
+**While you wait:** keep working on lanes that aren't blocked. When I answer in LaneSignal, acknowledge before acting; when I answer here, dismiss the escalation with what I decided. Either way, publish the lane's next status in the same call.
 
 **Requirements** (optional: keep, change or drop this part):
 - Before escalating a product question to me, search the requirements and follow any that answer it.

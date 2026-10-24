@@ -49,5 +49,5 @@ Answers can take minutes or a day.
 ## After a restart
 
 1. Call `update_group` (as at any session start).
-2. Call `wait_for_decisions` with your `group_id`, `wait_seconds: 0` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything decided while you were away; `open` ones are still waiting on the owner, so never raise them again.
+2. Call `wait_for_decisions` with your `group_id`, `wait_seconds: 0` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything decided while you were away. Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
 3. Call `list_lanes` with your `group_id`. A lane you were running that's missing was removed: stop work on it.

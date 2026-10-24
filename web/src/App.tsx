@@ -241,7 +241,11 @@ function Dashboard({
   useEffect(() => {
     if (!isNative) return;
     const h = CapApp.addListener('backButton', () => {
-      if (location.hash && location.hash !== '#/') history.back();
+      // Sheets close the way their back button says; other screens step back.
+      const r = parseRoute(location.hash);
+      if (r.escId) closeTo('#/');
+      else if (r.laneId) closeTo('#/lanes');
+      else if (location.hash && location.hash !== '#/') history.back();
       else void CapApp.minimizeApp();
     });
     return () => void h.then((x) => x.remove());

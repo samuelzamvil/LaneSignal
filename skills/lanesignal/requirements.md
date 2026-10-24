@@ -7,7 +7,7 @@ LaneSignal keeps the owner's product decisions as **requirements**, outside the 
 
 If your owner's policy asks you to keep product decisions (or you're told to record one):
 
-- **Owner decisions only.** Record only what a person decided, never your own design choices. Every requirement names who decided: `decided_by` (e.g. `"Sam (Remote Control, 2026-10-23)"`), plus `source_escalation: "A12"` when it came from an alert. (Where the owner answers in LaneSignal itself, the escalation alone names the decider.)
+- **Owner decisions only.** Record only what a person decided, never your own design choices. Every requirement names who decided: `decided_by` (e.g. `"Sam (Remote Control, 2026-10-23)"`), plus `source_escalation: "A12"` when it came from an escalation. (Where the owner answers in LaneSignal itself, the escalation alone names the decider.)
 - **Short and single:** one decision per requirement, written as one normative statement ("Payout jobs retry at most 5 times, then go to the dead-letter queue."): at most 300 characters, with the reasoning in `justification` (at most 800).
 - **Tags:** 1–3 specific kebab-case tags naming the capability (`payout-retries`, not `backend`). Check `list_requirement_tags` and reuse existing tags.
 - **Scope:** set `group_id` for your train/epic, or leave it out for decisions about the whole project. Pass `all_projects: true` only when the owner said the decision covers all their projects.

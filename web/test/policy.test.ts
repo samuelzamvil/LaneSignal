@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { policyFor, POLICY_TEMPLATE } from '../src/policy.ts';
+import { ALERTS_ONLY, policyFor, POLICY_TEMPLATE } from '../src/policy.ts';
 
 test('the app shows the same policy template as the docs', () => {
   const doc = readFileSync(new URL('../../docs/agent-instructions.md', import.meta.url), 'utf8');
@@ -26,4 +26,8 @@ test('an alerts-only server gets the dismiss wording', () => {
   assert.doesNotMatch(alerts, /acknowledge/);
   assert.match(alerts, /dismiss the alert, with what I decided/);
   assert.match(alerts, /I answer you here, in this session/);
+  for (const [from, to] of ALERTS_ONLY) {
+    assert.ok(POLICY_TEMPLATE.includes(from), `the template still says: ${from}`);
+    assert.ok(alerts.includes(to));
+  }
 });

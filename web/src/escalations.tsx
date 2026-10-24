@@ -3,6 +3,7 @@ import type { Client, Escalation, Group, Lane, Position } from './api.ts';
 import { Links, RichText, TicketLink } from './components.tsx';
 import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
+import { stepTo } from './nav.ts';
 import { toast } from './toast.tsx';
 
 /** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
@@ -398,7 +399,7 @@ export function EscalationDetail({
   const idx = laneOpenIds.indexOf(currentId ?? id);
   const prev = idx > 0 ? laneOpenIds[idx - 1] : undefined;
   const next = idx >= 0 ? laneOpenIds[idx + 1] : laneOpenIds[0];
-  const go = (target: string) => location.replace(`#/esc/${target}`);
+  const go = (target: string) => stepTo(`#/esc/${target}`);
   const nav =
     prev || next ? (
       <nav className="esc-nav" aria-label="Other questions from this lane">
@@ -428,7 +429,7 @@ export function EscalationDetail({
           </button>
           <div className="sheet-title">
             <span className="sheet-kind">{esc && !esc.blocking ? 'FYI' : 'Escalation'}</span>
-            <h2>{esc ? (showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref) : 'Loading…'}</h2>
+            <h2>{esc ? (showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref) : error ? id : 'Loading…'}</h2>
           </div>
           {esc &&
             (esc.state === 'open' && !esc.blocking ? (

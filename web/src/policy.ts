@@ -19,7 +19,7 @@ Project: \`<project-id>\` (pass it as \`project\` on every LaneSignal call; dele
 
 Don't escalate routine progress or choices you can reverse cheaply; escalations page my phone. Raise things I should know but that don't block you as FYI (\`blocking: false\`).
 
-**While you wait:** keep working on lanes that aren't blocked. When I answer, acknowledge before acting, and publish the lane's next status in the same call.
+**While you wait:** keep working on lanes that aren't blocked. When I answer in LaneSignal, acknowledge before acting; when I answer here, dismiss the escalation with what I decided. Either way, publish the lane's next status in the same call.
 
 **Requirements** (optional: keep, change or drop this part):
 - Before escalating a product question to me, search the requirements and follow any that answer it.
@@ -32,11 +32,11 @@ const PROJECT_LINE = /^Project: .*\n\n/m;
 const REQUIREMENTS_PART = /\n\*\*Requirements\*\*[\s\S]*$/;
 
 /** On an alerts-only server (LANESIGNAL_DECISIONS=false) the owner always answers in the session. */
-const ALERTS_ONLY: [string, string][] = [
+export const ALERTS_ONLY: [string, string][] = [
   ['ask me and act on my answers.', 'alert me and dismiss alerts.'],
   ['(I answer in LaneSignal, or here in this session):', '(I answer you here, in this session):'],
   [
-    "**While you wait:** keep working on lanes that aren't blocked. When I answer, acknowledge before acting, and publish the lane's next status in the same call.",
+    "**While you wait:** keep working on lanes that aren't blocked. When I answer in LaneSignal, acknowledge before acting; when I answer here, dismiss the escalation with what I decided. Either way, publish the lane's next status in the same call.",
     "**When I answer:** dismiss the alert, with what I decided as the justification, and publish the lane's next status in the same call.",
   ],
 ];
