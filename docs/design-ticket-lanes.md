@@ -71,8 +71,28 @@ The lane keeps its activity feed and messages. Past ticket switches were never r
 - A new `tickets.csv`.
 - A ticket column on `escalations.csv` and `lane_events.csv`.
 
+## Settled
+
+- **Lanes with no ticket** are allowed and show `idle`: work is often blocked, or can't run in parallel.
+- **Refs from different systems** keep their prefix in codes when they have one (**gh:500A**). The default system's refs use the bare number (**500A**).
+
+## Epics
+
+A group can be linked to one or more epic tickets. Epics are long-lived and aren't worked in a lane, so they get their own table and rules.
+
+- **`epics` table:** ref, name, state and links, linked many-to-many with groups.
+- **Epic card:** sits alongside the lane cards. It shows the combined status updates of the lanes under it, and has its own message board, separate from any lane's messages.
+
 ## Open questions
 
-1. **Lanes with no ticket.** Escalations belong to a ticket, so where does an escalation go on a lane that holds none? Proposal: refuse it and ask the agent to fill the lane first, or create a placeholder ticket named after the lane.
-2. **Refs from different systems.** `gh:500` and `redmine:500` would both code as **500A**. Proposal: keep the prefix when the ref has one (**gh:500A**), and use the bare number for the default system.
-3. **Long refs.** A URL used as a ticket makes an unusable code. Proposal: use the last path segment (`…/issues/500` → **500A**), and fall back to the system prefix on a collision.
+1. **Escalations on a lane with no ticket.** Proposal: they attach to the group's epic and take the epic's code (**900A**). A group with no epic would fall back to the lane's letter, as today.
+2. **A URL used as a ticket ref.** Linking is unaffected. The issue is the code text: the code is the ref plus a letter, so the ref `https://github.com/o/r/issues/500` would give a code ending `…/issues/500A`.
+3. **Which lanes feed an epic's card**, when a group has several epics.
+4. **What makes an epic "not worked the same"**: its states, its blocking rules, and whether questions can be raised on it.
+5. **Whether an epic can span groups.**
+
+## Delivery
+
+1. **Tickets:** schema, migration, ticket codes, `fill_lane`, filters, export. Server and agent tools first, with the dashboard following.
+2. **Dashboard for tickets:** the Parked list, the ticket view and switch markers.
+3. **Epics:** the table, group links, the epic card and its message board.
