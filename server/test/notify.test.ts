@@ -174,3 +174,23 @@ test('an FYI raised again as blocking notifies like a new question; notices go o
   sink.close();
   store.close();
 });
+
+test("every agent message in a conversation reaches the owner", async () => {
+  const sink = await ntfySink();
+  const { config, store } = setup({ LANESIGNAL_NTFY_URL: `${sink.url}/lanes-topic` });
+  startNotifier(config, store);
+  publishLane(store, 'default/lane-1', { name: 'Auth', status: 'active' }, 'bot');
+  const e = escalate(store, { laneId: 'default/lane-1', question: 'Ship?' }, 'bot');
+  store.decideEscalation(e.id, 'Other', 'Behind a flag', 'alice');
+  store.postMessage(e.id, { from: 'agent', author: 'bot', body: 'Flag checkout_v2?' }, 'bot');
+  await settle();
+  assert.deepEqual(
+    sink.received.map((r) => [r.body.title, r.body.message, r.body.priority]),
+    [
+      [`Needs you ${e.ref} · Auth`, 'Ship?', 4],
+      [`Reply ${e.ref} · Auth`, 'Flag checkout_v2?', 4],
+    ],
+  );
+  sink.close();
+  store.close();
+});

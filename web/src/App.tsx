@@ -282,9 +282,11 @@ function Dashboard({
     const k = keyOf(e.project, e.laneId);
     openByLane.set(k, [...(openByLane.get(k) ?? []), e]);
   }
-  // Counts and badges are for blocking questions; FYI ones are listed separately.
-  const open = [...openByLane.values()].flat().filter((e) => e.blocking);
-  const fyi = [...openByLane.values()].flat().filter((e) => !e.blocking);
+  // Counts and badges are for blocking questions waiting on you; FYI ones, and ones where the
+  // agent is replying to your Other, are listed separately.
+  const open = [...openByLane.values()].flat().filter((e) => e.blocking && e.turn === 'owner');
+  const replying = [...openByLane.values()].flat().filter((e) => e.turn === 'agent');
+  const fyi = [...openByLane.values()].flat().filter((e) => !e.blocking && e.turn === 'owner');
   const decided = escalations.filter((e) => e.state === 'decided');
   // Old lane links carry no project: the one lane with that id, or the current/only project.
   const routeLaneProject = route.laneId
@@ -445,6 +447,26 @@ function Dashboard({
               config={config}
               groupName={laneGroupKey(l) && groupName(laneGroupKey(l))}
               onOpen={() => navigate(laneRoute(l.project, l.id))}
+            />
+          ))}
+        </>
+      )}
+      {replying.length > 0 && (
+        <>
+          <h3 className="subhead">
+            Agent's turn · replying to you <span className="count">{replying.length}</span>
+          </h3>
+          {replying.map((e) => (
+            <EscalationCard
+              key={e.id}
+              esc={e}
+              lane={laneOf(e)}
+              group={groupOfLane(laneOf(e))}
+              now={now}
+              client={client}
+              staleMinutes={config.staleMinutes}
+              showProject={showProject}
+              decisions={config.decisions}
             />
           ))}
         </>

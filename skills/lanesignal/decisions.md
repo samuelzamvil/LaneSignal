@@ -3,7 +3,12 @@
 The owner answers on the LaneSignal dashboard or phone app with one of three buttons, then you wait for the decision, acknowledge it and act on it.
 
 - **Say what each answer means** when you raise it: `accept_means` (one line: what you do on Accept) and `reject_means` (what you do on Reject). Pass `allow_reject: false` when rejecting makes no sense (e.g. "Rotate the leaked key?").
-- **The decision** is `Accept`, `Reject` or `Other`. `decisionNote` holds the owner's instructions: optional with Accept and Reject (follow them), always there with Other (do what it says instead).
+- **Accept or Reject** arrive as a decision (`decided` in the wait), with any instructions in `decisionNote`: follow them.
+- **Other opens a conversation.** The escalation stays open and the wait returns it in `replies`, with the owner's new messages. Then either:
+  - **act on it:** `acknowledge_escalation` takes their latest message as the decision (`Other`), then do what it says; or
+  - **reply:** `reply_to_escalation` with a short question back or what you'll do. The owner answers again with Accept, Reject or another message.
+- **Keep messages short:** at most 500 characters, plain, no preamble or recap. Anything longer (a revised plan, a diff summary, a screenshot) goes in an attachment.
+- **Updates while they decide:** you may `reply_to_escalation` with a one-line update when something changed that affects the answer (e.g. "CI found a second failure"). Never to chat or repeat yourself: every message notifies their phone, and updates are limited to one a minute. Retrying the same message is harmless.
 
 1. **Wait** for answers on your whole group (next section). Keep working on lanes that aren't blocked meanwhile.
 2. **Acknowledge first, then act:** call `acknowledge_escalation` as soon as an escalation is decided. It returns the final `decision` and `decisionNote` (the owner may correct a mis-tap until you acknowledge). Act on what it returns. Only the agent that raised an escalation can acknowledge it; repeating an acknowledgement changes nothing.
@@ -17,6 +22,7 @@ Answers can take minutes or a day.
 
 - **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns as soon as anything needs you:
   - `decided`: answered. Acknowledge and act on each one (above).
+  - `replies`: the owner answered Other; `messages` are theirs since you last wrote. Acknowledge and act, or reply (above). They come back on every wait until you do.
   - `closed`: withdrawn by someone else. "Lane removed by …" means the lane was taken off the dashboard.
   - `removedLanes`: lanes someone else took off the dashboard (including ones with nothing open). Stop work on them and don't publish to them again; publishing brings a lane back.
   - `open`: still waiting.
@@ -52,5 +58,5 @@ Answers can take minutes or a day.
 ## After a restart
 
 1. Call `update_group` (as at any session start).
-2. Call `wait_for_decisions` with your `group_id`, `wait_seconds: 0` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything decided while you were away. Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
+2. Call `wait_for_decisions` with your `group_id`, `wait_seconds: 0` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything decided or in `replies` while you were away. Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
 3. Call `list_lanes` with your `group_id`. A lane you were running that's missing was removed: stop work on it.

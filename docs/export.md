@@ -94,6 +94,10 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 `id` (`R14`), `group_id` (empty for product-wide), `requirement`, `justification`, `tags`, `status` (`active`, `superseded`, `retired`), `superseded_by`, `decided_by`, `source_escalation`, `recorded_by`, `created_at`, `updated_at`. Every requirement is included, whatever its status; `from`/`to` filter by creation time. See [Requirements](requirements.md).
 
+### `messages.csv` (conversations)
+
+`id`, `escalation_id`, `escalation_ref`, `project`, `lane_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message, oldest first.
+
 ### `events.csv` (lane history)
 
 `id`, `lane_id`, `at`, `kind`, `message`, `actor`. The `kind` column is one of:

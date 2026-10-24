@@ -87,6 +87,7 @@ export async function exportZip(
         '',
         'escalations.csv  one row per escalation, with decision timings and position counts',
         'positions.csv    one row per agent position on an escalation',
+        'messages.csv     the conversations on escalations (Other answers and agent replies)',
         'lanes.csv        every lane, including archived ones (archived_at set)',
         'groups.csv       every group (epic/train/overseer), including archived ones',
         'events.csv       lane history: status changes, escalation steps, recent activity text',
