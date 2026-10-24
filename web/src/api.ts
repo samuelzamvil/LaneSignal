@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import type {
+  AttachmentMeta,
   Escalation,
   Group,
   Lane,
@@ -16,6 +17,7 @@ import type {
 } from '../../server/src/types.ts';
 
 export type {
+  AttachmentMeta,
   Escalation,
   Group,
   Lane,
@@ -209,6 +211,18 @@ export function createClient(conn: Connection) {
         role: p.admin ? 'admin' : 'user',
       }),
     removePerson: (userId: string) => request<unknown>('POST', '/api/auth/admin/remove-user', { userId }),
+
+    /** An escalation's attached file (fetched with the token, so it works in the app and the browser). */
+    async attachment(id: string): Promise<Blob> {
+      let res: Response;
+      try {
+        res = await fetch(`${base}/api/attachments/${encodeURIComponent(id)}`, { headers });
+      } catch {
+        throw new ApiError(0, "Couldn't reach the server to open the attachment.");
+      }
+      if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+      return res.blob();
+    },
 
     /** Downloads an export (zip or CSV) and hands it to the browser as a file. */
     async download(path: string, fallbackName: string) {

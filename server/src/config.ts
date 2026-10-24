@@ -39,6 +39,10 @@ export interface Config {
   ticketTemplates: Record<string, string>;
   defaultTicketSystem: string | null;
   staleMinutes: number;
+  /** Largest attachment, in bytes. */
+  attachmentMaxBytes: number;
+  /** Most attachments on one escalation. */
+  attachmentsPerItem: number;
   /** Which events trigger push notifications. */
   notifyOn: Set<'escalation' | 'notice' | 'blocked' | 'completed'>;
   fcmServiceAccountFile: string | null;
@@ -216,6 +220,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     defaultTicketSystem:
       env.LANESIGNAL_TICKET_DEFAULT ?? file.defaultTicketSystem ?? Object.keys(ticketTemplates)[0] ?? null,
     staleMinutes: int('LANESIGNAL_STALE_MINUTES', env.LANESIGNAL_STALE_MINUTES ?? file.staleMinutes, 30, 0, 100_000),
+    attachmentMaxBytes: int('LANESIGNAL_ATTACHMENT_MAX_MB', env.LANESIGNAL_ATTACHMENT_MAX_MB, 5, 1, 50) * 1024 * 1024,
+    attachmentsPerItem: int('LANESIGNAL_ATTACHMENTS_PER_ITEM', env.LANESIGNAL_ATTACHMENTS_PER_ITEM, 5, 1, 20),
     notifyOn,
     fcmServiceAccountFile: env.LANESIGNAL_FCM_SERVICE_ACCOUNT_FILE ?? file.fcmServiceAccountFile ?? null,
     ntfyUrl: env.LANESIGNAL_NTFY_URL ?? file.ntfyUrl ?? null,

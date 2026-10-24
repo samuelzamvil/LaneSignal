@@ -51,13 +51,27 @@ Call `create_escalation` once per decision. Four questions in a plan means four 
 | `recommendation` | What you'd do and why |
 | `cost` | What following the recommendation costs |
 | `alternatives` | Other paths, one per entry, each with its tradeoff |
-| `options` + `recommended_option` | 2–4 short answers, when it's a choice |
+| `attachments` | Files the owner should read or see: a plan (`.md`), notes (`.txt`), a UI screenshot (PNG, JPEG, WebP, GIF). See below |
 | `ticket` | What it's about (e.g. the PR), if it's not the lane's ticket |
 | `blocking: false` | For an FYI that shouldn't stop the lane |
 
 - **Codes:** each escalation gets a code, its `ref`, like **A12** (the lane's letter and a number). The owner uses it when they answer you ("A12: drop it"); use it too. Every tool accepts it in place of the id.
 - **Retries are safe:** re-sending the same open question on the same lane returns the existing escalation (`duplicate: true`).
-- **An FYI that now blocks you:** call `create_escalation` again with the FYI's exact `question` and without `blocking: false`. It keeps its code, blocks the lane and notifies the owner as a new question (`upgraded: true`). Fields you give (`context`, `recommendation`, `options`, …) replace the FYI's, so give the owner what they need to answer.
+- **An FYI that now blocks you:** call `create_escalation` again with the FYI's exact `question` and without `blocking: false`. It keeps its code, blocks the lane and notifies the owner as a new question (`upgraded: true`). Fields you give (`context`, `recommendation`, …) replace the FYI's, and new `attachments` are added, so give the owner what they need to answer.
+
+### Attachments
+
+When the owner needs to read a plan or see a UI preview to decide, attach it instead of pasting it into `context`. Upload each file over HTTP (it needs `LANESIGNAL_URL` and `LANESIGNAL_KEY`, as for the wait loop), then pass the ids in `attachments`:
+
+```bash
+base=${LANESIGNAL_URL%/}; base=${base%/mcp}
+curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api/attachments"
+# {"id":"…","name":"plan.md","type":"text/markdown","size":2140}
+```
+
+- Markdown (`.md`) and text (`.txt`) files, and PNG, JPEG, WebP or GIF images. Nothing else (no SVG, HTML or PDF).
+- At most 5 MB each and 5 per escalation (the server may set other limits; its error says).
+- Attach an upload once, from the key that uploaded it. Uploads not attached within a day are deleted.
 
 ## Telling the owner about milestones
 

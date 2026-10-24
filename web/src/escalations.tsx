@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, Lane, Position } from './api.ts';
+import { AttachmentList } from './attachments.tsx';
 import { Links, RichText, TicketLink } from './components.tsx';
 import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
@@ -61,9 +62,103 @@ function StanceSummary({ positions }: { positions: Position[] }) {
   );
 }
 
+type Choice = 'Accept' | 'Reject' | 'Other';
+
 /**
- * Option buttons, free-text answer and note. `compact` (inbox cards) shows
- * only the option buttons and Send; the full form lives in the detail sheet.
+ * Accept / Reject / Other. A tap asks for confirmation, with a box for instructions: optional for
+ * Accept and Reject, required for Other. The same bar sits on inbox cards and in the detail sheet.
+ */
+function AnswerBar({
+  esc,
+  client,
+  compact,
+  change,
+  onDone,
+}: {
+  esc: Escalation;
+  client: Client;
+  compact?: boolean;
+  change?: boolean;
+  onDone?: () => void;
+}) {
+  const [picked, setPicked] = useState<Choice | null>(null);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const choices: { choice: Choice; means: string | null; tone: string }[] = [
+    { choice: 'Accept', means: esc.acceptMeans, tone: 'accept' },
+    ...(esc.allowReject ? [{ choice: 'Reject' as const, means: esc.rejectMeans, tone: 'reject' }] : []),
+    { choice: 'Other', means: 'Tell the agent what to do instead', tone: 'other' },
+  ];
+  const needsNote = picked === 'Other';
+  const code = esc.ref;
+
+  async function send() {
+    if (!picked) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await client.decide(esc.id, picked, note.trim(), change);
+      toast({ text: `Sent “${picked}” to ${code}`, action: { label: 'Change', href: `#/esc/${esc.id}` } });
+      setPicked(null);
+      setNote('');
+      onDone?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!picked) {
+    return (
+      <div className={`answer-bar${compact ? ' compact' : ''}`} onClick={(e) => e.stopPropagation()}>
+        {choices.map(({ choice, means, tone }) => (
+          <button key={choice} className={`answer-choice ${tone}`} onClick={() => setPicked(choice)}>
+            <span className="answer-label">{choice}</span>
+            {means && !compact && <span className="answer-means">{means}</span>}
+          </button>
+        ))}
+        {change && (
+          <button className="ghost" onClick={onDone}>
+            Cancel
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const means = choices.find((c) => c.choice === picked)?.means;
+  return (
+    <div className={`answer-confirm tone-${picked.toLowerCase()}`} onClick={(e) => e.stopPropagation()}>
+      <p>
+        {change ? 'Change the answer to' : 'Answer'} <strong>{picked}</strong> to {code}?
+        {means && picked !== 'Other' && <span className="answer-means"> {means}</span>}
+      </p>
+      <textarea
+        autoFocus={needsNote}
+        placeholder={needsNote ? 'Instructions for the agent (required)' : 'Instructions for the agent (optional)'}
+        value={note}
+        rows={needsNote ? 3 : 2}
+        onChange={(e) => setNote(e.target.value)}
+      />
+      {error && <p className="error">{error}</p>}
+      <div className="actions">
+        <button className="primary" disabled={busy || (needsNote && !note.trim())} onClick={() => void send()}>
+          {busy ? 'Sending…' : `Send ${picked}`}
+        </button>
+        <button className="ghost" disabled={busy} onClick={() => (setPicked(null), setError(null))}>
+          Back
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Answers for older escalations that list options: option buttons, free-text answer and note.
+ * New ones get the Accept / Reject / Other bar. `compact` (inbox cards) shows only the option
+ * buttons and Send; the full form lives in the detail sheet.
  */
 function DecisionForm({
   esc,
@@ -87,6 +182,29 @@ function DecisionForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const decision = custom.trim() || choice;
+
+  if (!esc.options.length) {
+    return (
+      <>
+        <AnswerBar esc={esc} client={client} compact={compact} change={change} onDone={onDone} />
+        {!compact && !change && (
+          <div className="actions dismiss-row">
+            <button
+              className="link-button"
+              disabled={busy}
+              onClick={() => {
+                const why = prompt('Dismiss without a decision? Optional reason:');
+                if (why !== null) void run(() => client.withdraw(esc.id, why));
+              }}
+            >
+              Dismiss without answering
+            </button>
+            {error && <p className="error">{error}</p>}
+          </div>
+        )}
+      </>
+    );
+  }
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -297,6 +415,11 @@ export function EscalationCard({
       )}
       <h3>{esc.question}</h3>
       {esc.state === 'open' && esc.context && <p className="context-line">{esc.context}</p>}
+      {esc.attachments.length > 0 && (
+        <p className="attachments-line" title="Open the escalation to view them">
+          📎 {esc.attachments.map((f) => f.name).join(', ')}
+        </p>
+      )}
       {esc.state === 'decided' ? (
         <>
           <p className="decision">
@@ -465,6 +588,13 @@ export function EscalationDetail({
               <p className="question-text">{esc.question}</p>
             </section>
 
+            {esc.attachments.length > 0 && (
+              <section className="esc-section">
+                <h4>Attachments</h4>
+                <AttachmentList client={client} files={esc.attachments} />
+              </section>
+            )}
+
             {(esc.recommendation || esc.recommendedOption || esc.cost) && (
               <section className="esc-section recommendation">
                 <h4>Recommendation</h4>
@@ -588,6 +718,10 @@ export function EscalationDetail({
                     {esc.decidedAt && <span className="muted"> · {absolute(esc.decidedAt)}</span>}
                   </p>
                 )}
+                {(() => {
+                  const means = esc.decision === 'Accept' ? esc.acceptMeans : esc.decision === 'Reject' ? esc.rejectMeans : null;
+                  return means && <p className="muted">{means}</p>;
+                })()}
                 {esc.decisionNote && <p className="note">{esc.decisionNote}</p>}
                 {esc.state === 'decided' && (
                   <>

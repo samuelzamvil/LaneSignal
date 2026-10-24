@@ -49,6 +49,10 @@ export const escalationFields = {
   ticket: z.string().max(300).nullable().optional(),
   positions: z.array(position.required({ agent: true })).max(20).optional(),
   options: z.array(z.string().min(1).max(200)).max(10).optional(),
+  acceptMeans: z.string().trim().min(1).max(200).nullable().optional(),
+  rejectMeans: z.string().trim().min(1).max(200).nullable().optional(),
+  allowReject: z.boolean().optional(),
+  attachments: z.array(z.string().min(1).max(64)).max(20).optional(),
   links: z.array(link).max(20).optional(),
   blocking: z.boolean().optional(),
 };

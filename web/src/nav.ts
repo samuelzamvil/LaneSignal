@@ -54,6 +54,25 @@ export function stepTo(hash: string) {
   location.replace(hash);
 }
 
+/** Close functions of open overlays (the attachment viewer), newest last: back closes these first. */
+const overlays: (() => void)[] = [];
+
+/** Registers an open overlay; returns the function that unregisters it. */
+export function pushOverlay(close: () => void) {
+  overlays.push(close);
+  return () => {
+    const i = overlays.lastIndexOf(close);
+    if (i !== -1) overlays.splice(i, 1);
+  };
+}
+
+/** Closes the newest overlay; false when none is open. */
+export function closeOverlay() {
+  const close = overlays.pop();
+  close?.();
+  return !!close;
+}
+
 /** Close a sheet: step back if we navigated here in-app, otherwise go to `fallback`. */
 export function closeTo(fallback: string) {
   if ((history.state as Entry | null)?.inApp) history.back();

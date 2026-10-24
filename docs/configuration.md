@@ -46,6 +46,8 @@ In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "t
 | `LANESIGNAL_GROUP_LABEL` | `groupLabel` | `Group` | What a group (one overseer session's lanes) is called in the app, e.g. `Train` |
 | `LANESIGNAL_TICKET_TEMPLATES` | `ticketTemplates` | | `key=url-with-{id},…`, e.g. `redmine=https://redmine/issues/{id},gh=https://github.com/o/r/issues/{id}`. In JSON, an object |
 | `LANESIGNAL_TICKET_DEFAULT` | `defaultTicketSystem` | first template | Used for plain refs like `1234` or `#1234` |
+| `LANESIGNAL_ATTACHMENT_MAX_MB` | | `5` | Largest file an agent can attach to an escalation (1–50) |
+| `LANESIGNAL_ATTACHMENTS_PER_ITEM` | | `5` | Most files on one escalation (1–20) |
 | `LANESIGNAL_STALE_MINUTES` | `staleMinutes` | `30` | A lane that is `active`, `pending_ci` or `awaiting_agent` and hasn't published for this long is flagged stale. `0` turns this off |
 | `LANESIGNAL_EVENT_RETENTION` | `eventRetention` | `200` | Routine activity lines kept per lane. Status changes and escalation history are always kept |
 

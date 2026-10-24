@@ -1,6 +1,9 @@
 ## When the owner answers
 
-The owner answers on the LaneSignal dashboard or phone app. You wait for the decision, acknowledge it, then act on it.
+The owner answers on the LaneSignal dashboard or phone app with one of three buttons, then you wait for the decision, acknowledge it and act on it.
+
+- **Say what each answer means** when you raise it: `accept_means` (one line: what you do on Accept) and `reject_means` (what you do on Reject). Pass `allow_reject: false` when rejecting makes no sense (e.g. "Rotate the leaked key?").
+- **The decision** is `Accept`, `Reject` or `Other`. `decisionNote` holds the owner's instructions: optional with Accept and Reject (follow them), always there with Other (do what it says instead).
 
 1. **Wait** for answers on your whole group (next section). Keep working on lanes that aren't blocked meanwhile.
 2. **Acknowledge first, then act:** call `acknowledge_escalation` as soon as an escalation is decided. It returns the final `decision` and `decisionNote` (the owner may correct a mis-tap until you acknowledge). Act on what it returns. Only the agent that raised an escalation can acknowledge it; repeating an acknowledgement changes nothing.

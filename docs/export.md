@@ -54,6 +54,8 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 | `lane_id`, `lane_name`, `group_id`, `group_name` | What it belongs to (the group as the lane has it now, even if the group was archived) |
 | `ticket`, `ticket_url` | The escalation's own reference, e.g. the plan PR |
 | `question`, `context`, `recommendation`, `recommended_option`, `cost`, `alternatives`, `options` | The question as asked |
+| `accept_means`, `reject_means`, `allow_reject` | What Accept and Reject meant, and whether Reject was offered |
+| `attachments` | The attached files as `name (type, size)`, joined with ` \| `. Exports never include the files themselves |
 | `blocking` | `false` for FYI questions |
 | `state` | `open`, `decided`, `acknowledged` or `withdrawn` |
 | `created_by`, `created_at` | Which agent asked, and when |

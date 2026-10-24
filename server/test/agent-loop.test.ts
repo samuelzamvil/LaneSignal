@@ -94,11 +94,10 @@ describe('safe retries', () => {
     const res = await srv.tool(AGENT, 'create_escalation', {
       lane_id: 'retry',
       question: 'Bad?',
-      options: ['A'],
-      recommended_option: 'B',
+      accept_means: 'x'.repeat(201),
     });
     assert.equal(res.isError, true);
-    assert.match(res.text, /^Invalid input: recommended_option: /);
+    assert.match(res.text, /accept_means/);
   });
 });
 
@@ -127,7 +126,7 @@ describe('acknowledging publishes the next lane state', () => {
 
 describe('changing a decision', () => {
   test('needs change: true, and only until the agent acknowledges', async () => {
-    const e = await ask('change', 'Which?', { options: ['A', 'B'] });
+    const e = await ask('change', 'Which?');
     await decide(e.id, 'A');
     assert.equal((await decide(e.id, 'B')).status, 409, 'a plain second decision is a conflict');
     const changed = await decide(e.id, 'B', { change: true, note: 'mis-tap' });
