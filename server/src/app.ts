@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError, type ZodType } from 'zod';
-import { accessFor, briefMessages, briefWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, approvesRequirements, briefMessages, briefWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { oversizedImage, readUpload, sniff } from './attachments.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
@@ -821,7 +821,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   app.post('/api/requirements', any, requirementsOnly, (req, res) => {
     const p = principalOf(res);
-    const result = store.recordRequirement(requirementBody(req, res), p.name, p.role === 'human', ownerOf(p));
+    const result = store.recordRequirement(requirementBody(req, res), p.name, p.role === 'human', ownerOf(p), approvesRequirements(p));
     res.status(result.duplicate ? 200 : 201).json(pubRecord(acc(res), result));
   });
 
@@ -833,6 +833,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       principalOf(res).name,
       principalOf(res).role === 'human',
       ownerOf(principalOf(res)),
+      approvesRequirements(principalOf(res)),
     );
     res.status(201).json(pubRecord(acc(res), result));
   });
@@ -844,6 +845,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   });
 
   app.post('/api/requirements/:id/approve', human, requirementsOnly, (req, res) => {
+    if (!approvesRequirements(principalOf(res))) throw new ForbiddenError('Approve requirements signed in, not with a personal key');
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
     res.json(pub.requirement(store.approveRequirement(current.id)));

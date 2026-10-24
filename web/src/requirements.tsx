@@ -14,25 +14,31 @@ const STATUS_LABEL: Record<Requirement['status'], string> = {
 /** Still applies: approved, or waiting for a person's approval. */
 const inForce = (r: Requirement) => r.status === 'pending' || r.status === 'active';
 
-/** Pending, superseded or retired; nothing for active, the usual case. */
+/**
+ * Pending, superseded or retired (nothing for active, the usual case), and a replacement
+ * waiting for approval: a requirement in force that names its successor.
+ */
 function StatusBadge({ req, onOpen }: { req: Requirement; onOpen?: (id: string) => void }) {
-  if (req.status === 'active') return null;
+  const ref = (id: string) =>
+    onOpen ? (
+      <button className="link" onClick={() => onOpen(id)}>
+        {id}
+      </button>
+    ) : (
+      id
+    );
   return (
-    <span className={`pill ${req.status === 'pending' ? 'tone-info' : 'tone-muted'}`}>
-      {STATUS_LABEL[req.status]}
-      {req.supersededBy && (
-        <>
-          {' by '}
-          {onOpen ? (
-            <button className="link" onClick={() => onOpen(req.supersededBy!)}>
-              {req.supersededBy}
-            </button>
-          ) : (
-            req.supersededBy
-          )}
-        </>
+    <>
+      {req.status !== 'active' && (
+        <span className={`pill ${req.status === 'pending' ? 'tone-info' : 'tone-muted'}`}>
+          {STATUS_LABEL[req.status]}
+          {req.status === 'superseded' && req.supersededBy && <> by {ref(req.supersededBy)}</>}
+        </span>
       )}
-    </span>
+      {inForce(req) && req.supersededBy && (
+        <span className="pill tone-info">Replacement {ref(req.supersededBy)} pending</span>
+      )}
+    </>
   );
 }
 
@@ -287,11 +293,19 @@ export function RequirementsPane({
             </select>
           </label>
           <label className="check">
-            <input type="checkbox" checked={showOld} onChange={(e) => setShowOld(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={showOld}
+              onChange={(e) => (setShowOld(e.target.checked), e.target.checked && setPendingOnly(false))}
+            />
             Superseded &amp; retired
           </label>
           <label className="check">
-            <input type="checkbox" checked={pendingOnly} onChange={(e) => setPendingOnly(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={pendingOnly}
+              onChange={(e) => (setPendingOnly(e.target.checked), e.target.checked && setShowOld(false))}
+            />
             Pending approval only
           </label>
         </div>

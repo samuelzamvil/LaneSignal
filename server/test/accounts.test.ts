@@ -205,6 +205,7 @@ describe('accounts', () => {
       email: 'ada@example.com',
       admin: false,
       superuser: true,
+      personalKey: true,
     });
     const bot = (await call('POST', '/api/auth/api-key/create', adminToken, { name: 'personal-test-bot' })).body.key;
     const esc = await call('POST', '/api/escalations', bot, { laneId: 'wiring', question: 'Personal key?' });
@@ -215,6 +216,16 @@ describe('accounts', () => {
     assert.equal((await call('PUT', '/api/lanes/wiring', key, { status: 'idle' })).status, 403);
     // It can't manage accounts the way the owner's session can.
     assert.equal((await call('POST', '/api/admin/people', key, { email: 'z@example.com', name: 'Z', password: 'temporary password' })).status, 403);
+    // Claude in the owner's session writes requirements down; the owner approves them signed in.
+    const body = { requirement: 'Personal keys record pending.', justification: 'Approval.', tags: ['key-approval'] };
+    const viaKey = await call('POST', '/api/requirements', key, body);
+    assert.equal(viaKey.body.requirement.status, 'pending');
+    assert.equal(viaKey.body.requirement.decidedBy, 'Ada');
+    const approve = `/api/requirements/${viaKey.body.requirement.id}/approve`;
+    assert.equal((await call('POST', approve, key)).status, 403);
+    assert.equal((await call('POST', approve, adminToken)).body.status, 'active');
+    const signedIn = await call('POST', '/api/requirements', adminToken, { ...body, requirement: 'Signed-in records are approved.' });
+    assert.equal(signedIn.body.requirement.status, 'active');
   });
 
   test('key metadata can only set the role', async () => {

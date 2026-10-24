@@ -61,7 +61,7 @@ export interface RequirementInput {
 
 export interface RecordResult {
   requirement: Requirement;
-  /** Active requirements that read alike: check these aren't the same decision. */
+  /** Pending or active requirements that read alike: check these aren't the same decision. */
   similar: Requirement[];
   /** Advice, e.g. a tag already on most requirements. */
   warnings: string[];
@@ -2843,7 +2843,8 @@ export class Store {
     actor: string,
     actorIsHuman: boolean,
     at: string,
-    actorOwner: string | null = null,
+    actorOwner: string | null,
+    approved: boolean,
   ): number {
     if (input.group && !this.getGroup(input.group)) throw new NotFoundError(`Group "${localId(input.group)}" not found`);
     if (input.group && input.project !== projectOf(input.group)) {
@@ -2864,7 +2865,7 @@ export class Store {
         input.justification.trim(),
         JSON.stringify(tags),
         // A person recording it is the approval; an agent's record waits for one.
-        actorIsHuman ? 'active' : 'pending',
+        approved ? 'active' : 'pending',
         decidedBy,
         escalationId,
         actor,
@@ -2874,8 +2875,17 @@ export class Store {
     return Number(res.lastInsertRowid);
   }
 
-  /** Records an owner decision. Returns it with similar active requirements, so duplicates get noticed. */
-  recordRequirement(input: RequirementInput, actor: string, actorIsHuman = false, actorOwner: string | null = null): RecordResult {
+  /**
+   * Records an owner decision: active when `approved` (a person recorded it), otherwise pending.
+   * Returns it with similar requirements in force, so duplicates get noticed.
+   */
+  recordRequirement(
+    input: RequirementInput,
+    actor: string,
+    actorIsHuman = false,
+    actorOwner: string | null = null,
+    approved = actorIsHuman,
+  ): RecordResult {
     // A retry (the same requirement from the same escalation) returns the first instead of a copy.
     // A second decision from the same answer is stored; `similar` shows the first.
     if (input.sourceEscalation) {
@@ -2888,7 +2898,7 @@ export class Store {
       if (same) return { requirement: this.requireRequirement(String(same.num)), similar: [], warnings: [], duplicate: true };
     }
     const requirement = this.tx(() => {
-      const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString(), actorOwner);
+      const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString(), actorOwner, approved);
       return this.requireRequirement(String(num));
     });
     this.emit({ type: 'requirement', requirement });
@@ -2896,9 +2906,11 @@ export class Store {
   }
 
   /**
-   * Replaces an active requirement with a new one (the owner changed direction).
+   * Replaces a requirement in force with a new one (the owner changed direction).
    * The old one stays, marked superseded, so the history of why is kept. Group
-   * defaults to the old one's.
+   * defaults to the old one's. A pending replacement (an agent's) only names itself
+   * in the old one's `supersededBy`: the old one stays in force until a person
+   * approves the replacement, and comes clear again if they reject it.
    */
   supersedeRequirement(
     id: string,
@@ -2906,10 +2918,16 @@ export class Store {
     actor: string,
     actorIsHuman = false,
     actorOwner: string | null = null,
+    approved = actorIsHuman,
   ): RecordResult {
     const { requirement, old } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (!inForce(current)) throw new ConflictError(`${current.id} is ${current.status}; only pending or active requirements can be superseded`);
+      if (current.supersededBy) {
+        throw new ConflictError(
+          `${current.id} already has a replacement waiting for approval (${current.supersededBy}); supersede that one instead`,
+        );
+      }
       const at = this.now().toISOString();
       const num = this.insertRequirement(
         {
@@ -2921,10 +2939,11 @@ export class Store {
         actorIsHuman,
         at,
         actorOwner,
+        approved,
       );
       this.db
-        .prepare("UPDATE requirements SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE num = ?")
-        .run(num, at, this.requirementNum(current.id)!);
+        .prepare('UPDATE requirements SET status = ?, superseded_by = ?, updated_at = ? WHERE num = ?')
+        .run(approved ? 'superseded' : current.status, num, at, this.requirementNum(current.id)!);
       return { requirement: this.requireRequirement(String(num)), old: this.requireRequirement(current.id) };
     });
     this.emit({ type: 'requirement', requirement: old });
@@ -2953,16 +2972,31 @@ export class Store {
     return requirement;
   }
 
-  /** A person confirms an agent's record of their decision: pending becomes active. */
+  /** Requirements still in force that name this one as their replacement waiting for approval. */
+  private replacedBy(num: number): number[] {
+    return (
+      this.db.prepare("SELECT num FROM requirements WHERE superseded_by = ? AND status IN ('pending', 'active')").all(num) as Row[]
+    ).map((r) => Number(r.num));
+  }
+
+  /**
+   * A person confirms an agent's record of their decision: pending becomes active. If it
+   * replaces another requirement, that one is superseded now.
+   */
   approveRequirement(id: string): Requirement {
-    const requirement = this.tx(() => {
+    const { requirement, replaced } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (current.status !== 'pending') throw new ConflictError(`${current.id} is ${current.status}; only pending requirements can be approved`);
-      this.db
-        .prepare("UPDATE requirements SET status = 'active', updated_at = ? WHERE num = ?")
-        .run(this.now().toISOString(), this.requirementNum(current.id)!);
-      return this.requireRequirement(current.id);
+      const at = this.now().toISOString();
+      const num = this.requirementNum(current.id)!;
+      this.db.prepare("UPDATE requirements SET status = 'active', updated_at = ? WHERE num = ?").run(at, num);
+      const replaced = this.replacedBy(num);
+      for (const old of replaced) {
+        this.db.prepare("UPDATE requirements SET status = 'superseded', updated_at = ? WHERE num = ?").run(at, old);
+      }
+      return { requirement: this.requireRequirement(current.id), replaced: replaced.map((n) => this.requireRequirement(String(n))) };
     });
+    for (const old of replaced) this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });
     return requirement;
   }
@@ -2981,16 +3015,22 @@ export class Store {
     return requirement;
   }
 
-  /** Withdraws a requirement with no replacement (the decision no longer applies). */
+  /**
+   * Withdraws a requirement with no replacement (the decision no longer applies), or rejects a
+   * pending one. A requirement it was to replace no longer has a replacement waiting.
+   */
   retireRequirement(id: string): Requirement {
-    const requirement = this.tx(() => {
+    const { requirement, kept } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (!inForce(current)) throw new ConflictError(`${current.id} is already ${current.status}`);
-      this.db
-        .prepare("UPDATE requirements SET status = 'retired', updated_at = ? WHERE num = ?")
-        .run(this.now().toISOString(), this.requirementNum(current.id)!);
-      return this.requireRequirement(current.id);
+      const at = this.now().toISOString();
+      const num = this.requirementNum(current.id)!;
+      this.db.prepare("UPDATE requirements SET status = 'retired', updated_at = ? WHERE num = ?").run(at, num);
+      const kept = this.replacedBy(num);
+      for (const old of kept) this.db.prepare('UPDATE requirements SET superseded_by = NULL, updated_at = ? WHERE num = ?').run(at, old);
+      return { requirement: this.requireRequirement(current.id), kept: kept.map((n) => this.requireRequirement(String(n))) };
     });
+    for (const old of kept) this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });
     return requirement;
   }

@@ -261,6 +261,8 @@ export interface Principal {
   superuser?: boolean;
   /** An agent key bound to one project. */
   project?: string;
+  /** A personal key: acts as its owner, but from a Claude session, so its requirements still wait for approval. */
+  personalKey?: boolean;
 }
 
 /**

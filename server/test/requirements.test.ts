@@ -197,13 +197,14 @@ describe('changing direction', () => {
     });
     assert.equal(res.isError, false, res.text);
     const replacement = res.value.requirement;
+    await srv.call('POST', `/api/requirements/${replacement.id}/approve`, ALICE);
     const before = (await srv.tool(AGENT, 'get_requirement', { id: old.id })).value;
     assert.equal(before.status, 'superseded');
     assert.equal(before.supersededBy, replacement.id);
     assert.equal(replacement.group, undefined, 'keeps the old scope (no group)');
     const active = (await srv.call('GET', '/api/requirements?tag=money-amounts', ALICE)).body;
     assert.deepEqual(active.map((r: any) => r.id), [replacement.id]);
-    const all = (await srv.call('GET', '/api/requirements?tag=money-amounts&status=pending,superseded', ALICE)).body;
+    const all = (await srv.call('GET', '/api/requirements?tag=money-amounts&status=active,superseded', ALICE)).body;
     assert.equal(all.length, 2);
     const again = await srv.tool(AGENT, 'supersede_requirement', { id: old.id, requirement: 'Z.', justification: 'Z.', tags: ['z-z'], decided_by: 'Sam' });
     assert.match(again.text, /superseded; only pending or active/);
@@ -234,6 +235,27 @@ describe('changing direction', () => {
     assert.equal((await srv.call('POST', `/api/requirements/${other}/retire`, ALICE)).body.status, 'retired');
     assert.equal((await srv.call('POST', `/api/requirements/${other}/approve`, ALICE)).status, 409);
     assert.equal((await srv.call('POST', `/api/requirements/${other}/restore`, ALICE)).body.status, 'active');
+  });
+
+  test('an agent\'s replacement leaves the old decision in force until it is approved', async () => {
+    const base = { justification: 'Ops review.', tags: ['export-window'], decided_by: 'Sam' };
+    const old = (await srv.call('POST', '/api/requirements', ALICE, { requirement: 'Exports run nightly.', justification: 'Ops.', tags: ['export-window'] })).body.requirement;
+    assert.equal(old.status, 'active');
+    const first = (await srv.tool(AGENT, 'supersede_requirement', { id: old.id, requirement: 'Exports run hourly.', ...base })).value.requirement;
+    assert.equal(first.status, 'pending');
+    let now = (await srv.call('GET', `/api/requirements/${old.id}`, ALICE)).body;
+    assert.deepEqual([now.status, now.supersededBy], ['active', first.id], 'still in force, replacement named');
+    const twice = await srv.tool(AGENT, 'supersede_requirement', { id: old.id, requirement: 'Exports run weekly.', ...base });
+    assert.match(twice.text, /already has a replacement waiting/);
+    // Rejected: the old one is clear again and can be replaced afresh.
+    await srv.call('POST', `/api/requirements/${first.id}/retire`, ALICE);
+    now = (await srv.call('GET', `/api/requirements/${old.id}`, ALICE)).body;
+    assert.deepEqual([now.status, now.supersededBy], ['active', null]);
+    const second = (await srv.tool(AGENT, 'supersede_requirement', { id: old.id, requirement: 'Exports run every 6 hours.', ...base })).value.requirement;
+    // Approved: now the old one is superseded.
+    await srv.call('POST', `/api/requirements/${second.id}/approve`, ALICE);
+    now = (await srv.call('GET', `/api/requirements/${old.id}`, ALICE)).body;
+    assert.deepEqual([now.status, now.supersededBy], ['superseded', second.id]);
   });
 
   test('people correct wording or retire; agents cannot', async () => {
