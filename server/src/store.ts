@@ -1018,10 +1018,13 @@ export class Store {
     }
   }
 
-  laneEvents(laneId: string, limit = 50): LaneEvent[] {
+  /** A lane's history, latest first. `withMessages: false` leaves out its conversation (shown on its own). */
+  laneEvents(laneId: string, limit = 50, withMessages = true): LaneEvent[] {
     return (
       this.db
-        .prepare('SELECT * FROM lane_events WHERE lane_id = ? ORDER BY id DESC LIMIT ?')
+        .prepare(
+          `SELECT * FROM lane_events WHERE lane_id = ?${withMessages ? '' : " AND kind NOT IN ('notice', 'message')"} ORDER BY id DESC LIMIT ?`,
+        )
         .all(laneId, limit) as Row[]
     ).map((r) => ({
       id: Number(r.id),
@@ -2030,10 +2033,13 @@ export class Store {
     const closedById = new Map<string, Escalation>();
     for (const e of named) if (e.state === 'acknowledged' || e.state === 'withdrawn') closedById.set(e.id, e);
     const removedLanes: WaitResult['removedLanes'] = [];
+    // The owner's notes on every lane in scope, the lanes of escalations named in `ids` included.
     const laneMessages: WaitResult['laneMessages'] = [];
-    for (const laneId of laneIds) {
+    for (const laneId of new Set([...laneIds, ...named.map((e) => e.laneId)])) {
       const unread = this.unreadByAgent(laneId);
       if (unread.length && this.getLane(laneId)) laneMessages.push({ laneId, messages: unread });
+    }
+    for (const laneId of laneIds) {
       if (scope.since) {
         // Covers lanes removed with nothing open on them, which leave no withdrawn escalation behind.
         const removed = this.db
@@ -2090,9 +2096,14 @@ export class Store {
     };
   }
 
-  /** Marks the lane messages in a wait result as handed to the agent, once it's actually returned to it. */
-  handOver(w: WaitResult): WaitResult {
-    for (const l of w.laneMessages) this.markSeenByAgent(l.laneId, l.messages.at(-1)!.id);
+  /**
+   * Marks the lane messages in a wait result as handed to the agent. Callers do this only once the
+   * result is going back to it (credential still valid), and only for the projects it still sees.
+   */
+  handOver(w: WaitResult, projects?: string[]): WaitResult {
+    for (const l of w.laneMessages) {
+      if (!projects || projects.includes(projectOf(l.laneId))) this.markSeenByAgent(l.laneId, l.messages.at(-1)!.id);
+    }
     return w;
   }
 
@@ -2106,7 +2117,7 @@ export class Store {
   waitForDecisions(scope: WaitScope, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
     scope = { ...scope, since: scope.since ?? this.now().toISOString() };
     const first = this.decisionsFor(scope);
-    if (first.ready || timeoutMs <= 0 || signal?.aborted) return Promise.resolve(signal?.aborted ? first : this.handOver(first));
+    if (first.ready || timeoutMs <= 0 || signal?.aborted) return Promise.resolve(first);
     const held = new Set<string>();
     const releases: (() => void)[] = [];
     const hold = (laneIds: Iterable<string>) => {
@@ -2123,9 +2134,7 @@ export class Store {
         signal?.removeEventListener('abort', finish);
         for (const release of releases) release();
         try {
-          const result = this.decisionsFor(scope);
-          // A caller that went away gets nothing, so its messages stay unread.
-          resolve(signal?.aborted ? result : this.handOver(result));
+          resolve(this.decisionsFor(scope));
         } catch (err) {
           reject(err);
         }

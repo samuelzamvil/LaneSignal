@@ -303,7 +303,8 @@ function buildServer(
             store.waitForDecisions(scope, timeout * 1000, signal),
           );
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
-          return json(briefWait(pub.wait(value, timeout ? accessFor(store, a.principal).projects : undefined)));
+          const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
+          return json(briefWait(pub.wait(store.handOver(value, visible), timeout ? visible : undefined)));
         } catch (err) {
           return fail(err);
         }
@@ -585,8 +586,10 @@ function buildServer(
         description:
           `Publish a lane's state on meaningful changes (not on a timer). Creates it on first call; omitted fields ` +
           `are unchanged. ${STATUS_HELP} \`group\`: your group, registered first with update_group. While a blocking ` +
-          'escalation is open the lane stays blocked_human. Tickets look like "gh:42" or "redmine:1234". ' +
-          '`ownerMessages` in the result: the owner wrote to you on this lane; act on them, and answer with notify_owner if useful.',
+          'escalation is open the lane stays blocked_human. Tickets look like "gh:42" or "redmine:1234".' +
+          (features.decisions
+            ? ' `ownerMessages` in the result: the owner wrote to you on this lane; act on them, and answer with notify_owner if useful.'
+            : ''),
         inputSchema: { lane_id: s.laneId, ...s.lanePatch.shape, group_id: s.lanePatch.shape.group, ...PROJECT_WRITE },
       },
       async ({ lane_id, project, group_id, ...rest }) => {
@@ -647,10 +650,11 @@ function buildServer(
           'Write to the owner in the lane\'s conversation, with a quiet phone notification that opens the lane: a ' +
           'milestone ("Merged PR #311", "Starting gh:42"), with any detail or screenshots in `attachments`. ' +
           `At most ${AGENT_MESSAGE_MAX} characters; one per lane per minute. Not for routine progress, and not for ` +
-          'questions (create_escalation). The owner can write back on the lane: their messages come back here, in ' +
-          'update_lane' +
-          (features.decisions ? ' and wait_for_decisions' : '') +
-          ' (`ownerMessages`).',
+          'questions (create_escalation).' +
+          (features.decisions
+            ? ' The owner can write back on the lane: their notes come back once, as `ownerMessages` here and in ' +
+              'update_lane, and as `laneMessages` in wait_for_decisions.'
+            : ''),
         inputSchema: {
           lane_id: s.laneId,
           message: s.notice.shape.message.describe(`At most ${AGENT_MESSAGE_MAX} characters.`),

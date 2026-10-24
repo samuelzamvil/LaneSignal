@@ -395,8 +395,7 @@ export function LaneDetail({
 
             <h4>Recent activity</h4>
             <ol className="timeline">
-              {/* Messages are in the conversation above. */}
-              {data.events.filter((ev) => ev.kind !== 'notice' && ev.kind !== 'message').map((ev) => (
+              {data.events.map((ev) => (
                 <li key={ev.id} className={`kind-${ev.kind}`}>
                   <time title={absolute(ev.at)}>{ago(ev.at, now)}</time>
                   <span>{ev.message}</span>

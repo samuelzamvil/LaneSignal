@@ -161,8 +161,10 @@ describe('notices', () => {
   test('an overseer tells the owner about a milestone; it lands in the lane history, one per minute', async () => {
     const res = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Merged PR #311' });
     assert.equal(res.isError, false, res.text);
-    const events = (await srv.call('GET', '/api/lanes/pay-1', ALICE)).body.events;
-    assert.ok(events.some((e: any) => e.kind === 'notice' && e.message === 'Merged PR #311'));
+    const d = (await srv.call('GET', '/api/lanes/pay-1', ALICE)).body;
+    assert.ok(d.messages.some((m: any) => m.from === 'agent' && m.body === 'Merged PR #311'));
+    // Kept in the lane's history (exports), though the sheet shows it in the conversation instead.
+    assert.ok(srv.store.laneEvents('default/pay-1').some((e) => e.kind === 'notice' && e.message === 'Merged PR #311'));
     const again = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Starting gh:42' });
     assert.equal(again.isError, true);
     assert.match(again.text, /One message per lane per minute/);

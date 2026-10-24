@@ -26,6 +26,8 @@ Answers can take minutes or a day.
   - `closed`: withdrawn by someone else. "Lane removed by …" means the lane was taken off the dashboard.
   - `removedLanes`: lanes someone else took off the dashboard (including ones with nothing open). Stop work on them and don't publish to them again; publishing brings a lane back.
   - `laneMessages`: the owner wrote on lanes in scope, outside any escalation (`messages` per lane, each returned once). Act on them; answer with `notify_owner` if useful.
+
+The owner can also write on a lane while you work (the lane's conversation, where `notify_owner` posts). Nothing blocks: their notes come back once, as `ownerMessages` in the result of your next `update_lane` or `notify_owner` on that lane, or in `laneMessages` from a wait. Act on them like instructions from the owner; answer with `notify_owner` when they asked something or you changed course.
   - `open`: still waiting.
   - `ready: false`: the wait ran out. Call again.
   - `ready: true` with everything empty: nothing is waiting on the owner. Stop waiting.

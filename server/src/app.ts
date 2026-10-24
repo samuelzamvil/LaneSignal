@@ -464,7 +464,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       escalations: store
         .listEscalations({ laneId: lane.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 50 })
         .map(pub.escalation),
-      events: store.laneEvents(lane.id, 100).map((e) => ({ ...e, laneId: localId(e.laneId) })),
+      events: store.laneEvents(lane.id, 100, false).map((e) => ({ ...e, laneId: localId(e.laneId) })),
       messages: store.laneMessages(lane.id),
     });
   });
@@ -630,7 +630,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
-        res.json(briefWait(pub.wait(store.handOver(now))));
+        res.json(briefWait(pub.wait(store.handOver(now, acc(res).projects))));
         return;
       }
       const abort = new AbortController();
@@ -650,6 +650,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;
+        // Notes are handed over only when they're actually sent: not to a revoked key or a client that left.
+        if (!revoked && !abort.signal.aborted) store.handOver(result, visible);
         res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : briefWait(pub.wait(result, visible))));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));

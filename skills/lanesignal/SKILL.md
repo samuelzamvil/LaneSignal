@@ -79,4 +79,3 @@ curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api
 
 - **Milestones only:** a PR merged, or a new ticket started, unless your owner's policy names others. Never for routine progress, and never to ask something (that's an escalation).
 - **Short:** at most 500 characters, first line written for a lock screen. Detail or screenshots go in `attachments` (uploaded as for escalations, below the same limits). One per lane per minute: put several things in one message.
-- **The owner can write back** on the lane. Nothing blocks: their notes come back as `ownerMessages` in the result of your next `update_lane` or `notify_owner` on that lane, each once. Act on them like instructions from the owner; answer with `notify_owner` when they asked something or you changed course.

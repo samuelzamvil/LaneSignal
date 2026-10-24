@@ -79,7 +79,6 @@ curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api
 
 - **Milestones only:** a PR merged, or a new ticket started, unless your owner's policy names others. Never for routine progress, and never to ask something (that's an escalation).
 - **Short:** at most 500 characters, first line written for a lock screen. Detail or screenshots go in `attachments` (uploaded as for escalations, below the same limits). One per lane per minute: put several things in one message.
-- **The owner can write back** on the lane. Nothing blocks: their notes come back as `ownerMessages` in the result of your next `update_lane` or `notify_owner` on that lane, each once. Act on them like instructions from the owner; answer with `notify_owner` when they asked something or you changed course.
 
 ## When the owner answers
 
@@ -109,6 +108,8 @@ Answers can take minutes or a day.
   - `closed`: withdrawn by someone else. "Lane removed by …" means the lane was taken off the dashboard.
   - `removedLanes`: lanes someone else took off the dashboard (including ones with nothing open). Stop work on them and don't publish to them again; publishing brings a lane back.
   - `laneMessages`: the owner wrote on lanes in scope, outside any escalation (`messages` per lane, each returned once). Act on them; answer with `notify_owner` if useful.
+
+The owner can also write on a lane while you work (the lane's conversation, where `notify_owner` posts). Nothing blocks: their notes come back once, as `ownerMessages` in the result of your next `update_lane` or `notify_owner` on that lane, or in `laneMessages` from a wait. Act on them like instructions from the owner; answer with `notify_owner` when they asked something or you changed course.
   - `open`: still waiting.
   - `ready: false`: the wait ran out. Call again.
   - `ready: true` with everything empty: nothing is waiting on the owner. Stop waiting.

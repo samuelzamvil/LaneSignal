@@ -40,7 +40,9 @@ describe('lane conversations', () => {
       [['agent', 'overseer', 'Merged PR #311\nDeploy goes out tonight.', ['merged.png', 'notes.md']]],
     );
     assert.equal(d.lane.lastAgentMessageId, d.messages[0].id);
-    assert.ok(d.events.some((e: any) => e.kind === 'notice' && e.message.startsWith('Merged PR #311')));
+    // The sheet's activity leaves the conversation out; the history keeps it.
+    assert.ok(!d.events.some((e: any) => e.kind === 'notice'));
+    assert.ok(srv.store.laneEvents('default/talk-1').some((e) => e.kind === 'notice' && e.message.startsWith('Merged PR #311')));
     // People who see the lane can open its files.
     const file = await fetch(`${srv.base}/api/attachments/${shot.body.id}`, { headers: { authorization: `Bearer ${ALICE}` } });
     assert.equal(file.status, 200);
@@ -117,6 +119,24 @@ describe('lane conversations', () => {
     const http = await srv.call('GET', '/api/wait?group=chatty&timeout=0', AGENT);
     assert.deepEqual(http.body.laneMessages[0].messages.map((m: any) => m.body), ['One more thing']);
     assert.equal((await detail('talk-4')).lane.unreadByAgent, 0);
+    // A wait on named escalations covers their lanes' notes too.
+    const esc = (await srv.tool(AGENT, 'list_escalations', { lane_id: 'talk-4' })).value[0];
+    await write('talk-4', 'About that rename');
+    const byId = (await srv.tool(AGENT, 'wait_for_decisions', { ids: [esc.ref], wait_seconds: 0 })).value;
+    assert.deepEqual(byId.laneMessages.map((l: any) => l.laneId), ['talk-4']);
+  });
+
+  test('a wait only finds notes; they count as handed over once the answer goes out', async () => {
+    await write('talk-1', 'Read me later');
+    const result = await srv.store.waitForDecisions({ laneIds: ['default/talk-1'] }, 0);
+    assert.deepEqual(result.laneMessages[0].messages.map((m) => m.body), ['Read me later']);
+    // A revoked key or a client that left gets nothing, so nothing is marked.
+    assert.equal((await detail('talk-1')).lane.unreadByAgent, 1);
+    // Nor for a project the caller no longer sees.
+    srv.store.handOver(result, ['elsewhere']);
+    assert.equal((await detail('talk-1')).lane.unreadByAgent, 1);
+    srv.store.handOver(result, ['default']);
+    assert.equal((await detail('talk-1')).lane.unreadByAgent, 0);
   });
 
   test('limits: length, empty, removed lanes', async () => {

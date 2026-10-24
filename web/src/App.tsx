@@ -23,7 +23,7 @@ import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { HistoryPane } from './history.tsx';
 import { RequirementsPane } from './requirements.tsx';
-import { useSeenVersion } from './seen.ts';
+import { baselineSeen, useSeenVersion } from './seen.ts';
 import { Toaster } from './toast.tsx';
 import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection, ProjectsSection } from './settings.tsx';
 
@@ -203,6 +203,9 @@ function Dashboard({
   const now = useNow();
   // Lane cards mark new agent messages until the lane is opened.
   useSeenVersion();
+  useEffect(() => {
+    if (live.syncedAt !== null) baselineSeen(live.lanes.values());
+  }, [live.syncedAt, live.lanes]);
   const [route, navigate] = useRoute();
   const [filters, setFilters] = useFilters();
 
