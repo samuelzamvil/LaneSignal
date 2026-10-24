@@ -5,6 +5,7 @@ LaneSignal keeps everything needed for analysis:
 - every escalation, including decided, acknowledged and withdrawn ones
 - every requirement, including superseded and retired ones
 - every agent position
+- every conversation, on escalations and on lanes
 - every lane and group, including ones that were removed from the dashboard (they're archived, not deleted)
 - each lane's full status and escalation history
 
@@ -29,10 +30,10 @@ curl -fsS -H "authorization: Bearer $KEY" "https://lanesignal.example.com/api/ex
 
 | Parameter | Applies to | Format |
 |---|---|---|
-| `from` | escalations (by creation time), positions (by when each was taken), events (by time) | `YYYY-MM-DD` (midnight UTC), or an ISO timestamp with a zone such as `2026-10-01T09:00:00Z` or `…+02:00`. Inclusive |
+| `from` | escalations (by creation time), positions (by when each was taken), messages and lane_messages (by when each was written), events (by time), requirements (by creation time) | `YYYY-MM-DD` (midnight UTC), or an ISO timestamp with a zone such as `2026-10-01T09:00:00Z` or `…+02:00`. Inclusive |
 | `to` | same | same, exclusive. Must be after `from` |
 | `project` | everything | a project id or key. Without it, every project you can see. Requirements for all projects are always included |
-| `lane` (`lane_id` in MCP) | escalations, positions, events, lanes | a lane id (with `project`, if you can see several) |
+| `lane` (`lane_id` in MCP) | escalations, positions, messages, lane_messages, events, lanes | a lane id (with `project`, if you can see several) |
 
 Unknown parameters, timestamps without a zone, and impossible dates (`2026-02-30`) are rejected with `400`, rather than silently ignored or reinterpreted.
 
@@ -98,6 +99,10 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 `id`, `escalation_id`, `escalation_ref`, `project`, `lane_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message, oldest first.
 
+### `lane_messages.csv` (lane conversations)
+
+`id`, `project`, `lane_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message in a lane's conversation (the agent's notices and the owner's notes), oldest first.
+
 ### `events.csv` (lane history)
 
 `id`, `lane_id`, `at`, `kind`, `message`, `actor`. The `kind` column is one of:
@@ -105,7 +110,8 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 - **`status`:** every status change, plus lane created, removed and restored
 - **`escalation`:** asked, positions, decided, acknowledged, withdrawn
 - **`activity`:** the agent's activity lines, only the most recent ones per lane
-- **`notice`:** milestones the overseer sent the owner with `notify_owner` ("Merged PR #311")
+- **`notice`:** the agent's messages in the lane's conversation (`notify_owner`, "Merged PR #311")
+- **`message`:** the owner's notes in the lane's conversation
 
 To rebuild blocked time per lane over a period, pair the status changes in `status` rows.
 

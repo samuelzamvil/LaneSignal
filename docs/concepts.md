@@ -83,15 +83,24 @@ A tap asks you to confirm, with a box for instructions to the agent: optional fo
 - Agent messages are short by design: at most 500 characters (yours, 2,000). Anything longer comes as an attachment, which messages can carry too. While you decide, an agent may post a one-line update when something changes; every agent message notifies your phone.
 - Conversations are kept with the escalation and exported in `messages.csv`.
 
+### Lane conversations
+
+Each lane has a conversation of its own, outside any escalation, in the lane's sheet:
+
+- **The agent's milestones** ("Merged PR #311", "Starting gh:42") arrive with `notify_owner`, optionally with files (a screenshot, release notes). Each sends a quiet push that opens the lane, and the lane's card shows **💬 new message** (a 💬 in the list view) until you open it on that device (a device counts from the first time it opens the app, so older messages aren't marked).
+- **You can write back** from the sheet (with answering in LaneSignal on). Nothing blocks and the lane's status doesn't change: the agent gets your note the next time it publishes the lane, writes on it or waits on it, and the note then reads *seen by the agent*. Each note goes to one agent, whichever reports in first: an overseer waiting on its whole group picks up notes on all its lanes.
+- Use an escalation instead when the agent needs a decision from you.
+- Agent messages are at most 500 characters (yours, 2,000), one per lane per minute. Conversations stay with the lane and are exported in `lane_messages.csv`.
+
 ### Attachments
 
-Agents attach files they want you to read or see, such as a plan or a UI preview: Markdown and text files, and PNG, JPEG, WebP or GIF images. They upload each to `POST /api/attachments` and list the ids when raising the escalation.
+Agents attach files they want you to read or see, such as a plan or a UI preview: Markdown and text files, and PNG, JPEG, WebP or GIF images. They upload each to `POST /api/attachments` and list the ids when raising the escalation, writing in its conversation, or sending a milestone on a lane (`notify_owner`).
 
 - The app renders Markdown itself (headings, lists, tables, code); HTML in a file is shown as text, and links only open web and mail addresses. Images get a thumbnail, and a full view you can pinch, drag and double-tap to zoom.
 - The server recognises the type from the content, so a script renamed `plan.png` is refused. SVG, HTML and other types are refused.
 - Images bigger than 50 megapixels are refused, so phones can show them.
-- Limits: 5 MB per file and 5 files per escalation (`LANESIGNAL_ATTACHMENT_MAX_MB`, `LANESIGNAL_ATTACHMENTS_PER_ITEM`). An upload no escalation references within a day is deleted.
-- Only people and agents who can see the escalation's project can open its files. Exports list the files' names, types and sizes, not the files.
+- Limits: 5 MB per file and 5 files per escalation or message (`LANESIGNAL_ATTACHMENT_MAX_MB`, `LANESIGNAL_ATTACHMENTS_PER_ITEM`). An upload nothing references within a day is deleted.
+- Only people and agents who can see the escalation's (or the lane's) project can open its files. Exports list the files' names, types and sizes, not the files.
 
 ### Inbox and History
 
@@ -157,4 +166,4 @@ LaneSignal links to tickets but never syncs or edits them.
 
 ## Notifications
 
-By default, push notifications go out when an escalation is **created**: urgent for blocking questions, quiet for FYIs. The title carries its code (`Needs you A12 · …`). An FYI the agent raises again as blocking notifies like a new question. Overseers can also send a **notice** about a milestone ("Merged PR #311", "Starting gh:42") with `notify_owner`: quiet, one line, at most one per lane per minute, and kept in the lane's activity. Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).
+By default, push notifications go out when an escalation is **created**: urgent for blocking questions (regular, if an instance admin turned on [quiet alerts](android.md#quiet-alerts)), quiet for FYIs. The title carries its code (`Needs you A12 · …`). An FYI the agent raises again as blocking notifies like a new question. Overseers can also send a **notice** about a milestone ("Merged PR #311", "Starting gh:42") with `notify_owner`: quiet, at most one per lane per minute, kept in the [lane's conversation](#lane-conversations), and tapping it opens the lane. Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).

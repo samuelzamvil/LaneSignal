@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AGENT_MESSAGE_MAX } from './store.ts';
 import { LANE_STATUSES, STANCES } from './types.ts';
 
 export const laneId = z
@@ -57,10 +58,10 @@ export const escalationFields = {
   blocking: z.boolean().optional(),
 };
 
-/** A notice is one line for a phone notification. */
-export const NOTICE_MAX = 140;
+/** The agent's message on a lane: a quiet phone notification, with any files. */
 export const notice = z.object({
-  message: z.string().trim().min(1).max(NOTICE_MAX).refine((m) => !/[\r\n]/.test(m), 'One line: no line breaks'),
+  message: z.string().trim().min(1).max(AGENT_MESSAGE_MAX),
+  attachments: z.array(z.string().min(1).max(64)).max(20).optional(),
 });
 
 export const escalationInput = z

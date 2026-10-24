@@ -1,6 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import type { Client, Escalation, Group, Lane, LaneEvent, LaneStatus, Link, PublicConfig } from './api.ts';
+import type { Client, Escalation, Group, Lane, LaneEvent, LaneMessage, LaneStatus, Link, PublicConfig } from './api.ts';
+import { AttachmentList } from './attachments.tsx';
 import { ago, absolute, blockedMs, duration, isStale, needsHuman, STATUS_META } from './format.ts';
+import { hasNewMessage, markMessagesSeen } from './seen.ts';
+import { toast } from './toast.tsx';
 
 export function StatusPill({ status }: { status: LaneStatus }) {
   const meta = STATUS_META[status];
@@ -60,6 +63,11 @@ export function LaneRow({ lane, now, onOpen }: { lane: Lane; now: number; onOpen
         <span className="lane-row-name">{lane.name}</span>
         <span className="muted lane-row-activity">{lane.activity ?? lane.id}</span>
       </span>
+      {hasNewMessage(lane) && (
+        <span className="new-message" title="The agent wrote on this lane">
+          💬
+        </span>
+      )}
       <StatusPill status={lane.status} />
       <span className="muted lane-row-when">{ago(lane.updatedAt, now)}</span>
     </button>
@@ -118,6 +126,11 @@ export function LaneCard({
             ● agent waiting
           </span>
         )}
+        {hasNewMessage(lane) && (
+          <span className="new-message" title="The agent wrote on this lane: open it to read">
+            💬 new message
+          </span>
+        )}
       </div>
       {lane.activity && <p className="activity">{lane.activity}</p>}
       <Links links={lane.links} />
@@ -132,6 +145,47 @@ export function LaneCard({
         ) : null}
       </footer>
     </article>
+  );
+}
+
+/**
+ * Writing to a lane's agent. Nothing blocks: the agent gets the note the next time it publishes the
+ * lane, writes on it or waits on it.
+ */
+function LaneComposer({ onSend }: { onSend: (body: string) => Promise<void> }) {
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send() {
+    setBusy(true);
+    setError(null);
+    try {
+      await onSend(body.trim());
+      setBody('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="lane-composer">
+      <textarea
+        placeholder="Write to the agent (it reads this next time it reports in)"
+        value={body}
+        maxLength={2000}
+        rows={2}
+        onChange={(e) => setBody(e.target.value)}
+      />
+      {error && <p className="error">{error}</p>}
+      <div className="actions">
+        <button className="primary" disabled={busy || !body.trim()} onClick={() => void send()}>
+          {busy ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -182,6 +236,7 @@ export function LaneDetail({
   version,
   now,
   canDelete,
+  canWrite,
   group,
   groupLabel,
   onClose,
@@ -195,23 +250,34 @@ export function LaneDetail({
   version: string;
   now: number;
   canDelete: boolean;
+  /** May write to the lane's agent (a person, with answering in LaneSignal on). */
+  canWrite: boolean;
   onClose: () => void;
   /** Where closing goes, named on the back button. */
   backTo: string;
 }) {
-  const [data, setData] = useState<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[] } | null>(null);
+  const [data, setData] = useState<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[]; messages: LaneMessage[] } | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
+  const [sent, setSent] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     client
       .laneDetail(project, laneId)
-      .then((d) => !cancelled && (setData(d), setError(null)))
+      .then((d) => {
+        if (cancelled) return;
+        // A server from before lane conversations sends none.
+        setData({ ...d, messages: d.messages ?? [] });
+        setError(null);
+        markMessagesSeen(d.lane, d.lane.lastAgentMessageId);
+      })
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
-  }, [client, project, laneId, version]);
+  }, [client, project, laneId, version, sent]);
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
@@ -295,6 +361,38 @@ export function LaneDetail({
                     </li>
                   ))}
                 </ul>
+              </>
+            )}
+
+            {(data.messages.length > 0 || canWrite) && (
+              <>
+                <h4>Conversation</h4>
+                {data.messages.length > 0 ? (
+                  <ol className="thread">
+                    {data.messages.map((m) => (
+                      <li key={m.id} className={`msg from-${m.from}`}>
+                        <div className="msg-meta">
+                          {m.author} <span title={absolute(m.at)}>· {ago(m.at, now)}</span>
+                          {m.from === 'owner' && <span className="msg-seen">{m.seen ? ' · seen by the agent' : ' · not seen yet'}</span>}
+                        </div>
+                        <RichText text={m.body} />
+                        {m.attachments.length > 0 && <AttachmentList client={client} files={m.attachments} />}
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="hint">The agent's milestones on this lane show here, and you can write to it.</p>
+                )}
+                {canWrite && (
+                  <LaneComposer
+                    key={data.lane.id}
+                    onSend={async (body) => {
+                      await client.laneMessage(data.lane.project, data.lane.id, body);
+                      toast({ text: `Sent to the agent on ${data.lane.name}` });
+                      setSent((n) => n + 1);
+                    }}
+                  />
+                )}
               </>
             )}
 

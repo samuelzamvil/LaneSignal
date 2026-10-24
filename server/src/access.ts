@@ -10,7 +10,7 @@ import {
   type WaitResult,
   type WaitScope,
 } from './store.ts';
-import type { Escalation, Group, Lane, Principal, ProjectRole, Requirement, StreamEvent } from './types.ts';
+import type { Escalation, Group, Lane, Message, Principal, ProjectRole, Requirement, StreamEvent } from './types.ts';
 
 /**
  * What a caller may see and do across projects, and the translation between
@@ -224,6 +224,7 @@ export const pub = {
       replies: w.replies.filter((r) => keep(r.laneId)).map((r) => ({ ...r, laneId: localId(r.laneId) })),
       open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: localId(o.laneId) })),
       removedLanes: w.removedLanes.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
+      laneMessages: w.laneMessages.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
     };
   },
   /** The event as a client sees it, or null when the caller can't see its project. */
@@ -305,12 +306,18 @@ export const briefRequirement = (r: Requirement) =>
     sourceEscalation: r.sourceEscalation,
   });
 
+/** Messages as agents read them: what was said, by whom, when, and any files. */
+export const briefMessages = (messages: Message[]) =>
+  messages.map((m) => compact({ body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined }));
+
 /** A wait result with its escalations in brief. */
 export const briefWait = (w: WaitResult) => ({
   ...w,
   decided: w.decided.map(brief),
-  replies: w.replies.map((r) => ({ ...r, messages: r.messages.map((m) => compact({ body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined })) })),
+  replies: w.replies.map((r) => ({ ...r, messages: briefMessages(r.messages) })),
   closed: w.closed.map(brief),
+  // Only when there are some: the wait is the call agents make most.
+  laneMessages: w.laneMessages.length ? w.laneMessages.map((l) => ({ ...l, messages: briefMessages(l.messages) })) : undefined,
 });
 
 /**

@@ -566,3 +566,32 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
   }
 });
 
+
+test('upgrading to lane conversations keeps earlier notices as the agent\'s messages', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v12-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    publishLane(store, 'default/ship', { status: 'active' }, 'bot');
+    store.postNotice('default/ship', 'Merged PR #311', 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      DROP TABLE lane_messages;
+      DROP INDEX attachments_lane_message;
+      ALTER TABLE attachments DROP COLUMN lane_message_id;
+      ALTER TABLE lanes DROP COLUMN agent_read_id;
+      UPDATE meta SET value = '12' WHERE key = 'schema_version';
+    `);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    assert.deepEqual(
+      store.laneMessages('default/ship').map((m) => [m.from, m.author, m.body]),
+      [['agent', 'bot', 'Merged PR #311']],
+    );
+    assert.equal(store.getLane('default/ship')?.unreadByAgent, 0);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

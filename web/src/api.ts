@@ -5,6 +5,7 @@ import type {
   Group,
   Lane,
   LaneEvent,
+  LaneMessage,
   Principal,
   Project,
   ProjectAccess,
@@ -24,6 +25,7 @@ export type {
   Group,
   Lane,
   LaneEvent,
+  LaneMessage,
   Principal,
   Project,
   ProjectAccess,
@@ -137,10 +139,13 @@ export function createClient(conn: Connection) {
         '/api/snapshot',
       ),
     laneDetail: (project: string, id: string) =>
-      request<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[] }>(
+      request<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[]; messages: LaneMessage[] }>(
         'GET',
         `/api/lanes/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`,
       ),
+    /** A note to the lane's agent: it gets it the next time it publishes, writes on or waits on the lane. */
+    laneMessage: (project: string, id: string, body: string) =>
+      request<LaneMessage>('POST', `/api/lanes/${encodeURIComponent(id)}/messages?project=${encodeURIComponent(project)}`, { body }),
     escalation: (id: string) => request<Escalation>('GET', `/api/escalations/${encodeURIComponent(id)}`),
     /** Closed escalations, latest first. `before` is the previous page's `next`. */
     history: (f: { q?: string; project?: string; group?: string; outcome?: 'answered' | 'dismissed'; before?: { at: string; id: string } }) => {

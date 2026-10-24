@@ -688,7 +688,7 @@ export function PeopleSection({ client, me }: { client: Client; me: Principal })
   );
 }
 
-const DATASETS = ['escalations', 'positions', 'messages', 'lanes', 'groups', 'events', 'requirements'] as const;
+const DATASETS = ['escalations', 'positions', 'messages', 'lane_messages', 'lanes', 'groups', 'events', 'requirements'] as const;
 
 /** Everything (including closed escalations and removed lanes) as CSV for analysis. */
 export function ExportSection({ client, serverUrl, requirements }: { client: Client; serverUrl: string; requirements: boolean }) {

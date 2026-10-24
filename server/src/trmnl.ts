@@ -3,8 +3,8 @@ import path from 'node:path';
 import { TRMNL_HOSTS } from './config.ts';
 import { zipFiles } from './export.ts';
 import { log } from './log.ts';
-import { localId, ValidationError, type Store } from './store.ts';
-import type { Escalation, StreamEvent, TrmnlCard, TrmnlPushResult, TrmnlSetup } from './types.ts';
+import { ConflictError, localId, ValidationError, type Store } from './store.ts';
+import type { Escalation, Notice, StreamEvent, TrmnlCard, TrmnlPushResult, TrmnlSetup } from './types.ts';
 
 /**
  * A project's TRMNL screen: LaneSignal pushes the screen's data to a TRMNL private plugin's
@@ -182,7 +182,7 @@ export function buildPayload(store: Store, setup: TrmnlSetup, now: Date): TrmnlP
       recommendation: null,
       accept: null,
       reject: null,
-      files: 0,
+      files: stored.files ?? 0,
       at: epoch(stored.at),
     };
   }
@@ -294,13 +294,14 @@ export interface TrmnlOptions {
 export class TrmnlPusher {
   private states = new Map<string, State>();
   private heartbeat: NodeJS.Timeout | null = null;
+  private stopped = false;
   private readonly fetch: typeof fetch;
   private readonly now: () => Date;
   private readonly minGap: number;
   private readonly debounce: number;
   private readonly heartbeatMs: number;
   private readonly onChange = (e: StreamEvent) => this.change(e);
-  private readonly onNotice = (n: { project: string; laneId: string; message: string }) => this.notice(n);
+  private readonly onNotice = (n: Notice) => this.notice(n);
 
   private readonly store: Store;
 
@@ -336,6 +337,7 @@ export class TrmnlPusher {
   }
 
   stop() {
+    this.stopped = true;
     this.store.events.off('change', this.onChange);
     this.store.events.off('notice', this.onNotice);
     if (this.heartbeat) clearInterval(this.heartbeat);
@@ -355,6 +357,9 @@ export class TrmnlPusher {
     if (newPlugin) {
       st.generation++;
       st.lastAttempt = 0;
+      // A timer waiting out the old plugin's rate limit would hold the first push back.
+      if (st.timer) clearTimeout(st.timer);
+      st.timer = null;
     }
     this.touch(project);
   }
@@ -383,7 +388,7 @@ export class TrmnlPusher {
     }
   }
 
-  private notice(n: { project: string; laneId: string; message: string }) {
+  private notice(n: Notice) {
     try {
       const setup = this.store.trmnlSetup(n.project);
       if (!setup?.includeNotifications) return;
@@ -393,6 +398,7 @@ export class TrmnlPusher {
         title: where(this.store, n.laneId),
         body: n.message,
         at: this.now().toISOString(),
+        files: n.attachments?.length || undefined,
       });
       this.touch(n.project);
     } catch (err) {
@@ -402,6 +408,8 @@ export class TrmnlPusher {
 
   /** Schedules a push for the project: soon, but no sooner than TRMNL's rate limit allows. */
   private touch(project: string) {
+    // Pushes still out at shutdown don't schedule more.
+    if (this.stopped) return;
     const st = this.state(project);
     if (st.inflight) {
       st.dirty = true;
@@ -432,11 +440,13 @@ export class TrmnlPusher {
     const st = this.state(project);
     if (st.timer) clearTimeout(st.timer);
     st.timer = null;
-    if (st.inflight) await st.inflight.catch(() => undefined);
+    // Pushes for a project never overlap: wait out every push already out, including another Send now.
+    while (st.inflight) await st.inflight.catch(() => undefined);
     if (st.timer) clearTimeout(st.timer);
     st.timer = null;
     const setup = this.store.trmnlSetup(project);
     if (!setup) throw new ValidationError('This project has no TRMNL screen set up');
+    if (!setup.enabled) throw new ConflictError('Pushes to this screen are paused: tick Push to TRMNL first');
     const payload = buildPayload(this.store, setup, this.now());
     return this.send(setup, payload, JSON.stringify({ ...payload, asOf: 0 }));
   }

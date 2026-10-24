@@ -10,6 +10,7 @@ import {
   briefLane,
   briefRequirement,
   briefWait,
+  briefMessages,
   compact,
   ownerOf,
   pub,
@@ -273,7 +274,8 @@ function buildServer(
           'any of them needs you. Returns `decided` (answered, not yet acknowledged: act on each), `replies` ' +
           '(the owner answered Other: their new messages; act on them and acknowledge, or reply_to_escalation), `closed` ' +
           '(withdrawn by someone else, e.g. "Lane removed by …": the lane was taken off the dashboard, stop work on it; or named ones already ' +
-          'acknowledged), `removedLanes` (taken off the dashboard by someone else: stop work on them), `open` (still ' +
+          'acknowledged), `removedLanes` (taken off the dashboard by someone else: stop work on them), `laneMessages` ' +
+          '(the owner wrote on lanes in scope, outside any escalation: act on them, answer with notify_owner if useful), `open` (still ' +
           'waiting) and `checkedAt` (pass it as `since` next time). ' +
           '`ready` is false only when the wait ran out with nothing new; call again. Returns at once if something is ' +
           'already decided or nothing is open. Decisions can take hours: loop on this tool, or for long waits in ' +
@@ -301,7 +303,10 @@ function buildServer(
             store.waitForDecisions(scope, timeout * 1000, signal),
           );
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
-          return json(briefWait(pub.wait(value, timeout ? accessFor(store, a.principal).projects : undefined)));
+          const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
+          // A cancelled call never reaches the agent: its notes stay unread.
+          if (!extra.signal.aborted) store.handOver(value, visible);
+          return json(briefWait(pub.wait(value, timeout ? visible : undefined)));
         } catch (err) {
           return fail(err);
         }
@@ -316,10 +321,11 @@ function buildServer(
       {
         description:
           'Export LaneSignal data for analysis, including closed escalations and archived lanes. Datasets: ' +
-          'escalations (one row each), positions, lanes, groups, events (status changes and escalation history)' +
+          'escalations (one row each), positions, messages (escalation conversations), lane_messages (lane conversations), ' +
+          'lanes, groups, events (status changes and escalation history)' +
           (features.requirements ? ', requirements. ' : '. ') +
           '`from`/`to` (YYYY-MM-DD or ISO) filter ' +
-          'escalations, positions, events and requirements by creation time. Results come in pages (default 100 rows, and cut short to stay under ' +
+          'escalations, positions, messages, lane_messages, events and requirements by creation time. Results come in pages (default 100 rows, and cut short to stay under ' +
           'about 60 KB); the first line says which rows you got and the offset for the next page. For everything at ' +
           'once as files, the HTTP API serves a zip at GET /api/export.',
         inputSchema: {
@@ -582,7 +588,10 @@ function buildServer(
         description:
           `Publish a lane's state on meaningful changes (not on a timer). Creates it on first call; omitted fields ` +
           `are unchanged. ${STATUS_HELP} \`group\`: your group, registered first with update_group. While a blocking ` +
-          'escalation is open the lane stays blocked_human. Tickets look like "gh:42" or "redmine:1234".',
+          'escalation is open the lane stays blocked_human. Tickets look like "gh:42" or "redmine:1234".' +
+          (features.decisions
+            ? ' Result `ownerMessages`: the owner\'s notes on this lane; act on them.'
+            : ''),
         inputSchema: { lane_id: s.laneId, ...s.lanePatch.shape, group_id: s.lanePatch.shape.group, ...PROJECT_WRITE },
       },
       async ({ lane_id, project, group_id, ...rest }) => {
@@ -591,6 +600,7 @@ function buildServer(
           const pr = a.pick(project, { lane: lane_id, group: patch.group ?? undefined });
           const qualified = { ...patch, group: patch.group ? q(pr, patch.group) : patch.group };
           const lane = pub.lane(store.upsertLane(q(pr, lane_id), qualified, who.name));
+          const unread = store.takeUnreadForAgent(q(pr, lane_id));
           // Say so when the status was kept, rather than letting it look accepted.
           const warning =
             patch.status && lane.status !== patch.status
@@ -605,6 +615,8 @@ function buildServer(
               status: lane.status,
               blockingEscalations: lane.blockingEscalations || undefined,
               warning,
+              // The owner wrote on the lane since you last heard: read and act on it (reply with notify_owner).
+              ownerMessages: unread.length ? briefMessages(unread) : undefined,
             }),
           );
         } catch (err) {
@@ -637,14 +649,23 @@ function buildServer(
       'notify_owner',
       {
         description:
-          'Tell the owner about a milestone with a quiet phone notification, e.g. "Merged PR #311" or "Starting gh:42". ' +
-          'One line, kept in the lane\'s history. Not for routine progress or questions; one per lane per minute.',
-        inputSchema: { lane_id: s.laneId, message: s.notice.shape.message.describe('One line, at most 140 characters.'), ...PROJECT_WRITE },
+          'Write to the owner in the lane\'s conversation, with a quiet phone notification that opens the lane: a ' +
+          'milestone ("Merged PR #311", "Starting gh:42"). One per lane per minute. Not for routine progress, and not ' +
+          'for questions (create_escalation).' +
+          (features.decisions ? ' May return `ownerMessages`, as update_lane does.' : ''),
+        inputSchema: {
+          lane_id: s.laneId,
+          message: s.notice.shape.message,
+          attachments: s.notice.shape.attachments.describe('Screenshots or detail: ids from POST /api/attachments.'),
+          ...PROJECT_WRITE,
+        },
       },
-      async ({ lane_id, message, project }) => {
+      async ({ lane_id, message, attachments, project }) => {
         try {
-          const r = store.postNotice(q(a.pick(project, { lane: lane_id }), lane_id), message.trim(), who.name);
-          return json({ laneId: localId(r.laneId), at: r.at });
+          const laneId = q(a.pick(project, { lane: lane_id }), lane_id);
+          const r = store.postNotice(laneId, message.trim(), who.name, attachments, ownerOf(who));
+          const unread = store.takeUnreadForAgent(laneId);
+          return json(compact({ laneId: localId(r.laneId), at: r.at, ownerMessages: unread.length ? briefMessages(unread) : undefined }));
         } catch (err) {
           return fail(err);
         }
