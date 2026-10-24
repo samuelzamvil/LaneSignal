@@ -965,7 +965,7 @@ textarea {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 40px;
+  min-height: var(--tap);
   padding: 4px 0;
   border: none;
   border-bottom: 1px solid var(--border);

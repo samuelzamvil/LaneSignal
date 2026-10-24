@@ -470,7 +470,7 @@ export function LaneDetail({
             {data.escalations.length > 0 && (
               <SheetSection
                 title="Escalations"
-                count={activeEscs.length}
+                count={shownEscs.length}
                 open={escFold === 'open'}
                 onToggle={() => setEscFold(escFold === 'open' ? 'folded' : 'open')}
               >
