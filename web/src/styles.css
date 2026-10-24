@@ -1048,7 +1048,8 @@ textarea {
 
   .panes {
     display: grid;
-    grid-template-columns: 420px 1fr;
+    /* minmax(0, …): one-line list rows mustn't widen the lanes pane past the window. */
+    grid-template-columns: 420px minmax(0, 1fr);
     gap: 24px;
     align-items: start;
     padding: 8px 24px 24px;
