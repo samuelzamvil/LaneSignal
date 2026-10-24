@@ -102,7 +102,7 @@ describe('lane conversations', () => {
 
   test('a waiting agent wakes for a note on its lanes, even with questions still open', async () => {
     await srv.tool(AGENT, 'create_escalation', { lane_id: 'talk-4', question: 'Rename the table?' });
-    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'chatty', wait_seconds: 10 });
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'chatty', wait_seconds: 10 });
     await new Promise((r) => setTimeout(r, 100));
     await write('talk-4', 'Whatever you do, keep the old name as a view');
     const w = (await waiting).value;
@@ -112,17 +112,17 @@ describe('lane conversations', () => {
       [['talk-4', ['Whatever you do, keep the old name as a view']]],
     );
     // Handed over: the next wait doesn't repeat it.
-    const next = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'chatty', wait_seconds: 0 })).value;
+    const next = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'chatty', wait_seconds: 0 })).value;
     assert.equal(next.laneMessages, undefined, 'left out when empty');
     // The HTTP wait hands notes over too.
     await write('talk-4', 'One more thing');
-    const http = await srv.call('GET', '/api/wait?group=chatty&timeout=0', AGENT);
+    const http = await srv.call('GET', '/api/wait?format=full&group=chatty&timeout=0', AGENT);
     assert.deepEqual(http.body.laneMessages[0].messages.map((m: any) => m.body), ['One more thing']);
     assert.equal((await detail('talk-4')).lane.unreadByAgent, 0);
     // A wait on named escalations covers their lanes' notes too.
     const esc = (await srv.tool(AGENT, 'list_escalations', { lane_id: 'talk-4' })).value[0];
     await write('talk-4', 'About that rename');
-    const byId = (await srv.tool(AGENT, 'wait_for_decisions', { ids: [esc.ref], wait_seconds: 0 })).value;
+    const byId = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', ids: [esc.ref], wait_seconds: 0 })).value;
     assert.deepEqual(byId.laneMessages.map((l: any) => l.laneId), ['talk-4']);
   });
 

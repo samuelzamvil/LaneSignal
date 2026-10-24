@@ -3,9 +3,9 @@
 The owner answers on the LaneSignal dashboard or phone app with one of three buttons, then you wait for the decision, acknowledge it and act on it.
 
 - **Say what each answer means** when you raise it: `accept_means` (one line: what you do on Accept) and `reject_means` (what you do on Reject). Pass `allow_reject: false` when rejecting makes no sense (e.g. "Rotate the leaked key?").
-- **Accept or Reject** arrive as a decision (`decided` in the wait), with any instructions in `decisionNote`: follow them.
-- **Other opens a conversation.** The escalation stays open and the wait returns it in `replies`, with the owner's new messages. Then either:
-  - **act on it:** `acknowledge_escalation` takes their latest message as the decision (`Other`), then do what it says; or
+- **Accept or Reject** arrive as a decision (a `decided` item in the wait), with any instructions in `note`: follow them.
+- **Other opens a conversation.** The escalation stays open and the wait returns it as a `reply` item, with the owner's new messages. Then either:
+  - **act on it:** `acknowledge_escalation` takes their latest message as the decision (`Other`), then do what it says. Don't reply first: a reply pages the owner; or
   - **reply:** `reply_to_escalation` with a short question back or what you'll do. The owner answers again with Accept, Reject or another message.
 - **Keep messages short:** at most 500 characters, plain, no preamble or recap. Anything longer (a revised plan, a diff summary, a screenshot) goes in an attachment.
 - **Updates while they decide:** you may `reply_to_escalation` with a one-line update when something changed that affects the answer (e.g. "CI found a second failure"). Never to chat or repeat yourself: every message notifies their phone, and updates are limited to one a minute. Retrying the same message is harmless.
@@ -20,16 +20,17 @@ The owner answers on the LaneSignal dashboard or phone app with one of three but
 
 Answers can take minutes or a day.
 
-- **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns as soon as anything needs you:
+- **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns a digest as soon as anything needs you, even when nothing is open: `items`, one per thing to handle, each with a `kind`:
   - `decided`: answered. Acknowledge and act on each one (above).
-  - `replies`: the owner answered Other; `messages` are theirs since you last wrote. Acknowledge and act, or reply (above). They come back on every wait until you do.
+  - `reply`: the owner answered Other; `messages` are theirs since you last wrote. Acknowledge and act, or reply (above).
   - `closed`: withdrawn by someone else. "Lane removed by …" means the lane was taken off the dashboard.
-  - `removedLanes`: lanes someone else took off the dashboard (including ones with nothing open). Stop work on them and don't publish to them again; publishing brings a lane back.
-  - `laneMessages`: the owner's notes on lanes in scope, outside any escalation. Each note comes back once: here, or as `ownerMessages` from your next `update_lane` or `notify_owner` on that lane. Act on them like the owner's instructions; answer with `notify_owner` if useful.
-  - `open`: still waiting.
-  - `ready: false`: the wait ran out. Call again.
-  - `ready: true` with everything empty: nothing is waiting on the owner. Stop waiting.
-- **Pass `checkedAt` back:** always pass the last result's `checkedAt` as `since` on your next wait, including after handling decisions, so a removal in between still reaches you. Also save it to the file `.claude/lanesignal-since` (overwrite it after every wait), so it survives a restart; the loop below does this itself.
+  - `lane_removed`: a lane someone else took off the dashboard (including ones with nothing open). Stop work on it and don't publish to it again; publishing brings a lane back.
+  - `lane_note`: the owner's notes on a lane in scope, outside any escalation. Act on them like the owner's instructions; answer with `notify_owner` if useful. They also come back as `ownerMessages` from your next `update_lane` or `notify_owner` on that lane.
+- **What repeats:** `decided` and `reply` come back on every wait until you acknowledge or reply. The rest come back once per `since`.
+- **`counts`** says how many are `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou`. If they show something you can't find in `items` (e.g. after a compaction), call `get_updates`: it returns everything in scope.
+- **`ready: false`:** the wait ran out with nothing new. Call again. With nothing open, the wait keeps waiting for the owner's notes, so keep it running in the background (below).
+- **Pass `checkedAt` back:** pass the last result's `checkedAt` as `since` on your next wait, so nothing in between is missed. Once you've handled a result's items, also save its `checkedAt` to the file `.claude/lanesignal-since` (overwrite it), so a restart starts from there. Save it only after handling: if you crash first, the older `since` brings the same items back. The loop below saves it itself while there's nothing to handle.
+- **Don't hold your session:** a `wait_for_decisions` call holds your session for its whole `wait_seconds`, and the owner can't reach you through Remote Control meanwhile. When nothing is open, or the wait may be long, use the background loop below; for a quick check, pass `wait_seconds: 0`.
 - **How long:** `wait_seconds` defaults to 300 (up to 3600). If your MCP client cuts calls off sooner (some stop at 60 seconds), pass a shorter wait and call again.
 - **Failed calls:** if a call fails (timeout, dropped connection, server restart), just call again. Decided escalations wait for you until you acknowledge them.
 - **Long waits in Claude Code:** a waiting tool call keeps your session busy, so the owner can't talk to you through Remote Control. For waits that may take hours, run the HTTP wait as a background shell command instead. Claude Code tells you when it exits. It needs `LANESIGNAL_URL` (the server's base URL; a trailing `/mcp` is tolerated), `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (your group id) in the environment:
@@ -44,8 +45,9 @@ Answers can take minutes or a day.
     case "$code" in
       200) # A connection cut mid-wait, or a server error, has no checkedAt: keep the old since.
            s=$(grep -o '"checkedAt":"[^"]*"' "$out" | cut -d'"' -f4)
-           if [ -n "$s" ]; then since=$s; fails=0; mkdir -p .claude && echo "$s" > "$sincefile"; else fails=$((fails + 1)); fi
-           grep -q '"ready":true' "$out" && { cat "$out"; echo; break; } ;;
+           # Something to handle: print it and stop. Its since goes to .next until the agent has handled it.
+           grep -q '"ready":true' "$out" && { mkdir -p .claude; [ -n "$s" ] && echo "$s" > "$sincefile.next"; cat "$out"; echo; break; }
+           if [ -n "$s" ]; then since=$s; fails=0; mkdir -p .claude && echo "$s" > "$sincefile"; else fails=$((fails + 1)); fi ;;
       400|401|403|404) cat "$out"; echo; exit 1 ;;
       *) fails=$((fails + 1)) ;;
     esac
@@ -54,10 +56,10 @@ Answers can take minutes or a day.
   done
   ```
 
-  If your key reaches several projects, also set `LANESIGNAL_PROJECT`. It starts from the `checkedAt` saved in `.claude/lanesignal-since` (or `LANESIGNAL_SINCE`, if set), saves each new one there, prints the same JSON as `wait_for_decisions`, and gives up after about 10 minutes of failures.
+  If your key reaches several projects, also set `LANESIGNAL_PROJECT`. It starts from the `checkedAt` saved in `.claude/lanesignal-since` (or `LANESIGNAL_SINCE`, if set), saves each new one there while nothing needs you, prints the same JSON as `wait_for_decisions` when something does, and gives up after about 10 minutes of failures. After handling the items, run `mv .claude/lanesignal-since.next .claude/lanesignal-since`, then start the loop again.
 
 ## After a restart
 
 1. Call `update_group` (as at any session start).
-2. Call `wait_for_decisions` with your `group_id`, `wait_seconds: 0` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything decided or in `replies` while you were away. Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
+2. Call `get_updates` with your `group_id` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything in `decided` or `replies`, and the owner's `laneMessages`, from while you were away, then save its `checkedAt` to `.claude/lanesignal-since` (otherwise the next wait returns the same notes again). Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
 3. Call `list_lanes` with your `group_id`. A lane you were running that's missing was removed: stop work on it.

@@ -48,14 +48,14 @@ describe('typos are errors, not new things nobody waits on', () => {
     const lane = await srv.tool(AGENT, 'update_lane', { lane_id: 'pay-2', group_id: 'payments', activity: 'via group_id' });
     assert.equal(lane.isError, false, lane.text);
     assert.equal((await srv.call('GET', '/api/lanes/pay-2', ALICE)).body.lane.group, 'payments');
-    const wait = await srv.tool(AGENT, 'wait_for_decisions', { group: 'payments', wait_seconds: 0 });
+    const wait = await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group: 'payments', wait_seconds: 0 });
     assert.equal(wait.isError, false, wait.text);
-    const none = await srv.tool(AGENT, 'wait_for_decisions', { wait_seconds: 0 });
+    const none = await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', wait_seconds: 0 });
     assert.match(none.text, /group_id/);
   });
 
   test('a mistyped API URL is a 404, not the web app', async () => {
-    assert.equal((await srv.call('GET', '/mcp/api/wait?group=payments', AGENT)).status, 404);
+    assert.equal((await srv.call('GET', '/mcp/api/wait?format=full&group=payments', AGENT)).status, 404);
   });
 });
 
@@ -67,7 +67,7 @@ describe('acknowledging', () => {
     assert.equal(theirs.isError, true);
     assert.match(theirs.text, /raised by overseer; only that agent/);
     // The decision is still waiting for its overseer.
-    const wait = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'payments', wait_seconds: 0 })).value;
+    const wait = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'payments', wait_seconds: 0 })).value;
     assert.deepEqual(wait.decided.map((e: any) => e.id), [mine.id]);
     const byPerson = await srv.call('POST', `/api/escalations/${mine.id}/ack`, ALICE, { note: 'handled in the session' });
     assert.equal(byPerson.status, 200);
@@ -137,10 +137,10 @@ describe('small results', () => {
     assert.ok(created.text.length < 1000, `create returned ${created.text.length} chars`);
     assert.equal(created.value.context, undefined);
     await decide(created.value.id, 'fine');
-    const wait = await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'payments', wait_seconds: 0 });
+    const wait = await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'payments', wait_seconds: 0 });
     assert.ok(wait.text.length < 2000, `wait returned ${wait.text.length} chars`);
     assert.equal(wait.value.decided.find((e: any) => e.id === created.value.id).decision, 'fine');
-    const http = await srv.call('GET', '/api/wait?group=payments&timeout=0', AGENT);
+    const http = await srv.call('GET', '/api/wait?format=full&group=payments&timeout=0', AGENT);
     assert.ok(http.body.decided.length > 0 && http.body.decided.every((e: any) => e.context === undefined));
     const ack = await srv.tool(AGENT, 'acknowledge_escalation', { id: created.value.id });
     assert.ok(ack.text.length < 1000);

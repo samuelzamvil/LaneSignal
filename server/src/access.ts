@@ -310,11 +310,40 @@ export const briefRequirement = (r: Requirement) =>
 export const briefMessages = (messages: Message[]) =>
   messages.map((m) => compact({ body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined }));
 
+/** The start of an agent's own question, so a digest item says which one without echoing it. */
+const gist = (text: string) => (text.length > 80 ? `${text.slice(0, 79)}…` : text);
+
+/**
+ * A wait result as a digest: one item per thing to handle, the owner's words in full, and counts in
+ * place of the open list. Decisions and replies are listed on every wait until handled; the rest
+ * once per `since`. Takes the public shape (local lane ids).
+ */
+export const digestWait = (w: WaitResult) => {
+  const esc = (e: { ref: string; laneId: string; question: string; projectKey?: string | null }) =>
+    compact({ code: e.ref, project: e.projectKey ?? undefined, lane: e.laneId, question: gist(e.question) });
+  const items = [
+    ...w.decided.map((e) =>
+      compact({ kind: 'decided', ...esc(e), decision: e.decision, note: e.decisionNote, by: e.decidedBy }),
+    ),
+    ...w.replies.map((r) => ({ kind: 'reply', ...esc(r), messages: briefMessages(r.messages) })),
+    ...w.closed.map((e) => compact({ kind: 'closed', ...esc(e), state: e.state, resolution: e.resolution })),
+    ...w.removedLanes.map((l) => compact({ kind: 'lane_removed', lane: l.laneId, by: l.removedBy, at: l.at })),
+    ...w.laneMessages.map((l) => ({ kind: 'lane_note', lane: l.laneId, messages: briefMessages(l.messages) })),
+  ];
+  return {
+    // From the items themselves: `pub.wait` may have dropped some the caller no longer sees.
+    ready: items.length > 0,
+    items,
+    counts: { open: w.open.length, decidedUnacknowledged: w.decided.length, waitingOnYou: w.replies.length },
+    checkedAt: w.checkedAt,
+  };
+};
+
 /** A wait result with its escalations in brief. */
 export const briefWait = (w: WaitResult) => ({
   ...w,
   decided: w.decided.map(brief),
-  replies: w.replies.map((r) => ({ ...r, messages: briefMessages(r.messages) })),
+  replies: w.replies.map(({ projectKey: _key, ...r }) => ({ ...r, messages: briefMessages(r.messages) })),
   closed: w.closed.map(brief),
   // Only when there are some: the wait is the call agents make most.
   laneMessages: w.laneMessages.length ? w.laneMessages.map((l) => ({ ...l, messages: briefMessages(l.messages) })) : undefined,

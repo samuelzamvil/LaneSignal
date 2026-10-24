@@ -188,6 +188,7 @@ export const waitQuery = z
     timeout: z.coerce.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
     since: z.string().max(40).optional(),
     project: z.string().max(40).optional(),
+    format: z.enum(['digest', 'full']).optional(),
   })
   .strict();
 

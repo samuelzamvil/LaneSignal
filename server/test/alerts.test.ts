@@ -61,7 +61,7 @@ describe('alerts', () => {
     const a = await alert('Answer here?');
     assert.equal((await srv.call('POST', `/api/escalations/${a.id}/decide`, ALICE, { decision: 'yes' })).status, 404);
     assert.equal((await srv.call('POST', `/api/escalations/${a.id}/ack`, AGENT, {})).status, 404);
-    assert.equal((await srv.call('GET', '/api/wait?group=payments&timeout=0', AGENT)).status, 404);
+    assert.equal((await srv.call('GET', '/api/wait?format=full&group=payments&timeout=0', AGENT)).status, 404);
     const humanTools = await fetch(`${srv.base}/mcp`, {
       method: 'POST',
       headers: { authorization: `Bearer ${ALICE}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
