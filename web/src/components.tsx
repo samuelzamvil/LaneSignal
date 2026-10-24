@@ -5,23 +5,22 @@ import { ago, absolute, blockedMs, duration, isStale, needsHuman, STATUS_META } 
 import { hasNewMessage, markMessagesSeen } from './seen.ts';
 import { toast } from './toast.tsx';
 
-export type Layout = 'cards' | 'list';
-
-/** Cards or a compact list, for the inbox, the lanes or the requirements; remembered on this device. */
-export function useLayout(key: string): [Layout, (l: Layout) => void] {
-  const [layout, setLayout] = useState<Layout>(() => {
+/** A choice from `allowed`, remembered on this device; `fallback` when nothing (valid) is stored. */
+export function useStored<T extends string>(key: string, allowed: readonly T[], fallback: T): [T, (v: T) => void] {
+  const [value, setValue] = useState<T>(() => {
     try {
-      return localStorage.getItem(key) === 'list' ? 'list' : 'cards';
+      const v = localStorage.getItem(key) as T | null;
+      return v && allowed.includes(v) ? v : fallback;
     } catch {
-      return 'cards';
+      return fallback;
     }
   });
   return [
-    layout,
-    (l) => {
-      setLayout(l);
+    value,
+    (v) => {
+      setValue(v);
       try {
-        localStorage.setItem(key, l);
+        localStorage.setItem(key, v);
       } catch {
         /* storage unavailable: keep it for this visit */
       }
@@ -29,19 +28,91 @@ export function useLayout(key: string): [Layout, (l: Layout) => void] {
   ];
 }
 
-/** The Cards / List switch in a pane's heading. */
-export function LayoutToggle({ layout, onChange }: { layout: Layout; onChange: (l: Layout) => void }) {
+export type Layout = 'cards' | 'list';
+
+/** Cards or a compact list, for the inbox, the lanes or the requirements; remembered on this device. */
+export const useLayout = (key: string) => useStored<Layout>(key, ['cards', 'list'], 'cards');
+
+/** A row of buttons, one of them on: e.g. Cards / List. */
+export function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+}: {
+  options: { value: T; label: ReactNode }[];
+  value: T;
+  onChange: (v: T) => void;
+  label: string;
+}) {
   return (
-    <span className="layout-toggle" role="group" aria-label="Show as">
-      <button className={layout === 'cards' ? 'on' : ''} aria-pressed={layout === 'cards'} onClick={() => onChange('cards')}>
-        Cards
-      </button>
-      <button className={layout === 'list' ? 'on' : ''} aria-pressed={layout === 'list'} onClick={() => onChange('list')}>
-        List
-      </button>
+    <span className="layout-toggle" role="group" aria-label={label}>
+      {options.map((o) => (
+        <button key={o.value} className={value === o.value ? 'on' : ''} aria-pressed={value === o.value} onClick={() => onChange(o.value)}>
+          {o.label}
+        </button>
+      ))}
     </span>
   );
 }
+
+/** The Cards / List switch in a pane's heading. */
+export function LayoutToggle({ layout, onChange }: { layout: Layout; onChange: (l: Layout) => void }) {
+  return (
+    <Segmented
+      label="Show as"
+      value={layout}
+      onChange={onChange}
+      options={[
+        { value: 'cards', label: 'Cards' },
+        { value: 'list', label: 'List' },
+      ]}
+    />
+  );
+}
+
+/**
+ * A part of the lane sheet that folds away under its heading. Open or folded is remembered on
+ * this device for every lane, so a part you don't read stays out of the way.
+ */
+function SheetSection({
+  title,
+  count,
+  badge,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  count?: number;
+  /** Shown beside the heading, e.g. that there's something new inside. */
+  badge?: ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className={`sheet-section${open ? '' : ' folded'}`}>
+      <h4>
+        <button className="section-toggle" aria-expanded={open} onClick={onToggle}>
+          <span className="chevron" aria-hidden="true">
+            ▸
+          </span>
+          {title}
+          {count !== undefined && <span className="count">{count}</span>}
+          {badge}
+        </button>
+      </h4>
+      {open && children}
+    </section>
+  );
+}
+
+type Fold = 'open' | 'folded';
+const FOLD: readonly Fold[] = ['open', 'folded'];
+/** Unresolved: still open, or answered and not yet picked up by the agent. */
+const ACTIVE_STATES: readonly Escalation['state'][] = ['open', 'decided'];
+type EscFilter = 'active' | 'history' | 'all';
 
 export function StatusPill({ status }: { status: LaneStatus }) {
   const meta = STATUS_META[status];
@@ -299,6 +370,10 @@ export function LaneDetail({
   );
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(0);
+  const [escFold, setEscFold] = useStored<Fold>('lanesignal.lane.escalations', FOLD, 'open');
+  const [talkFold, setTalkFold] = useStored<Fold>('lanesignal.lane.conversation', FOLD, 'open');
+  const [eventsFold, setEventsFold] = useStored<Fold>('lanesignal.lane.activity', FOLD, 'open');
+  const [escFilter, setEscFilter] = useStored<EscFilter>('lanesignal.lane.escalationFilter', ['active', 'history', 'all'], 'active');
 
   useEffect(() => {
     let cancelled = false;
@@ -309,13 +384,25 @@ export function LaneDetail({
         // A server from before lane conversations sends none.
         setData({ ...d, messages: d.messages ?? [] });
         setError(null);
-        markMessagesSeen(d.lane, d.lane.lastAgentMessageId);
       })
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
   }, [client, project, laneId, version, sent]);
+
+  // The agent's messages are read once the conversation is showing, not while it's folded away.
+  useEffect(() => {
+    if (data && talkFold === 'open') markMessagesSeen(data.lane, data.lane.lastAgentMessageId);
+  }, [data, talkFold]);
+
+  const activeEscs = data?.escalations.filter((e) => ACTIVE_STATES.includes(e.state)) ?? [];
+  const shownEscs =
+    escFilter === 'all'
+      ? (data?.escalations ?? [])
+      : escFilter === 'active'
+        ? activeEscs
+        : (data?.escalations ?? []).filter((e) => !ACTIVE_STATES.includes(e.state));
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
@@ -381,10 +468,27 @@ export function LaneDetail({
             )}
 
             {data.escalations.length > 0 && (
-              <>
-                <h4>Escalations</h4>
+              <SheetSection
+                title="Escalations"
+                count={shownEscs.length}
+                open={escFold === 'open'}
+                onToggle={() => setEscFold(escFold === 'open' ? 'folded' : 'open')}
+              >
+                <Segmented
+                  label="Show escalations"
+                  value={escFilter}
+                  onChange={setEscFilter}
+                  options={[
+                    { value: 'active', label: `Active ${activeEscs.length}` },
+                    { value: 'history', label: `Historical ${data.escalations.length - activeEscs.length}` },
+                    { value: 'all', label: `All ${data.escalations.length}` },
+                  ]}
+                />
+                {shownEscs.length === 0 && (
+                  <p className="hint">{escFilter === 'active' ? 'Nothing open on this lane.' : 'No earlier escalations.'}</p>
+                )}
                 <ul className="esc-history">
-                  {data.escalations.map((e) => (
+                  {shownEscs.map((e) => (
                     <li key={e.id} className={`state-${e.state}`}>
                       <a href={`#/esc/${e.id}`} className="esc-row">
                         <span className="state">{e.state}</span> {e.question}
@@ -399,12 +503,24 @@ export function LaneDetail({
                     </li>
                   ))}
                 </ul>
-              </>
+              </SheetSection>
             )}
 
             {(data.messages.length > 0 || canWrite) && (
-              <>
-                <h4>Conversation</h4>
+              <SheetSection
+                title="Conversation"
+                count={data.messages.length}
+                badge={
+                  talkFold === 'folded' &&
+                  hasNewMessage(data.lane) && (
+                    <span className="new-message" title="The agent wrote on this lane">
+                      💬 new
+                    </span>
+                  )
+                }
+                open={talkFold === 'open'}
+                onToggle={() => setTalkFold(talkFold === 'open' ? 'folded' : 'open')}
+              >
                 {data.messages.length > 0 ? (
                   <ol className="thread">
                     {data.messages.map((m) => (
@@ -431,19 +547,25 @@ export function LaneDetail({
                     }}
                   />
                 )}
-              </>
+              </SheetSection>
             )}
 
-            <h4>Recent activity</h4>
-            <ol className="timeline">
-              {data.events.map((ev) => (
-                <li key={ev.id} className={`kind-${ev.kind}`}>
-                  <time title={absolute(ev.at)}>{ago(ev.at, now)}</time>
-                  <span>{ev.message}</span>
-                  {ev.actor && <span className="actor">{ev.actor}</span>}
-                </li>
-              ))}
-            </ol>
+            <SheetSection
+              title="Recent activity"
+              count={data.events.length}
+              open={eventsFold === 'open'}
+              onToggle={() => setEventsFold(eventsFold === 'open' ? 'folded' : 'open')}
+            >
+              <ol className="timeline">
+                {data.events.map((ev) => (
+                  <li key={ev.id} className={`kind-${ev.kind}`}>
+                    <time title={absolute(ev.at)}>{ago(ev.at, now)}</time>
+                    <span>{ev.message}</span>
+                    {ev.actor && <span className="actor">{ev.actor}</span>}
+                  </li>
+                ))}
+              </ol>
+            </SheetSection>
             {canDelete && (
               <button
                 className="ghost danger"

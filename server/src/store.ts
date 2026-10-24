@@ -2699,7 +2699,9 @@ export class Store {
     // An id ("R14") finds that requirement, whatever its status.
     if (filter.query && this.requirementNum(filter.query) !== null && /^r/i.test(filter.query.trim())) {
       const one = this.getRequirement(filter.query);
-      return one && (!filter.projects || one.project === null || filter.projects.includes(one.project)) ? [one] : [];
+      return one && (!filter.projects || one.project === null || filter.projects.includes(one.project))
+        ? this.withPendingChanges([one], filter.projects)
+        : [];
     }
     const limit = filter.limit ?? 50;
     const match = filter.query?.trim() ? this.ftsMatch(filter.query) : undefined;
@@ -2715,7 +2717,40 @@ export class Store {
       : (this.db
           .prepare(`SELECT r.* FROM requirements r WHERE ${where.join(' AND ')} ORDER BY r.num DESC LIMIT ?`)
           .all(...params, limit) as Row[]);
-    return rows.map((r) => this.requirementFromRow(r));
+    return this.withPendingChanges(
+      rows.map((r) => this.requirementFromRow(r)),
+      filter.projects,
+    );
+  }
+
+  /**
+   * A change waiting for approval comes with what it changes, whichever of the two was found:
+   * the requirement in force, then its pending replacement, so an agent reading either knows
+   * the decision may be about to change. Pairs are added whatever the other filters say, so
+   * a result can run past `limit` by the partners it brings. Changes never chain (see
+   * supersedeRequirement), so one step each way finds the whole pair.
+   */
+  private withPendingChanges(found: Requirement[], projects?: string[]): Requirement[] {
+    const visible = (r: Requirement) => !projects || r.project === null || projects.includes(r.project);
+    const out: Requirement[] = [];
+    const ids = new Set<string>();
+    const add = (r: Requirement) => {
+      if (!ids.has(r.id)) (ids.add(r.id), out.push(r));
+    };
+    for (const req of found) {
+      if (req.status === 'pending') {
+        for (const num of this.replacedBy(this.requirementNum(req.id)!)) {
+          const old = this.requireRequirement(String(num));
+          if (visible(old)) add(old);
+        }
+      }
+      add(req);
+      if (inForce(req) && req.supersededBy) {
+        const next = this.getRequirement(req.supersededBy);
+        if (next && next.status === 'pending' && visible(next)) add(next);
+      }
+    }
+    return out;
   }
 
   /** SQL limiting requirements (as `r`) to these projects plus the all-projects ones; every project when omitted. */
@@ -2910,7 +2945,9 @@ export class Store {
    * The old one stays, marked superseded, so the history of why is kept. Group
    * defaults to the old one's. A pending replacement (an agent's) only names itself
    * in the old one's `supersededBy`: the old one stays in force until a person
-   * approves the replacement, and comes clear again if they reject it.
+   * approves the replacement, and comes clear again if they reject it. Superseding a
+   * pending replacement swaps it for the new one: it's superseded at once, and what it
+   * was to replace waits on the new one instead, so changes never chain.
    */
   supersedeRequirement(
     id: string,
@@ -2920,12 +2957,12 @@ export class Store {
     actorOwner: string | null = null,
     approved = actorIsHuman,
   ): RecordResult {
-    const { requirement, old } = this.tx(() => {
+    const { requirement, old, earlier } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (!inForce(current)) throw new ConflictError(`${current.id} is ${current.status}; only pending or active requirements can be superseded`);
       if (current.supersededBy) {
         throw new ConflictError(
-          `${current.id} already has a replacement waiting for approval (${current.supersededBy}); supersede that one instead`,
+          `${current.id} already has a replacement waiting for approval (${current.supersededBy}); supersede that one to change the proposal`,
         );
       }
       const at = this.now().toISOString();
@@ -2941,11 +2978,23 @@ export class Store {
         actorOwner,
         approved,
       );
+      // What `current` was to replace, if it's a pending replacement itself.
+      const earlier = this.replacedBy(this.requirementNum(current.id)!);
       this.db
         .prepare('UPDATE requirements SET status = ?, superseded_by = ?, updated_at = ? WHERE num = ?')
-        .run(approved ? 'superseded' : current.status, num, at, this.requirementNum(current.id)!);
-      return { requirement: this.requireRequirement(String(num)), old: this.requireRequirement(current.id) };
+        .run(approved || earlier.length ? 'superseded' : current.status, num, at, this.requirementNum(current.id)!);
+      for (const e of earlier) {
+        // Approved: the whole line is replaced. Pending: it waits on the new change instead.
+        if (approved) this.db.prepare("UPDATE requirements SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE num = ?").run(num, at, e);
+        else this.db.prepare('UPDATE requirements SET superseded_by = ?, updated_at = ? WHERE num = ?').run(num, at, e);
+      }
+      return {
+        requirement: this.requireRequirement(String(num)),
+        old: this.requireRequirement(current.id),
+        earlier: earlier.map((e) => this.requireRequirement(String(e))),
+      };
     });
+    for (const e of earlier) this.emit({ type: 'requirement', requirement: e });
     this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });
     return { requirement, similar: this.similarTo(requirement).filter((r) => r.id !== old.id), warnings: this.tagWarnings(requirement.tags, requirement.project) };

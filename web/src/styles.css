@@ -955,6 +955,44 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+/* Lane sheet parts that fold away under their headings. */
+.sheet-section h4 {
+  margin: 16px 0 8px;
+}
+
+.section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 4px 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  text-align: left;
+}
+
+.section-toggle .chevron {
+  display: inline-block;
+  width: 1em;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+.section-toggle[aria-expanded='true'] .chevron {
+  transform: rotate(90deg);
+}
+
+.sheet-section .layout-toggle {
+  margin: 0 0 8px;
+}
+
 .esc-history,
 .timeline {
   list-style: none;

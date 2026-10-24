@@ -462,7 +462,8 @@ function buildServer(
           'follow it and cite its id. `query` is free text; `tags` must all match; `group_id` adds the train/epic\'s ' +
           'requirements to the project-wide ones. Returns pending and active ones unless you set `statuses`. ' +
           '`status: "pending"` means the owner hasn\'t approved the record yet: follow it, but it may still be corrected. ' +
-          'A requirement in force with `supersededBy` has a replacement waiting for approval.',
+          'A requirement in force with `supersededBy` has a replacement waiting for approval: both always come back, ' +
+          'the current one then the pending change, whichever of them matched.',
         inputSchema: {
           query: z.string().max(500).optional(),
           tags: z.array(s.requirementTag).max(5).optional(),
