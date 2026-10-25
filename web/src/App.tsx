@@ -13,6 +13,7 @@ import {
   type PublicConfig,
 } from './api.ts';
 import { Chips, GroupHeader, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout } from './components.tsx';
+import { TicketLinksContext } from './linked-text.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
 import { routeFromAppLink } from './deeplink.ts';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
@@ -688,145 +689,147 @@ function Dashboard({
   );
 
   return (
-    <div className={`app view-${route.view}`}>
-      <header className="topbar">
-        <a href="#/" className="brand">
-          <img src="/icon.svg" alt="" width={24} height={24} /> {config.name}
-        </a>
-        {multiProject && (
-          <select
-            className="project-switch"
-            aria-label="Project"
-            value={projectFilter}
-            onChange={(e) => setProjectFilter(e.target.value)}
-          >
-            <option value="">All projects</option>
-            {live.projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+    <TicketLinksContext.Provider value={config}>
+      <div className={`app view-${route.view}`}>
+        <header className="topbar">
+          <a href="#/" className="brand">
+            <img src="/icon.svg" alt="" width={24} height={24} /> {config.name}
+          </a>
+          {multiProject && (
+            <select
+              className="project-switch"
+              aria-label="Project"
+              value={projectFilter}
+              onChange={(e) => setProjectFilter(e.target.value)}
+            >
+              <option value="">All projects</option>
+              {live.projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <nav className="topnav" aria-label="Views">
+            <a href="#/lanes" className={route.view === 'lanes' || route.view === 'inbox' ? 'on' : ''}>
+              Lanes
+            </a>
+            <a href="#/history" className={route.view === 'history' ? 'on' : ''}>
+              History
+            </a>
+            {config.requirements && (
+              <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
+                Requirements
+              </a>
+            )}
+          </nav>
+          <span className={`link-dot ${live.link}`} title={live.link} aria-label={`connection ${live.link}`} />
+          <a href="#/settings" className="settings-link" aria-label="Settings">
+            ⚙
+          </a>
+        </header>
+        {live.link === 'offline' && (
+          <div className="offline-bar" role="status">
+            Offline{live.syncedAt ? ` · showing data from ${new Date(live.syncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''} ·
+            reconnecting…
+          </div>
         )}
-        <nav className="topnav" aria-label="Views">
-          <a href="#/lanes" className={route.view === 'lanes' || route.view === 'inbox' ? 'on' : ''}>
-            Lanes
+        <Toaster />
+        {open.length > 0 && route.view !== 'inbox' && (
+          <a className="alert-banner" href="#/">
+            ⚑ {open.length} {config.decisions ? 'decision' : 'alert'}
+            {open.length > 1 ? 's' : ''} waiting
+          </a>
+        )}
+        <main className="panes">
+          {route.view === 'history' ? (
+            <HistoryPane
+              client={client}
+              groups={live.groups}
+              lanes={live.lanes}
+              projects={live.projects}
+              project={projectFilter}
+              groupLabel={config.groupLabel}
+              now={now}
+              version={unresolvedIds}
+              selectedId={route.escId}
+            />
+          ) : (
+            inbox
+          )}
+          {route.view === 'settings' ? (
+            settings
+          ) : route.view === 'history' ? (
+            <section className="pane history-empty" aria-hidden>
+              <p className="empty">Pick an escalation to see it here.</p>
+            </section>
+          ) : route.view === 'reqs' && config.requirements ? (
+            <RequirementsPane
+              client={client}
+              groups={live.groups}
+              projects={live.projects}
+              project={projectFilter}
+              groupLabel={config.groupLabel}
+              canEdit={me?.role === 'human'}
+              version={live.requirementsVersion}
+            />
+          ) : (
+            lanePane
+          )}
+        </main>
+        <nav className="tabbar">
+          <a href="#/" className={route.view === 'inbox' ? 'on' : ''}>
+            <span className="icon">⚑</span>Needs you
+            {open.length > 0 && <span className="badge">{open.length}</span>}
+          </a>
+          <a href="#/lanes" className={route.view === 'lanes' ? 'on' : ''}>
+            <span className="icon">☰</span>Lanes
           </a>
           <a href="#/history" className={route.view === 'history' ? 'on' : ''}>
-            History
+            <span className="icon">↺</span>History
           </a>
           {config.requirements && (
             <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
-              Requirements
+              <span className="icon">§</span>Requirements
             </a>
           )}
-        </nav>
-        <span className={`link-dot ${live.link}`} title={live.link} aria-label={`connection ${live.link}`} />
-        <a href="#/settings" className="settings-link" aria-label="Settings">
-          ⚙
-        </a>
-      </header>
-      {live.link === 'offline' && (
-        <div className="offline-bar" role="status">
-          Offline{live.syncedAt ? ` · showing data from ${new Date(live.syncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''} ·
-          reconnecting…
-        </div>
-      )}
-      <Toaster />
-      {open.length > 0 && route.view !== 'inbox' && (
-        <a className="alert-banner" href="#/">
-          ⚑ {open.length} {config.decisions ? 'decision' : 'alert'}
-          {open.length > 1 ? 's' : ''} waiting
-        </a>
-      )}
-      <main className="panes">
-        {route.view === 'history' ? (
-          <HistoryPane
-            client={client}
-            groups={live.groups}
-            lanes={live.lanes}
-            projects={live.projects}
-            project={projectFilter}
-            groupLabel={config.groupLabel}
-            now={now}
-            version={unresolvedIds}
-            selectedId={route.escId}
-          />
-        ) : (
-          inbox
-        )}
-        {route.view === 'settings' ? (
-          settings
-        ) : route.view === 'history' ? (
-          <section className="pane history-empty" aria-hidden>
-            <p className="empty">Pick an escalation to see it here.</p>
-          </section>
-        ) : route.view === 'reqs' && config.requirements ? (
-          <RequirementsPane
-            client={client}
-            groups={live.groups}
-            projects={live.projects}
-            project={projectFilter}
-            groupLabel={config.groupLabel}
-            canEdit={me?.role === 'human'}
-            version={live.requirementsVersion}
-          />
-        ) : (
-          lanePane
-        )}
-      </main>
-      <nav className="tabbar">
-        <a href="#/" className={route.view === 'inbox' ? 'on' : ''}>
-          <span className="icon">⚑</span>Needs you
-          {open.length > 0 && <span className="badge">{open.length}</span>}
-        </a>
-        <a href="#/lanes" className={route.view === 'lanes' ? 'on' : ''}>
-          <span className="icon">☰</span>Lanes
-        </a>
-        <a href="#/history" className={route.view === 'history' ? 'on' : ''}>
-          <span className="icon">↺</span>History
-        </a>
-        {config.requirements && (
-          <a href="#/reqs" className={route.view === 'reqs' ? 'on' : ''}>
-            <span className="icon">§</span>Requirements
+          <a href="#/settings" className={route.view === 'settings' ? 'on' : ''}>
+            <span className="icon">⚙</span>Settings
           </a>
+        </nav>
+        {route.escId && (
+          <EscalationDetail
+            id={route.escId}
+            client={client}
+            lanes={live.lanes}
+            groups={live.groups}
+            laneOpenIds={escLaneKey && route.view !== 'history' ? (openByLane.get(escLaneKey) ?? []).map((e) => e.id) : []}
+            showProject={multiProject}
+            decisions={config.decisions}
+            currentId={routeEsc?.id}
+            version={escVersion}
+            now={now}
+            staleMinutes={config.staleMinutes}
+            onClose={() => closeTo(escFallback(route))}
+            backTo={backLabel(escFallback(route))}
+          />
         )}
-        <a href="#/settings" className={route.view === 'settings' ? 'on' : ''}>
-          <span className="icon">⚙</span>Settings
-        </a>
-      </nav>
-      {route.escId && (
-        <EscalationDetail
-          id={route.escId}
-          client={client}
-          lanes={live.lanes}
-          groups={live.groups}
-          laneOpenIds={escLaneKey && route.view !== 'history' ? (openByLane.get(escLaneKey) ?? []).map((e) => e.id) : []}
-          showProject={multiProject}
-          decisions={config.decisions}
-          currentId={routeEsc?.id}
-          version={escVersion}
-          now={now}
-          staleMinutes={config.staleMinutes}
-          onClose={() => closeTo(escFallback(route))}
-          backTo={backLabel(escFallback(route))}
-        />
-      )}
-      {route.laneId && routeLaneProject && (
-        <LaneDetail
-          laneId={route.laneId}
-          project={routeLaneProject}
-          client={client}
-          version={laneVersion}
-          now={now}
-          canDelete={me?.role === 'human'}
-          canWrite={me?.role === 'human' && config.decisions}
-          group={groupOfLane(live.lanes.get(routeLaneKey))}
-          groupLabel={config.groupLabel}
-          onClose={() => closeTo('#/lanes')}
-          backTo={backLabel('#/lanes')}
-        />
-      )}
-    </div>
+        {route.laneId && routeLaneProject && (
+          <LaneDetail
+            laneId={route.laneId}
+            project={routeLaneProject}
+            client={client}
+            version={laneVersion}
+            now={now}
+            canDelete={me?.role === 'human'}
+            canWrite={me?.role === 'human' && config.decisions}
+            group={groupOfLane(live.lanes.get(routeLaneKey))}
+            groupLabel={config.groupLabel}
+            onClose={() => closeTo('#/lanes')}
+            backTo={backLabel('#/lanes')}
+          />
+        )}
+      </div>
+    </TicketLinksContext.Provider>
   );
 }

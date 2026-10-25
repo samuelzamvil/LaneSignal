@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, Lane, Position } from './api.ts';
 import { AttachmentList } from './attachments.tsx';
 import { Links, RichText, TicketLink } from './components.tsx';
+import { LinkedText } from './linked-text.tsx';
 import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
 import { openItem, stepTo } from './nav.ts';
@@ -681,7 +682,9 @@ export function EscalationDetail({
 
             <section className="esc-section question">
               <h4>Question</h4>
-              <p className="question-text">{esc.question}</p>
+              <p className="question-text">
+                <LinkedText text={esc.question} />
+              </p>
             </section>
 
             {esc.attachments.length > 0 && (
@@ -837,9 +840,19 @@ export function EscalationDetail({
                 )}
                 {(() => {
                   const means = esc.decision === 'Accept' ? esc.acceptMeans : esc.decision === 'Reject' ? esc.rejectMeans : null;
-                  return means && <p className="muted">{means}</p>;
+                  return (
+                    means && (
+                      <p className="muted">
+                        <LinkedText text={means} />
+                      </p>
+                    )
+                  );
                 })()}
-                {esc.decisionNote && <p className="note">{esc.decisionNote}</p>}
+                {esc.decisionNote && (
+                  <p className="note">
+                    <LinkedText text={esc.decisionNote} />
+                  </p>
+                )}
                 {esc.state === 'decided' && (
                   <>
                     <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
@@ -865,7 +878,7 @@ export function EscalationDetail({
                 {esc.resolution && (
                   <p className="note">
                     {esc.state === 'withdrawn' ? 'Dismissed: ' : 'Agent: '}
-                    {esc.resolution}
+                    <LinkedText text={esc.resolution} />
                   </p>
                 )}
               </section>

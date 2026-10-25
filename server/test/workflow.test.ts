@@ -329,6 +329,12 @@ describe('agent skill', () => {
     }
   });
 
+  test('the config gives the app the ticket templates, so refs in free text can link', async () => {
+    const config = (await srv.call('GET', '/api/config', ALICE)).body;
+    assert.deepEqual(config.ticketTemplates, { gh: 'https://github.com/o/r/issues/{id}' });
+    assert.equal(config.defaultTicketSystem, 'gh');
+  });
+
   test('by default people answer in LaneSignal, and the skill covers waiting and acknowledging', async () => {
     assert.equal((await srv.call('GET', '/api/config', ALICE)).body.decisions, true);
     const { text, tools } = await skillAndTools(srv);

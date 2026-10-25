@@ -237,6 +237,10 @@ export interface PublicConfig {
   groupLabel: string;
   statuses: readonly LaneStatus[];
   ticketSystems: string[];
+  /** Ticket system key -> URL template with {id}, so the app can link refs written in free text. */
+  ticketTemplates: Record<string, string>;
+  /** The system plain refs like `#1234` link to. */
+  defaultTicketSystem: string | null;
   staleMinutes: number;
   push: { fcm: boolean; ntfy: boolean };
   /** People answer escalations in LaneSignal; off, they answer in the agent's session and agents dismiss alerts. */
