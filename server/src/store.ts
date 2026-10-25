@@ -4805,15 +4805,17 @@ export class Store {
         }
         this.db.prepare('UPDATE requirements SET superseded_by = ?, updated_at = ? WHERE num = ?').run(num, at, old);
       }
-      // Its own replacement, if it had one, still counts only while that is pending.
+      // Its own replacement (only on records withdrawn before that was refused) counts while it's a
+      // lone pending change; once approved, this one was replaced and isn't brought back beside it.
       const next = current.supersededBy ? this.getRequirement(current.supersededBy) : null;
+      if (next?.status === 'active') throw new ConflictError(`${current.id} was replaced by ${next.id} since; it can't be restored beside it`);
       this.db
         .prepare(
           'UPDATE requirements SET status = ?, superseded_by = ?, rejection_reason = NULL, rejected_replacing = NULL, updated_at = ? WHERE num = ?',
         )
         .run(
           current.status === 'rejected' ? 'pending' : 'active',
-          next?.status === 'pending' ? this.requirementNum(next.id)! : null,
+          next?.status === 'pending' && !next.supersededBy ? this.requirementNum(next.id)! : null,
           at,
           num,
         );
@@ -4831,13 +4833,21 @@ export class Store {
    * (not even a proposal it was swapped in for); it remembers what did, so a restore links them again.
    */
   private withdrawRequirement(current: Requirement, status: 'retired' | 'rejected', reason: string | null): Requirement {
+    // A change to it is waiting: that's decided first, so a withdrawn requirement never names a replacement.
+    if (current.supersededBy) {
+      throw new ConflictError(`${current.id} has a replacement waiting for approval (${current.supersededBy}); approve or reject that first`);
+    }
     const { requirement, kept } = this.tx(() => {
       const at = this.now().toISOString();
       const num = this.requirementNum(current.id)!;
       const kept = this.replacedBy(num);
       const pointing =
         status === 'rejected'
-          ? (this.db.prepare('SELECT num FROM requirements WHERE superseded_by = ?').all(num) as Row[]).map((r) => Number(r.num))
+          ? (
+              this.db
+                .prepare("SELECT num FROM requirements WHERE superseded_by = ? AND status IN ('pending', 'active', 'superseded')")
+                .all(num) as Row[]
+            ).map((r) => Number(r.num))
           : kept;
       for (const old of pointing) this.db.prepare('UPDATE requirements SET superseded_by = NULL, updated_at = ? WHERE num = ?').run(at, old);
       this.db

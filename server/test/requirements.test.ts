@@ -344,21 +344,27 @@ describe('changing direction', () => {
     assert.match(await person.until('STREAM-SECRET'), /"status":"rejected"/);
   });
 
-  test('a rejected record with a replacement of its own comes back without a stale link', async () => {
+  test('a requirement with a change waiting is not withdrawn until the change is decided', async () => {
     const base = { justification: 'Ops.', tags: ['cache-ttl'], decided_by: 'Sam' };
     const get = async (id: string) => (await srv.call('GET', `/api/requirements/${id}`, ALICE)).body;
+    // A pending record with its own pending change: reject the change first.
     const r3 = (await record({ requirement: 'Cache entries live 1 hour.', ...base })).value.requirement;
     const r4 = (await srv.tool(AGENT, 'supersede_requirement', { id: r3.id, requirement: 'Cache entries live 2 hours.', ...base })).value.requirement;
-    await srv.call('POST', `/api/requirements/${r3.id}/reject`, ALICE, { reason: 'Never decided.' });
-    await srv.call('POST', `/api/requirements/${r4.id}/approve`, ALICE);
-    const restored = (await srv.call('POST', `/api/requirements/${r3.id}/restore`, ALICE)).body;
-    assert.deepEqual([restored.status, restored.supersededBy], ['pending', null], 'its replacement is approved, not waiting');
-    assert.equal((await get(r4.id)).status, 'active');
-    // While the replacement is still pending, restoring keeps the pair.
-    const r5 = (await record({ requirement: 'Cache warms at boot.', ...base })).value.requirement;
-    const r6 = (await srv.tool(AGENT, 'supersede_requirement', { id: r5.id, requirement: 'Cache warms lazily.', ...base })).value.requirement;
-    await srv.call('POST', `/api/requirements/${r5.id}/reject`, ALICE, { reason: 'No.' });
-    assert.equal((await srv.call('POST', `/api/requirements/${r5.id}/restore`, ALICE)).body.supersededBy, r6.id);
+    const refused = await srv.call('POST', `/api/requirements/${r3.id}/reject`, ALICE, { reason: 'Never decided.' });
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error, new RegExp(r4.id));
+    await srv.call('POST', `/api/requirements/${r4.id}/reject`, ALICE, { reason: 'No.' });
+    assert.equal((await srv.call('POST', `/api/requirements/${r3.id}/reject`, ALICE, { reason: 'Never decided.' })).body.status, 'rejected');
+    assert.equal((await get(r3.id)).supersededBy, null);
+    // Restoring either brings back a lone pending record; neither claims the other.
+    await srv.call('POST', `/api/requirements/${r3.id}/restore`, ALICE);
+    assert.deepEqual([(await get(r3.id)).status, (await get(r3.id)).supersededBy], ['pending', null]);
+    // An active one with a pending change isn't retired out from under it either.
+    const a = (await srv.call('POST', '/api/requirements', ALICE, { requirement: 'Cache is per region.', justification: 'Ops.', tags: ['cache-ttl'] })).body.requirement;
+    const b = (await srv.tool(AGENT, 'supersede_requirement', { id: a.id, requirement: 'Cache is global.', ...base })).value.requirement;
+    assert.equal((await srv.call('POST', `/api/requirements/${a.id}/retire`, ALICE)).status, 409);
+    await srv.call('POST', `/api/requirements/${b.id}/approve`, ALICE);
+    assert.deepEqual([(await get(a.id)).status, (await get(b.id)).status], ['superseded', 'active']);
   });
 
   test('restoring a rejected swap links back the proposal it was swapped in for', async () => {
