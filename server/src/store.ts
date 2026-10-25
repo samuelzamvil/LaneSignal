@@ -199,8 +199,8 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
   messages: ['id', 'escalation_id', 'escalation_ref', 'project', 'lane_id', 'from', 'author', 'body', 'attachments', 'at'],
   lane_messages: ['id', 'project', 'lane_id', 'from', 'author', 'body', 'attachments', 'at'],
   requirements: [
-    'id', 'project', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'rejection_reason', 'decided_by',
-    'source_escalation', 'recorded_by', 'created_at', 'updated_at',
+    'id', 'project', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'decided_by',
+    'source_escalation', 'recorded_by', 'created_at', 'updated_at', 'rejection_reason',
   ],
 };
 export interface ExportFilter {
@@ -3872,12 +3872,12 @@ export class Store {
           tags: req.tags.join(' | '),
           status: req.status,
           superseded_by: req.supersededBy,
-          rejection_reason: req.rejectionReason,
           decided_by: req.decidedBy,
           source_escalation: req.sourceEscalation,
           recorded_by: req.recordedBy,
           created_at: req.createdAt,
           updated_at: req.updatedAt,
+          rejection_reason: req.rejectionReason,
         };
       });
     }
@@ -4797,16 +4797,26 @@ export class Store {
           : [];
       for (const old of replacing) {
         const req = this.requireRequirement(String(old));
-        if (!inForce(req) || req.supersededBy) {
+        // Still waiting on it (in force), or a proposal it was swapped in for (superseded): link it again.
+        if ((!inForce(req) && req.status !== 'superseded') || req.supersededBy) {
           throw new ConflictError(
-            `${current.id} was to replace ${req.id}, which has ${req.supersededBy ? `another replacement waiting (${req.supersededBy})` : `become ${req.status}`} since; record the change again instead`,
+            `${current.id} was to replace ${req.id}, which has ${req.supersededBy ? `another replacement (${req.supersededBy})` : `become ${req.status}`} since; record the change again instead`,
           );
         }
         this.db.prepare('UPDATE requirements SET superseded_by = ?, updated_at = ? WHERE num = ?').run(num, at, old);
       }
+      // Its own replacement, if it had one, still counts only while that is pending.
+      const next = current.supersededBy ? this.getRequirement(current.supersededBy) : null;
       this.db
-        .prepare('UPDATE requirements SET status = ?, rejection_reason = NULL, rejected_replacing = NULL, updated_at = ? WHERE num = ?')
-        .run(current.status === 'rejected' ? 'pending' : 'active', at, num);
+        .prepare(
+          'UPDATE requirements SET status = ?, superseded_by = ?, rejection_reason = NULL, rejected_replacing = NULL, updated_at = ? WHERE num = ?',
+        )
+        .run(
+          current.status === 'rejected' ? 'pending' : 'active',
+          next?.status === 'pending' ? this.requirementNum(next.id)! : null,
+          at,
+          num,
+        );
       return { requirement: this.requireRequirement(current.id), relinked: replacing.map((n) => this.requireRequirement(String(n))) };
     });
     for (const old of relinked) this.emit({ type: 'requirement', requirement: old });
@@ -4817,8 +4827,8 @@ export class Store {
   /**
    * Takes a requirement out of force: retired (an active one no longer applies, nothing replaces
    * it) or rejected (a pending record a person turned down, with their reason). A requirement it
-   * was to replace no longer has a replacement waiting; a rejected one remembers which, for a
-   * restore, and nothing points at it any more (not even a proposal it was swapped in for).
+   * was to replace no longer has a replacement waiting. Nothing points at a rejected one any more
+   * (not even a proposal it was swapped in for); it remembers what did, so a restore links them again.
    */
   private withdrawRequirement(current: Requirement, status: 'retired' | 'rejected', reason: string | null): Requirement {
     const { requirement, kept } = this.tx(() => {
@@ -4832,7 +4842,7 @@ export class Store {
       for (const old of pointing) this.db.prepare('UPDATE requirements SET superseded_by = NULL, updated_at = ? WHERE num = ?').run(at, old);
       this.db
         .prepare('UPDATE requirements SET status = ?, rejection_reason = ?, rejected_replacing = ?, updated_at = ? WHERE num = ?')
-        .run(status, reason, status === 'rejected' && kept.length ? JSON.stringify(kept) : null, at, num);
+        .run(status, reason, status === 'rejected' && pointing.length ? JSON.stringify(pointing) : null, at, num);
       return { requirement: this.requireRequirement(current.id), kept: pointing.map((n) => this.requireRequirement(String(n))) };
     });
     for (const old of kept) this.emit({ type: 'requirement', requirement: old });

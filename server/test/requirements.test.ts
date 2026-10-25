@@ -298,6 +298,82 @@ describe('changing direction', () => {
     assert.deepEqual([(await get(a.id)).status, (await get(a.id)).supersededBy], ['superseded', p2.id]);
   });
 
+  test('a personal key cannot reject, and never sees a rejected requirement', async () => {
+    await srv.call('POST', '/api/admin/people', ALICE, { email: 'rae@example.com', name: 'Rae', password: 'correct horse battery' });
+    const signIn = await fetch(`${srv.base}/api/auth/sign-in/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: srv.base },
+      body: JSON.stringify({ email: 'rae@example.com', password: 'correct horse battery' }),
+    });
+    const personal = (await srv.call('POST', '/api/auth/api-key/create', signIn.headers.get('set-auth-token')!, { name: 'rae-claude', metadata: { role: 'human' } })).body.key;
+    const id = (await record({ requirement: 'Statements close on the 1st.', justification: 'Finance.', tags: ['statement-close'], decided_by: 'Sam' })).value.requirement.id;
+    assert.equal((await srv.call('POST', `/api/requirements/${id}/reject`, personal, { reason: 'No.' })).status, 403);
+    assert.equal((await srv.call('GET', `/api/requirements/${id}`, ALICE)).body.status, 'pending');
+    await srv.call('POST', `/api/requirements/${id}/reject`, ALICE, { reason: 'PK-SECRET' });
+    assert.equal((await srv.call('GET', `/api/requirements/${id}`, personal)).status, 404);
+    assert.deepEqual((await srv.call('GET', '/api/requirements?tag=statement-close&status=rejected', personal)).body, []);
+    assert.equal((await srv.call('POST', `/api/requirements/${id}/restore`, personal)).status, 404);
+    const exported = await srv.tool(personal, 'export_data', { dataset: 'requirements', format: 'json' });
+    assert.equal(exported.isError, false, exported.text);
+    assert.ok(!exported.text.includes('PK-SECRET'));
+  });
+
+  test('agents on the event stream learn a rejected requirement is gone, without its reason', async () => {
+    const id = (await record({ requirement: 'Coupons stack at most twice.', justification: 'Margins.', tags: ['coupon-stacking'], decided_by: 'Sam' })).value.requirement.id;
+    const read = async (token: string) => {
+      const ctrl = new AbortController();
+      const res = await fetch(`${srv.base}/api/events`, { headers: { authorization: `Bearer ${token}` }, signal: ctrl.signal });
+      const reader = res.body!.getReader();
+      let text = '';
+      return {
+        async until(needle: string) {
+          const decoder = new TextDecoder();
+          while (!text.includes(needle)) text += decoder.decode((await reader.read()).value);
+          ctrl.abort();
+          return text;
+        },
+      };
+    };
+    const agent = await read(AGENT);
+    const person = await read(ALICE);
+    await new Promise((r) => setTimeout(r, 100));
+    await srv.call('POST', `/api/requirements/${id}/reject`, ALICE, { reason: 'STREAM-SECRET' });
+    const seen = await agent.until('requirement_removed');
+    assert.match(seen, new RegExp(`"id":"${id}"`));
+    assert.ok(!seen.includes('STREAM-SECRET'));
+    assert.match(await person.until('STREAM-SECRET'), /"status":"rejected"/);
+  });
+
+  test('a rejected record with a replacement of its own comes back without a stale link', async () => {
+    const base = { justification: 'Ops.', tags: ['cache-ttl'], decided_by: 'Sam' };
+    const get = async (id: string) => (await srv.call('GET', `/api/requirements/${id}`, ALICE)).body;
+    const r3 = (await record({ requirement: 'Cache entries live 1 hour.', ...base })).value.requirement;
+    const r4 = (await srv.tool(AGENT, 'supersede_requirement', { id: r3.id, requirement: 'Cache entries live 2 hours.', ...base })).value.requirement;
+    await srv.call('POST', `/api/requirements/${r3.id}/reject`, ALICE, { reason: 'Never decided.' });
+    await srv.call('POST', `/api/requirements/${r4.id}/approve`, ALICE);
+    const restored = (await srv.call('POST', `/api/requirements/${r3.id}/restore`, ALICE)).body;
+    assert.deepEqual([restored.status, restored.supersededBy], ['pending', null], 'its replacement is approved, not waiting');
+    assert.equal((await get(r4.id)).status, 'active');
+    // While the replacement is still pending, restoring keeps the pair.
+    const r5 = (await record({ requirement: 'Cache warms at boot.', ...base })).value.requirement;
+    const r6 = (await srv.tool(AGENT, 'supersede_requirement', { id: r5.id, requirement: 'Cache warms lazily.', ...base })).value.requirement;
+    await srv.call('POST', `/api/requirements/${r5.id}/reject`, ALICE, { reason: 'No.' });
+    assert.equal((await srv.call('POST', `/api/requirements/${r5.id}/restore`, ALICE)).body.supersededBy, r6.id);
+  });
+
+  test('restoring a rejected swap links back the proposal it was swapped in for', async () => {
+    const base = { justification: 'Ops.', tags: ['retention-days'], decided_by: 'Sam' };
+    const get = async (id: string) => (await srv.call('GET', `/api/requirements/${id}`, ALICE)).body;
+    const r5 = (await srv.call('POST', '/api/requirements', ALICE, { requirement: 'Logs are kept 30 days.', justification: 'Ops.', tags: ['retention-days'] })).body.requirement;
+    const r6 = (await srv.tool(AGENT, 'supersede_requirement', { id: r5.id, requirement: 'Logs are kept 60 days.', ...base })).value.requirement;
+    const r7 = (await srv.tool(AGENT, 'supersede_requirement', { id: r6.id, requirement: 'Logs are kept 90 days.', ...base })).value.requirement;
+    await srv.call('POST', `/api/requirements/${r7.id}/reject`, ALICE, { reason: 'Too long.' });
+    assert.equal((await get(r6.id)).supersededBy, null);
+    await srv.call('POST', `/api/requirements/${r7.id}/restore`, ALICE);
+    assert.deepEqual([(await get(r5.id)).status, (await get(r5.id)).supersededBy], ['active', r7.id]);
+    assert.deepEqual([(await get(r6.id)).status, (await get(r6.id)).supersededBy], ['superseded', r7.id]);
+  });
+
   test('restoring a rejected replacement is refused once what it replaced has moved on', async () => {
     const base = { justification: 'Ops.', tags: ['archive-window'], decided_by: 'Sam' };
     const a = (await srv.call('POST', '/api/requirements', ALICE, { requirement: 'Archives run monthly.', justification: 'Ops.', tags: ['archive-window'] })).body.requirement;

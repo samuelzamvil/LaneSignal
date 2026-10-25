@@ -76,7 +76,7 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `GET /api/projects/:id/trmnl/plugin.zip` | project admin | The private plugin to import into TRMNL, named after the project |
 | `PUT /api/settings/push` | instance admin | `{quietAlerts}`: send alerts as regular notifications instead of high priority (shown in `GET /api/config`). Returns `204` |
 | `GET /api/people` | project admin | Everyone with an account, for adding members |
-| `GET /api/events` | any | Server-Sent Events: `group`, `group_deleted`, `lane`, `lane_deleted`, `escalation`, `ticket`, `epic`. Only your projects' events. The stream ends when memberships or projects change; reconnect and re-snapshot. Heartbeat every 25s. `?access_token=` is accepted here only, for clients that can't set headers |
+| `GET /api/events` | any | Server-Sent Events: `group`, `group_deleted`, `lane`, `lane_deleted`, `escalation`, `ticket`, `epic`, `requirement`. Only your projects' events. Agent and personal keys never get a rejected requirement: they get `requirement_removed` with just its `id` instead. The stream ends when memberships or projects change; reconnect and re-snapshot. Heartbeat every 25s. `?access_token=` is accepted here only, for clients that can't set headers |
 | `GET /api/groups` | any | |
 | `PUT /api/groups/:id` | agent | Create or update `{name?, links?}`. A group's `ticket` is read-only now (its epic has it): one sent is ignored, with a `warning` |
 | `DELETE /api/groups/:id` | human | Archives it. Its lanes show as ungrouped, and exports keep the link |
@@ -118,9 +118,9 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `POST /api/requirements/:id/supersede` | any | Same body; marks the old one (pending or active) superseded. When the new one is pending, the old one stays in force with `supersededBy` set until the new one is approved (`409` if it already has a replacement waiting) |
 | `PATCH /api/requirements/:id` | human | Fix `requirement`, `justification` or `tags` wording |
 | `POST /api/requirements/:id/approve` | human | A pending requirement becomes `active`, superseding the one it replaces (`409` if it isn't pending; `403` for a personal key) |
-| `POST /api/requirements/:id/reject` | human | `{reason}` (required, at most 2,000 characters): a pending requirement becomes `rejected`, with `rejectionReason` set. A requirement it was to replace stays in force with no replacement waiting. `409` if it isn't pending |
-| `POST /api/requirements/:id/retire` | human | An active requirement no longer applies; nothing replaces it. `409` for a pending one (reject it instead) |
-| `POST /api/requirements/:id/restore` | human | Undo a retire (it comes back `active`) or a rejection (it comes back `pending`, its reason cleared) |
+| `POST /api/requirements/:id/reject` | human | `{reason}` (required, at most 2,000 characters): a pending requirement becomes `rejected`, with `rejectionReason` set. A requirement it was to replace stays in force with no replacement waiting. `409` if it isn't pending; `403` for a personal key |
+| `POST /api/requirements/:id/retire` | human | An active requirement no longer applies; nothing replaces it. `409` for a pending one: reject it instead (app versions from before rejection reasons, which retired pending ones, get this error until updated) |
+| `POST /api/requirements/:id/restore` | human | Undo a retire (it comes back `active`) or a rejection (it comes back `pending`, its reason cleared, and again the pending replacement of what it was to replace; `409` if that has changed since) |
 | `POST /api/push/register`, `/unregister` | human | Used by the Android app |
 | `POST /api/admin/people` | static human token | Break-glass: add a person `{email, name, password, admin?}` |
 | `POST /api/admin/people/password` | static human token | Break-glass: `{email, password}`, which also signs them out |
