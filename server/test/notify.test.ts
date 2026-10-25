@@ -55,7 +55,7 @@ test('ntfy gets new escalations only, as UTF-8 JSON, not positions or decisions'
   const { path: p, body } = sink.received[0];
   assert.equal(p, '/');
   assert.equal(body.topic, 'lanes-topic');
-  assert.equal(body.title, `Needs you ${esc.ref} · Auth → OAuth 🚀`);
+  assert.equal(body.title, `Needs you ${esc.ref} · Ungrouped / Auth → OAuth 🚀`);
   assert.equal(body.priority, 4);
   assert.equal(body.message, 'Ship it?');
   // Tapping opens the Android app; a button opens the web app instead.
@@ -165,9 +165,9 @@ test('an FYI raised again as blocking notifies like a new question; notices go o
   assert.deepEqual(
     sink.received.map((r) => [r.body.title, r.body.priority]),
     [
-      [`FYI ${fyi.ref} · Auth`, 3],
-      [`Needs you ${fyi.ref} · Auth`, 4],
-      ['Auth', 3],
+      [`FYI ${fyi.ref} · Ungrouped / Auth`, 3],
+      [`Needs you ${fyi.ref} · Ungrouped / Auth`, 4],
+      ['Ungrouped / Auth', 3],
     ],
   );
   assert.equal(sink.received[2].body.message, 'Merged PR #311');
@@ -188,8 +188,8 @@ test("every agent message in a conversation reaches the owner", async () => {
   assert.deepEqual(
     sink.received.map((r) => [r.body.title, r.body.message, r.body.priority]),
     [
-      [`Needs you ${e.ref} · Auth`, 'Ship?', 4],
-      [`Reply ${e.ref} · Auth`, 'Flag checkout_v2?', 4],
+      [`Needs you ${e.ref} · Ungrouped / Auth`, 'Ship?', 4],
+      [`Reply ${e.ref} · Ungrouped / Auth`, 'Flag checkout_v2?', 4],
     ],
   );
   sink.close();
@@ -212,8 +212,9 @@ test('quiet alerts send questions as regular notifications', async () => {
   assert.deepEqual(
     sink.received.map((r) => [r.body.title, r.body.priority]),
     [
-      [`Needs you ${quiet.ref} · q`, 3],
-      [`Needs you ${quiet.ref.replace(/\d+$/, (n) => String(Number(n) + 1))} · q`, 4],
+      [`Needs you ${quiet.ref} · Ungrouped / q`, 3],
+      // The ticket's next letter.
+      [`Needs you ${quiet.ref.replace(/A$/, 'B')} · Ungrouped / q`, 4],
     ],
   );
   sink.close();

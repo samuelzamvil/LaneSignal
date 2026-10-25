@@ -20,14 +20,14 @@ const decide = (id: string, decision: string, extra: Record<string, unknown> = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe('escalation codes', () => {
-  test('codes are the lane letter and a number, usable wherever an id is', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'refs' });
-    const letter = (await srv.call('GET', '/api/lanes/refs', ALICE)).body.lane.letter;
-    assert.match(letter, /^[A-Z]+$/);
+  test("codes are the ticket's ref and a letter, usable wherever an id is", async () => {
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'refs', ticket: '967' });
+    // The lane keeps its letter as a card label.
+    assert.match((await srv.call('GET', '/api/lanes/refs', ALICE)).body.lane.letter, /^[A-Z]+$/);
     const a = await ask('refs', 'First?');
     const b = await ask('refs', 'Second?');
-    assert.match(a.ref, new RegExp(`^${letter}\\d+$`));
-    assert.equal(Number(b.ref.slice(letter.length)), Number(a.ref.slice(letter.length)) + 1);
+    assert.equal(a.ref, '967A');
+    assert.equal(b.ref, '967B');
     assert.equal((await srv.call('GET', `/api/escalations/${b.ref}`, ALICE)).body.id, b.id);
     assert.equal((await srv.tool(AGENT, 'get_escalation', { id: b.ref.toLowerCase() })).value.id, b.id);
     assert.equal((await srv.tool(AGENT, 'add_position', { id: a.ref, stance: 'agree' })).value.positions.length, 1);
@@ -39,20 +39,27 @@ describe('escalation codes', () => {
 
   test('codes appear in exports and the lane history', async () => {
     const rows = (await srv.call('GET', '/api/export/escalations.json?lane=refs', ALICE)).body;
-    assert.ok(rows.length > 0 && rows.every((r: any) => /^[A-Z]+\d+$/.test(r.ref)));
+    assert.ok(rows.length > 0 && rows.every((r: any) => /^967[A-Z]$/.test(r.ref)));
     const events = (await srv.call('GET', '/api/lanes/refs', ALICE)).body.events.map((e: any) => e.message);
-    assert.ok(events.some((m: string) => /^Escalated [A-Z]+\d+: First\?$/.test(m)));
+    assert.ok(events.includes('Escalated 967A: First?'));
   });
 
-  test('overseers can remove a lane whose work is over', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'finished' });
+  test('overseers can remove a lane whose work is over; questions stay with its ticket or epic', async () => {
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'finished', ticket: '777' });
     const e = await ask('finished', 'Still needed?');
-    const res = await srv.tool(AGENT, 'remove_lane', { lane_id: 'finished' });
-    assert.equal(res.isError, false, res.text);
-    assert.equal((await srv.call('GET', '/api/lanes/finished', ALICE)).status, 404);
-    const closed = (await srv.call('GET', `/api/escalations/${e.id}`, ALICE)).body;
-    assert.equal(closed.state, 'withdrawn');
-    assert.match(closed.resolution, /Lane removed by overseer/);
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'empty' });
+    const loose = await ask('empty', 'Which ticket next?');
+    for (const lane of ['finished', 'empty']) {
+      const res = await srv.tool(AGENT, 'remove_lane', { lane_id: lane });
+      assert.equal(res.isError, false, res.text);
+      assert.equal((await srv.call('GET', `/api/lanes/${lane}`, ALICE)).status, 404);
+    }
+    // The parked ticket keeps its question; the ticketless lane's went to its group's epic.
+    assert.equal((await srv.call('GET', `/api/escalations/${e.id}`, ALICE)).body.state, 'open');
+    assert.equal((await srv.call('GET', '/api/tickets/777', ALICE)).body.ticket.state, 'parked');
+    const epicQuestion = (await srv.call('GET', `/api/escalations/${loose.id}`, ALICE)).body;
+    assert.equal(epicQuestion.state, 'open');
+    assert.notEqual(epicQuestion.epicId, null);
     assert.equal((await srv.call('DELETE', '/api/lanes/nope', AGENT)).status, 404);
   });
 });
@@ -87,7 +94,7 @@ describe('safe retries', () => {
     const e = await ask('retry', 'Not yet?');
     const res = await srv.tool(AGENT, 'acknowledge_escalation', { id: e.id });
     assert.equal(res.isError, true);
-    assert.match(res.text, /[A-Z]+\d+ is open/);
+    assert.match(res.text, /T\d+[A-Z]+ is open/);
   });
 
   test('validation errors name the fields as the tool spells them', async () => {
@@ -103,7 +110,7 @@ describe('safe retries', () => {
 
 describe('acknowledging publishes the next lane state', () => {
   test('status and activity are applied in the same call', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'next', status: 'active' });
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'next', ticket: '600', status: 'active' });
     const e = await ask('next', 'Go?');
     await decide(e.id, 'go');
     assert.equal((await srv.call('GET', '/api/lanes/next', ALICE)).body.lane.status, 'awaiting_agent');
@@ -190,11 +197,11 @@ describe('waiting on many escalations', () => {
     assert.deepEqual(res.open.map((x: any) => x.id), [e.id]);
   });
 
-  test('named escalations report being closed, e.g. by a lane removal', async () => {
+  test('named escalations report being closed, e.g. by a person dismissing them', async () => {
     const e = await ask('w-gone', 'Gone?');
     const waiting = srv.tool(AGENT, 'wait_for_decisions', { format: 'full', ids: [`#${e.ref}`], wait_seconds: 30 });
     await sleep(150);
-    await srv.call('DELETE', '/api/lanes/w-gone', ALICE);
+    await srv.call('POST', `/api/escalations/${e.id}/withdraw`, ALICE, { note: 'session ended' });
     const res = (await waiting).value;
     assert.equal(res.ready, true);
     assert.equal(res.closed[0].state, 'withdrawn');
@@ -215,9 +222,10 @@ describe('waiting on many escalations', () => {
     const res = (await waiting).value;
     assert.ok(Date.now() - t0 < 5000);
     assert.equal(res.ready, true);
-    assert.deepEqual(res.closed.map((e: any) => e.id), [a.id]);
-    assert.match(res.closed[0].resolution, /Lane removed by alice/);
-    assert.deepEqual(res.open.map((e: any) => e.id), [b.id]);
+    assert.deepEqual(res.removedLanes.map((l: any) => [l.laneId, l.removedBy]), [['g-a', 'alice']]);
+    // The removed lane's ticket is parked with its question, still waiting on the owner.
+    assert.deepEqual(res.closed, []);
+    assert.deepEqual(res.open.map((e: any) => e.id).sort(), [a.id, b.id].sort());
   });
 
   test('a lane removed with nothing open is reported too, but not the agent\'s own removals', async () => {
@@ -238,8 +246,8 @@ describe('waiting on many escalations', () => {
   test('since catches withdrawals that happened between two waits', async () => {
     const before = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'removals', wait_seconds: 0 })).value;
     await srv.publish('g-c', { group: 'removals' });
-    await ask('g-c', 'C?');
-    await srv.call('DELETE', '/api/lanes/g-c', ALICE);
+    const c = await ask('g-c', 'C?');
+    await srv.call('POST', `/api/escalations/${c.id}/withdraw`, ALICE, { note: 'session ended' });
     const later = (await srv.tool(AGENT, 'wait_for_decisions', { format: 'full', group_id: 'removals', since: before.checkedAt, wait_seconds: 5 })).value;
     assert.equal(later.ready, true);
     assert.deepEqual(later.closed.map((e: any) => e.laneId), ['g-c']);

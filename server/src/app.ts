@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
-import { accessFor, approvesRequirements, briefMessages, briefWait, digestWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, approvesRequirements, briefMessages, briefWait, digestWait, escalationTarget, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { oversizedImage, readUpload, sniff } from './attachments.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
@@ -24,7 +24,7 @@ import {
   ValidationError,
   type ExportDataset,
   type RecordResult,
-  type Store,
+  Store,
   type WaitResult,
 } from './store.ts';
 import {
@@ -258,6 +258,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       lanes: store.listLanes(projects).map(pub.lane),
       escalations: store.listEscalations({ projects }).map(pub.escalation),
       tickets: store.snapshotTickets(projects).map(pub.ticket),
+      epics: store.listEpics({ projects }).map(pub.epic),
       serverTime: new Date().toISOString(),
     });
   });
@@ -457,7 +458,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   app.get('/api/lanes/:id', any, (req, res) => {
     const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
-    const lane = store.getLane(q(project, String(req.params.id)));
+    const lane = Store.isEpicLane(String(req.params.id)) ? null : store.getLane(q(project, String(req.params.id)));
     if (!lane) throw new NotFoundError('Lane not found');
     res.json({
       lane: pub.lane(lane),
@@ -486,11 +487,17 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const id = parse(s.laneId, req.params.id);
     const group = typeof req.body?.group === 'string' ? req.body.group : undefined;
     const project = acc(res).pick(projectQuery(req), { lane: id, group });
-    const { previous, reason, waitingOn, ...rest } = parse(s.laneFill, req.body ?? {});
+    const { previous, reason, waitingOn, epic: epicName, ...rest } = parse(s.laneFill, req.body ?? {});
+    let epic: number | null | undefined = epicName === null ? null : undefined;
+    if (epicName) {
+      const found = acc(res).epic(epicName, project);
+      if (!found) throw new NotFoundError(`Epic "${epicName}" not found`);
+      epic = found.id;
+    }
     const patch = { ...rest, group: rest.group ? q(project, rest.group) : rest.group, ...(strict ? { ticket: rest.ticket ?? null } : {}) };
     // The dashboard's message bookkeeping is no use to the agent publishing.
     const { lastMessageId, lastAgentMessageId, unreadByAgent, ...lane } = pub.lane(
-      store.upsertLane(q(project, id), patch, principalOf(res).name, { previous, reason, waitingOn, strict }),
+      store.upsertLane(q(project, id), patch, principalOf(res).name, { previous, reason, waitingOn, epic, strict }),
     );
     // The owner's notes on the lane reach a working agent the next time it publishes.
     const unread = store.takeUnreadForAgent(q(project, id));
@@ -508,6 +515,87 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     );
     store.deleteLane(q(project, String(req.params.id)), principalOf(res).name, release);
     res.sendStatus(204);
+  });
+
+  // ---- epics: a group's long-lived tickets, with their own questions and message board ----
+
+  /** An epic's id from the path: its number. */
+  const epicOf = (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) throw new NotFoundError(`Epic ${req.params.id} not found`);
+    return acc(res).epicById(id);
+  };
+
+  app.get('/api/epics', any, (req, res) => {
+    const query = parse(s.epicQuery, req.query);
+    const projects = acc(res).scope(query.project);
+    const epics = query.group
+      ? projects.flatMap((p) => (store.groupExists(q(p, query.group!)) ? store.listEpics({ projects: [p], groupId: q(p, query.group!), states: query.state }) : []))
+      : store.listEpics({ projects, states: query.state });
+    res.json(epics.map(pub.epic));
+  });
+
+  /** One epic with its questions, its message board, and the combined feed of its lanes. */
+  app.get('/api/epics/:id', any, (req, res) => {
+    const epic = epicOf(req, res);
+    res.json({
+      epic: pub.epic(epic),
+      escalations: store.listEscalations({ epicId: epic.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 200 }).map(pub.escalation),
+      messages: store.epicMessages(epic.id),
+      lanes: store.epicLanes(epic.id).map(localId),
+      feed: store.epicFeed(epic.id).map((e) => ({ ...e, laneId: localId(e.laneId) })),
+    });
+  });
+
+  /** A real epic for a group, by its ticket's ref (or that epic, updated, if it exists). Retires the group's stand-in. */
+  app.post('/api/epics', agent, (req, res) => {
+    const body = parse(s.epicCreate, req.body ?? {});
+    const project = acc(res).pick(projectQuery(req), { group: body.group });
+    const epic = store.upsertEpic(project, { groupId: q(project, body.group), ...body }, principalOf(res).name);
+    res.status(201).json(pub.epic(epic));
+  });
+
+  app.put('/api/epics/:id', agent, (req, res) => {
+    const epic = epicOf(req, res);
+    const body = parse(s.epicPatch, req.body ?? {});
+    // A ref for a group's stand-in adds the group's real epic.
+    const updated =
+      epic.standIn && body.ref?.trim()
+        ? store.upsertEpic(epic.project, { groupId: epic.group, ...body }, principalOf(res).name)
+        : store.upsertEpic(epic.project, { epic: epic.id, ...body }, principalOf(res).name);
+    const unread = store.takeUnreadEpicForAgent(updated.id);
+    const out = pub.epic(store.getEpic(updated.id)!);
+    res.json(unread.length ? { ...out, ownerMessages: briefMessages(unread) } : out);
+  });
+
+  /** A message on the board: from the overseer, a quiet push; from a person, a note the overseer's group wait hands over. */
+  app.post('/api/epics/:id/messages', any, (req, res) => {
+    const body = parse(s.message, req.body ?? {});
+    const p = principalOf(res);
+    if (p.role !== 'agent' && !config.decisions) {
+      throw new NotFoundError("Writing to agents in LaneSignal is off on this server (LANESIGNAL_DECISIONS): write in the agent's session");
+    }
+    const epic = epicOf(req, res);
+    const from = p.role === 'agent' ? 'agent' : 'owner';
+    const message = store.postEpicMessage(epic.id, { from, author: p.name, body: body.body, attachments: body.attachments }, ownerOf(p));
+    if (from === 'owner') {
+      res.status(201).json(message);
+      return;
+    }
+    const unread = store.takeUnreadEpicForAgent(epic.id);
+    res.status(201).json({ id: message.id, at: message.at, ...(unread.length ? { ownerMessages: briefMessages(unread) } : {}) });
+  });
+
+  app.post('/api/epics/:id/close-request', agent, (req, res) => {
+    const epic = epicOf(req, res);
+    res.json(pub.epic(store.requestEpicClose(epic.id, parse(s.closeRequest, req.body ?? {}).reason, principalOf(res).name)));
+  });
+
+  /** A person approves or declines an overseer's request to close the epic. */
+  app.post('/api/epics/:id/close', human, (req, res) => {
+    if (!approvesRequirements(principalOf(res))) throw new ForbiddenError('Approve closing an epic signed in, not with a personal key');
+    const epic = epicOf(req, res);
+    res.json(pub.epic(store.decideEpicClose(epic.id, parse(s.closeDecision, req.body ?? {}).approve, principalOf(res).name)));
   });
 
   // ---- tickets: held by lanes, parked, done ----
@@ -577,6 +665,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     if (file.escalationId) acc(res).escalation(file.escalationId);
     else if (file.laneId) {
       if (!acc(res).projects.includes(projectOf(file.laneId))) throw notFound();
+    } else if (file.epicId !== null) {
+      const epic = store.getEpic(file.epicId);
+      if (!epic || !acc(res).projects.includes(epic.project)) throw notFound();
     } else if (file.owner !== ownerOf(principalOf(res))) throw notFound();
     res.set({
       'content-type': file.type.startsWith('text/') ? `${file.type}; charset=utf-8` : file.type,
@@ -662,9 +753,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   /** 201 when created; 200 with `duplicate: true` when the same open question already exists (a retry). */
   app.post('/api/escalations', agent, (req, res) => {
-    const input = parse(s.escalationInput, req.body);
-    const project = acc(res).pick(projectQuery(req), { lane: input.laneId });
-    const escalation = store.createEscalation({ ...input, laneId: q(project, input.laneId) }, principalOf(res).name, ownerOf(principalOf(res)));
+    const { epic, ...input } = parse(s.escalationInput, req.body);
+    const target = escalationTarget(store, acc(res), { laneId: input.laneId, epic }, projectQuery(req));
+    const escalation = store.createEscalation({ ...input, ...target }, principalOf(res).name, ownerOf(principalOf(res)));
     res.status(escalation.duplicate ? 200 : 201).json(pub.escalation(escalation));
   });
 

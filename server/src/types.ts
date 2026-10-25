@@ -115,6 +115,8 @@ export interface Ticket {
   parkReason: string | null;
   /** Another ticket (canonical ref) this one waits on. */
   waitingOn: string | null;
+  /** The epic it belongs to, if it names one. */
+  epicId: number | null;
   /** Its status: the holding lane's while in a lane, else as it was when the lane let it go. */
   status: LaneStatus;
   statusSince: string;
@@ -122,6 +124,46 @@ export interface Ticket {
   blockedTotalMs: number;
   /** Escalations still waiting on a human. */
   openEscalations: number;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+}
+
+export const EPIC_STATES = ['open', 'close_requested', 'closed'] as const;
+export type EpicState = (typeof EPIC_STATES)[number];
+
+/**
+ * A long-lived ticket a group steers its work by: its own questions and message board, not worked in
+ * a lane. Every group has one; when none was given, the group stands in as its epic (`standIn`).
+ */
+export interface Epic {
+  /** Short number, unique across projects. */
+  id: number;
+  project: string;
+  group: string;
+  /** Canonical ref of its ticket ("redmine:680"); null for a group's stand-in epic. */
+  ref: string | null;
+  /** The ref as first written. */
+  displayRef: string | null;
+  url: string | null;
+  /** What its escalation codes start with: "680A", or the group's id for a stand-in. */
+  code: string;
+  name: string;
+  links: Link[];
+  /** One line the overseer sets: "3 of 5 lanes busy; next up #966". */
+  statusLine: string | null;
+  state: EpicState;
+  standIn: boolean;
+  /** Why the overseer asked to close it, while waiting for a person. */
+  closeReason: string | null;
+  closeRequestedBy: string | null;
+  /** Its questions waiting on a person, and of those how many block (it shows "Waiting on you"). */
+  openEscalations: number;
+  blockingEscalations: number;
+  /** Its message board: the latest message ids, and people's notes the overseer hasn't had yet. */
+  lastMessageId: number | null;
+  lastAgentMessageId: number | null;
+  unreadByAgent: number;
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
@@ -147,15 +189,18 @@ export interface Position {
 export interface Escalation {
   id: string;
   /**
-   * Short code for humans and agents to refer to it by: its ticket's ref and a letter ("967A"), or for one
-   * raised on a lane holding no ticket (and older ones) its lane's letter and a number ("A12"). Accepted
-   * wherever an id is.
+   * Short code for humans and agents to refer to it by: its ticket's or epic's code and a letter ("967A",
+   * "680A"); older ones keep their lane's letter and a number ("A12"). Accepted wherever an id is.
    */
   ref: string;
-  /** The ticket it belongs to; null when raised on a lane holding none. */
+  /** The ticket it belongs to; null for an epic's. */
   ticketId: number | null;
   /** That ticket's short ref ("967", "gh:632"); null without one. */
   ticketRef: string | null;
+  /** The epic it belongs to (raised on an epic, or on a lane holding no ticket); null for a ticket's. */
+  epicId: number | null;
+  /** That epic's name. */
+  epicName: string | null;
   /** Project the escalation's lane belongs to. */
   project: string;
   /** Short key of that project, so codes can be shown as "LS·A12" where projects mix. */
@@ -399,6 +444,8 @@ export interface TrmnlPushResult {
 export interface Notice {
   project: string;
   laneId: string;
+  /** Set when it's a post on an epic's board (its internal lane is `laneId`). */
+  epicId?: number;
   message: string;
   by: string;
   attachments?: AttachmentMeta[];
@@ -418,4 +465,6 @@ export type StreamEvent =
   | { type: 'escalation'; escalation: Escalation; raised?: boolean; replied?: 'reply' | 'update' }
   /** A ticket filled into a lane, parked, done or dropped, or what it waits on changed. */
   | { type: 'ticket'; ticket: Ticket }
+  /** An epic changed: details, close request, its questions' counts, or its board (`messaged`). */
+  | { type: 'epic'; epic: Epic; messaged?: 'owner' | 'agent' }
   | { type: 'requirement'; requirement: Requirement };

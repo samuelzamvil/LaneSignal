@@ -1273,6 +1273,69 @@ textarea {
   margin-top: 6px;
 }
 
+/* An epic's card, in place of the group header: its lanes are listed under it. */
+.epic-card {
+  margin: 20px 0 10px;
+  background: var(--surface);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.epic-card.needs-human {
+  border-left-color: var(--danger);
+}
+.epic-mark {
+  color: var(--accent);
+}
+.epic-card .session-link {
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+.status-line {
+  margin: 6px 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.status-line.full {
+  color: inherit;
+}
+.close-request {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 0.9rem;
+}
+.close-request .actions {
+  display: flex;
+  gap: 8px;
+}
+/* The lanes of a group whose ticket names none of its epics. */
+.group-rest {
+  margin: 14px 0 8px;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+/* The epic a question belongs to. */
+.epic-ref {
+  font-size: 0.8rem;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  text-decoration: none;
+}
+.sheet.sheet-epic {
+  --kind: var(--accent);
+}
+.sheet-epic .sheet-head {
+  background: color-mix(in srgb, var(--kind) 9%, var(--bg));
+  border-top: 3px solid var(--kind);
+}
+
 /* ---- escalation batches, cost, alternatives ---- */
 
 .seq {

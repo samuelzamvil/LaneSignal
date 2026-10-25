@@ -76,11 +76,16 @@ describe('wait digest', () => {
   test('withdrawals and removed lanes come back once per since', async () => {
     await srv.publish('d-gone', { group: 'digest-gone' });
     const e = await ask('d-gone', 'Keep this lane?');
+    const parked = await ask('d-gone', 'Still needed after the lane goes?');
     const start = await wait('digest-gone');
+    await srv.call('POST', `/api/escalations/${e.id}/withdraw`, ALICE, { note: 'Not needed' });
     await srv.call('DELETE', '/api/lanes/d-gone', ALICE);
     const w = await wait('digest-gone', { since: start.checkedAt });
     assert.deepEqual(kinds(w), [['closed', e.ref], ['lane_removed', 'd-gone']]);
-    assert.match(w.items[0].resolution, /Lane removed by alice/);
+    assert.equal(w.items[0].resolution, 'Not needed');
+    // The removed lane's ticket is parked with its other question, still open.
+    assert.equal(w.counts.open, 1);
+    assert.equal((await srv.call('GET', `/api/escalations/${parked.id}`, ALICE)).body.state, 'open');
     assert.deepEqual((await wait('digest-gone', { since: w.checkedAt })).items, []);
   });
 

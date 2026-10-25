@@ -13,7 +13,10 @@ import {
   briefTicket,
   briefWait,
   digestWait,
+  briefEpic,
   briefMessages,
+  escalationTarget,
+  updateEpicFor,
   compact,
   ownerOf,
   pub,
@@ -159,6 +162,13 @@ function buildServer(
     }
     return group;
   };
+  /** fill_lane's `epic`: its number in the lane's project (null clears, undefined leaves it). */
+  const epicNumber = (epic: string | null | undefined, project: string) => {
+    if (epic === undefined || epic === null) return epic;
+    const e = a.epic(epic, project);
+    if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
+    return e.id;
+  };
   /** A ticket by any form of its ref, in the project given or the only one of the caller's that has it. */
   const findTicket = (ref: string, project?: string): Ticket => {
     const hits = a.scope(project).flatMap((p) => store.getTicket(p, ref) ?? []);
@@ -240,6 +250,30 @@ function buildServer(
           lanes: store.ticketLanes(t.id).map(localId),
           history: store.ticketEvents(t.id, 50).map((e) => compact({ at: e.at, lane: localId(e.laneId), kind: e.kind, message: e.message, by: e.actor })),
         });
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_epics',
+    {
+      description:
+        'List epics: the long-lived tickets groups steer their work by, each with its status line, open questions and ' +
+        'notes people left on its board. Every group has one; a group with none of its own stands in as its epic ' +
+        '(`standIn`, named by the group\'s id). `epic` is how to name one in other tools.',
+      inputSchema: { group_id: GROUP_FILTER, group: GROUP_ALIAS, ...PROJECT },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ group_id, group: alias, project }) => {
+      try {
+        const group = checkGroup(group_id ?? alias, project);
+        const projects = a.scope(project);
+        const epics = group
+          ? projects.flatMap((p) => (store.groupExists(q(p, group)) ? store.listEpics({ projects: [p], groupId: q(p, group) }) : []))
+          : store.listEpics({ projects });
+        return listJson(epics.map((e) => briefEpic(pub.epic(e))));
       } catch (err) {
         return fail(err);
       }
@@ -363,7 +397,8 @@ function buildServer(
           'and `note`), `reply` (the owner answered Other: their `messages`; acknowledge and act, or reply_to_escalation), ' +
           '`closed` (withdrawn by someone else; "Lane removed by …" means stop that lane), `lane_removed` (stop work on ' +
           'it), `lane_note` (the owner wrote on a lane: act on it, answer with notify_owner if useful), ' +
-          '`ticket_moved` (a lane outside your scope took one of its tickets). `decided` and ' +
+          '`ticket_moved` (a lane outside your scope took one of its tickets), `board_note` (with your group: someone wrote on ' +
+          'one of its epics\' boards; answer with notify_epic if useful). An epic\'s question names its `epic`. `decided` and ' +
           '`reply` come back on every wait until you handle them; the rest once per `since`. `counts` says how many are ' +
           '`open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies). If counts show something ' +
           'and items don\'t, call get_updates. `ready` is true when there are items; false means the wait ran out: call ' +
@@ -407,7 +442,8 @@ function buildServer(
         description:
           'Everything in scope that involves you, without waiting: escalations decided and not yet acknowledged ' +
           '(`decided`), ones the owner answered Other (`replies`), ones still waiting on the owner (`open`), the owner\'s ' +
-          'unread notes on lanes (`laneMessages`, plus any since `since`), and, with `since`, escalations withdrawn and ' +
+          'unread notes on lanes (`laneMessages`, plus any since `since`) and, with your group, on its epics\' boards ' +
+          '(`boardMessages`), and, with `since`, escalations withdrawn and ' +
           'lanes removed by someone else since then. Call it after a restart, or when you\'ve lost track of what ' +
           'wait_for_decisions reported.',
         inputSchema: waitInput,
@@ -436,10 +472,10 @@ function buildServer(
         description:
           'Export LaneSignal data for analysis, including closed escalations and archived lanes. Datasets: ' +
           'escalations (one row each), positions, messages (escalation conversations), lane_messages (lane conversations), ' +
-          'lanes, groups, events (status changes and escalation history)' +
+          'lanes, groups, tickets, epics, epic_messages (epic boards), events (status changes and escalation history)' +
           (features.requirements ? ', requirements. ' : '. ') +
           '`from`/`to` (YYYY-MM-DD or ISO) filter ' +
-          'escalations, positions, messages, lane_messages, events and requirements by creation time. Results come in pages (default 100 rows, and cut short to stay under ' +
+          'escalations, positions, messages, lane_messages, epic_messages, events and requirements by creation time. Results come in pages (default 100 rows, and cut short to stay under ' +
           'about 60 KB); the first line says which rows you got and the offset for the next page. For everything at ' +
           'once as files, the HTTP API serves a zip at GET /api/export.',
         inputSchema: {
@@ -782,25 +818,33 @@ function buildServer(
           'and not needed to refill it with the ticket it already holds. `ticket` moves in, created on first use: a ' +
           'parked, done or dropped one comes back with its escalations and history; leave it out to empty the lane (idle). ' +
           'A ticket is in one lane at a time. A ticket\'s open questions stay open and in the owner\'s inbox whatever ' +
-          'happens to it, and block only the lane holding it. Also takes the fields of update_lane (status, activity, ...), ' +
-          `applied to the lane after the switch. ${STATUS_HELP}`,
+          'happens to it, and block only the lane holding it. `epic` names the epic the ticket is for (its ref, or the ' +
+          'group\'s id; null clears it), so the lane is listed under that epic\'s card. Also takes the fields of ' +
+          `update_lane (status, activity, ...), applied to the lane after the switch. A lane holding no ticket shows idle. ${STATUS_HELP}`,
         inputSchema: {
           lane_id: s.laneId,
           ticket: z.string().max(300).nullable().optional().describe('The ticket to work next; leave out or null to empty the lane.'),
           previous: s.ticketRelease.optional(),
           reason: z.string().max(500).nullable().optional(),
           waiting_on: WAITING_ON,
+          epic: s.epicName.nullable().optional().describe('The epic the ticket is for: its ref, or the group\'s id. null clears it.'),
           ...s.lanePatch.omit({ ticket: true }).shape,
           group_id: s.lanePatch.shape.group,
           ...PROJECT_WRITE,
         },
       },
-      async ({ lane_id, project, group_id, ticket, previous, reason, waiting_on, ...rest }) => {
+      async ({ lane_id, project, group_id, ticket, previous, reason, waiting_on, epic, ...rest }) => {
         try {
           const patch = { ...rest, group: rest.group !== undefined ? rest.group : group_id };
           const pr = a.pick(project, { lane: lane_id, group: patch.group ?? undefined });
           const qualified = { ...patch, group: patch.group ? q(pr, patch.group) : patch.group, ticket: ticket ?? null };
-          const lane = store.upsertLane(q(pr, lane_id), qualified, who.name, { previous, reason, waitingOn: waiting_on, strict: true });
+          const lane = store.upsertLane(q(pr, lane_id), qualified, who.name, {
+            previous,
+            reason,
+            waitingOn: waiting_on,
+            epic: epicNumber(epic, pr),
+            strict: true,
+          });
           return published(q(pr, lane_id), patch.status, lane);
         } catch (err) {
           return fail(err);
@@ -814,15 +858,92 @@ function buildServer(
         description:
           'Take a lane off the dashboard when you no longer need the slot. Its ticket is let go as `previous` says ' +
           '(default: `done` if the lane is completed, else `park` with the reason "Lane removed"); the ticket keeps its ' +
-          'open escalations. Those raised while the lane held no ticket are dismissed' +
-          (features.decisions ? ' (decided ones can still be acknowledged)' : '') +
-          '. Its history is kept. Publishing to the same lane id brings it back.',
+          'open escalations, and those raised while the lane held no ticket stay with the epic. Its history is kept. ' +
+          'Publishing to the same lane id brings it back.',
         inputSchema: { lane_id: s.laneId, previous: s.ticketRelease.optional(), reason: z.string().max(500).nullable().optional(), ...PROJECT_WRITE },
       },
       async ({ lane_id, previous, reason, project }) => {
         try {
           store.deleteLane(q(a.pick(project, { lane: lane_id }), lane_id), who.name, { previous, reason });
           return { content: [{ type: 'text' as const, text: `Lane "${lane_id}" removed` }] };
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    const EPIC = s.epicName.describe('The epic: its ticket ref ("680"), or a group\'s id for that group\'s epic.');
+
+    server.registerTool(
+      'update_epic',
+      {
+        description:
+          'Set an epic\'s status line (one line on its card, e.g. "3 of 5 lanes busy; next up #966": use it instead of ' +
+          'placeholder lanes), name, ref or links. Name a group\'s epic by the group\'s id. A ticket ref no epic has yet, ' +
+          'with `group`, adds that epic to the group (so does giving a group\'s stand-in epic a `ref`); the group\'s ' +
+          'earlier questions and board move to it.',
+        inputSchema: {
+          epic: EPIC,
+          group: s.groupId.optional().describe('To add a new epic: the group it belongs to.'),
+          name: z.string().min(1).max(200).optional(),
+          ref: z.string().max(300).optional(),
+          links: s.epicPatch.shape.links,
+          status_line: s.statusLine,
+          ...PROJECT_WRITE,
+        },
+      },
+      async ({ epic, group, name, ref, links, status_line, project }) => {
+        try {
+          const e = updateEpicFor(store, a, { epic, group, name, ref, links, statusLine: status_line }, project, who.name);
+          const unread = store.takeUnreadEpicForAgent(e.id);
+          return json(compact({ ...briefEpic(pub.epic(store.getEpic(e.id)!)), ownerMessages: unread.length ? briefMessages(unread) : undefined }));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'notify_epic',
+      {
+        description:
+          'Write on an epic\'s message board, for the durable conversation that steers its work (direction, scope, ' +
+          'which tickets to file next), with a quiet phone notification. One per epic per minute. Questions that need ' +
+          'an answer go in create_escalation with `epic`. Returns `ownerMessages`: people\'s notes on the board you ' +
+          'hadn\'t seen.',
+        inputSchema: {
+          epic: EPIC,
+          message: s.notice.shape.message,
+          attachments: s.notice.shape.attachments.describe('Ids from POST /api/attachments.'),
+          ...PROJECT_WRITE,
+        },
+      },
+      async ({ epic, message, attachments, project }) => {
+        try {
+          const e = a.epic(epic, project);
+          if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
+          const m = store.postEpicMessage(e.id, { from: 'agent', author: who.name, body: message, attachments }, ownerOf(who));
+          const unread = store.takeUnreadEpicForAgent(e.id);
+          return json(compact({ epic: e.displayRef ?? localId(e.group), at: m.at, ownerMessages: unread.length ? briefMessages(unread) : undefined }));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'request_epic_close',
+      {
+        description:
+          'Ask a person to close an epic whose work is over; they approve or decline in the app. Refused while it has ' +
+          'open questions, or answered ones you haven\'t acknowledged. A group\'s stand-in epic isn\'t closed.',
+        inputSchema: { epic: EPIC, reason: s.closeRequest.shape.reason, ...PROJECT_WRITE },
+      },
+      async ({ epic, reason, project }) => {
+        try {
+          const e = a.epic(epic, project);
+          if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
+          return json(briefEpic(pub.epic(store.requestEpicClose(e.id, reason, who.name))));
         } catch (err) {
           return fail(err);
         }
@@ -860,21 +981,25 @@ function buildServer(
       'create_escalation',
       {
         description:
-          'Ask the owner: notifies their phone and blocks the lane (`blocking: false` for an FYI). One per decision; ' +
-          'the lane must be published first. Write it to be understood from a phone: `question`, `context`, ' +
+          'Ask the owner: notifies their phone and blocks the lane holding its ticket (`blocking: false` for an FYI). One per decision; ' +
+          'the lane must be published first. On a lane holding no ticket it goes to the group\'s epic (`epic` says which ' +
+          'when the group has several). For durable questions that steer the work (direction, scope, which tickets to ' +
+          'file), raise it on the epic: `epic`, with no `lane_id`. An epic\'s questions show on its card and block no ' +
+          'lane. Write it to be understood from a phone: `question`, `context`, ' +
           '`recommendation`, `cost`, `alternatives`' +
           (features.decisions
             ? '. The owner answers Accept, Reject or Other (with instructions): say in one line each what `accept_means` and ' +
               '`reject_means`, or `allow_reject: false` when rejecting makes no sense. '
             : '. ') +
           'Files (a plan, a screenshot) go in `attachments`: ids from uploading each to /api/attachments. ' +
-          'Returns its code (`ref`: the lane\'s ticket and a letter, e.g. "967A"; "A12" on a lane holding no ticket), usable in every tool. The same open question again returns the first ' +
+          'Returns its code (`ref`: its ticket\'s or epic\'s code and a letter, e.g. "967A"), usable in every tool. The same open question again returns the first ' +
           '(`duplicate: true`); the same `question` as an open FYI of yours, raised as blocking, makes it block and notifies the owner (`upgraded: true`; fields you give replace the FYI\'s, new attachments are added). ' +
           (features.decisions
             ? 'Then wait with wait_for_decisions and acknowledge_escalation as soon as one is decided.'
             : 'The owner answers in your session, quoting the code; then dismiss_escalation with what they decided.'),
         inputSchema: {
-          lane_id: s.laneId,
+          lane_id: s.laneId.optional().describe('The lane it\'s raised in; leave out to raise it on `epic`.'),
+          epic: s.epicName.optional().describe('The epic it\'s for: its ref, or the group\'s id.'),
           question: s.escalationFields.question,
           context: s.escalationFields.context,
           recommendation: s.escalationFields.recommendation,
@@ -897,15 +1022,15 @@ function buildServer(
       },
       async ({ lane_id, accept_means, reject_means, allow_reject, project, ...rest }) => {
         try {
-          const input = s.escalationInput.parse({
+          const { epic, ...input } = s.escalationInput.parse({
             laneId: lane_id,
             acceptMeans: accept_means,
             rejectMeans: reject_means,
             allowReject: allow_reject,
             ...rest,
           });
-          const pr = a.pick(project, { lane: input.laneId });
-          return json(brief(pub.escalation(store.createEscalation({ ...input, laneId: q(pr, input.laneId) }, who.name, ownerOf(who)))));
+          const target = escalationTarget(store, a, { laneId: input.laneId, epic }, project);
+          return json(brief(pub.escalation(store.createEscalation({ ...input, ...target }, who.name, ownerOf(who)))));
         } catch (err) {
           return fail(err);
         }

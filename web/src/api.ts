@@ -1,6 +1,7 @@
 import { Capacitor } from '@capacitor/core';
 import type {
   AttachmentMeta,
+  Epic,
   Escalation,
   Group,
   Lane,
@@ -22,6 +23,7 @@ import type {
 
 export type {
   AttachmentMeta,
+  Epic,
   Escalation,
   Group,
   Lane,
@@ -136,8 +138,16 @@ export function createClient(conn: Connection) {
     config: () => request<PublicConfig>('GET', '/api/config'),
     setQuietAlerts: (quietAlerts: boolean) => request<void>('PUT', '/api/settings/push', { quietAlerts }),
     snapshot: () =>
-      // A server from before tickets sends none.
-      request<{ projects: ProjectAccess[]; groups: Group[]; lanes: Lane[]; escalations: Escalation[]; tickets?: Ticket[]; serverTime: string }>(
+      // A server from before tickets (or epics) sends none.
+      request<{
+        projects: ProjectAccess[];
+        groups: Group[];
+        lanes: Lane[];
+        escalations: Escalation[];
+        tickets?: Ticket[];
+        epics?: Epic[];
+        serverTime: string;
+      }>(
         'GET',
         '/api/snapshot',
       ),
@@ -156,6 +166,13 @@ export function createClient(conn: Connection) {
         'GET',
         `/api/tickets/${encodeURIComponent(ref)}?project=${encodeURIComponent(project)}`,
       ),
+    /** An epic with its questions, its message board, its lanes and their combined feed. */
+    epicDetail: (id: number) =>
+      request<{ epic: Epic; escalations: Escalation[]; messages: LaneMessage[]; lanes: string[]; feed: LaneEvent[] }>('GET', `/api/epics/${id}`),
+    /** A note on an epic's board: the overseer gets it on its next wait on the group. */
+    epicMessage: (id: number, body: string) => request<LaneMessage>('POST', `/api/epics/${id}/messages`, { body }),
+    /** Approve or decline the overseer's request to close an epic. */
+    decideEpicClose: (id: number, approve: boolean) => request<Epic>('POST', `/api/epics/${id}/close`, { approve }),
     /** Closed escalations, latest first. `before` is the previous page's `next`. */
     history: (f: {
       q?: string;

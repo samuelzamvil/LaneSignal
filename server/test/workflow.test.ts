@@ -207,8 +207,8 @@ describe('escalations on one lane', () => {
 });
 
 describe('removing and restoring a lane', () => {
-  test('removal withdraws open questions, releases waiters, and keeps decided ones', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'gone', group: 'payments', status: 'active' });
+  test('removal releases waiters and parks the ticket with its questions: open ones stay open, decided ones can be acknowledged', async () => {
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'gone', group: 'payments', ticket: '321', status: 'active' });
     const open = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'gone', question: 'Open?' })).value;
     const decided = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'gone', question: 'Decided?' })).value;
     await srv.call('POST', `/api/escalations/${decided.id}/decide`, ALICE, { decision: 'ok' });
@@ -216,17 +216,21 @@ describe('removing and restoring a lane', () => {
     const waiting = srv.tool(AGENT, 'get_escalation', { id: open.id, wait_seconds: 30 });
     await assertPending(waiting);
     assert.equal((await srv.call('DELETE', '/api/lanes/gone', ALICE)).status, 204);
+    // The waiter hears the lane went; nothing is withdrawn, the question waits on the parked ticket.
     const released = await within(waiting);
-    assert.equal(released.value.state, 'withdrawn');
-    assert.match(released.value.resolution, /Lane removed by alice/);
+    assert.equal(released.value.state, 'open');
+    assert.equal((await srv.call('GET', '/api/tickets/321', ALICE)).body.ticket.state, 'parked');
+    await srv.call('POST', `/api/escalations/${open.id}/decide`, ALICE, { decision: 'later' });
 
     assert.equal((await srv.call('GET', '/api/lanes/gone', ALICE)).status, 404);
-    const ack = await srv.tool(AGENT, 'acknowledge_escalation', { id: decided.id });
-    assert.equal(ack.value.state, 'acknowledged');
+    for (const id of [decided.id, open.id]) {
+      assert.equal((await srv.tool(AGENT, 'acknowledge_escalation', { id })).value.state, 'acknowledged');
+    }
   });
 
   test('publishing to a removed lane restores it with its history', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'gone', status: 'active' });
+    // It comes back without its ticket: filling it brings the parked one back.
+    await srv.tool(AGENT, 'fill_lane', { lane_id: 'gone', ticket: '321', status: 'active' });
     const detail = await laneOf('gone');
     assert.equal(detail.lane.status, 'active');
     const messages = detail.events.map((e: any) => e.message);
