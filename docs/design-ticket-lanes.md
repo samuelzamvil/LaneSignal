@@ -293,6 +293,19 @@ Each PR is shippable on its own, with tests, wiki updates and an adversarial rev
    - the agent tools
    - the skill update, so overseers use the status line instead of placeholder lanes
 
+## As built
+
+What the PRs changed from this plan, and why.
+
+**PR 2 (tickets, server):**
+
+- **Escalations follow their ticket.** When a ticket moves to another lane, its escalations move with it (`lane_id`), so the lane, its group's waits and the inbox all see them there. The lanes a ticket passed through are in its history (`get_ticket`), so no separate "raised in" column is needed.
+- **Lanes with no ticket keep the status their agent publishes.** A lane only goes `idle` when it lets its ticket go without taking another. That way agents that never set a ticket keep working as before. The migration doesn't reset them either.
+- **Questions on a lane with no ticket keep lane-letter codes (A12)** until epics arrive (PR 4), which take them over.
+- **No `legacy_ref` column.** `ref` is the code, new or old, and old codes resolve as before.
+- **The "Ungrouped" stand-in group** moves to PR 4, where it's needed for stand-in epics.
+- **Two live lanes on one ticket at upgrade:** the more recently updated lane keeps it. The other lane drops its ticket, and its history says which lane holds it.
+
 ## Risks
 
 - **Codes change for new escalations.** People used to typing "A3" will type "500A". Old codes keep resolving, and push titles carry the new code.

@@ -63,3 +63,4 @@ Answers can take minutes or a day.
 1. Call `update_group` (as at any session start).
 2. Call `get_updates` with your `group_id` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything in `decided` or `replies`, and the owner's `laneMessages`, from while you were away, then save its `checkedAt` to `.claude/lanesignal-since` (otherwise the next wait returns the same notes again). Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
 3. Call `list_lanes` with your `group_id`. A lane you were running that's missing was removed: stop work on it.
+4. Call `list_tickets` with your `group_id`. A ticket still `in_lane` that nobody is working now was left behind by the crash: pick it up again or `fill_lane` its lane with what's next (parking it). Parked ones are waiting for a free slot.

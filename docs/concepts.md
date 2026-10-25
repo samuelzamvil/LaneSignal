@@ -14,7 +14,7 @@ A lane that references an unknown group creates it. The overseer fills in the de
 
 ## Lanes
 
-A lane is one work stream with a stable id the agent picks (`auth-rework`, `e2e-stabilize`). It carries:
+A lane is a slot work goes through, one ticket at a time, with a stable id the agent picks (`slot-1`, or a work stream such as `e2e-stabilize`). It carries:
 
 - **status:**
 
@@ -28,7 +28,7 @@ A lane is one work stream with a stable id the agent picks (`auth-rework`, `e2e-
   | `completed` | done |
 
 - **group:** which epic/train it belongs to
-- **ticket:** its *current* ticket. When a lane moves to the next ticket, the overseer publishes the new one under the same lane id
+- **ticket:** the [ticket](#tickets) it holds, or none (a lane with no ticket shows `idle`)
 - **activity:** one line, readable on a phone
 - **links:** PRs, CI runs, sessions. URLs must be http(s)
 
@@ -38,11 +38,34 @@ Its history keeps every status change and escalation step. Routine activity text
 
 Tapping a lane opens its page: its details, then **Escalations**, **Conversation** and **Recent activity**. Tap a heading to fold that part away. Folded or open is remembered on the device, for every lane. Escalations show the **Active** ones (open, or answered and not yet picked up by the agent) unless you pick **Historical** (acknowledged or dismissed) or **All**; that choice is remembered too. While Conversation is folded, the agent's new messages aren't marked as read.
 
-**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md). People remove lanes in the app; overseers remove theirs with `remove_lane` when the work stream is over.
+**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md). People remove lanes in the app; overseers remove theirs with `remove_lane` when they no longer need the slot. A removed lane's ticket is parked (or done, if the lane was completed), so nothing on it is lost.
+
+## Tickets
+
+A ticket is what a lane works on. It owns its escalations and its status history, and moves between lanes, so a lane can set one aside for a while:
+
+1. Lane A works ticket 500 and hits a blocker. 500's question, **500A**, is waiting on you.
+2. The overseer parks 500 ("waiting on the vendor API key") and fills lane A with bug fix 501, in one call (`fill_lane`). 500A stays in your inbox, but no longer holds lane A blocked.
+3. 501 is done. The overseer fills lane A with 500 again: it comes back with 500A and its history, blocked if 500A is still open, or waiting on the agent if you've answered it meanwhile.
+
+The rules:
+
+- **One record per ticket:** `967`, `#967`, `redmine:967` and the Redmine URL are the same ticket (refs are put into one form, using the default ticket system). A ticket is created the first time a lane is filled with it.
+- **One lane at a time:** filling a lane with a ticket another lane holds is refused. A worker and a reviewer on one ticket share a lane. Any lane can take a parked ticket.
+- **Letting go:** a lane lets its ticket go as **parked** (to pick up again, with a reason), **done**, or **dropped** (unfinished). A done or dropped ticket's unanswered questions are withdrawn; decided ones can still be acknowledged. A lane published as `completed` marks its ticket done and empties (`idle`), ready for the next.
+- **Not a tracker:** a ticket's state here only says whether a lane holds it and how the last one let it go. Its real status lives in Redmine, GitHub or wherever it's tracked; LaneSignal never syncs it.
+- **Blocked time** belongs to the ticket: a lane's blocked total is its current ticket's.
+- **Waiting on another ticket:** a lane can say its ticket waits on another ("waiting on 945"); that clears itself once 945 is done.
+- **PRs aren't tickets:** they go in the lane's links. Switching a lane from a Redmine ticket to a `gh:` ref gets a warning.
+- **Who may close its questions:** the agent that raised them, a person, or the overseer of the group the ticket is in now, so a ticket handed to another overseer goes with its questions.
+
+Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)").
 
 ### Lane letters and escalation codes
 
-Each active lane gets a letter, shown on its card: A, B, … Z, then AA, AB. Letters and codes are per [project](projects.md); where projects mix, codes carry the project key (**SH·A1**). Its escalations are coded with it: **A1**, **A2**, then B1 for lane B, so two overseers' questions never share a code.
+An escalation's code is its ticket's ref and a letter: **967A**, **967B** … **967Z**, **967AA**. Tickets from a system other than the default keep its name (**gh:632A**); a ticket whose ref can't make a code (a plain URL) uses its number instead (**T42A**). A code doesn't change when its ticket moves to another lane. Codes are per [project](projects.md); where projects mix, they carry the project key (**SH·967A**).
+
+Each active lane also gets a letter, shown on its card: A, B, … Z, then AA, AB. A question raised on a lane holding no ticket is coded with it: **A1**, **A2**, then B1 for lane B. Codes from before tickets (A12) keep working.
 
 - A lane keeps its letter while it's active, and after that while any of its escalations is unanswered or not yet acknowledged.
 - Once a lane is completed or removed and nothing is pending, its letter goes back to the pool. The next new lane takes the smallest free letter, so letters stay short.
@@ -136,7 +159,7 @@ open ──(human decides)──► decided ──(agent acknowledges)──► 
 - When a lane's last open blocking escalation is decided, the lane moves to `awaiting_agent`, which stops the blocked timer while the agent picks up the answer.
 - While an agent waits for answers on a lane, the lane shows **agent waiting**. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting.
 - Raising the same question again on the same lane while it's still open (ignoring spacing and case) returns the existing escalation, so agent retries don't create duplicates.
-- A lane stays **blocked** while any of its blocking escalations is open, whatever status its agent publishes.
+- A lane stays **blocked** while any of its blocking escalations is open, whatever status its agent publishes. Its escalations are its ticket's and those raised while it held none: a parked ticket's questions don't block the lane that parked it.
 
 ### Alerts only (optional)
 
@@ -154,7 +177,7 @@ You answer in the agent's own session, so the conversation and the decision stay
 - `blocking: false` marks an FYI that never holds the lane blocked. FYIs are listed separately in the inbox, aren't counted in the "Needs you" badge, don't make a lane look urgent, and notify quietly.
 - Nothing else changes a lane the agent set to `blocked_human` itself. The agent publishes what it does next.
 
-## Tickets
+## Ticket links
 
 References become links through URL templates (`LANESIGNAL_TICKET_TEMPLATES`):
 

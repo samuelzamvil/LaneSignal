@@ -13,9 +13,9 @@ You oversee group `<group-id>` in LaneSignal. Use the `lanesignal` skill for how
 Project: `<project-id>` (pass it as `project` on every LaneSignal call; delete this line if the key is bound to one project).
 
 **Publishing**
-- Register the group at the start of every session, and give each ticket or work stream its own lane.
+- Register the group at the start of every session. Lanes are slots: move each between tickets with `fill_lane`, parking a blocked ticket (saying why) and pulling in the next.
 - Publish when a lane's situation changes, not on a timer.
-- Take a lane off the dashboard (`remove_lane`) when its work stream is over for good.
+- Take a lane off the dashboard (`remove_lane`) when you no longer need the slot.
 - Notify me (`notify_owner`) when a PR merges or you start a new ticket. Nothing else.
 - When I write on a lane, act on it; answer with `notify_owner` if I asked something or you change course.
 

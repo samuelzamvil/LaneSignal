@@ -51,7 +51,7 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 | Column | Meaning |
 |---|---|
-| `id`, `ref` | The escalation's id and its code (`A12`) |
+| `id`, `ref` | The escalation's id and its code (`967A`, or `A12` for one raised on a lane holding no ticket) |
 | `lane_id`, `lane_name`, `group_id`, `group_name` | What it belongs to (the group as the lane has it now, even if the group was archived) |
 | `ticket`, `ticket_url` | The escalation's own reference, e.g. the plan PR |
 | `question`, `context`, `recommendation`, `recommended_option`, `cost`, `alternatives`, `options` | The question as asked |
@@ -69,6 +69,7 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 | `seconds_open` | Time until decided or closed, or until now if still open |
 | `positions_agree`, `positions_disagree`, `positions_neutral` | Counts of agent positions |
 | `links` | JSON |
+| `ticket_id` | The [ticket](#ticketscsv-every-ticket-lanes-have-held) it belongs to; empty for one raised on a lane holding no ticket |
 
 ### `positions.csv` (one row per agent position)
 
@@ -86,10 +87,29 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 | `escalations_total`, `escalations_open` | Counts |
 | `links` | JSON |
 | `archived_at` | Set if the lane was removed from the dashboard |
+| `ticket_id` | The ticket it holds now; empty when it holds none |
+
+Blocked time and status history belong to a lane's ticket: when a lane moves to another ticket, its blocked total starts again from that ticket's. Use `tickets.csv` for blocked time per ticket.
 
 ### `groups.csv` (every group, including archived ones)
 
 `id`, `name`, `ticket`, `ticket_url`, `links`, `last_published_by`, `created_at`, `updated_at`, `archived_at`.
+
+### `tickets.csv` (every ticket lanes have held)
+
+| Column | Meaning |
+|---|---|
+| `id` | The ticket's number (escalations and events refer to it as `ticket_id`) |
+| `ref`, `display_ref` | Its canonical reference (`redmine:967`) and how it was first written (`#967`) |
+| `code` | What its escalation codes start with (`967`, `gh:632`, or `T42` when the ref can't be one) |
+| `ticket_url` | From the ticket templates |
+| `group_id`, `lane_id` | The group it was last worked in, and the lane holding it (empty unless held) |
+| `state` | `in_lane`, `parked`, `done` or `dropped`: whether a lane holds it, and how the last one let it go. Not the ticket's status in its tracker |
+| `park_reason`, `waiting_on` | Why it's parked, and the ticket it waits on |
+| `status` | Its lane status: the holding lane's, or as it was when let go |
+| `blocked_seconds_total` | Time blocked while in lanes |
+| `escalations_total`, `escalations_open` | Counts |
+| `created_at`, `updated_at`, `closed_at` | Timing (`closed_at` once done or dropped) |
 
 ### `requirements.csv` (the owner's product decisions)
 
@@ -105,13 +125,14 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 ### `events.csv` (lane history)
 
-`id`, `lane_id`, `at`, `kind`, `message`, `actor`. The `kind` column is one of:
+`id`, `lane_id`, `at`, `kind`, `message`, `actor`, `ticket_id` (the ticket it concerns). The `kind` column is one of:
 
 - **`status`:** every status change, plus lane created, removed and restored
 - **`escalation`:** asked, positions, decided, acknowledged, withdrawn
 - **`activity`:** the agent's activity lines, only the most recent ones per lane
 - **`notice`:** the agent's messages in the lane's conversation (`notify_owner`, "Merged PR #311")
 - **`message`:** the owner's notes in the lane's conversation
+- **`ticket`:** a lane filled with a ticket, parking or letting one go ("Parked 500: waiting on the vendor"), and what a ticket waits on
 
 To rebuild blocked time per lane over a period, pair the status changes in `status` rows.
 
@@ -120,7 +141,8 @@ To rebuild blocked time per lane over a period, pair the status changes in `stat
 **Removing a lane**, in the app or by its overseer (`remove_lane`):
 
 - hides it from the dashboard
-- withdraws its **unanswered** escalations, so waiting agents get an answer ("Lane removed by …"). Each withdrawal is recorded in the history
+- lets its ticket go: parked by default, so its questions stay open for whichever lane picks it up, or done if the lane was completed (`remove_lane` takes `previous` to say otherwise; a done or dropped ticket's unanswered questions are withdrawn)
+- withdraws the **unanswered** escalations raised while it held no ticket, so waiting agents get an answer ("Lane removed by …"). Each withdrawal is recorded in the history
 - leaves **decided** escalations as they are, so an agent already acting on an answer can still acknowledge it
 - ends a blocked spell: a lane removed while `blocked_human` is set to `idle`, so archived time isn't counted as blocked
 - keeps the lane, its escalations and its history
