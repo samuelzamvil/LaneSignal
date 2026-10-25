@@ -129,8 +129,8 @@ describe('real epics', () => {
     const standIn = await epicId('orders');
     const q = (await ask({ epic: 'orders', question: 'Keep the legacy cart?' })).value;
     assert.equal(q.ref, 'ordersA');
-    assert.equal((await srv.call('POST', `/api/epics/${standIn}/messages`, ALICE, { body: 'Cart redesign first' })).status, 201);
     await srv.tool(AGENT, 'update_epic', { epic: 'orders', status_line: '2 lanes busy' });
+    assert.equal((await srv.call('POST', `/api/epics/${standIn}/messages`, ALICE, { body: 'Cart redesign first' })).status, 201);
     const created = await srv.tool(AGENT, 'update_epic', { epic: '700', group: 'orders', name: 'Checkout v2' });
     assert.equal(created.isError, false, created.text);
     assert.equal(created.value.epic, '700');
@@ -242,7 +242,8 @@ describe('closing an epic', () => {
   test('an overseer asks; refused while questions are open or answered and unacknowledged', async () => {
     await group('closing');
     await srv.tool(AGENT, 'update_epic', { epic: '800', group: 'closing', name: 'Audit' });
-    assert.match((await srv.tool(AGENT, 'request_epic_close', { epic: 'closing', reason: 'x' })).text, /has 1 epics|stand-in/);
+    // A stand-in isn't closed: it steps aside for a real epic.
+    assert.match((await srv.tool(AGENT, 'request_epic_close', { epic: 'boards', reason: 'x' })).text, /stand-in epic isn't closed/);
     const q = (await ask({ epic: '800', question: 'Anything left?' })).value;
     assert.match((await srv.tool(AGENT, 'request_epic_close', { epic: '800', reason: 'Done' })).text, /still open or awaiting acknowledgement/);
     await decide(q.id);
@@ -270,6 +271,10 @@ describe('closing an epic', () => {
     // A closed epic takes no more questions or board posts.
     assert.match((await ask({ epic: '800', question: 'More?' })).text, /not found|closed/);
     assert.equal((await srv.call('POST', `/api/epics/${id}/messages`, ALICE, { body: 'late' })).status, 409);
+    // Nor can a ticket name it any more.
+    const fill = await srv.tool(AGENT, 'fill_lane', { lane_id: 'close-slot', group: 'closing', ticket: '810', epic: '800' });
+    assert.equal(fill.isError, true);
+    assert.match(fill.text, /Epic 800 is closed/);
   });
 });
 
@@ -280,7 +285,7 @@ describe('export', () => {
       assert.equal(csv.split(/\r?\n/)[0], EXPORT_COLUMNS[d].join(','), d);
     }
     const epicRows = (await srv.call('GET', '/api/export/epics.json', ALICE)).body;
-    assert.ok(epicRows.some((r: any) => r.ref === '700' && r.name === 'Checkout v2' && r.stand_in === false));
+    assert.ok(epicRows.some((r: any) => r.display_ref === '700' && r.name === 'Checkout v2' && r.stand_in === false));
     assert.ok(epicRows.some((r: any) => r.group_id === 'orders' && r.stand_in === true && r.state === 'closed'));
     const boards = (await srv.call('GET', '/api/export/epic_messages.json', ALICE)).body;
     assert.ok(boards.some((r: any) => r.body === 'Do the audit ticket first' && r.from === 'owner' && typeof r.epic_id === 'number'));
@@ -299,7 +304,8 @@ describe('export', () => {
 describe('REST', () => {
   test('list and detail: questions, board, lanes and their combined feed', async () => {
     const list = (await srv.call('GET', '/api/epics?group=orders', ALICE)).body;
-    assert.deepEqual(list.map((e: any) => e.ref).sort(), ['700', '701']);
+    // The test server's only ticket system (gh) is the default: "700" is "gh:700", shown as written.
+    assert.deepEqual(list.map((e: any) => [e.ref, e.displayRef]).sort(), [['gh:700', '700'], ['gh:701', '701']]);
     const id = await epicId('orders', '700');
     await srv.tool(AGENT, 'fill_lane', { lane_id: 'groom', ticket: '700', epic: '700', activity: 'Grooming the backlog' });
     const d = await epicDetail(id);

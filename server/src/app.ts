@@ -458,7 +458,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   app.get('/api/lanes/:id', any, (req, res) => {
     const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
-    const lane = Store.isEpicLane(String(req.params.id)) ? null : store.getLane(q(project, String(req.params.id)));
+    const laneId = q(project, String(req.params.id));
+    const lane = Store.isEpicLane(laneId) ? null : store.getLane(laneId);
     if (!lane) throw new NotFoundError('Lane not found');
     res.json({
       lane: pub.lane(lane),

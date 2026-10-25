@@ -112,12 +112,19 @@ export function ntfyLinks(config: Pick<Config, 'publicUrl' | 'ntfyOpen'>, route:
 }
 
 /** The agent's message on a lane (a milestone, maybe with files): quiet, and opens the lane. */
+/** "Group / Lane". A question raised on a group's own epic is filed on a lane named like the group: just "Group". */
+function whereOf(store: Store, laneId: string) {
+  const lane = store.getLane(laneId);
+  const parts = [lane?.group ? store.getGroup(lane.group)?.name : undefined, lane?.name ?? localId(laneId)].filter((x): x is string => !!x);
+  return [...new Set(parts)].join(' / ');
+}
+
 export function noticeNotification(store: Store, n: Notice): Notification {
   const epic = n.epicId !== undefined ? store.getEpic(n.epicId) : null;
   if (epic) {
     const files = n.attachments?.length ?? 0;
     return {
-      title: [store.getGroup(epic.group)?.name, epic.name].filter(Boolean).join(' / '),
+      title: [...new Set([store.getGroup(epic.group)?.name, epic.name].filter(Boolean))].join(' / '),
       body: files ? `${n.message}\n📎 ${files === 1 ? n.attachments![0].name : `${files} files`}` : n.message,
       data: { epicId: String(epic.id), project: n.project },
       route: `#/epic/${encodeURIComponent(n.project)}/${epic.id}`,
@@ -125,8 +132,7 @@ export function noticeNotification(store: Store, n: Notice): Notification {
       project: n.project,
     };
   }
-  const lane = store.getLane(n.laneId);
-  const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? localId(n.laneId)].filter(Boolean).join(' / ');
+  const where = whereOf(store, n.laneId);
   const files = n.attachments?.length ?? 0;
   return {
     title: where,
@@ -209,8 +215,7 @@ export function startNotifier(
     // The agent wrote in a conversation: every message reaches the owner.
     if (e.type === 'escalation' && e.replied && e.escalation.lastMessage && config.notifyOn.has('escalation')) {
       const esc = e.escalation;
-      const lane = store.getLane(esc.laneId);
-      const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? localId(esc.laneId)].filter(Boolean).join(' / ');
+      const where = whereOf(store, esc.laneId);
       const code = store.listProjects().length > 1 ? `${esc.projectKey}·${esc.ref}` : esc.ref;
       const reply = e.replied === 'reply';
       const urgent = esc.blocking && reply;
@@ -227,10 +232,7 @@ export function startNotifier(
     const created = e.type === 'escalation' && (e.raised || e.escalation.createdAt === e.escalation.updatedAt);
     if (e.type === 'escalation' && created && config.notifyOn.has('escalation')) {
       // Later open-state events (agent positions) don't re-notify.
-      const lane = store.getLane(e.escalation.laneId);
-      const where = [lane?.group && store.getGroup(lane.group)?.name, lane?.name ?? localId(e.escalation.laneId)]
-        .filter(Boolean)
-        .join(' / ');
+      const where = whereOf(store, e.escalation.laneId);
       // FYI questions (non-blocking) still notify once, but quietly.
       const urgent = e.escalation.blocking;
       // With several projects, the code carries its project's key: "LS·A12".

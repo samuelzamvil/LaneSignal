@@ -115,7 +115,7 @@ export interface WaitScope {
   groupId?: string;
   /**
    * Report escalations in the lanes/group that someone else withdrew at or after
-   * this time (e.g. a human removed the lane). Defaults to when the wait starts;
+   * this time (e.g. a person dismissed one), and lanes removed since then. Defaults to when the wait starts;
    * a loop passes the previous result's `checkedAt` so nothing slips between calls.
    */
   since?: string;
@@ -136,7 +136,7 @@ export interface WaitResult {
   decided: Escalation[];
   /**
    * Escalations named in `ids` that were closed (withdrawn or already acknowledged), and ones in
-   * the lanes/group that someone else withdrew since `since` ("Lane removed by …" means stop that lane).
+   * the lanes/group that someone else withdrew since `since` (a removed lane is reported in `removedLanes`).
    */
   closed: Escalation[];
   /**

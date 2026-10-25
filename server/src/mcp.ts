@@ -395,7 +395,7 @@ function buildServer(
           'Wait for what needs you across your group, some lanes, or specific escalations. Returns a digest: ' +
           '`items`, one per thing to handle, each with a `kind`: `decided` (answered: acknowledge, then act on `decision` ' +
           'and `note`), `reply` (the owner answered Other: their `messages`; acknowledge and act, or reply_to_escalation), ' +
-          '`closed` (withdrawn by someone else; "Lane removed by …" means stop that lane), `lane_removed` (stop work on ' +
+          '`closed` (withdrawn by someone else, e.g. dismissed by a person), `lane_removed` (stop work on ' +
           'it), `lane_note` (the owner wrote on a lane: act on it, answer with notify_owner if useful), ' +
           '`ticket_moved` (a lane outside your scope took one of its tickets), `board_note` (with your group: someone wrote on ' +
           'one of its epics\' boards; answer with notify_epic if useful). An epic\'s question names its `epic`. `decided` and ' +

@@ -132,7 +132,7 @@ Answers can take minutes or a day.
 - **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns a digest as soon as anything needs you, even when nothing is open: `items`, one per thing to handle, each with a `kind`:
   - `decided`: answered. Acknowledge and act on each one (above).
   - `reply`: the owner answered Other; `messages` are theirs since you last wrote. Acknowledge and act, or reply (above).
-  - `closed`: withdrawn by someone else. "Lane removed by …" means the lane was taken off the dashboard.
+  - `closed`: withdrawn by someone else (a person dismissed it).
   - `lane_removed`: a lane someone else took off the dashboard (including ones with nothing open). Stop work on it and don't publish to it again; publishing brings a lane back.
   - `ticket_moved`: a lane outside your group took one of your group's tickets (another overseer picked up one you parked). Don't fill a lane with it again.
   - `lane_note`: the owner's notes on a lane in scope, outside any escalation. Act on them like the owner's instructions; answer with `notify_owner` if useful. They also come back as `ownerMessages` from your next `update_lane` or `notify_owner` on that lane.
