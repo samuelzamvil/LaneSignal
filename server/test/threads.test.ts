@@ -70,7 +70,7 @@ describe('conversations', () => {
   test("only the raising agent replies, and only while it's open", async () => {
     const e = await ask('Retry policy?');
     const theirs = await srv.tool(REVIEWER, 'reply_to_escalation', { id: e.ref, message: 'mine now' });
-    assert.match(theirs.text, /only that agent \(or a person\) can reply to it/);
+    assert.match(theirs.text, /only that agent, the overseer of the group its \w+ is in, or a person can reply to it/);
     await srv.call('POST', `/api/escalations/${e.id}/decide`, ALICE, { decision: 'Accept' });
     const late = await srv.tool(AGENT, 'reply_to_escalation', { id: e.ref, message: 'thanks' });
     assert.match(late.text, /the conversation is closed/);

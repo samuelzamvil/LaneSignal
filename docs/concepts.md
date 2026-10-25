@@ -7,7 +7,7 @@ An overseer agent session runs several lanes for a body of tickets, an epic or a
 A group has:
 
 - a name
-- the epic/train ticket
+- its [epics](#epics), which carry the epic/train ticket (a group's own `ticket` from before epics is kept, read-only)
 - links, most usefully the overseer's Remote Control session, so a decision is one tap from the conversation that owns it
 
 The overseer registers its group with `update_group` before publishing lanes in it. Every lane is in a group: a lane published without one joins the project's **Ungrouped** group. The lane list is arranged by group by default, and groups that need you sort first. Each group has at least one [epic](#epics), whose card heads the group's lanes.
@@ -74,7 +74,7 @@ Agents that don't know about tickets still work: publishing a lane with a differ
 An escalation's code is its ticket's or epic's code and a letter: **967A**, **967B** … **967Z**, **967AA**.
 
 - A ticket's code is its ref. Tickets from a system other than the default keep its name (**gh:632A**); a ticket whose ref can't make a code (a plain URL) uses its number instead (**T42A**).
-- An epic's code is its ticket's ref (**680A**). A group standing in as its epic uses the group's ticket, or its id when it has none (**paymentsA**).
+- An epic's code is its ticket's ref (**680A**). A group standing in as its epic uses its id (**paymentsA**), or for a group from before epics, the ticket it had.
 - A ref that's both an epic and a ticket (an epic worked directly, e.g. an audit) shares one letter sequence, so codes stay unique.
 - A code doesn't change when its ticket moves to another lane, or when a group's questions move to its first real epic.
 - Codes are per [project](projects.md); where projects mix, they carry the project key (**SH·967A**). Matching ignores case.

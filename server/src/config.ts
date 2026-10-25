@@ -196,7 +196,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (t.token.length < 16) throw new Error(`Token for "${t.name}" is shorter than 16 characters`);
   }
 
-  const ticketTemplates = parseTemplates(env.LANESIGNAL_TICKET_TEMPLATES) ?? file.ticketTemplates ?? {};
+  // Ticket system names are lower-case wherever they appear ("Redmine" configures "redmine").
+  const ticketTemplates = Object.fromEntries(
+    Object.entries(parseTemplates(env.LANESIGNAL_TICKET_TEMPLATES) ?? file.ticketTemplates ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
+  );
   const notifyOn = new Set(
     (list(env.LANESIGNAL_NOTIFY_ON) ?? file.notifyOn ?? ['escalation', 'notice']).filter(
       (n): n is 'escalation' | 'notice' | 'blocked' | 'completed' =>
@@ -223,7 +226,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     groupLabel: env.LANESIGNAL_GROUP_LABEL ?? file.groupLabel ?? 'Group',
     ticketTemplates,
     defaultTicketSystem:
-      env.LANESIGNAL_TICKET_DEFAULT ?? file.defaultTicketSystem ?? Object.keys(ticketTemplates)[0] ?? null,
+      (env.LANESIGNAL_TICKET_DEFAULT ?? file.defaultTicketSystem)?.toLowerCase() ?? Object.keys(ticketTemplates)[0] ?? null,
     staleMinutes: int('LANESIGNAL_STALE_MINUTES', env.LANESIGNAL_STALE_MINUTES ?? file.staleMinutes, 30, 0, 100_000),
     attachmentMaxBytes: int('LANESIGNAL_ATTACHMENT_MAX_MB', env.LANESIGNAL_ATTACHMENT_MAX_MB, 5, 1, 50) * 1024 * 1024,
     attachmentsPerItem: int('LANESIGNAL_ATTACHMENTS_PER_ITEM', env.LANESIGNAL_ATTACHMENTS_PER_ITEM, 5, 1, 20),

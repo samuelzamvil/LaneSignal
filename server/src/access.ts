@@ -426,34 +426,34 @@ export const isEpicLane = (laneId: string) => /(^|\/)~epic-\d+$/.test(laneId);
 /** A lane id as clients know it; null for an epic's internal lane. */
 const pubLaneId = (laneId: string | null) => (laneId === null || isEpicLane(laneId) ? null : localId(laneId));
 
-/** The start of an agent's own question, so a digest item says which one without echoing it. */
-const gist = (text: string) => (text.length > 80 ? `${text.slice(0, 79)}…` : text);
+/** The owner's messages as one text: each in full, with any files attached (name and id, for GET /api/attachments/:id). */
+const ownerWords = (messages: { body: string; attachments: { id: string; name: string }[] }[]) =>
+  messages
+    .map((m) => (m.attachments.length ? `${m.body} [attached: ${m.attachments.map((f) => `${f.name} (id ${f.id})`).join(', ')}]` : m.body))
+    .join('\n\n');
 
 /**
- * A wait result as a digest: one item per thing to handle, the owner's words in full, and counts in
- * place of the open list. Decisions and replies are listed on every wait until handled; the rest
- * once per `since`. Takes the public shape (local lane ids).
+ * A wait result as a digest: one item per thing to handle, `{code, kind, id, text}`, with the owner's
+ * words in full in `text` and nothing of the agent's own; counts in place of the open list. `code`
+ * is the escalation's (with its project key when the caller reaches several projects); `id` is the
+ * escalation's id, or for the rest the lane, ticket or epic it's about. Decisions and replies are
+ * listed on every wait until handled; the rest once per `since`. Takes the public shape (local lane ids).
  */
-export const digestWait = (w: WaitResult) => {
-  // An epic's own question has no lane: its epic says where it is.
-  const esc = (e: { ref: string; laneId: string | null; question: string; projectKey?: string | null; epicName?: string | null }) =>
-    compact({
-      code: e.ref,
-      project: e.projectKey ?? undefined,
-      lane: e.laneId === null || isEpicLane(e.laneId) ? undefined : e.laneId,
-      epic: e.epicName ?? undefined,
-      question: gist(e.question),
-    });
+export const digestWait = (w: WaitResult, keyed = false) => {
+  const code = (e: { ref: string; projectKey: string }) => (keyed ? `${e.projectKey}-${e.ref}` : e.ref);
   const items = [
-    ...w.decided.map((e) =>
-      compact({ kind: 'decided', ...esc(e), decision: e.decision, note: e.decisionNote, by: e.decidedBy }),
-    ),
-    ...w.replies.map((r) => ({ kind: 'reply', ...esc(r), messages: briefMessages(r.messages) })),
-    ...w.closed.map((e) => compact({ kind: 'closed', ...esc(e), state: e.state, resolution: e.resolution })),
-    ...w.removedLanes.map((l) => compact({ kind: 'lane_removed', lane: l.laneId, by: l.removedBy, at: l.at })),
-    ...w.laneMessages.map((l) => ({ kind: 'lane_note', lane: l.laneId, messages: briefMessages(l.messages) })),
-    ...w.movedTickets.map((m) => compact({ kind: 'ticket_moved', ticket: m.ticket, lane: m.laneId, by: m.by, at: m.at })),
-    ...w.boardMessages.map((b) => ({ kind: 'board_note', epic: b.epic, messages: briefMessages(b.messages) })),
+    ...w.decided.map((e) => ({
+      code: code(e),
+      kind: 'decided',
+      id: e.id,
+      text: e.decisionNote ? `${e.decision}: ${e.decisionNote}` : (e.decision ?? ''),
+    })),
+    ...w.replies.map((r) => ({ code: code(r), kind: 'reply', id: r.id, text: ownerWords(r.messages) })),
+    ...w.closed.map((e) => ({ code: code(e), kind: 'closed', id: e.id, text: e.resolution ?? e.state })),
+    ...w.removedLanes.map((l) => ({ kind: 'lane_removed', id: l.laneId, text: l.removedBy ? `Removed by ${l.removedBy}` : 'Removed' })),
+    ...w.laneMessages.map((l) => ({ kind: 'lane_note', id: l.laneId, text: ownerWords(l.messages) })),
+    ...w.movedTickets.map((m) => ({ kind: 'ticket_moved', id: m.ticket, text: `Taken into lane ${m.laneId}${m.by ? ` by ${m.by}` : ''}` })),
+    ...w.boardMessages.map((b) => ({ kind: 'board_note', id: b.epic, text: ownerWords(b.messages) })),
   ];
   return {
     // From the items themselves: `pub.wait` may have dropped some the caller no longer sees.
@@ -506,7 +506,7 @@ export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'ack
     (e.ticketId !== null && store.ticketOverseer(e.ticketId) === me) || (e.epicId !== null && store.epicOverseer(e.epicId) === me);
   if (!mine && !overseer) {
     throw new ForbiddenError(
-      `${e.ref} was raised by ${e.createdBy}; only that agent (or a person) can ${verb} it, or the overseer of the group its ${e.epicId !== null ? 'epic' : 'ticket'} is in`,
+      `${e.ref} was raised by ${e.createdBy}; only that agent, the overseer of the group its ${e.epicId !== null ? 'epic' : 'ticket'} is in, or a person can ${verb} it`,
     );
   }
 }

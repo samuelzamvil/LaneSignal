@@ -5,7 +5,7 @@ On this server the owner answers **in this session** (usually through Remote Con
 1. **Dismiss the escalation** with `dismiss_escalation`: `justification` says what was decided and where, e.g. `"Sam: drop the column (in session, 2026-10-23)"`. It's the record on the dashboard and in exports.
 2. **Publish the next state in the same call:** pass `status` and `activity`, e.g. `status: "active", activity: "Dropping the column (A12)"`. A lane the dismissal unblocks goes back to `active` if you don't say.
 3. **Moot escalations:** dismiss them the same way, saying why ("Superseded by A14").
-4. **Only you can dismiss yours.** The owner may also dismiss a stale one from the dashboard.
+4. **Only you (or the overseer of the group its ticket or epic is in) can dismiss yours.** The owner may also dismiss a stale one from the dashboard.
 
 ## After a restart
 

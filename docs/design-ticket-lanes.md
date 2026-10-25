@@ -1,6 +1,6 @@
 # Plan: tickets, epics and explicit lane filling
 
-Status: **signed off by both overseers, revision 3**. Nothing here is built yet. It ships over several PRs (see [Delivery](#delivery)).
+Status: **signed off by both overseers, revision 3**. Built over PRs #38, #40, #41 and #42, with an audit follow-up (see [Delivery](#delivery) and [As built](#as-built)).
 
 ## Why
 
@@ -300,7 +300,7 @@ Each PR is shippable on its own, with tests, wiki updates and an adversarial rev
 - **Held over to PR 4 with epics:** stand-in epics, the "Ungrouped" stand-in group, `epic_id` and `fill_lane`'s `epic`.
 - **Until epics (owner's decision):** a question raised on a lane holding no ticket kept today's behaviour: it blocked that lane and got a lane-letter code (A12). A lane went `idle` when it let its ticket go without taking another; the migration left ticketless lanes' status as it was. This interim ended in PR 4, as the plan says: a lane holding no ticket shows `idle`, and its questions go to the group's epic (migration step 3 included).
 - **Two live lanes on one ticket at upgrade:** they share the ticket record, and the more recently updated lane holds it. The other lane's history says which lane holds it.
-- **The overseer of a ticket's group** is the key that last published the group with `update_group` (as the plan's "whichever key last published the group"), compared like a raiser (account and key name).
+- **The overseer of a ticket's group** is the key that last published the group with `update_group`, compared like a raiser (account and key name).
 - **Changing the ticket systems later** (e.g. adding a default) re-derives tickets' canonical refs at startup from how each was first written; codes don't change.
 - **Notifications:** completing a lane still sends the "completed" notification and TRMNL card, though the lane shows `idle` afterwards.
 - **`waiting_on` alongside `completed`** in one call: the lane ends up holding no ticket, so `waiting_on` is left out with a warning rather than failing the whole call.
@@ -329,7 +329,10 @@ Each PR is shippable on its own, with tests, wiki updates and an adversarial rev
 14. **Two groups with one ticket at upgrade** (a train and the one that replaced it): the first gets the real epic, the other stands in, since an epic has one group.
 15. **Lanes blocked only by their own earlier questions** (raised before they took their ticket, the epic's now) show `awaiting_agent` after the upgrade, as at the tickets upgrade.
 16. **Naming epics:** an epic named from a lane must be in the lane's group, and an existing epic named with another group is refused. A real epic keeps a ref (it can change, not be cleared).
-17. **Any agent key of the project** may use the epic tools, as with `update_group`; the overseer is whoever does.
+17. **Any agent key of the project** may use the epic tools, as with `update_group`. The overseer (who may close an epic's questions) is still the key that last published the group.
+18. **`epic` from a lane holding a ticket:** `create_escalation` with both goes to the epic, so an agent working a ticket can raise a durable question; without `epic` it's the ticket's, as the plan says.
+
+**Audit follow-up** (after PR 4): digest items follow the plan's `{code, kind, id, text}`; a wait's digest depends on `since` alone; `lanes.ticket` and `groups.ticket` are read-only (migration step 6), so `update_group` ignores `ticket` with a warning pointing to `update_epic`; ticket system names are lower-case; lane rows show the ticket, **Idle · no ticket** and **waiting on #945**; a stand-in's card links its group's ticket; History search finds epic refs.
 
 ## Risks
 

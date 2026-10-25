@@ -13,7 +13,7 @@ const wait = async (group: string, opts: Record<string, unknown> = {}) =>
   (await srv.tool(AGENT, 'wait_for_decisions', { group_id: group, wait_seconds: 0, ...opts })).value;
 const ask = async (lane: string, question: string) => (await srv.tool(AGENT, 'create_escalation', { lane_id: lane, question })).value;
 const note = (lane: string, body: string) => srv.call('POST', `/api/lanes/${lane}/messages`, ALICE, { body });
-const kinds = (w: any) => w.items.map((i: any) => [i.kind, i.code ?? i.lane]);
+const kinds = (w: any) => w.items.map((i: any) => [i.kind, i.code ?? i.id]);
 
 describe('wait digest', () => {
   test('with nothing open it reports nothing to do and keeps waiting', async () => {
@@ -31,9 +31,8 @@ describe('wait digest', () => {
     await note('d-idle', 'Pick up #966 next');
     const woke = (await waiting).value;
     assert.equal(woke.ready, true);
-    assert.deepEqual(woke.items, [
-      { kind: 'lane_note', lane: 'd-idle', messages: [{ body: 'Pick up #966 next', by: 'alice', at: woke.items[0].messages[0].at }] },
-    ]);
+    // Items are {code, kind, id, text}: a note has no code; its id is the lane, its text the owner's words.
+    assert.deepEqual(woke.items, [{ kind: 'lane_note', id: 'd-idle', text: 'Pick up #966 next' }]);
     // Repeating the same `since` (a wait that crashed before acting) returns the note again; the next `since` doesn't.
     assert.deepEqual(kinds(await wait('digest-idle', { since: now.checkedAt })), [['lane_note', 'd-idle']]);
     assert.deepEqual((await wait('digest-idle', { since: woke.checkedAt })).items, []);
@@ -53,16 +52,11 @@ describe('wait digest', () => {
     const w = await wait('digest-work', { since: first.checkedAt });
     assert.equal(w.ready, true);
     assert.deepEqual(w.counts, { open: 1, decidedUnacknowledged: 1, waitingOnYou: 1 });
+    // The owner's words in `text`; nothing of the agent's own question.
     const decided = w.items.find((i: any) => i.kind === 'decided');
-    assert.equal(decided.code, accepted.ref);
-    assert.equal(decided.decision, 'Accept');
-    assert.equal(decided.note, 'Flag name: retry_v2');
-    assert.equal(decided.by, 'alice');
-    // The agent's own question comes back shortened, enough to recognise it.
-    assert.ok(decided.question.length <= 80 && decided.question.endsWith('…'));
+    assert.deepEqual(decided, { code: accepted.ref, kind: 'decided', id: accepted.id, text: 'Accept: Flag name: retry_v2' });
     const reply = w.items.find((i: any) => i.kind === 'reply');
-    assert.equal(reply.code, other.ref);
-    assert.deepEqual(reply.messages.map((m: any) => m.body), ['Redis']);
+    assert.deepEqual(reply, { code: other.ref, kind: 'reply', id: other.id, text: 'Redis' });
 
     // Both come back on the next wait, even with a later `since`, until handled.
     assert.deepEqual(kinds(await wait('digest-work', { since: w.checkedAt })).sort(), [['decided', accepted.ref], ['reply', other.ref]].sort());
@@ -82,7 +76,8 @@ describe('wait digest', () => {
     await srv.call('DELETE', '/api/lanes/d-gone', ALICE);
     const w = await wait('digest-gone', { since: start.checkedAt });
     assert.deepEqual(kinds(w), [['closed', e.ref], ['lane_removed', 'd-gone']]);
-    assert.equal(w.items[0].resolution, 'Not needed');
+    assert.equal(w.items[0].text, 'Not needed');
+    assert.equal(w.items[1].text, 'Removed by alice');
     // The removed lane's ticket is parked with its other question, still open.
     assert.equal(w.counts.open, 1);
     assert.equal((await srv.call('GET', `/api/escalations/${parked.id}`, ALICE)).body.state, 'open');
@@ -166,4 +161,16 @@ test('a note in the same millisecond as a wait is returned once, and later ones 
   } finally {
     store.close();
   }
+});
+
+test("a note's files are named in the digest with their ids", async () => {
+  await srv.publish('d-files', { group: 'digest-files' });
+  const start = await wait('digest-files');
+  const form = new FormData();
+  form.append('file', new Blob(['# Plan'], { type: 'text/markdown' }), 'plan.md');
+  const up = await fetch(`${srv.base}/api/attachments`, { method: 'POST', headers: { authorization: `Bearer ${ALICE}` }, body: form });
+  const file = await up.json();
+  await srv.call('POST', '/api/lanes/d-files/messages', ALICE, { body: 'Read this first', attachments: [file.id] });
+  const w = await wait('digest-files', { since: start.checkedAt });
+  assert.deepEqual(w.items, [{ kind: 'lane_note', id: 'd-files', text: `Read this first [attached: plan.md (id ${file.id})]` }]);
 });
