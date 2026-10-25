@@ -10,10 +10,12 @@ export type TextPart = { t: 'text'; text: string } | { t: 'link'; href: string; 
 /**
  * One pass over the text, left to right:
  *  1. a web address (so "#12" inside a URL stays part of it);
- *  2. "system#id" or "system:id" (the id may be a key like PROJ-12);
- *  3. "#digits" at the start of a word ("PR#5", "a/#5" and "&#38;" are left alone).
+ *  2. "system#id" or "system:id" (the id may be a key like PROJ-12), but not "see:https://…";
+ *  3. "#" and two or more digits at the start of a word. Left alone: "PR#5", "a/#5", "&#38;",
+ *     "#1" ("our #1 priority"), "#012" and "#1.5".
  */
-const PATTERN = /(https?:\/\/[^\s)]+)|\b([A-Za-z][\w-]*)[#:]([A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*)\b|(?<![\w&/#])#(\d+)\b/g;
+const PATTERN =
+  /(https?:\/\/[^\s)]+)|(?<![\p{L}\p{N}_])([A-Za-z][\w-]*)[#:]([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*)\b(?!:\/\/)|(?<![\p{L}\p{N}_&/#])#([1-9]\d+)\b(?![.,]\d)/gu;
 
 function ticketUrl(template: string, id: string): string | null {
   const url = template.replaceAll('{id}', encodeURIComponent(id));

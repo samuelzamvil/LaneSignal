@@ -448,7 +448,11 @@ export function LaneDetail({
               <dt>Blocked</dt>
               <dd>{duration(blockedMs(data.lane, now))} total</dd>
             </dl>
-            {data.lane.activity && <p className="activity full">{data.lane.activity}</p>}
+            {data.lane.activity && (
+              <p className="activity full">
+                <LinkedText text={data.lane.activity} />
+              </p>
+            )}
             <Links links={data.lane.links} />
             {group && group.links.length > 0 && (
               <>

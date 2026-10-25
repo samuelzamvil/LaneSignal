@@ -27,15 +27,45 @@ test('web addresses still link, and a "#12" inside one stays part of it', () => 
 });
 
 test('things that only look like refs stay text', () => {
-  for (const text of ['PR#5', 'a/#5', '&#38;', '#fff', '# heading', 'note:5', 'gh#12', '10:30', 'ab##12', '#']) {
+  for (const text of [
+    'PR#5',
+    'a/#5',
+    '&#38;',
+    '#fff',
+    '# heading',
+    'note:5',
+    'gh#12',
+    '10:30',
+    'ab##12',
+    '#',
+    'our #1 priority',
+    'color #000',
+    'version #12.5',
+    'café#12',
+  ]) {
     assert.deepEqual(hrefs(text), [], text);
   }
 });
 
+test('a web address right after "word:" still links, even when the word is a system', () => {
+  assert.deepEqual(hrefs('see:https://x.example/a redmine:https://x.example/b'), [
+    ['https://x.example/a', 'https://x.example/a'],
+    ['https://x.example/b', 'https://x.example/b'],
+  ]);
+});
+
+test('a sentence that runs on after an id does not join it', () => {
+  assert.deepEqual(hrefs('redmine:1234.Then'), [['redmine:1234', 'https://redmine.example/issues/1234']]);
+});
+
+test('one-digit refs link when the system is named', () => {
+  assert.deepEqual(hrefs('redmine#5'), [['redmine#5', 'https://redmine.example/issues/5']]);
+});
+
 test('refs at the start, end and next to brackets', () => {
-  assert.deepEqual(hrefs('#1 (#2) [redmine:3]'), [
-    ['#1', 'https://redmine.example/issues/1'],
-    ['#2', 'https://redmine.example/issues/2'],
+  assert.deepEqual(hrefs('#10 (#20) [redmine:3]'), [
+    ['#10', 'https://redmine.example/issues/10'],
+    ['#20', 'https://redmine.example/issues/20'],
     ['redmine:3', 'https://redmine.example/issues/3'],
   ]);
 });
