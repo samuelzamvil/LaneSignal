@@ -16,3 +16,7 @@ test('crafted links only ever reach the home screen', () => {
   assert.equal(routeFromAppLink('lanesignal://esc/a b'), '#/');
   assert.equal(routeFromAppLink('lanesignal://lane/default/a%20b'), '#/lane/default/a%20b');
 });
+
+test('the Cloudflare Access sign-in callback is left to the sign-in screen', () => {
+  assert.equal(routeFromAppLink('lanesignal://oauth/callback?code=x&state=y'), null);
+});

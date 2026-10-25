@@ -349,6 +349,8 @@ export interface PublicConfig {
   requirements: boolean;
   /** Alerts arrive as regular notifications instead of high priority (Settings → Push). */
   quietAlerts: boolean;
+  /** Sign-in through Cloudflare Access is on (LANESIGNAL_CLOUDFLARE_ACCESS, beta). */
+  cloudflareAccess?: boolean;
 }
 
 export type Role = 'human' | 'agent';
@@ -367,6 +369,8 @@ export interface Principal {
   project?: string;
   /** A personal key: acts as its owner, but from a Claude session, so its requirements still wait for approval. */
   personalKey?: boolean;
+  /** Signed in through Cloudflare Access (LANESIGNAL_CLOUDFLARE_ACCESS) rather than with a LaneSignal session. */
+  cloudflareAccess?: boolean;
 }
 
 /**

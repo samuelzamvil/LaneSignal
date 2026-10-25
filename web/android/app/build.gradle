@@ -9,6 +9,9 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode((System.getenv("LANESIGNAL_VERSION_CODE") ?: "1") as int)
         versionName System.getenv("LANESIGNAL_VERSION_NAME") ?: "0.1.0"
+        // The LaneSignal server whose Cloudflare Access sign-in callback opens the app directly (an App Link).
+        // Unset, the placeholder host never verifies and the callback page forwards to lanesignal:// instead.
+        manifestPlaceholders = [appLinkHost: System.getenv("LANESIGNAL_APP_LINK_HOST") ?: "app-link.lanesignal.invalid"]
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

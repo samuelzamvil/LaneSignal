@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core';
+import type { AccessClient } from './cloudflare.ts';
 import type {
   AttachmentMeta,
   Epic,
@@ -49,9 +50,17 @@ export const isNative = Capacitor.isNativePlatform();
 export interface Connection {
   /** Empty string = same origin (browser served by the LaneSignal server). */
   server: string;
-  /** An account session token, or a static access token from the server config. */
+  /** An account session token, or a static access token from the server config; empty when signed in through Cloudflare Access. */
   token: string;
-  kind?: 'session' | 'token';
+  /** "cloudflare": signed in through Cloudflare Access (its cookie in the browser, Managed OAuth tokens in the app). */
+  kind?: 'session' | 'token' | 'cloudflare';
+  /** The app's Managed OAuth client for this server; absent in the browser, where Access's cookie does the work. */
+  access?: AccessClient;
+}
+
+/** Hands out the bearer token per request (Cloudflare Access tokens are short-lived and refreshed). */
+export interface BearerSource {
+  token(force?: boolean): Promise<string>;
 }
 
 export interface AgentKey {
@@ -104,19 +113,43 @@ export function normalizeServer(url: string) {
   return /^https?:\/\//.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
-export function createClient(conn: Connection) {
+export function createClient(conn: Connection, bearer?: BearerSource) {
   const base = conn.server;
-  const headers = { authorization: `Bearer ${conn.token}` };
+
+  /**
+   * fetch with the connection's credential. A refreshed bearer gets one retry when the server (or Cloudflare
+   * Access in front of it) refuses the token, or the request fails outright: Access's own 401 carries no CORS
+   * headers, so the WebView reports it as a network error.
+   */
+  async function send(url: string, init: RequestInit = {}): Promise<Response> {
+    const withAuth = async (force: boolean): Promise<RequestInit> => {
+      const token = bearer ? await bearer.token(force) : conn.token;
+      return { ...init, headers: { ...(init.headers as Record<string, string>), ...(token ? { authorization: `Bearer ${token}` } : {}) } };
+    };
+    if (!bearer) return fetch(url, await withAuth(false));
+    let res: Response;
+    try {
+      res = await fetch(url, await withAuth(false));
+    } catch (err) {
+      if (init.signal?.aborted) throw err;
+      // Only reads are retried: a change that failed in transit may still have arrived.
+      if ((init.method ?? 'GET') === 'GET') return fetch(url, await withAuth(true));
+      await bearer.token(true).catch(() => {});
+      throw err;
+    }
+    return res.status === 401 ? fetch(url, await withAuth(true)) : res;
+  }
 
   async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
     let res: Response;
     try {
-      res = await fetch(base + path, {
+      res = await send(base + path, {
         method,
-        headers: body !== undefined ? { ...headers, 'content-type': 'application/json' } : headers,
+        headers: body !== undefined ? { 'content-type': 'application/json' } : {},
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.name === 'SignedOut') throw new ApiError(401, err.message);
       // The browser's "Failed to fetch" says nothing useful to someone on a phone.
       throw new ApiError(0, "Couldn't reach the server, so nothing was sent. Try again when you're back online.");
     }
@@ -238,9 +271,9 @@ export function createClient(conn: Connection) {
     signOut: () => request<unknown>('POST', '/api/auth/sign-out', {}),
     /** Signs out every other device; returns this device's replacement session token. */
     changePassword: async (currentPassword: string, newPassword: string): Promise<string> => {
-      const res = await fetch(`${base}/api/auth/change-password`, {
+      const res = await send(`${base}/api/auth/change-password`, {
         method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ currentPassword, newPassword, revokeOtherSessions: true }),
       });
       if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
@@ -278,7 +311,7 @@ export function createClient(conn: Connection) {
     async attachment(id: string): Promise<Blob> {
       let res: Response;
       try {
-        res = await fetch(`${base}/api/attachments/${encodeURIComponent(id)}`, { headers });
+        res = await send(`${base}/api/attachments/${encodeURIComponent(id)}`);
       } catch {
         throw new ApiError(0, "Couldn't reach the server to open the attachment.");
       }
@@ -288,7 +321,7 @@ export function createClient(conn: Connection) {
 
     /** Downloads an export (zip or CSV) and hands it to the browser as a file. */
     async download(path: string, fallbackName: string) {
-      const res = await fetch(base + path, { headers });
+      const res = await send(base + path);
       if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
       const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? fallbackName;
       const url = URL.createObjectURL(await res.blob());
@@ -313,7 +346,10 @@ export function createClient(conn: Connection) {
       handlers: { onOpen: () => void; onEvent: (e: StreamEvent) => void; onActivity: () => void },
       signal: AbortSignal,
     ) {
-      const res = await fetch(`${base}/api/events`, { headers, signal });
+      const res = await send(`${base}/api/events`, { signal }).catch((err: unknown) => {
+        if (err instanceof Error && err.name === 'SignedOut') throw new ApiError(401, err.message);
+        throw err;
+      });
       if (!res.ok || !res.body) throw new ApiError(res.status, 'event stream failed');
       handlers.onOpen();
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -8,6 +8,7 @@ import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { getMigrations } from 'better-auth/db/migration';
 import { admin, bearer } from 'better-auth/plugins';
+import type { AccessIdentity } from './cloudflare-access.ts';
 import type { Config } from './config.ts';
 import { log } from './log.ts';
 import type { Principal } from './types.ts';
@@ -17,6 +18,9 @@ export const KEY_PREFIX = 'ls_';
 
 /** Header the server sets from Express's `req.ip` (which honours trust-proxy) for Better Auth's rate limiter. */
 export const CLIENT_IP_HEADER = 'x-lanesignal-client-ip';
+
+/** User agent of the Better Auth sessions LaneSignal keeps for people signed in through Cloudflare Access. */
+const ACCESS_SESSION_AGENT = 'LaneSignal (Cloudflare Access)';
 
 /** Better Auth endpoints after which open streams must re-check their credentials. */
 const REVOKING_PATHS = new Set([
@@ -57,9 +61,10 @@ export async function createAccounts(config: Config, dbPath: string) {
     added: [userId: string, admin: boolean];
   }>();
 
+  const secret = authSecret(config);
   const options = {
     database: db,
-    secret: authSecret(config),
+    secret,
     baseURL: config.publicUrl ?? `http://localhost:${config.port}`,
     basePath: '/api/auth',
     // The app's own origin (whatever host it's served from) plus the Android app and configured origins.
@@ -198,6 +203,21 @@ export async function createAccounts(config: Config, dbPath: string) {
 
   // First-run setup must not race: one process, so a promise chain is enough.
   let setupLock: Promise<unknown> = Promise.resolve();
+  // Nor must two first requests from the same new Cloudflare Access user each create an account.
+  let accessLock: Promise<unknown> = Promise.resolve();
+
+  const principalOfUser = (u: { id: string; name: string; email: string; role: string | null }): Principal => ({
+    name: u.name || u.email,
+    role: 'human',
+    userId: u.id,
+    email: u.email,
+    admin: isAdminRole(u.role),
+    superuser: isAdminRole(u.role),
+  });
+  const userByEmail = (email: string) =>
+    db.prepare('SELECT id, name, email, role FROM user WHERE lower(email) = ?').get(email.toLowerCase()) as
+      | { id: string; name: string; email: string; role: string | null }
+      | undefined;
 
   return {
     auth,
@@ -299,18 +319,55 @@ export async function createAccounts(config: Config, dbPath: string) {
         }
         const session = await auth.api.getSession({ headers: new Headers({ authorization: `Bearer ${token}` }) });
         if (!session) return null;
-        return {
-          name: session.user.name || session.user.email,
-          role: 'human',
-          userId: session.user.id,
-          email: session.user.email,
-          admin: isAdminRole(session.user.role),
-          superuser: isAdminRole(session.user.role),
-        };
+        return principalOfUser({ ...session.user, role: (session.user.role as string | null | undefined) ?? null });
       } catch (err) {
         log.warn('credential check failed', { error: String(err) });
         return null;
       }
+    },
+
+    /**
+     * The account with the email Cloudflare Access verified, if it exists and isn't banned. With `create`, an
+     * email without an account gets one (not an admin, with a random password: they sign in through Access).
+     */
+    identifyAccess(identity: AccessIdentity, create: boolean): Promise<Principal | null> {
+      const run = accessLock.then(async () => {
+        let user = userByEmail(identity.email);
+        if (!user && create && userCount() > 0) {
+          const local = identity.email.split('@')[0] || identity.email;
+          await auth.api.createUser({
+            body: { email: identity.email, name: local, password: randomBytes(24).toString('base64url'), role: 'user' },
+          });
+          log.info('account created for a Cloudflare Access sign-in', { email: identity.email });
+          user = userByEmail(identity.email);
+        }
+        if (!user || !ownerActive(user.id)) return null;
+        return { ...principalOfUser(user), cloudflareAccess: true };
+      });
+      accessLock = run.catch(() => {});
+      return run.catch((err: unknown) => {
+        log.warn('cloudflare access sign-in failed', { email: identity.email, error: String(err) });
+        return null;
+      });
+    },
+
+    /**
+     * A signed Better Auth session token for a person signed in through Cloudflare Access, so Better Auth's own
+     * routes (agent keys, people) work for them too. One such session per person is kept and reused.
+     */
+    async accessSessionToken(userId: string): Promise<string> {
+      const rows = db
+        .prepare('SELECT token, expiresAt FROM session WHERE userId = ? AND userAgent = ?')
+        .all(userId, ACCESS_SESSION_AGENT) as { token: string; expiresAt: string | number }[];
+      const fresh = rows.find((r) => new Date(r.expiresAt).getTime() > Date.now() + 86_400_000);
+      let token = fresh?.token;
+      if (!token) {
+        const c = await auth.$context;
+        const session = await c.internalAdapter.createSession(userId, false, { userAgent: ACCESS_SESSION_AGENT });
+        token = session.token;
+      }
+      // The bearer plugin only accepts signed tokens: "<token>.<HMAC-SHA256 of it, base64>", as sign-in hands out.
+      return `${token}.${createHmac('sha256', secret).update(token).digest('base64')}`;
     },
 
     close: () => db.close(),
