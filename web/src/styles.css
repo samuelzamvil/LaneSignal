@@ -655,6 +655,14 @@ textarea {
 
 /* ---- escalations ---- */
 
+/* Agents write long paths, URLs and identifiers (in questions, options, lane names): they wrap
+   instead of widening the page, which in the app looked zoomed in and scrolled sideways. */
+.esc-card,
+.esc-detail,
+.sheet-esc .sheet-head {
+  overflow-wrap: anywhere;
+}
+
 .esc-card {
   padding: 16px;
   margin-bottom: 12px;
