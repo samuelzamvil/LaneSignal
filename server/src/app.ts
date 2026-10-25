@@ -257,6 +257,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       groups: store.listGroups(projects).map(pub.group),
       lanes: store.listLanes(projects).map(pub.lane),
       escalations: store.listEscalations({ projects }).map(pub.escalation),
+      tickets: store.snapshotTickets(projects).map(pub.ticket),
       serverTime: new Date().toISOString(),
     });
   });
@@ -652,6 +653,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       query: query.q,
       groupId: group,
       states,
+      activeTickets: query.active_tickets === '1',
       before: query.before_at && query.before_id ? { at: query.before_at, id: query.before_id } : undefined,
       limit: query.limit,
     });

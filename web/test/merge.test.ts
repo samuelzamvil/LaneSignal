@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { applyEvent, type Entities } from '../src/merge.ts';
-import { escalation, lane } from './fixtures.ts';
+import { escalation, lane, ticket } from './fixtures.ts';
 
-const empty = (): Entities => ({ groups: new Map(), lanes: new Map(), escalations: new Map() });
+const empty = (): Entities => ({ groups: new Map(), lanes: new Map(), escalations: new Map(), tickets: new Map() });
 
 test('lane events add and update lanes, but an older copy never wins', () => {
   let s = applyEvent(empty(), { type: 'lane', lane: lane({ updatedAt: '2026-10-01T00:00:02Z', activity: 'new' }) });
@@ -56,3 +56,18 @@ test('lanes with the same id in two projects are kept apart', () => {
   assert.deepEqual([...s.escalations.keys()], ['eb']);
 });
 
+
+test('ticket events keep the newest copy of each ticket', () => {
+  let s = applyEvent(empty(), { type: 'ticket', ticket: ticket({ state: 'in_lane', lane: 'l1', updatedAt: '2026-10-01T00:00:02Z' }) });
+  s = applyEvent(s, { type: 'ticket', ticket: ticket({ state: 'parked', updatedAt: '2026-10-01T00:00:01Z' }) });
+  assert.equal(s.tickets.get('1')?.state, 'in_lane');
+  s = applyEvent(s, { type: 'ticket', ticket: ticket({ state: 'parked', parkReason: 'later', updatedAt: '2026-10-01T00:00:03Z' }) });
+  assert.equal(s.tickets.get('1')?.parkReason, 'later');
+});
+
+test("removing a lane drops its own questions but keeps its tickets'", () => {
+  let s = applyEvent(empty(), { type: 'escalation', escalation: escalation({ id: 'own' }) });
+  s = applyEvent(s, { type: 'escalation', escalation: escalation({ id: 'ticket', ticketId: 1 }) });
+  s = applyEvent(s, { type: 'lane_deleted', id: 'l1', project: 'p' });
+  assert.deepEqual([...s.escalations.keys()], ['ticket']);
+});

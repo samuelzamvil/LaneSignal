@@ -362,3 +362,63 @@ describe('tickets', () => {
     assert.match(csv, /redmine:640,640,640,.*,parked,Lane removed/);
   });
 });
+
+describe('tickets in the app', () => {
+  test('the snapshot carries held and parked tickets, and escalations their ticket', async () => {
+    await fill({ lane_id: 'app-a', group: 'train', ticket: '800' });
+    const q = await ask('app-a', 'Ship?');
+    await fill({ lane_id: 'app-a', ticket: '801', previous: 'park', reason: 'later' });
+    const snap = (await srv.call('GET', '/api/snapshot', ALICE)).body;
+    const parked = snap.tickets.find((t: any) => t.ref === 'redmine:800');
+    assert.equal(parked.state, 'parked');
+    assert.equal(parked.lastLane, 'app-a');
+    assert.ok(snap.tickets.some((t: any) => t.ref === 'redmine:801' && t.lane === 'app-a'));
+    const esc = snap.escalations.find((e: any) => e.id === q.id);
+    assert.equal(esc.ticketRef, '800');
+    assert.equal(esc.ticketId, parked.id);
+  });
+
+  test('History filters to active tickets and finds a ticket by any form of its ref', async () => {
+    await fill({ lane_id: 'app-b', group: 'train', ticket: '810' });
+    const q = await ask('app-b', 'Rename the queue?');
+    await srv.tool(AGENT, 'dismiss_escalation', { id: q.ref, justification: 'moot' });
+    for (const form of ['810', '#810', 'redmine:810', 'https://redmine.example/issues/810']) {
+      const items = (await srv.call('GET', `/api/history?q=${encodeURIComponent(form)}`, ALICE)).body.items;
+      assert.ok(items.some((e: any) => e.id === q.id), form);
+    }
+    const active = (await srv.call('GET', '/api/history?active_tickets=1', ALICE)).body.items;
+    assert.ok(active.some((e: any) => e.id === q.id), 'its ticket is in a lane');
+    await fill({ lane_id: 'app-b', previous: 'park', reason: 'later' });
+    const after = (await srv.call('GET', '/api/history?active_tickets=1', ALICE)).body.items;
+    assert.ok(!after.some((e: any) => e.id === q.id), 'parked now');
+  });
+});
+
+describe('tickets in the app: live updates', () => {
+  test("a parked ticket's open count is sent again when one of its questions closes", async () => {
+    await fill({ lane_id: 'app-c', group: 'train', ticket: '820' });
+    const fyi = await ask('app-c', 'FYI: flaky', { blocking: false });
+    await ask('app-c', 'Keep it?');
+    await fill({ lane_id: 'app-c', previous: 'park', reason: 'later' });
+    const events: any[] = [];
+    const listen = (e: any) => events.push(e);
+    srv.store.events.on('change', listen);
+    try {
+      await srv.tool(AGENT, 'dismiss_escalation', { id: fyi.ref, justification: 'moot' });
+    } finally {
+      srv.store.events.off('change', listen);
+    }
+    const sent = events.find((e) => e.type === 'ticket' && e.ticket.ref === 'redmine:820');
+    assert.equal(sent?.ticket.openEscalations, 1);
+  });
+
+  test('a parked ticket in a removed group shows as ungrouped', async () => {
+    await srv.call('PUT', '/api/groups/gone-group', AGENT, { name: 'Gone' });
+    await fill({ lane_id: 'app-d', group: 'gone-group', ticket: '830' });
+    await fill({ lane_id: 'app-d', previous: 'park', reason: 'later' });
+    assert.equal((await srv.call('DELETE', '/api/groups/gone-group', ALICE)).status, 204);
+    const t = (await srv.call('GET', '/api/snapshot', ALICE)).body.tickets.find((x: any) => x.ref === 'redmine:830');
+    assert.equal(t.group, null);
+    assert.equal(t.lastLane, 'app-d');
+  });
+});

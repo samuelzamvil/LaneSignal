@@ -109,6 +109,8 @@ export interface Ticket {
   group: string | null;
   /** The lane holding it, or null. */
   lane: string | null;
+  /** The last lane it was in (the one it left, while parked or over); null if it never was. */
+  lastLane: string | null;
   state: TicketState;
   parkReason: string | null;
   /** Another ticket (canonical ref) this one waits on. */
@@ -152,6 +154,8 @@ export interface Escalation {
   ref: string;
   /** The ticket it belongs to; null when raised on a lane holding none. */
   ticketId: number | null;
+  /** That ticket's short ref ("967", "gh:632"); null without one. */
+  ticketRef: string | null;
   /** Project the escalation's lane belongs to. */
   project: string;
   /** Short key of that project, so codes can be shown as "LS·A12" where projects mix. */

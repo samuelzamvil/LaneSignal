@@ -108,6 +108,8 @@ export const historyQuery = z.object({
   project: z.string().max(64).optional(),
   group: z.string().max(64).optional(),
   outcome: z.enum(['all', 'answered', 'dismissed']).optional(),
+  /** "1": leave out escalations whose ticket no lane holds. */
+  active_tickets: z.enum(['0', '1']).optional(),
   before_at: z.string().max(40).optional(),
   before_id: z.string().max(64).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),

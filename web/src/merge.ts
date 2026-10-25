@@ -1,4 +1,4 @@
-import type { Escalation, Group, Lane, StreamEvent } from './api.ts';
+import type { Escalation, Group, Lane, StreamEvent, Ticket } from './api.ts';
 
 /** Lane and group ids are unique within a project; client maps key them by both. */
 export const keyOf = (project: string, id: string) => `${project}/${id}`;
@@ -7,6 +7,8 @@ export interface Entities {
   groups: Map<string, Group>;
   lanes: Map<string, Lane>;
   escalations: Map<string, Escalation>;
+  /** Keyed by the ticket's number (unique across projects). */
+  tickets: Map<string, Ticket>;
 }
 
 const UNRESOLVED = new Set(['open', 'decided']);
@@ -21,6 +23,7 @@ export function applyEvent(s: Entities, e: StreamEvent): Entities {
   const groups = new Map(s.groups);
   const lanes = new Map(s.lanes);
   const escalations = new Map(s.escalations);
+  const tickets = new Map(s.tickets);
   if (e.type === 'group') {
     const k = keyOf(e.group.project, e.group.id);
     if (newer(groups, k, e.group)) groups.set(k, e.group);
@@ -39,5 +42,6 @@ export function applyEvent(s: Entities, e: StreamEvent): Entities {
     if (UNRESOLVED.has(e.escalation.state)) escalations.set(e.escalation.id, e.escalation);
     else escalations.delete(e.escalation.id);
   }
-  return { groups, lanes, escalations };
+  if (e.type === 'ticket' && newer(tickets, String(e.ticket.id), e.ticket)) tickets.set(String(e.ticket.id), e.ticket);
+  return { groups, lanes, escalations, tickets };
 }

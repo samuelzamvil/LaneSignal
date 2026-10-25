@@ -305,6 +305,12 @@ Each PR is shippable on its own, with tests, wiki updates and an adversarial rev
 - **Notifications:** completing a lane still sends the "completed" notification and TRMNL card, though the lane shows `idle` afterwards.
 - **`waiting_on` alongside `completed`** in one call: the lane ends up holding no ticket, so `waiting_on` is left out with a warning rather than failing the whole call.
 
+**PR 3 (tickets, app)** follows the plan. Where the plan is silent:
+
+- **The Parked row is folded by default** (remembered per device), and parked tickets aren't listed while a status filter is on, since that filter picks lanes by status. When lanes are arranged by priority or status, the parked tickets sit in one Parked row at the end.
+- **"Active tickets only" doesn't change counts:** the "Needs you" badge and banner still count questions on parked tickets; the filter only hides them from the lists.
+- **A lane's sheet** lists the questions raised on it and those of the ticket it holds, each naming its ticket.
+
 ## Risks
 
 - **Codes change for new escalations.** People used to typing "A3" will type "500A". Old codes keep resolving, and push titles carry the new code.
