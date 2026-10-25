@@ -305,6 +305,8 @@ export class Store {
   private broadTags: Set<string>;
   private retention: number;
   private now: () => Date;
+  /** No timestamp written from now on is earlier than this (ms): the latest `checkedAt` handed out. */
+  private floorMs = 0;
   /** Lanes with an agent currently waiting on their escalations (in memory: waits don't survive restarts). */
   private waiting = new Map<string, number>();
   private graceTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -316,7 +318,11 @@ export class Store {
     this.resolveTicketUrl = opts.resolveTicketUrl;
     this.refs = opts.ticketRefs ?? ticketRefs({}, null);
     this.retention = opts.eventRetention ?? 200;
-    this.now = opts.now ?? (() => new Date());
+    const clock = opts.now ?? (() => new Date());
+    this.now = () => {
+      const t = clock();
+      return t.getTime() >= this.floorMs ? t : new Date(this.floorMs);
+    };
     this.waitGraceMs = opts.waitGraceMs ?? WAIT_GRACE_MS;
     this.attachmentsPerItem = opts.attachmentsPerItem ?? 5;
     this.broadTags = new Set((opts.broadTags ?? DEFAULT_BROAD_TAGS).map((t) => t.toLowerCase()));
@@ -2674,7 +2680,11 @@ export class Store {
 
   /** Where things stand for a wait scope right now. Unknown groups and lanes are errors (likely typos). */
   decisionsFor(scope: WaitScope): WaitResult {
-    const checkedAt = this.now().toISOString();
+    // A millisecond past everything this result can include, and nothing written later is stamped
+    // earlier: a wait from this `since` neither repeats what it returns nor misses what comes next.
+    const checkedMs = this.now().getTime() + 1;
+    this.floorMs = Math.max(this.floorMs, checkedMs);
+    const checkedAt = new Date(checkedMs).toISOString();
     const digest = scope.mode !== 'full';
     const named = (scope.ids ?? []).map((id) => this.requireEscalation(id));
     const byId = new Map<string, Escalation>(named.map((e) => [e.id, e]));
