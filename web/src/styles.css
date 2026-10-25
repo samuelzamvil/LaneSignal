@@ -659,7 +659,18 @@ textarea {
    instead of widening the page, which in the app looked zoomed in and scrolled sideways. */
 .esc-card,
 .esc-detail,
-.sheet-esc .sheet-head {
+.esc-history {
+  overflow-wrap: anywhere;
+}
+
+/* Our own button labels keep their words whole; agent-written option labels still wrap. */
+.esc-card button,
+.esc-detail button {
+  overflow-wrap: normal;
+}
+
+.esc-card .options button,
+.esc-detail .options button {
   overflow-wrap: anywhere;
 }
 
@@ -1090,6 +1101,8 @@ textarea {
 }
 
 .esc-history .state {
+  flex: none;
+  overflow-wrap: normal;
   font-size: 0.75rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -1750,6 +1763,11 @@ textarea {
   font-size: 0.92rem;
 }
 
+.toast span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .toast a {
   color: inherit;
   font-weight: 700;
@@ -2223,6 +2241,12 @@ a.button.primary {
 /* Desktop History: the right side until an escalation is picked. Phones show only the list. */
 .history-empty {
   display: none;
+}
+
+.esc-row .pill {
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .esc-row .ref,
