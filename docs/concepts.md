@@ -164,6 +164,21 @@ References become links through URL templates (`LANESIGNAL_TICKET_TEMPLATES`):
 | `#1234` or `1234` | The default system's template |
 | `https://…` | Used as-is |
 
+Refs written in free text link too: messages, escalation questions and their fields (context, recommendation, cost, alternatives, what Accept/Reject means, positions), decision notes and resolutions, a lane's activity on its detail page, requirements and their justifications, and attached Markdown plans.
+
+| Written | Links to |
+|---|---|
+| `#1234` | The default system's ticket 1234 |
+| `redmine#1234` or `redmine:1234` | That system's ticket (the system name may be in any case; ids like `PROJ-12` work) |
+
+Plain text, so ordinary writing doesn't turn into links:
+
+- a system name that isn't configured (`foo#12`, `note:5`);
+- a `#` stuck to a word or path (`PR#5`, `a/#5`);
+- `#` with letters or a single digit (`#fff`, "our #1 priority"), a leading zero (`#000`) or a decimal (`#12.5`). Write `redmine#5` for a one-digit ticket.
+
+With no templates configured, only web addresses link. Lane cards and rows show activity as plain text.
+
 LaneSignal links to tickets but never syncs or edits them.
 
 ## Notifications

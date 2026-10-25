@@ -1,23 +1,28 @@
 import type { ReactNode } from 'react';
+import { LinkedText } from './linked-text.tsx';
 import { parseMarkdown, type Block, type Inline } from './markdown.ts';
 
-function inlines(nodes: Inline[]): ReactNode[] {
+/** Inside a link (`inLink`), ticket refs stay text: links can't nest. */
+function inlines(nodes: Inline[], inLink = false): ReactNode[] {
   return nodes.map((n, i) => {
     switch (n.t) {
       case 'text':
-        return n.text.split('\n').flatMap((part, j) => (j ? [<br key={`${i}-${j}`} />, part] : [part]));
+        return n.text.split('\n').flatMap((part, j) => {
+          const text = inLink ? part : <LinkedText key={`${i}-${j}-t`} text={part} />;
+          return j ? [<br key={`${i}-${j}`} />, text] : [text];
+        });
       case 'code':
         return <code key={i}>{n.text}</code>;
       case 'strong':
-        return <strong key={i}>{inlines(n.children)}</strong>;
+        return <strong key={i}>{inlines(n.children, inLink)}</strong>;
       case 'em':
-        return <em key={i}>{inlines(n.children)}</em>;
+        return <em key={i}>{inlines(n.children, inLink)}</em>;
       case 'del':
-        return <del key={i}>{inlines(n.children)}</del>;
+        return <del key={i}>{inlines(n.children, inLink)}</del>;
       case 'link':
         return (
           <a key={i} href={n.href} target="_blank" rel="noreferrer noopener">
-            {inlines(n.children)}
+            {inlines(n.children, true)}
           </a>
         );
     }
