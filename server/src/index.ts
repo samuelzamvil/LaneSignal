@@ -8,7 +8,7 @@ import { log } from './log.ts';
 import { startNotifier } from './notify.ts';
 import { Store } from './store.ts';
 import { TrmnlPusher } from './trmnl.ts';
-import { ticketResolver } from './tickets.ts';
+import { ticketRefs, ticketResolver } from './tickets.ts';
 
 const config = loadConfig();
 mkdirSync(config.dataDir, { recursive: true });
@@ -16,6 +16,7 @@ mkdirSync(config.dataDir, { recursive: true });
 const store = new Store({
   path: path.join(config.dataDir, 'lanesignal.db'),
   resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem),
+  ticketRefs: ticketRefs(config.ticketTemplates, config.defaultTicketSystem),
   eventRetention: config.eventRetention,
   broadTags: config.broadTags ?? undefined,
   attachmentsPerItem: config.attachmentsPerItem,

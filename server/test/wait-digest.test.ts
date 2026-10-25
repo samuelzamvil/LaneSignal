@@ -136,3 +136,29 @@ describe('wait digest', () => {
     assert.equal((await srv.tool(AGENT, 'get_updates', {})).isError, true);
   });
 });
+
+test('a note in the same millisecond as a wait is returned once, and later ones still are', async () => {
+  const { Store } = await import('../src/store.ts');
+  // The clock never moves: everything happens in one millisecond.
+  const frozen = new Date('2026-10-25T00:00:00.000Z');
+  const store = new Store({ path: ':memory:', resolveTicketUrl: () => null, now: () => frozen });
+  try {
+    store.upsertGroup('default/g', {}, 'bot');
+    store.upsertLane('default/l', { group: 'default/g' }, 'bot');
+    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'First' }, 'alice');
+    const first = store.decisionsFor({ groupId: 'default/g' });
+    assert.deepEqual(first.laneMessages.map((l) => l.messages.map((m) => m.body)), [['First']]);
+    store.handOver(first);
+    const again = store.decisionsFor({ groupId: 'default/g', since: first.checkedAt });
+    assert.deepEqual(again.laneMessages, [], 'not repeated from its own checkedAt');
+    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'Second' }, 'alice');
+    const next = store.decisionsFor({ groupId: 'default/g', since: again.checkedAt });
+    assert.deepEqual(next.laneMessages.map((l) => l.messages.map((m) => m.body)), [['Second']]);
+    // Repeating an older since still brings back what came after it.
+    store.handOver(next);
+    const crashed = store.decisionsFor({ groupId: 'default/g', since: again.checkedAt });
+    assert.deepEqual(crashed.laneMessages.map((l) => l.messages.map((m) => m.body)), [['Second']]);
+  } finally {
+    store.close();
+  }
+});

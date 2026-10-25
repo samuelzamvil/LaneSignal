@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AGENT_MESSAGE_MAX } from './store.ts';
-import { LANE_STATUSES, STANCES } from './types.ts';
+import { LANE_STATUSES, STANCES, TICKET_STATES } from './types.ts';
 
 export const laneId = z
   .string()
@@ -31,6 +31,24 @@ export const lanePatch = z.object({
   activity: z.string().max(2000).nullable().optional(),
   links: z.array(link).max(20).optional(),
 });
+
+/** What happens to the ticket a lane lets go of. */
+export const ticketRelease = z.enum(['park', 'done', 'drop']);
+
+/** How a lane changes tickets, on top of a lane's fields (PUT /api/lanes/:id/fill). */
+export const laneFill = lanePatch.extend({
+  previous: ticketRelease.optional(),
+  reason: z.string().max(500).nullable().optional(),
+  waitingOn: z.string().max(300).nullable().optional(),
+});
+
+export const ticketQuery = z
+  .object({
+    group: groupId.optional(),
+    state: z.preprocess((v) => (typeof v === 'string' ? v.split(',').filter(Boolean) : v), z.array(z.enum(TICKET_STATES)).max(4)).optional(),
+    project: z.string().max(40).optional(),
+  })
+  .strict();
 
 export const position = z.object({
   /** Defaults to the caller's token name. */

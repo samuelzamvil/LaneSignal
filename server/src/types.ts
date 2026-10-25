@@ -53,10 +53,14 @@ export interface Lane {
   /** Id of the group (epic/train/overseer) this lane belongs to. */
   group: string | null;
   status: LaneStatus;
-  /** Raw ticket reference as published by the agent, e.g. "redmine:1234" or "#42". */
+  /** The ticket the lane holds, as the agent last wrote it, e.g. "redmine:1234" or "#42"; null when it holds none. */
   ticket: string | null;
   /** Resolved from the configured URL templates; null when no template matches. */
   ticketUrl: string | null;
+  /** The held ticket's id (see Ticket), or null. */
+  ticketId: number | null;
+  /** Another ticket the held one waits on, e.g. "945"; null when none. */
+  waitingOn: string | null;
   activity: string | null;
   links: Link[];
   /** Name of the agent token that last updated the lane. */
@@ -82,6 +86,45 @@ export interface Lane {
   unreadByAgent: number;
 }
 
+/**
+ * Where a ticket stands in LaneSignal: held by a lane, set aside to pick up again, or let go
+ * finished or not. Nothing here claims anything about the ticket's real status in its tracker.
+ */
+export const TICKET_STATES = ['in_lane', 'parked', 'done', 'dropped'] as const;
+export type TicketState = (typeof TICKET_STATES)[number];
+
+/** A ticket worked in lanes: owns its escalations and status history, and moves between lanes. */
+export interface Ticket {
+  /** Short number, unique across projects. */
+  id: number;
+  project: string;
+  /** Canonical reference ("redmine:967"): the forms an agent may write ("967", "#967", the URL) all map to it. */
+  ref: string;
+  /** The reference as first written. */
+  displayRef: string;
+  /** What its escalation codes start with: "967A", "gh:632B", or "T42C" when the ref can't be one. */
+  code: string;
+  url: string | null;
+  /** The group it was last worked in. */
+  group: string | null;
+  /** The lane holding it, or null. */
+  lane: string | null;
+  state: TicketState;
+  parkReason: string | null;
+  /** Another ticket (canonical ref) this one waits on. */
+  waitingOn: string | null;
+  /** Its status: the holding lane's while in a lane, else as it was when the lane let it go. */
+  status: LaneStatus;
+  statusSince: string;
+  blockedSince: string | null;
+  blockedTotalMs: number;
+  /** Escalations still waiting on a human. */
+  openEscalations: number;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+}
+
 export type EscalationState = 'open' | 'decided' | 'acknowledged' | 'withdrawn';
 
 export const STANCES = ['agree', 'disagree', 'neutral'] as const;
@@ -101,8 +144,14 @@ export interface Position {
  */
 export interface Escalation {
   id: string;
-  /** Short code for humans and agents to refer to it by: its lane's letter and a number, e.g. "A12". Accepted wherever an id is. */
+  /**
+   * Short code for humans and agents to refer to it by: its ticket's ref and a letter ("967A"), or for one
+   * raised on a lane holding no ticket (and older ones) its lane's letter and a number ("A12"). Accepted
+   * wherever an id is.
+   */
   ref: string;
+  /** The ticket it belongs to; null when raised on a lane holding none. */
+  ticketId: number | null;
   /** Project the escalation's lane belongs to. */
   project: string;
   /** Short key of that project, so codes can be shown as "LS·A12" where projects mix. */
@@ -195,10 +244,12 @@ export interface LaneEvent {
   id: number;
   laneId: string;
   at: string;
-  /** `notice`: the agent's message in the lane's conversation; `message`: the owner's. */
-  kind: 'status' | 'activity' | 'escalation' | 'notice' | 'message';
+  /** `notice`: the agent's message in the lane's conversation; `message`: the owner's; `ticket`: a ticket filled, parked or let go. */
+  kind: 'status' | 'activity' | 'escalation' | 'notice' | 'message' | 'ticket';
   message: string;
   actor: string | null;
+  /** The ticket it concerns: the one the lane held, or the escalation's. */
+  ticketId?: number | null;
 }
 
 /** One application or codebase, with its own groups, lanes, escalations and requirements. */
@@ -356,8 +407,11 @@ export type StreamEvent =
    * `statusChanged` is set when this event is the lane's status transition (drives notifications);
    * `messaged` when someone wrote in the lane's conversation.
    */
-  | { type: 'lane'; lane: Lane; statusChanged?: boolean; messaged?: 'owner' | 'agent' }
+  /** `completed`: the lane was published completed and let its ticket go (it shows idle now). */
+  | { type: 'lane'; lane: Lane; statusChanged?: boolean; messaged?: 'owner' | 'agent'; completed?: boolean }
   | { type: 'lane_deleted'; id: string; project: string }
   /** `raised`: an FYI that now needs the owner, notified like a new question. `replied`: the agent answered the owner's Other (`reply`) or posted an update while they decide. */
   | { type: 'escalation'; escalation: Escalation; raised?: boolean; replied?: 'reply' | 'update' }
+  /** A ticket filled into a lane, parked, done or dropped, or what it waits on changed. */
+  | { type: 'ticket'; ticket: Ticket }
   | { type: 'requirement'; requirement: Requirement };

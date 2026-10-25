@@ -247,7 +247,7 @@ export function startNotifier(
           project: lane.project,
         };
       }
-      if (lane.status === 'completed' && config.notifyOn.has('completed')) {
+      if ((lane.status === 'completed' || e.completed) && config.notifyOn.has('completed')) {
         return {
           title: `Completed · ${lane.name}`,
           body: lane.activity ?? 'Lane completed',

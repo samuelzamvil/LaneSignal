@@ -11,7 +11,7 @@ The owner answers on the LaneSignal dashboard or phone app with one of three but
 - **Updates while they decide:** you may `reply_to_escalation` with a one-line update when something changed that affects the answer (e.g. "CI found a second failure"). Never to chat or repeat yourself: every message notifies their phone, and updates are limited to one a minute. Retrying the same message is harmless.
 
 1. **Wait** for answers on your whole group (next section). Keep working on lanes that aren't blocked meanwhile.
-2. **Acknowledge first, then act:** call `acknowledge_escalation` as soon as an escalation is decided. It returns the final `decision` and `decisionNote` (the owner may correct a mis-tap until you acknowledge). Act on what it returns. Only the agent that raised an escalation can acknowledge it; repeating an acknowledgement changes nothing.
+2. **Acknowledge first, then act:** call `acknowledge_escalation` as soon as an escalation is decided. It returns the final `decision` and `decisionNote` (the owner may correct a mis-tap until you acknowledge). Act on what it returns. Only the agent that raised an escalation can acknowledge it (or the overseer of the group its ticket is in now); repeating an acknowledgement changes nothing.
 3. **Publish the next state in the same call:** pass `status` and `activity`, e.g. `status: "active", activity: "Dropping the column (A12)"`.
 4. **Answered in this session instead?** If the owner answers you here ("A12: drop it"), close it with `dismiss_escalation`: `justification` says what was decided and where, e.g. `"Sam: drop the column (in session, 2026-10-23)"`, plus `status` and `activity` as above. Dismiss moot escalations the same way, saying why ("Superseded by A14"). Only you can dismiss yours; the owner may also dismiss a stale one from the dashboard.
 5. **Other lanes' questions:** if one affects your work, `add_position` with `agree`, `disagree` or `neutral` and a one-line reason, while it's still open.
@@ -25,6 +25,7 @@ Answers can take minutes or a day.
   - `reply`: the owner answered Other; `messages` are theirs since you last wrote. Acknowledge and act, or reply (above).
   - `closed`: withdrawn by someone else. "Lane removed by …" means the lane was taken off the dashboard.
   - `lane_removed`: a lane someone else took off the dashboard (including ones with nothing open). Stop work on it and don't publish to it again; publishing brings a lane back.
+  - `ticket_moved`: a lane outside your group took one of your group's tickets (another overseer picked up one you parked). Don't fill a lane with it again.
   - `lane_note`: the owner's notes on a lane in scope, outside any escalation. Act on them like the owner's instructions; answer with `notify_owner` if useful. They also come back as `ownerMessages` from your next `update_lane` or `notify_owner` on that lane.
 - **What repeats:** `decided` and `reply` come back on every wait until you acknowledge or reply. The rest come back once per `since`.
 - **`counts`** says how many are `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou`. If they show something you can't find in `items` (e.g. after a compaction), call `get_updates`: it returns everything in scope.
@@ -63,3 +64,4 @@ Answers can take minutes or a day.
 1. Call `update_group` (as at any session start).
 2. Call `get_updates` with your `group_id` and the `checkedAt` saved in `.claude/lanesignal-since` (if the file exists) as `since`. Handle anything in `decided` or `replies`, and the owner's `laneMessages`, from while you were away, then save its `checkedAt` to `.claude/lanesignal-since` (otherwise the next wait returns the same notes again). Dismiss any `open` ones whose answer you can see in this conversation; the rest are still waiting on the owner, so never raise them again.
 3. Call `list_lanes` with your `group_id`. A lane you were running that's missing was removed: stop work on it.
+4. Call `list_tickets` with your `group_id`. A ticket still `in_lane` that nobody is working now was left behind by the crash: pick it up again or `fill_lane` its lane with what's next (parking it). Parked ones are waiting for a free slot.

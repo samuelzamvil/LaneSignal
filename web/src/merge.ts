@@ -32,7 +32,8 @@ export function applyEvent(s: Entities, e: StreamEvent): Entities {
   }
   if (e.type === 'lane_deleted') {
     lanes.delete(keyOf(e.project, e.id));
-    for (const [id, esc] of escalations) if (esc.project === e.project && esc.laneId === e.id) escalations.delete(id);
+    // The lane's own questions are withdrawn with it; a ticket's stay open with the ticket.
+    for (const [id, esc] of escalations) if (esc.project === e.project && esc.laneId === e.id && esc.ticketId === null) escalations.delete(id);
   }
   if (e.type === 'escalation' && newer(escalations, e.escalation.id, e.escalation)) {
     if (UNRESOLVED.has(e.escalation.state)) escalations.set(e.escalation.id, e.escalation);

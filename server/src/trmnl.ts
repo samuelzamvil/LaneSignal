@@ -242,7 +242,7 @@ function cardFor(e: StreamEvent, includeNotifications: boolean): TrmnlCard | nul
   if (e.type === 'lane' && e.statusChanged && includeNotifications) {
     const lane = e.lane;
     const title = lane.name;
-    if (lane.status === 'completed') {
+    if (lane.status === 'completed' || e.completed) {
       return { kind: 'completed', laneId: lane.id, title, body: lane.activity ?? 'Lane completed', at: lane.updatedAt };
     }
     if (lane.status === 'blocked_human' && lane.openEscalations === 0) {

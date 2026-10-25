@@ -10,6 +10,7 @@ import {
   brief,
   briefLane,
   briefRequirement,
+  briefTicket,
   briefWait,
   digestWait,
   briefMessages,
@@ -26,8 +27,19 @@ import { principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import { log } from './log.ts';
 import * as s from './schemas.ts';
 import { toCsv } from './export.ts';
-import { AGENT_MESSAGE_MAX, ConflictError, EXPORT_COLUMNS, EXPORT_DATASETS, localId, NotFoundError, type ExportDataset, type RecordResult, type Store } from './store.ts';
-import { LANE_STATUSES, type Requirement } from './types.ts';
+import {
+  AGENT_MESSAGE_MAX,
+  ConflictError,
+  EXPORT_COLUMNS,
+  EXPORT_DATASETS,
+  localId,
+  NotFoundError,
+  ValidationError,
+  type ExportDataset,
+  type RecordResult,
+  type Store,
+} from './store.ts';
+import { LANE_STATUSES, TICKET_STATES, type Requirement, type Ticket } from './types.ts';
 
 // Compact JSON: agents pay for every character.
 const json = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] });
@@ -109,7 +121,7 @@ async function cancellable<T>(
 const GROUP_FILTER = z.string().max(64).optional().describe('Group (epic/train) id.');
 const GROUP_ALIAS = z.string().max(64).optional();
 
-const ID_HELP = 'Escalation id, or its code such as "A12" (or "LS-A12" to name the project too).';
+const ID_HELP = 'Escalation id, or its code such as "967A" or "A12" (or "LS-967A" to name the project too).';
 
 /** Every tool takes it; only keys and people with several projects need it. */
 const PROJECT = {
@@ -147,6 +159,13 @@ function buildServer(
     }
     return group;
   };
+  /** A ticket by any form of its ref, in the project given or the only one of the caller's that has it. */
+  const findTicket = (ref: string, project?: string): Ticket => {
+    const hits = a.scope(project).flatMap((p) => store.getTicket(p, ref) ?? []);
+    if (hits.length > 1) throw new ValidationError(`"${ref}" is a ticket in several projects: say which (project)`);
+    if (!hits.length) throw new NotFoundError(`Ticket "${ref}" not found (list_tickets shows them)`);
+    return hits[0];
+  };
   const server = new McpServer({ name: 'lanesignal', version: '0.1.0' }, { capabilities: { logging: {} } });
 
   server.registerTool(
@@ -166,6 +185,61 @@ function buildServer(
             .filter((l) => (!status || l.status === status) && (!group || l.group === group))
             .map((l) => briefLane(l, features.decisions)),
         );
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_tickets',
+    {
+      description:
+        'List tickets: by default the ones lanes hold and the parked ones (set aside to pick up again, with why), ' +
+        'optionally for one group. A ticket\'s state here only says whether a lane holds it, not its status in its tracker. ' +
+        'After a restart, look for tickets still `in_lane` that nobody is working.',
+      inputSchema: {
+        group_id: GROUP_FILTER,
+        group: GROUP_ALIAS,
+        state: z.array(z.enum(TICKET_STATES)).max(4).optional().describe('Default ["in_lane", "parked"].'),
+        ...PROJECT,
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ group_id, group: alias, state, project }) => {
+      try {
+        const group = checkGroup(group_id ?? alias, project);
+        const projects = a.scope(project);
+        const tickets = group
+          ? projects.flatMap((p) => store.listTickets({ projects: [p], groupId: q(p, group), states: state }))
+          : store.listTickets({ projects, states: state });
+        return listJson(tickets.map((t) => briefTicket(pub.ticket(t))));
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_ticket',
+    {
+      description:
+        'One ticket, by any form of its ref ("967", "#967", "redmine:967", its URL): where it is, its escalations, ' +
+        'its status history and the lanes it passed through.',
+      inputSchema: { ticket: z.string().min(1).max(300), ...PROJECT },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ ticket, project }) => {
+      try {
+        const t = findTicket(ticket, project);
+        return json({
+          ...briefTicket(pub.ticket(t)),
+          escalations: store.listEscalations({ ticketId: t.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 100 }).map((e) =>
+            brief(pub.escalation(e)),
+          ),
+          lanes: store.ticketLanes(t.id).map(localId),
+          history: store.ticketEvents(t.id, 50).map((e) => compact({ at: e.at, lane: localId(e.laneId), kind: e.kind, message: e.message, by: e.actor })),
+        });
       } catch (err) {
         return fail(err);
       }
@@ -272,7 +346,7 @@ function buildServer(
       group_id: s.groupId.optional().describe('Wait on every lane in this group (your epic/train).'),
       group: s.groupId.optional().describe('Same as group_id.'),
       lane_ids: z.array(s.laneId).max(100).optional(),
-      ids: z.array(z.string()).max(100).optional().describe('Escalation ids or codes such as "A12".'),
+      ids: z.array(z.string()).max(100).optional().describe('Escalation ids or codes such as "967A" or "A12".'),
       since: z
         .string()
         .optional()
@@ -288,7 +362,8 @@ function buildServer(
           '`items`, one per thing to handle, each with a `kind`: `decided` (answered: acknowledge, then act on `decision` ' +
           'and `note`), `reply` (the owner answered Other: their `messages`; acknowledge and act, or reply_to_escalation), ' +
           '`closed` (withdrawn by someone else; "Lane removed by …" means stop that lane), `lane_removed` (stop work on ' +
-          'it), `lane_note` (the owner wrote on a lane: act on it, answer with notify_owner if useful). `decided` and ' +
+          'it), `lane_note` (the owner wrote on a lane: act on it, answer with notify_owner if useful), ' +
+          '`ticket_moved` (a lane outside your scope took one of its tickets). `decided` and ' +
           '`reply` come back on every wait until you handle them; the rest once per `since`. `counts` says how many are ' +
           '`open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies). If counts show something ' +
           'and items don\'t, call get_updates. `ready` is true when there are items; false means the wait ran out: call ' +
@@ -424,7 +499,7 @@ function buildServer(
       group_id: s.groupId.nullable().optional().describe('Your train/epic; omit for the whole project.'),
       group: s.groupId.nullable().optional(),
       all_projects: z.boolean().optional().describe('Only when the owner said it covers all their projects.'),
-      source_escalation: z.string().optional().describe('The escalation code it answered, e.g. "A12".'),
+      source_escalation: z.string().optional().describe('The escalation code it answered, e.g. "967A".'),
       decided_by: z
         .string()
         .max(100)
@@ -627,7 +702,7 @@ function buildServer(
       },
       async ({ group_id, project, ...patch }) => {
         try {
-          const group = store.upsertGroup(q(a.pick(project, { group: group_id }), group_id), patch, who.name);
+          const group = store.upsertGroup(q(a.pick(project, { group: group_id }), group_id), patch, who.name, ownerOf(who));
           return json({ id: localId(group.id), project: group.project });
         } catch (err) {
           return fail(err);
@@ -635,43 +710,98 @@ function buildServer(
       },
     );
 
+    /** What publishing a lane returns: where it stands, not everything echoed (the most frequent call). */
+    const published = (laneId: string, requested: string | undefined, lane: ReturnType<typeof store.upsertLane>) => {
+      const unread = store.takeUnreadForAgent(laneId);
+      const pubLane = pub.lane(lane);
+      // Say so when the status was kept, rather than letting it look accepted.
+      const kept =
+        requested && pubLane.status !== requested && pubLane.status === 'blocked_human'
+          ? `Kept blocked_human: ${pubLane.blockingEscalations} blocking escalation(s) still open; dismiss them first.`
+          : undefined;
+      return json(
+        compact({
+          id: pubLane.id,
+          project: pubLane.project,
+          letter: pubLane.letter,
+          status: pubLane.status,
+          blockingEscalations: pubLane.blockingEscalations || undefined,
+          warning: [kept, lane.warning].filter(Boolean).join(' ') || undefined,
+          // The owner wrote on the lane since you last heard: read and act on it (reply with notify_owner).
+          ownerMessages: unread.length ? briefMessages(unread) : undefined,
+        }),
+      );
+    };
+    const WAITING_ON = z
+      .string()
+      .max(300)
+      .nullable()
+      .optional()
+      .describe('Another ticket the lane\'s ticket waits on (e.g. "945"); null clears it. Cleared by itself once that ticket is done.');
+
     server.registerTool(
       'update_lane',
       {
         description:
           `Publish a lane's state on meaningful changes (not on a timer). Creates it on first call; omitted fields ` +
           `are unchanged. ${STATUS_HELP} \`group\`: your group, registered first with update_group. While a blocking ` +
-          'escalation is open the lane stays blocked_human. Tickets look like "gh:42" or "redmine:1234".' +
+          'escalation is open the lane stays blocked_human. `completed` finishes the lane\'s ticket and leaves the lane ' +
+          'idle for the next one. To move a lane to another ticket, use fill_lane (here a different `ticket` parks the ' +
+          'one it held). Tickets look like "gh:42" or "redmine:1234"; PRs go in `links`, never `ticket`.' +
           (features.decisions
             ? ' Result `ownerMessages`: the owner\'s notes on this lane; act on them.'
             : ''),
-        inputSchema: { lane_id: s.laneId, ...s.lanePatch.shape, group_id: s.lanePatch.shape.group, ...PROJECT_WRITE },
+        inputSchema: {
+          lane_id: s.laneId,
+          ...s.lanePatch.shape,
+          group_id: s.lanePatch.shape.group,
+          waiting_on: WAITING_ON,
+          ...PROJECT_WRITE,
+        },
       },
-      async ({ lane_id, project, group_id, ...rest }) => {
+      async ({ lane_id, project, group_id, waiting_on, ...rest }) => {
         try {
           const patch = { ...rest, group: rest.group !== undefined ? rest.group : group_id };
           const pr = a.pick(project, { lane: lane_id, group: patch.group ?? undefined });
           const qualified = { ...patch, group: patch.group ? q(pr, patch.group) : patch.group };
-          const lane = pub.lane(store.upsertLane(q(pr, lane_id), qualified, who.name));
-          const unread = store.takeUnreadForAgent(q(pr, lane_id));
-          // Say so when the status was kept, rather than letting it look accepted.
-          const warning =
-            patch.status && lane.status !== patch.status
-              ? `Kept blocked_human: ${lane.blockingEscalations} blocking escalation(s) still open; dismiss them first.`
-              : undefined;
-          // Where the lane stands, not everything echoed back: this is the most frequent call.
-          return json(
-            compact({
-              id: lane.id,
-              project: lane.project,
-              letter: lane.letter,
-              status: lane.status,
-              blockingEscalations: lane.blockingEscalations || undefined,
-              warning,
-              // The owner wrote on the lane since you last heard: read and act on it (reply with notify_owner).
-              ownerMessages: unread.length ? briefMessages(unread) : undefined,
-            }),
-          );
+          const lane = store.upsertLane(q(pr, lane_id), qualified, who.name, { waitingOn: waiting_on });
+          return published(q(pr, lane_id), patch.status, lane);
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'fill_lane',
+      {
+        description:
+          'Move a lane to another ticket in one call (lanes are slots, tickets move through them). `previous` says ' +
+          'what happens to the ticket the lane holds now: `park` (set aside to pick up again; `reason` required, e.g. ' +
+          '"blocked on the vendor API"), `done` or `drop` (let go unfinished). Required when the lane holds a ticket, ' +
+          'and not needed to refill it with the ticket it already holds. `ticket` moves in, created on first use: a ' +
+          'parked, done or dropped one comes back with its escalations and history; leave it out to empty the lane (idle). ' +
+          'A ticket is in one lane at a time. A ticket\'s open questions stay open and in the owner\'s inbox whatever ' +
+          'happens to it, and block only the lane holding it. Also takes the fields of update_lane (status, activity, ...), ' +
+          `applied to the lane after the switch. ${STATUS_HELP}`,
+        inputSchema: {
+          lane_id: s.laneId,
+          ticket: z.string().max(300).nullable().optional().describe('The ticket to work next; leave out or null to empty the lane.'),
+          previous: s.ticketRelease.optional(),
+          reason: z.string().max(500).nullable().optional(),
+          waiting_on: WAITING_ON,
+          ...s.lanePatch.omit({ ticket: true }).shape,
+          group_id: s.lanePatch.shape.group,
+          ...PROJECT_WRITE,
+        },
+      },
+      async ({ lane_id, project, group_id, ticket, previous, reason, waiting_on, ...rest }) => {
+        try {
+          const patch = { ...rest, group: rest.group !== undefined ? rest.group : group_id };
+          const pr = a.pick(project, { lane: lane_id, group: patch.group ?? undefined });
+          const qualified = { ...patch, group: patch.group ? q(pr, patch.group) : patch.group, ticket: ticket ?? null };
+          const lane = store.upsertLane(q(pr, lane_id), qualified, who.name, { previous, reason, waitingOn: waiting_on, strict: true });
+          return published(q(pr, lane_id), patch.status, lane);
         } catch (err) {
           return fail(err);
         }
@@ -682,15 +812,16 @@ function buildServer(
       'remove_lane',
       {
         description:
-          'Take a lane off the dashboard when its work stream is over (use update_lane status "completed" to show ' +
-          'it as done instead). Its open escalations are dismissed' +
+          'Take a lane off the dashboard when you no longer need the slot. Its ticket is let go as `previous` says ' +
+          '(default: `done` if the lane is completed, else `park` with the reason "Lane removed"); the ticket keeps its ' +
+          'open escalations. Those raised while the lane held no ticket are dismissed' +
           (features.decisions ? ' (decided ones can still be acknowledged)' : '') +
-          '; its history is kept. Publishing to the same lane id brings it back.',
-        inputSchema: { lane_id: s.laneId, ...PROJECT_WRITE },
+          '. Its history is kept. Publishing to the same lane id brings it back.',
+        inputSchema: { lane_id: s.laneId, previous: s.ticketRelease.optional(), reason: z.string().max(500).nullable().optional(), ...PROJECT_WRITE },
       },
-      async ({ lane_id, project }) => {
+      async ({ lane_id, previous, reason, project }) => {
         try {
-          store.deleteLane(q(a.pick(project, { lane: lane_id }), lane_id), who.name);
+          store.deleteLane(q(a.pick(project, { lane: lane_id }), lane_id), who.name, { previous, reason });
           return { content: [{ type: 'text' as const, text: `Lane "${lane_id}" removed` }] };
         } catch (err) {
           return fail(err);
@@ -737,7 +868,7 @@ function buildServer(
               '`reject_means`, or `allow_reject: false` when rejecting makes no sense. '
             : '. ') +
           'Files (a plan, a screenshot) go in `attachments`: ids from uploading each to /api/attachments. ' +
-          'Returns its code (`ref`, e.g. "A12"), usable in every tool. The same open question again returns the first ' +
+          'Returns its code (`ref`: the lane\'s ticket and a letter, e.g. "967A"; "A12" on a lane holding no ticket), usable in every tool. The same open question again returns the first ' +
           '(`duplicate: true`); the same `question` as an open FYI of yours, raised as blocking, makes it block and notifies the owner (`upgraded: true`; fields you give replace the FYI\'s, new attachments are added). ' +
           (features.decisions
             ? 'Then wait with wait_for_decisions and acknowledge_escalation as soon as one is decided.'
@@ -838,7 +969,7 @@ function buildServer(
             `Write in an open escalation's conversation: a short reply after the owner answered Other (a question back, ` +
             `or what you'll do), or a short update while they decide, only when something changed. At most ` +
             `${AGENT_MESSAGE_MAX} characters, plain and to the point: put anything longer in a file and pass its id in ` +
-            '`attachments`. Notifies the owner. Only the agent that raised the escalation can reply.',
+            '`attachments`. Notifies the owner. Only the agent that raised the escalation can reply, or the overseer of the group its ticket is in now.',
           inputSchema: {
             id: z.string().describe(ID_HELP),
             message: z.string().min(1).max(5000),
@@ -869,7 +1000,7 @@ function buildServer(
             : 'Close an alert once it is dealt with: the owner answered in your session, or it became moot. ') +
           '`justification` says what was decided and where, for the record (e.g. "Sam: drop the column, in the session"). ' +
           'Pass `status` and `activity` to publish what the lane does next; a lane this unblocks goes back to active. ' +
-          'Only the agent that raised it can dismiss it.',
+          'Only the agent that raised it can dismiss it, or the overseer of the group its ticket is in now.',
         inputSchema: {
           id: z.string().describe(ID_HELP),
           justification: z.string().trim().min(1).max(2000),
