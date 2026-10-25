@@ -1,4 +1,4 @@
-# Lanes, groups and escalations
+# Lanes, groups, tickets, epics and escalations
 
 ## Groups: one overseer, many lanes
 
@@ -10,7 +10,7 @@ A group has:
 - the epic/train ticket
 - links, most usefully the overseer's Remote Control session, so a decision is one tap from the conversation that owns it
 
-A lane that references an unknown group creates it. The overseer fills in the details with `update_group`. The lane list is arranged by group by default, and groups with lanes that need you sort first.
+The overseer registers its group with `update_group` before publishing lanes in it. Every lane is in a group: a lane published without one joins the project's **Ungrouped** group. The lane list is arranged by group by default, and groups that need you sort first. Each group has at least one [epic](#epics), whose card heads the group's lanes.
 
 ## Lanes
 
@@ -28,7 +28,7 @@ A lane is a slot work goes through, one ticket at a time, with a stable id the a
   | `completed` | done |
 
 - **group:** which epic/train it belongs to
-- **ticket:** the [ticket](#tickets) it holds, or none (a lane that lets its ticket go without taking another shows `idle`)
+- **ticket:** the [ticket](#tickets) it holds, or none. **A lane holding no ticket shows `idle`**, whatever status its agent publishes (the agent gets a warning): work is shown on tickets, and an empty slot is common while work is blocked or can't run in parallel
 - **activity:** one line, readable on a phone
 - **links:** PRs, CI runs, sessions. URLs must be http(s)
 
@@ -38,7 +38,7 @@ Its history keeps every status change and escalation step. Routine activity text
 
 Tapping a lane opens its page: its details, then **Escalations**, **Conversation** and **Recent activity**. Tap a heading to fold that part away. Folded or open is remembered on the device, for every lane. Escalations show the **Active** ones (open, or answered and not yet picked up by the agent) unless you pick **Historical** (acknowledged or dismissed) or **All**; that choice is remembered too. While Conversation is folded, the agent's new messages aren't marked as read.
 
-**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md). People remove lanes in the app; overseers remove theirs with `remove_lane` when they no longer need the slot. A removed lane's ticket is parked (or done, if the lane was completed), and keeps its questions.
+**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md). People remove lanes in the app; overseers remove theirs with `remove_lane` when they no longer need the slot. A removed lane's ticket is parked (or done, if the lane was completed), and keeps its questions. Questions raised while it held no ticket stay with the group's epic.
 
 ## Tickets
 
@@ -59,6 +59,7 @@ The rules:
 - **Waiting on another ticket:** a lane can say its ticket waits on another ("waiting on 945"); that clears itself once 945 is done.
 - **PRs aren't tickets:** they go in the lane's links. Switching a lane from a Redmine ticket to a `gh:` ref gets a warning.
 - **Who may close its questions:** the agent that raised them, a person, or the overseer of the group the ticket is in now (the key that last published it with `update_group`), so a ticket handed to another overseer goes with its questions.
+- **Naming its epic:** `fill_lane` takes `epic`, the [epic](#epics) the ticket is for (one of the lane's group's open epics); the lane is then listed under that epic's card.
 
 **In the app:**
 
@@ -68,23 +69,51 @@ The rules:
 
 Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)"). Otherwise their publishes follow the same rules as `fill_lane`: a ticket another lane holds is refused, and a done one reopens.
 
-### Lane letters and escalation codes
+### Escalation codes and lane letters
 
-An escalation's code is its ticket's ref and a letter: **967A**, **967B** … **967Z**, **967AA**. Tickets from a system other than the default keep its name (**gh:632A**); a ticket whose ref can't make a code (a plain URL) uses its number instead (**T42A**). A code doesn't change when its ticket moves to another lane. Codes are per [project](projects.md); where projects mix, they carry the project key (**SH·967A**).
+An escalation's code is its ticket's or epic's code and a letter: **967A**, **967B** … **967Z**, **967AA**.
 
-Each active lane also gets a letter, shown on its card: A, B, … Z, then AA, AB. A question raised on a lane holding no ticket is coded with it: **A1**, **A2**, then B1 for lane B. Codes from before tickets (A12) keep working.
+- A ticket's code is its ref. Tickets from a system other than the default keep its name (**gh:632A**); a ticket whose ref can't make a code (a plain URL) uses its number instead (**T42A**).
+- An epic's code is its ticket's ref (**680A**). A group standing in as its epic uses the group's ticket, or its id when it has none (**paymentsA**).
+- A ref that's both an epic and a ticket (an epic worked directly, e.g. an audit) shares one letter sequence, so codes stay unique.
+- A code doesn't change when its ticket moves to another lane, or when a group's questions move to its first real epic.
+- Codes are per [project](projects.md); where projects mix, they carry the project key (**SH·967A**). Matching ignores case.
+- Codes from before tickets (**A12**, the lane's letter and a number) keep working, in every tool and in search.
 
-- A lane keeps its letter while it's active, and after that while any of its escalations is unanswered or not yet acknowledged.
-- Once a lane is removed (or completed while holding no ticket) and nothing is pending, its letter goes back to the pool. A lane holding a ticket that's published `completed` lets the ticket go and stays, idle, with its letter. The next new lane takes the smallest free letter, so letters stay short.
-- Numbers keep counting per letter. If A1–A5 belonged to a lane that finished, the next lane to get A starts at **A6**, so a code always means one escalation, in exports too.
+Each active lane also gets a letter, shown on its card: A, B, … Z, then AA, AB. It's only a label: codes no longer use it. A lane keeps its letter while it's active; once it's removed and nothing it raised is pending, the letter goes back to the pool, and the next new lane takes the smallest free one.
+
+## Epics
+
+An epic is a long-lived ticket a group steers its work by: the direction, scope and next tickets, rather than code worked in a lane. It has a card on the Lanes page, its own questions and a message board.
+
+- **Every group has an epic.** Until it has one of its own, the group stands in as its epic (the *stand-in*): named after the group, and named by the group's id in agents' tools.
+- **Real epics** are named by their ticket's ref (`680`, `redmine:680`, its URL: one epic). A group can have several. The overseer adds one with `update_epic` (a ref no epic has yet, plus the group). The first one retires the stand-in: its questions, board and status line move to the new epic, keeping their codes. Closing the group's last real epic brings the stand-in back.
+- **Tickets name their epic** when a lane is filled with them (`fill_lane` with `epic`). It's optional.
+- **On the Lanes page each lane is listed once:** under its ticket's epic's card, or, when its ticket names no epic or it holds none, under the group (the stand-in's card when the group has no epic of its own).
+- **Status line:** one line the overseer sets on the card (`update_epic`), e.g. "3 of 5 lanes busy; next up #966". Use it instead of placeholder lanes.
+- **Questions:** the overseer raises the durable ones on the epic: direction, scope, which tickets to file (`create_escalation` with `epic`). Questions from a lane holding no ticket go to the group's epic too. They're in your inbox like any other and can block, but block no lane: a blocking one shows **Waiting on you** on the card and counts in "Needs you".
+- **Message board:** the conversation that steers the epic, with the same rules as a [lane's conversation](#lane-conversations): the overseer posts with `notify_epic` (at most 500 characters, files allowed, one post per epic per minute, a quiet push that opens the epic); you write back from the epic's sheet (2,000 characters), and your note reaches the group's overseer on its next wait on the group. The card shows 💬 while there's a post you haven't read.
+- **Closing:** the overseer asks with `request_epic_close` and a reason; the card and sheet show **Close requested**, and a signed-in person approves or declines (a personal key can't). A close is refused while the epic has open questions, or answered ones its agent hasn't acknowledged, so a live decision is never withdrawn. A closed epic's board is read-only, and tickets that name it keep the link. A group's stand-in isn't closed: it steps aside when a real epic is added.
+- **Requirements** stay separate from epics.
+
+**In the app:**
+
+- **Epic cards** head each group on the Lanes page, in place of the group header: the epic's name and ticket, the overseer's session, its status line, how many need you (its lanes' and its own blocking questions), **Waiting on you** when one of its own questions blocks, 💬 for a board post you haven't read, and **Close requested** with **Approve** and **Decline**. A card shows even with no lanes under it when it has something to say (a status line, questions, board posts or a close request), and always for a real epic. Lanes whose ticket names none of the group's epics are listed after the cards, under the group's name.
+- **An epic's sheet** opens from its card, or from the epic on a question. It shows the epic's questions, its board with a box to write to the overseer, and its lanes with their combined feed: status changes, activity and ticket switches across them, latest first.
 
 ## Escalations
 
-An escalation is a question for humans, attached to a lane. Only `question` is required. The rest follows a loose structure:
+An escalation is a question for humans. Every escalation belongs to one ticket or one epic:
+
+- raised on a lane holding a ticket: that ticket
+- raised on a lane holding none: the group's epic (the agent says which when the group has several)
+- raised on an epic directly: that epic
+
+It stays recorded on the lane it was raised in, if any, for history and export. Only `question` is required. The rest follows a loose structure:
 
 | Field | Meaning |
 |---|---|
-| `ref` | Set by the server: a code like **A12** (the lane's letter and a number) that people and agents can use to refer to the escalation. Every tool and endpoint accepts it in place of the id |
+| `ref` | Set by the server: a [code](#escalation-codes-and-lane-letters) like **967A** (its ticket's or epic's code and a letter) that people and agents can use to refer to the escalation. Every tool and endpoint accepts it in place of the id |
 | `context` | What you need to know to decide; the inbox card shows its first lines |
 | `question` | The decision being asked for. It's also the headline |
 | `recommendation` | What the agent would do and why |
@@ -136,7 +165,7 @@ Agents attach files they want you to read or see, such as a plan or a UI preview
 
 ### Inbox and History
 
-- **Needs you** lists open questions: blocking ones waiting on you first, then *Agent's turn* (you answered Other and the agent is replying), FYIs, and decisions the agent hasn't picked up yet. Each shows its code and the ticket it belongs to: a card shows 🎫 967 (dimmed with "parked" or "done" when no lane holds the ticket), and tapping it opens the ticket; a list row names it (967, or "967 (parked)"). **Cards** shows each with its answer buttons; **List** shows one line each (code, question, lane, status). The choice is remembered on the device. **Lanes** has the same Cards / List switch: the list shows each lane's letter, name, activity, status and last update on one line.
+- **Needs you** lists open questions: blocking ones waiting on you first, then *Agent's turn* (you answered Other and the agent is replying), FYIs, and decisions the agent hasn't picked up yet. Each shows its code and the ticket or epic it belongs to: a card shows 🎫 967 (dimmed with "parked" or "done" when no lane holds the ticket) or ◆ and the epic's name, and tapping it opens the ticket or epic; a list row names it (967, "967 (parked)", or ◆ and the epic). History items name them the same way. **Cards** shows each with its answer buttons; **List** shows one line each (code, question, lane, status). The choice is remembered on the device. **Lanes** has the same Cards / List switch: the list shows each lane's letter, name, activity, status and last update on one line.
 - **Active tickets only**, on Needs you and History, hides questions whose ticket no lane holds (parked, done or dropped). It's off by default and remembered on the device; the "Needs you" count still includes them.
 - **History** lists closed escalations, latest first, with how each ended (Accept, Reject, Other with the instructions, or Dismissed with the reason). Search covers the question, context, answers and conversations, a code like `967A` or `A12`, and a ticket in any form (`967`, `#967`, `redmine:967`, its URL); filter by outcome and group. Opening one shows the whole escalation and its conversation. The same list is `GET /api/history`.
 - On a wide screen (1024 px and up), the list stays on the left and the open escalation or lane fills the right, so you can work down the list without closing anything.
@@ -162,12 +191,12 @@ open ──(human decides)──► decided ──(agent acknowledges)──► 
 3. The agent acknowledges before acting, and the acknowledgement returns the final answer. It usually publishes its next status in the same call.
 
 - If two humans answer at once, the second gets `409 Conflict`. **Change decision** replaces the answer until the agent acknowledges, e.g. after a mis-tap.
-- Only the agent that raised an escalation (any key of the same account with the same key name) acknowledges or dismisses it, so an overseer can't close another's by reusing a code. A person can on its behalf, and so can the overseer of the group its ticket is in now (the key that last published it with `update_group`), so a ticket handed over goes with its questions.
+- Only the agent that raised an escalation (any key of the same account with the same key name) acknowledges or dismisses it, so an overseer can't close another's by reusing a code. A person can on its behalf, and so can the overseer of the group its ticket (or epic) is in now (the key that last published it with `update_group`), so a ticket handed over goes with its questions.
 - You can still answer in the agent's own session (e.g. Remote Control), quoting the code ("A12: drop it"). The agent then dismisses the escalation with a justification ("Sam: drop it, in session"), which is the record on the dashboard and in exports. **Dismiss** on the dashboard closes a stale one whose session ended; the lane then shows as waiting on its agent (`awaiting_agent`) until the agent publishes again.
 - When a lane's last open blocking escalation is decided, the lane moves to `awaiting_agent`, which stops the blocked timer while the agent picks up the answer.
 - While an agent waits for answers on a lane, the lane shows **agent waiting**. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting.
-- Raising the same question again on the same lane while it's still open (ignoring spacing and case) returns the existing escalation, so agent retries don't create duplicates.
-- A lane stays **blocked** while any of its blocking escalations is open, whatever status its agent publishes. Its escalations are its ticket's and those raised while it held none: a parked ticket's questions don't block the lane that parked it.
+- Raising the same question again on the same ticket or epic while it's still open (ignoring spacing and case) returns the existing escalation, so agent retries don't create duplicates.
+- A lane stays **blocked** while any of its ticket's blocking escalations is open, whatever status its agent publishes. A parked ticket's questions don't block the lane that parked it, and an epic's questions block no lane.
 
 ### Alerts only (optional)
 
@@ -181,7 +210,7 @@ You answer in the agent's own session, so the conversation and the decision stay
 
 ### Blocking
 
-- An escalation is **blocking** by default: creating it sets the lane to `blocked_human`.
+- An escalation is **blocking** by default: creating it sets the lane holding its ticket to `blocked_human`. An epic's blocking question shows **Waiting on you** on the epic's card instead.
 - `blocking: false` marks an FYI that never holds the lane blocked. FYIs are listed separately in the inbox, aren't counted in the "Needs you" badge, don't make a lane look urgent, and notify quietly.
 - Nothing else changes a lane the agent set to `blocked_human` itself. The agent publishes what it does next.
 
