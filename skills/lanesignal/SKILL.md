@@ -50,6 +50,7 @@ A server can host several independent projects (apps), each with its own groups,
 
 - **Removing:** when you no longer need a slot, `remove_lane` takes it off the dashboard. Its ticket is done if the lane is completed, otherwise parked, unless you pass `previous`. Its history is kept.
 - **Writing for a phone:** keep `activity` to one line. Use ticket references like `gh:42` or `redmine:1234`.
+- **Ticket refs link:** in messages, escalation questions and fields, notes and requirements, `#1234` links to the default ticket system and `redmine:1234` to that one (use the system name for one-digit ids). Write refs that way rather than pasting ticket URLs. In `ticket` fields, always use the `system:id` form.
 
 ## Raising an escalation
 

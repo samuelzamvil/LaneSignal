@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Client, Group, ProjectAccess, Requirement } from './api.ts';
 import { LayoutToggle, RichText, useLayout } from './components.tsx';
+import { LinkedText } from './linked-text.tsx';
 import { absolute } from './format.ts';
 import { keyOf } from './merge.ts';
 
@@ -141,7 +142,9 @@ function RequirementCard({
         <EditForm req={req} client={client} onDone={() => setEditing(false)} />
       ) : (
         <>
-          <h3>{req.requirement}</h3>
+          <h3>
+            <LinkedText text={req.requirement} />
+          </h3>
           <RichText text={req.justification} />
           <div className="req-tags">
             {req.tags.map((t) => (

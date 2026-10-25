@@ -238,6 +238,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       groupLabel: config.groupLabel,
       statuses: LANE_STATUSES,
       ticketSystems: Object.keys(config.ticketTemplates),
+      ticketTemplates: config.ticketTemplates,
+      defaultTicketSystem: config.defaultTicketSystem,
       staleMinutes: config.staleMinutes,
       push,
       decisions: config.decisions,
