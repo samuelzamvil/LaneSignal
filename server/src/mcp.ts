@@ -485,6 +485,7 @@ function buildServer(
             to: f.to,
             laneId: f.lane ? q(a.pick(project, { lane: f.lane }), f.lane) : undefined,
             projects: a.scope(project),
+            includeRejected: approvesRequirements(who),
           });
           const start = offset ?? 0;
           let page = rows.slice(start, start + (limit ?? 100));
@@ -572,10 +573,10 @@ function buildServer(
         args.project,
         current,
       );
-    /** A requirement the caller may see: one for all projects, or one of the caller's projects. */
+    /** A requirement the caller may see: one for all projects, or one of the caller's projects. Rejected ones are hidden from agents. */
     const visibleRequirement = (id: string) => {
       const found = store.getRequirement(id);
-      if (!found || (found.project !== null && !a.projects.includes(found.project))) {
+      if (!found || found.status === 'rejected' || (found.project !== null && !a.projects.includes(found.project))) {
         throw new NotFoundError(`Requirement "${id}" not found`);
       }
       return found;
@@ -605,7 +606,7 @@ function buildServer(
           tags: z.array(s.requirementTag).max(5).optional(),
           group_id: s.groupId.optional(),
           group: GROUP_ALIAS,
-          statuses: z.array(z.enum(s.REQUIREMENT_STATUSES)).optional(),
+          statuses: z.array(z.enum(s.AGENT_REQUIREMENT_STATUSES)).optional(),
           limit: z.number().int().min(1).max(100).optional(),
           ...PROJECT,
         },

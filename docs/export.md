@@ -3,7 +3,7 @@
 LaneSignal keeps everything needed for analysis:
 
 - every escalation, including decided, acknowledged and withdrawn ones
-- every requirement, including superseded and retired ones
+- every requirement, including superseded and retired ones, and rejected ones in exports made by a signed-in person (never with an agent or personal key)
 - every agent position
 - every conversation, on escalations, on lanes and on epics' boards
 - every lane, group and epic, including ones that were removed from the dashboard or closed (they're archived, not deleted)
@@ -137,7 +137,7 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 
 ### `requirements.csv` (the owner's product decisions)
 
-`id` (`R14`), `group_id` (empty for product-wide), `requirement`, `justification`, `tags`, `status` (`pending`, `active`, `superseded`, `retired`), `superseded_by`, `decided_by`, `source_escalation`, `recorded_by`, `created_at`, `updated_at`. Every requirement is included, whatever its status; `from`/`to` filter by creation time. See [Requirements](requirements.md).
+`id` (`R14`), `group_id` (empty for product-wide), `requirement`, `justification`, `tags`, `status` (`pending`, `active`, `superseded`, `retired`, `rejected`), `superseded_by`, `rejection_reason`, `decided_by`, `source_escalation`, `recorded_by`, `created_at`, `updated_at`. Every requirement is included, whatever its status (rejected ones only in exports made by a signed-in person); `from`/`to` filter by creation time. See [Requirements](requirements.md).
 
 ### `messages.csv` (conversations)
 

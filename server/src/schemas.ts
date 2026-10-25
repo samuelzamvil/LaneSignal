@@ -289,7 +289,13 @@ export const requirementEdit = z
   })
   .strict();
 
-export const REQUIREMENT_STATUSES = ['pending', 'active', 'superseded', 'retired'] as const;
+export const REQUIREMENT_STATUSES = ['pending', 'active', 'superseded', 'retired', 'rejected'] as const;
+
+/** Statuses agents may ask for: rejected records are hidden from them. */
+export const AGENT_REQUIREMENT_STATUSES = ['pending', 'active', 'superseded', 'retired'] as const;
+
+/** POST /api/requirements/:id/reject: why a pending record is turned down (required). */
+export const requirementReject = z.object({ reason: z.string().trim().min(1, 'Say why it is rejected').max(2000) }).strict();
 
 /** GET /api/requirements: ?q=&tag=a,b&group=&status=pending,active,superseded&limit= */
 export const requirementQuery = z

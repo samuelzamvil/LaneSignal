@@ -122,6 +122,8 @@ describe('retries and duplicates', () => {
 
   test('a retired requirement can be restored', async () => {
     const r = (await srv.call('GET', '/api/requirements?tag=payout-retries', ALICE)).body[0];
+    // Only an active requirement is retired; a pending one is rejected instead.
+    if (r.status === 'pending') await srv.call('POST', `/api/requirements/${r.id}/approve`, ALICE);
     assert.equal((await srv.call('POST', `/api/requirements/${r.id}/retire`, ALICE)).body.status, 'retired');
     const restored = await srv.call('POST', `/api/requirements/${r.id}/restore`, ALICE);
     assert.equal(restored.status, 200);
