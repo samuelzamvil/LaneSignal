@@ -1087,6 +1087,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   });
 
   app.post('/api/requirements/:id/reject', human, requirementsOnly, (req, res) => {
+    if (!approvesRequirements(principalOf(res))) throw new ForbiddenError('Reject requirements signed in, not with a personal key');
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
     res.json(pub.requirement(store.rejectRequirement(current.id, parse(s.requirementReject, req.body).reason)));
