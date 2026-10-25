@@ -403,7 +403,8 @@ export type StreamEvent =
    * `statusChanged` is set when this event is the lane's status transition (drives notifications);
    * `messaged` when someone wrote in the lane's conversation.
    */
-  | { type: 'lane'; lane: Lane; statusChanged?: boolean; messaged?: 'owner' | 'agent' }
+  /** `completed`: the lane was published completed and let its ticket go (it shows idle now). */
+  | { type: 'lane'; lane: Lane; statusChanged?: boolean; messaged?: 'owner' | 'agent'; completed?: boolean }
   | { type: 'lane_deleted'; id: string; project: string }
   /** `raised`: an FYI that now needs the owner, notified like a new question. `replied`: the agent answered the owner's Other (`reply`) or posted an update while they decide. */
   | { type: 'escalation'; escalation: Escalation; raised?: boolean; replied?: 'reply' | 'update' }

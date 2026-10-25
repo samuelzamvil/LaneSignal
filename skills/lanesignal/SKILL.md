@@ -46,7 +46,7 @@ A server can host several independent projects (apps), each with its own groups,
   | `idle` | nothing to do right now |
   | `completed` | its ticket is done: the ticket closes and the lane empties (idle), ready for the next |
 
-- **Removing:** when you no longer need a slot, `remove_lane` takes it off the dashboard. Its ticket is parked unless the lane is completed (pass `previous` to say otherwise). Its history is kept.
+- **Removing:** when you no longer need a slot, `remove_lane` takes it off the dashboard. Its ticket is parked unless you pass `previous` (publish `completed` first when it's finished). Its history is kept.
 - **Writing for a phone:** keep `activity` to one line. Use ticket references like `gh:42` or `redmine:1234`.
 
 ## Raising an escalation

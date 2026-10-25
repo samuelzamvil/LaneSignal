@@ -141,7 +141,7 @@ To rebuild blocked time per lane over a period, pair the status changes in `stat
 **Removing a lane**, in the app or by its overseer (`remove_lane`):
 
 - hides it from the dashboard
-- lets its ticket go: parked by default, so its questions stay open for whichever lane picks it up, or done if the lane was completed (`remove_lane` takes `previous` to say otherwise; a done or dropped ticket's unanswered questions are withdrawn)
+- lets its ticket go: parked by default, so its questions stay open for whichever lane picks it up (`remove_lane` takes `previous` to say otherwise; a done or dropped ticket's unanswered questions are withdrawn)
 - withdraws the **unanswered** escalations raised while it held no ticket, so waiting agents get an answer ("Lane removed by …"). Each withdrawal is recorded in the history
 - leaves **decided** escalations as they are, so an agent already acting on an answer can still acknowledge it
 - ends a blocked spell: a lane removed while `blocked_human` is set to `idle`, so archived time isn't counted as blocked

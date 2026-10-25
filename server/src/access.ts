@@ -394,7 +394,7 @@ export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'ack
   const me = ownerOf(a.principal);
   const mine = owner ? owner === me || (a.principal.userId !== undefined && owner === `user:${a.principal.userId}`) : e.createdBy === a.principal.name;
   // A ticket moved to another overseer's group goes with its questions: that overseer may close them too.
-  const overseer = e.ticketId !== null && store.ticketOverseer(e.ticketId) === a.principal.name;
+  const overseer = e.ticketId !== null && store.ticketOverseer(e.ticketId) === me;
   if (!mine && !overseer) {
     throw new ForbiddenError(`${e.ref} was raised by ${e.createdBy}; only that agent (or a person) can ${verb} it, or the overseer of the group its ticket is in now`);
   }

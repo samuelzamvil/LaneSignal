@@ -46,7 +46,7 @@ A server can host several independent projects (apps), each with its own groups,
   | `idle` | nothing to do right now |
   | `completed` | its ticket is done: the ticket closes and the lane empties (idle), ready for the next |
 
-- **Removing:** when you no longer need a slot, `remove_lane` takes it off the dashboard. Its ticket is parked unless the lane is completed (pass `previous` to say otherwise). Its history is kept.
+- **Removing:** when you no longer need a slot, `remove_lane` takes it off the dashboard. Its ticket is parked unless you pass `previous` (publish `completed` first when it's finished). Its history is kept.
 - **Writing for a phone:** keep `activity` to one line. Use ticket references like `gh:42` or `redmine:1234`.
 
 ## Raising an escalation
@@ -102,7 +102,7 @@ The owner answers on the LaneSignal dashboard or phone app with one of three but
 - **Updates while they decide:** you may `reply_to_escalation` with a one-line update when something changed that affects the answer (e.g. "CI found a second failure"). Never to chat or repeat yourself: every message notifies their phone, and updates are limited to one a minute. Retrying the same message is harmless.
 
 1. **Wait** for answers on your whole group (next section). Keep working on lanes that aren't blocked meanwhile.
-2. **Acknowledge first, then act:** call `acknowledge_escalation` as soon as an escalation is decided. It returns the final `decision` and `decisionNote` (the owner may correct a mis-tap until you acknowledge). Act on what it returns. Only the agent that raised an escalation can acknowledge it; repeating an acknowledgement changes nothing.
+2. **Acknowledge first, then act:** call `acknowledge_escalation` as soon as an escalation is decided. It returns the final `decision` and `decisionNote` (the owner may correct a mis-tap until you acknowledge). Act on what it returns. Only the agent that raised an escalation can acknowledge it (or the overseer of the group its ticket is in now); repeating an acknowledgement changes nothing.
 3. **Publish the next state in the same call:** pass `status` and `activity`, e.g. `status: "active", activity: "Dropping the column (A12)"`.
 4. **Answered in this session instead?** If the owner answers you here ("A12: drop it"), close it with `dismiss_escalation`: `justification` says what was decided and where, e.g. `"Sam: drop the column (in session, 2026-10-23)"`, plus `status` and `activity` as above. Dismiss moot escalations the same way, saying why ("Superseded by A14"). Only you can dismiss yours; the owner may also dismiss a stale one from the dashboard.
 5. **Other lanes' questions:** if one affects your work, `add_position` with `agree`, `disagree` or `neutral` and a one-line reason, while it's still open.

@@ -436,7 +436,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.put('/api/groups/:id', agent, (req, res) => {
     const id = parse(s.groupId, req.params.id);
     const project = acc(res).pick(projectQuery(req), { group: id });
-    res.json(pub.group(store.upsertGroup(q(project, id), parse(s.groupPatch, req.body), principalOf(res).name)));
+    res.json(pub.group(store.upsertGroup(q(project, id), parse(s.groupPatch, req.body), principalOf(res).name, ownerOf(principalOf(res)))));
   });
 
   app.delete('/api/groups/:id', human, (req, res) => {

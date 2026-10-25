@@ -305,6 +305,13 @@ What the PRs changed from this plan, and why.
 - **No `legacy_ref` column.** `ref` is the code, new or old, and old codes resolve as before.
 - **The "Ungrouped" stand-in group** moves to PR 4, where it's needed for stand-in epics.
 - **Two live lanes on one ticket at upgrade:** the more recently updated lane keeps it. The other lane drops its ticket, and its history says which lane holds it.
+- **Older agents' publishes never fail over tickets.** `update_lane` naming a ticket another lane holds, or one that's done, leaves the lane's ticket as it is, applies the rest, and returns a `warning`. Only `fill_lane` gets the `409`, and only `fill_lane` reopens a done ticket.
+- **`remove_lane` always parks by default.** A lane holding a ticket can't stay `completed` (completing lets the ticket go), so "done if completed" never applied. Publish `completed` first, or pass `previous: done`.
+- **A removed lane published again takes its ticket back**, if no other lane holds it.
+- **The overseer of a ticket's group** is the key that registered it with `update_group`, compared like a raiser (account and key name).
+- **At upgrade, lanes that were removed mid-work park their tickets** ("Lane removed"), as removing a lane does now. Completed lanes keep their unresolved questions as their own, so those still count and removing the lane withdraws them.
+- **Changing the ticket systems later** (e.g. adding a default) re-derives tickets' canonical refs at startup from how each was first written; codes don't change.
+- **Finishing a ticket keeps the questions the owner answered Other**: like decided ones, they wait for the agent.
 
 ## Risks
 

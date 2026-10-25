@@ -202,6 +202,90 @@ describe('tickets', () => {
     assert.equal((await ticket('660')).escalations.length, 0);
   });
 
+  test("older agents' publishes never fail over tickets", async () => {
+    await fill({ lane_id: 'pr-967', group: 'train', ticket: '967' });
+    // A review lane on the same ticket: its update still counts, and it says why it holds no ticket.
+    const review = await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967-review', group: 'train', ticket: '967', activity: 'Reviewing' });
+    assert.equal(review.isError, false, review.text);
+    assert.match(review.value.warning, /967 is in lane "pr-967".*keeps no ticket/);
+    assert.equal((await lane('pr-967-review')).activity, 'Reviewing');
+    // Completed, then the same full state again: the ticket stays done.
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967', status: 'completed' });
+    const again = await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967', ticket: '967', activity: 'Cleanup' });
+    assert.match(again.value.warning, /967 is done: fill_lane with it to reopen it/);
+    assert.equal((await ticket('967')).state, 'done');
+    assert.equal((await lane('pr-967')).activity, 'Cleanup');
+    // fill_lane reopens it.
+    assert.equal((await fill({ lane_id: 'pr-967', ticket: '967' })).isError, false);
+    assert.equal((await ticket('967')).state, 'in_lane');
+  });
+
+  test("finishing a ticket keeps questions the owner answered Other", async () => {
+    await fill({ lane_id: 'slot-n', group: 'train', ticket: '700' });
+    const q = await ask('slot-n', 'Which flag name?');
+    await srv.call('POST', `/api/escalations/${q.id}/decide`, ALICE, { decision: 'Other', note: 'retry_v2' });
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-n', status: 'completed' });
+    assert.equal((await srv.call('GET', `/api/escalations/${q.id}`, ALICE)).body.state, 'open');
+    assert.equal((await srv.tool(AGENT, 'acknowledge_escalation', { id: q.ref })).isError, false);
+  });
+
+  test("a lane's own blocking question still blocks it once it takes a ticket", async () => {
+    await fill({ lane_id: 'slot-o', group: 'train' });
+    await ask('slot-o', 'Which ticket next?');
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-o', ticket: '710', status: 'active' });
+    const o = await lane('slot-o');
+    assert.equal(o.status, 'blocked_human');
+    assert.equal(o.blockingEscalations, 1);
+  });
+
+  test('a removed lane published again takes its ticket back', async () => {
+    await fill({ lane_id: 'slot-p', group: 'train', ticket: '720' });
+    await srv.call('DELETE', '/api/lanes/slot-p', ALICE);
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-p', status: 'active' });
+    assert.equal((await lane('slot-p')).ticket, '720');
+    assert.equal((await ticket('720')).state, 'in_lane');
+  });
+
+  test('fill_lane input that would do nothing, or undo the call, is caught', async () => {
+    await fill({ lane_id: 'slot-q', group: 'train', ticket: '730' });
+    const same = await fill({ lane_id: 'slot-q', ticket: '730', previous: 'done' });
+    assert.match(same.text, /already holds 730: to finish it, publish status completed/);
+    // waiting_on alongside completed: the publish still goes through.
+    const both = await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-q', status: 'completed', waiting_on: '731' });
+    assert.equal(both.isError, false, both.text);
+    assert.match(both.value.warning, /holds no ticket now, so waiting_on was left out/);
+    assert.equal((await fill({ lane_id: 'slot-q', ticket: '732', reason: null })).isError, false);
+  });
+
+  test('live clients and notifications hear about switches correctly', async () => {
+    const events: any[] = [];
+    const listen = (e: any) => events.push(e);
+    srv.store.events.on('change', listen);
+    try {
+      await fill({ lane_id: 'slot-r', group: 'train', ticket: '740' });
+      const q = await ask('slot-r', 'Region?', { blocking: false });
+      await fill({ lane_id: 'slot-r', previous: 'park', reason: 'later' });
+      events.length = 0;
+      await fill({ lane_id: 'slot-s', group: 'train', ticket: '740' });
+      // The moved question isn't announced as new.
+      const moved = events.find((e) => e.type === 'escalation' && e.escalation.id === q.id);
+      assert.ok(moved, 'its move is sent');
+      assert.notEqual(moved.escalation.createdAt, moved.escalation.updatedAt);
+      // Completing announces completion, though the lane shows idle.
+      await fill({ lane_id: 'slot-t', group: 'train', ticket: '741', waiting_on: '740' });
+      events.length = 0;
+      await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-s', status: 'completed' });
+      const done = events.find((e) => e.type === 'lane' && e.lane.id === 'default/slot-s');
+      assert.equal(done.completed, true);
+      assert.equal(done.lane.status, 'idle');
+      // The lane that waited on 740 is sent again without it.
+      const waiter = events.find((e) => e.type === 'lane' && e.lane.id === 'default/slot-t');
+      assert.equal(waiter?.lane.waitingOn, null);
+    } finally {
+      srv.store.events.off('change', listen);
+    }
+  });
+
   test('tickets are listed, searched by code and exported', async () => {
     const listed = (await srv.tool(AGENT, 'list_tickets', { group_id: 'train' })).value;
     assert.ok(listed.some((t: any) => t.ref === '500' && t.state === 'in_lane'));

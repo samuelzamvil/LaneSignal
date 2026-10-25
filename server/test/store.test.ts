@@ -688,3 +688,57 @@ test('upgrading to tickets moves each lane\'s ticket, escalations and history on
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('changing the ticket systems keeps finding the tickets lanes hold', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-refs-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    publishLane(store, 'default/slot', { status: 'active', ticket: '967' }, 'bot');
+    store.close();
+    // A default ticket system is configured later: "967" now means "redmine:967".
+    store = new Store({ path: file, resolveTicketUrl, ticketRefs: ticketRefs({ redmine: 'https://r.example/{id}' }, 'redmine') });
+    const res = store.upsertLane('default/slot', { ticket: '967', activity: 'Same ticket' }, 'bot');
+    assert.equal(res.warning, undefined);
+    assert.equal(store.getTicket('default', 'redmine:967')?.lane, 'default/slot');
+    assert.equal(store.listTickets({ states: ['in_lane', 'parked', 'done', 'dropped'] }).length, 1);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrading to tickets parks the tickets of removed lanes and leaves completed lanes their open questions', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v15b-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    publishLane(store, 'default/gone', { status: 'active' }, 'bot');
+    publishLane(store, 'default/shipped', { status: 'active' }, 'bot');
+    const fyi = escalate(store, { laneId: 'default/shipped', question: 'FYI: slow CI', blocking: false }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      ${UNDO_V16}
+      UPDATE lanes SET ticket = 'gh:910', archived_at = '2026-01-01T00:00:00.000Z' WHERE id = 'default/gone';
+      UPDATE lanes SET ticket = 'gh:911', status = 'completed' WHERE id = 'default/shipped';
+      UPDATE meta SET value = '15' WHERE key = 'schema_version';
+    `);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    const parked = store.getTicket('default', 'gh:910')!;
+    assert.equal(parked.state, 'parked');
+    assert.equal(parked.parkReason, 'Lane removed');
+    // Publishing the removed lane again takes its ticket back.
+    store.upsertLane('default/gone', { status: 'active' }, 'bot');
+    assert.equal(store.getLane('default/gone')?.ticketId, parked.id);
+    // The completed lane keeps its open FYI as its own: still counted, and withdrawn if it's removed.
+    assert.equal(store.getEscalation(fyi.id)?.ticketId, null);
+    assert.equal(store.getLane('default/shipped')?.openEscalations, 1);
+    store.deleteLane('default/shipped', 'alice');
+    assert.equal(store.getEscalation(fyi.id)?.state, 'withdrawn');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

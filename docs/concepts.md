@@ -28,7 +28,7 @@ A lane is a slot work goes through, one ticket at a time, with a stable id the a
   | `completed` | done |
 
 - **group:** which epic/train it belongs to
-- **ticket:** the [ticket](#tickets) it holds, or none (a lane with no ticket shows `idle`)
+- **ticket:** the [ticket](#tickets) it holds, or none (a lane that lets its ticket go without taking another shows `idle`)
 - **activity:** one line, readable on a phone
 - **links:** PRs, CI runs, sessions. URLs must be http(s)
 
@@ -38,7 +38,7 @@ Its history keeps every status change and escalation step. Routine activity text
 
 Tapping a lane opens its page: its details, then **Escalations**, **Conversation** and **Recent activity**. Tap a heading to fold that part away. Folded or open is remembered on the device, for every lane. Escalations show the **Active** ones (open, or answered and not yet picked up by the agent) unless you pick **Historical** (acknowledged or dismissed) or **All**; that choice is remembered too. While Conversation is folded, the agent's new messages aren't marked as read.
 
-**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md). People remove lanes in the app; overseers remove theirs with `remove_lane` when they no longer need the slot. A removed lane's ticket is parked (or done, if the lane was completed), so nothing on it is lost.
+**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md). People remove lanes in the app; overseers remove theirs with `remove_lane` when they no longer need the slot. A removed lane's ticket is parked, so nothing on it is lost.
 
 ## Tickets
 
@@ -52,14 +52,14 @@ The rules:
 
 - **One record per ticket:** `967`, `#967`, `redmine:967` and the Redmine URL are the same ticket (refs are put into one form, using the default ticket system). A ticket is created the first time a lane is filled with it.
 - **One lane at a time:** filling a lane with a ticket another lane holds is refused. A worker and a reviewer on one ticket share a lane. Any lane can take a parked ticket.
-- **Letting go:** a lane lets its ticket go as **parked** (to pick up again, with a reason), **done**, or **dropped** (unfinished). A done or dropped ticket's unanswered questions are withdrawn; decided ones can still be acknowledged. A lane published as `completed` marks its ticket done and empties (`idle`), ready for the next.
+- **Letting go:** a lane lets its ticket go as **parked** (to pick up again, with a reason), **done**, or **dropped** (unfinished). A done or dropped ticket's unanswered questions are withdrawn; decided ones, and ones you answered Other, can still be acknowledged. A lane published as `completed` marks its ticket done and empties (`idle`), ready for the next.
 - **Not a tracker:** a ticket's state here only says whether a lane holds it and how the last one let it go. Its real status lives in Redmine, GitHub or wherever it's tracked; LaneSignal never syncs it.
 - **Blocked time** belongs to the ticket: a lane's blocked total is its current ticket's.
 - **Waiting on another ticket:** a lane can say its ticket waits on another ("waiting on 945"); that clears itself once 945 is done.
 - **PRs aren't tickets:** they go in the lane's links. Switching a lane from a Redmine ticket to a `gh:` ref gets a warning.
-- **Who may close its questions:** the agent that raised them, a person, or the overseer of the group the ticket is in now, so a ticket handed to another overseer goes with its questions.
+- **Who may close its questions:** the agent that raised them, a person, or the overseer that registered the group the ticket is in now, so a ticket handed to another overseer goes with its questions.
 
-Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)").
+Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)"). Their publishes never fail over tickets: naming a ticket another lane holds, or one that's done, leaves the lane's ticket as it is and says so in a warning, and the rest of the update applies. A removed lane that's published again takes back the ticket it held, if no other lane has.
 
 ### Lane letters and escalation codes
 
@@ -68,7 +68,7 @@ An escalation's code is its ticket's ref and a letter: **967A**, **967B** … **
 Each active lane also gets a letter, shown on its card: A, B, … Z, then AA, AB. A question raised on a lane holding no ticket is coded with it: **A1**, **A2**, then B1 for lane B. Codes from before tickets (A12) keep working.
 
 - A lane keeps its letter while it's active, and after that while any of its escalations is unanswered or not yet acknowledged.
-- Once a lane is completed or removed and nothing is pending, its letter goes back to the pool. The next new lane takes the smallest free letter, so letters stay short.
+- Once a lane is removed (or completed while holding no ticket) and nothing is pending, its letter goes back to the pool. A lane holding a ticket that's published `completed` lets the ticket go and stays, idle, with its letter. The next new lane takes the smallest free letter, so letters stay short.
 - Numbers keep counting per letter. If A1–A5 belonged to a lane that finished, the next lane to get A starts at **A6**, so a code always means one escalation, in exports too.
 
 ## Escalations
@@ -154,7 +154,7 @@ open ──(human decides)──► decided ──(agent acknowledges)──► 
 3. The agent acknowledges before acting, and the acknowledgement returns the final answer. It usually publishes its next status in the same call.
 
 - If two humans answer at once, the second gets `409 Conflict`. **Change decision** replaces the answer until the agent acknowledges, e.g. after a mis-tap.
-- Only the agent that raised an escalation (any key of the same account with the same key name) acknowledges or dismisses it, so an overseer can't close another's by reusing a code. A person can on its behalf.
+- Only the agent that raised an escalation (any key of the same account with the same key name) acknowledges or dismisses it, so an overseer can't close another's by reusing a code. A person can on its behalf, and so can the overseer that registered the group its ticket is in now (`update_group`), so a ticket handed over goes with its questions.
 - You can still answer in the agent's own session (e.g. Remote Control), quoting the code ("A12: drop it"). The agent then dismisses the escalation with a justification ("Sam: drop it, in session"), which is the record on the dashboard and in exports. **Dismiss** on the dashboard closes a stale one whose session ended; the lane then shows as waiting on its agent (`awaiting_agent`) until the agent publishes again.
 - When a lane's last open blocking escalation is decided, the lane moves to `awaiting_agent`, which stops the blocked timer while the agent picks up the answer.
 - While an agent waits for answers on a lane, the lane shows **agent waiting**. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting.

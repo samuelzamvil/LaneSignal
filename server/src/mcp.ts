@@ -701,7 +701,7 @@ function buildServer(
       },
       async ({ group_id, project, ...patch }) => {
         try {
-          const group = store.upsertGroup(q(a.pick(project, { group: group_id }), group_id), patch, who.name);
+          const group = store.upsertGroup(q(a.pick(project, { group: group_id }), group_id), patch, who.name, ownerOf(who));
           return json({ id: localId(group.id), project: group.project });
         } catch (err) {
           return fail(err);
@@ -787,7 +787,7 @@ function buildServer(
           lane_id: s.laneId,
           ticket: z.string().max(300).nullable().optional().describe('The ticket to work next; leave out or null to empty the lane.'),
           previous: s.ticketRelease.optional(),
-          reason: z.string().max(500).optional(),
+          reason: z.string().max(500).nullable().optional(),
           waiting_on: WAITING_ON,
           ...s.lanePatch.omit({ ticket: true }).shape,
           group_id: s.lanePatch.shape.group,
@@ -812,11 +812,11 @@ function buildServer(
       {
         description:
           'Take a lane off the dashboard when you no longer need the slot. Its ticket is let go as `previous` says ' +
-          '(default: `done` if the lane is completed, else `park` with the reason "Lane removed"): a parked ticket ' +
-          'keeps its open escalations; a done or dropped one\'s are dismissed' +
+          '(default `park`, with the reason "Lane removed"; publish status completed first, or pass `done`, when it\'s ' +
+          'finished): a parked ticket keeps its open escalations; a done or dropped one\'s are dismissed' +
           (features.decisions ? ' (decided ones can still be acknowledged)' : '') +
           ', as are those raised while the lane held no ticket. Its history is kept. Publishing to the same lane id brings it back.',
-        inputSchema: { lane_id: s.laneId, previous: s.ticketRelease.optional(), reason: z.string().max(500).optional(), ...PROJECT_WRITE },
+        inputSchema: { lane_id: s.laneId, previous: s.ticketRelease.optional(), reason: z.string().max(500).nullable().optional(), ...PROJECT_WRITE },
       },
       async ({ lane_id, previous, reason, project }) => {
         try {
@@ -968,7 +968,7 @@ function buildServer(
             `Write in an open escalation's conversation: a short reply after the owner answered Other (a question back, ` +
             `or what you'll do), or a short update while they decide, only when something changed. At most ` +
             `${AGENT_MESSAGE_MAX} characters, plain and to the point: put anything longer in a file and pass its id in ` +
-            '`attachments`. Notifies the owner. Only the agent that raised the escalation can reply.',
+            '`attachments`. Notifies the owner. Only the agent that raised the escalation can reply, or the overseer of the group its ticket is in now.',
           inputSchema: {
             id: z.string().describe(ID_HELP),
             message: z.string().min(1).max(5000),
@@ -999,7 +999,7 @@ function buildServer(
             : 'Close an alert once it is dealt with: the owner answered in your session, or it became moot. ') +
           '`justification` says what was decided and where, for the record (e.g. "Sam: drop the column, in the session"). ' +
           'Pass `status` and `activity` to publish what the lane does next; a lane this unblocks goes back to active. ' +
-          'Only the agent that raised it can dismiss it.',
+          'Only the agent that raised it can dismiss it, or the overseer of the group its ticket is in now.',
         inputSchema: {
           id: z.string().describe(ID_HELP),
           justification: z.string().trim().min(1).max(2000),
