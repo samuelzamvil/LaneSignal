@@ -5,15 +5,18 @@
  *   "#42" / "42"   -> default system's template
  *   "https://..."  -> used as-is
  */
-export function ticketResolver(templates: Record<string, string>, defaultSystem: string | null) {
+export function ticketResolver(configured: Record<string, string>, configuredDefault: string | null) {
+  // System names are matched in any case ("GH:7" is gh:7).
+  const templates = Object.fromEntries(Object.entries(configured).map(([k, v]) => [k.toLowerCase(), v]));
+  const defaultSystem = configuredDefault?.toLowerCase() ?? null;
   return (ticket: string): string | null => {
     const ref = ticket.trim();
     if (/^https?:\/\//i.test(ref)) return ref;
     const i = ref.indexOf(':');
     let system = defaultSystem;
     let id = ref;
-    if (i > 0 && templates[ref.slice(0, i)]) {
-      system = ref.slice(0, i);
+    if (i > 0 && templates[ref.slice(0, i).toLowerCase()]) {
+      system = ref.slice(0, i).toLowerCase();
       id = ref.slice(i + 1);
     }
     const template = system ? templates[system] : undefined;
@@ -30,20 +33,21 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * issue's URL) are one ticket:
  *
  *   "967" / "#967"                  -> "<default system>:967" (just "967" with no default system)
- *   "Redmine:#967"                  -> "redmine:967" (a configured system keeps its configured case)
+ *   "Redmine:#967"                  -> "redmine:967" (system names are lower-case)
  *   a URL one template produces     -> "<system>:<id>"
  *   any other URL                   -> unchanged
  *
  * `display` turns a canonical ref back into its short form: the default system's refs lose
  * their prefix ("967"), others keep it ("gh:632").
  */
-export function ticketRefs(templates: Record<string, string>, defaultSystem: string | null) {
-  const systems = new Map(Object.keys(templates).map((k) => [k.toLowerCase(), k]));
+export function ticketRefs(templates: Record<string, string>, configuredDefault: string | null) {
+  const defaultSystem = configuredDefault?.toLowerCase() ?? null;
+  const systems = new Map(Object.keys(templates).map((k) => [k.toLowerCase(), k.toLowerCase()]));
   const patterns = Object.entries(templates).flatMap(([system, template]) => {
     const i = template.indexOf('{id}');
     if (i < 0) return [];
     const re = new RegExp(`^${escapeRegExp(template.slice(0, i))}([^/?#]+)${escapeRegExp(template.slice(i + 4))}$`, 'i');
-    return [{ system, re }];
+    return [{ system: system.toLowerCase(), re }];
   });
   const canonical = (raw: string): string => {
     const ref = raw.trim();

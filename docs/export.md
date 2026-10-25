@@ -83,7 +83,7 @@ Epics' questions raised on the epic directly are recorded on an internal lane pe
 
 | Column | Meaning |
 |---|---|
-| `id`, `name`, `group_id`, `group_name`, `status`, `ticket`, `ticket_url`, `activity` | Current state |
+| `id`, `name`, `group_id`, `group_name`, `status`, `ticket`, `ticket_url`, `activity` | Current state. `ticket` is the ticket the lane holds now (as first written), empty when it holds none |
 | `last_published_by` | Agent key or token name that last updated it |
 | `created_at`, `updated_at`, `status_since` | Timing |
 | `blocked_seconds_total` | Total time in `blocked_human`, including the current spell |
@@ -97,7 +97,7 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 
 ### `groups.csv` (every group, including archived ones)
 
-`id`, `name`, `ticket`, `ticket_url`, `links`, `last_published_by`, `created_at`, `updated_at`, `archived_at`.
+`id`, `name`, `ticket`, `ticket_url`, `links`, `last_published_by`, `created_at`, `updated_at`, `archived_at`. `ticket` is a group's ticket from before epics (read-only now; its epics carry the ticket).
 
 ### `tickets.csv` (every ticket lanes have held)
 
@@ -122,7 +122,7 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 | `id` | The epic's number (escalations refer to it as `epic_id`) |
 | `group_id` | The group it belongs to |
 | `ref`, `display_ref` | Its ticket's canonical reference and how it was first written; empty for a group standing in as its epic |
-| `code` | What its escalation codes start with (`680`, the group's ticket or id for a stand-in, or `E7` when the ref can't be one) |
+| `code` | What its escalation codes start with (`680`; for a stand-in, its group's id, or its ticket from before epics; `E7` when the ref can't be one) |
 | `name`, `ticket_url`, `links` | |
 | `stand_in` | `true` for the group standing in as its epic |
 | `state` | `open`, `close_requested` or `closed` |

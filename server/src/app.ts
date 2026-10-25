@@ -440,7 +440,10 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.put('/api/groups/:id', agent, (req, res) => {
     const id = parse(s.groupId, req.params.id);
     const project = acc(res).pick(projectQuery(req), { group: id });
-    res.json(pub.group(store.upsertGroup(q(project, id), parse(s.groupPatch, req.body), principalOf(res).name, ownerOf(principalOf(res)))));
+    const { ticket, ...patch } = parse(s.groupPatch, req.body);
+    const group = pub.group(store.upsertGroup(q(project, id), patch, principalOf(res).name, ownerOf(principalOf(res))));
+    // A group's ticket is read-only now: its epic has it.
+    res.json(ticket?.trim() ? { ...group, warning: `A group's ticket is now its epic's: POST /api/epics with {group, ref} adds it` } : group);
   });
 
   app.delete('/api/groups/:id', human, (req, res) => {
@@ -792,7 +795,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         ),
         mode: query.format ?? 'digest',
       };
-      const shape = (w: WaitResult) => (query.format === 'full' ? briefWait(w) : digestWait(w));
+      const shape = (w: WaitResult) => (query.format === 'full' ? briefWait(w) : digestWait(w, acc(res).projects.length > 1));
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {

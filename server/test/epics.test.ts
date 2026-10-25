@@ -34,9 +34,10 @@ describe('every group has an epic', () => {
     assert.equal(e.epic, 'search');
     assert.equal(e.standIn, true);
     assert.equal(e.code, 'search');
-    // A group with a ticket stands in with the ticket's code.
-    await group('billing', { ticket: '680' });
-    assert.equal((await epics('billing'))[0].code, '680');
+    // A group's ticket is its epic's now: one sent with the group is left out, with a pointer.
+    const billing = await group('billing', { ticket: '680' });
+    assert.match(billing.value.warning, /update_epic with epic "680" and group "billing"/);
+    assert.equal((await epics('billing'))[0].code, 'billing');
   });
 
   test('a lane published without a group joins its project\'s Ungrouped group', async () => {
@@ -203,16 +204,27 @@ describe('message boards', () => {
     assert.equal((await srv.call('POST', `/api/epics/${id}/messages`, ALICE, { body: 'Do the audit ticket first' })).status, 201);
     assert.equal((await epicDetail(id)).epic.unreadByAgent, 1);
     const updates = (await srv.tool(AGENT, 'get_updates', { group_id: 'boards' })).value;
-    assert.deepEqual(updates.boardMessages.map((b: any) => [b.epic, b.messages.map((m: any) => m.body)]), [['Boards', ['Do the audit ticket first']]]);
+    assert.deepEqual(updates.boardMessages.map((b: any) => [b.epic, b.messages.map((m: any) => m.body)]), [['boards', ['Do the audit ticket first']]]);
     // get_updates hands it over; a digest from an earlier `since` still reports it, once.
     assert.equal((await epicDetail(id)).epic.unreadByAgent, 0);
     const w = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'boards', since: start.checkedAt, wait_seconds: 0 })).value;
     assert.deepEqual(
-      w.items.map((i: any) => [i.kind, i.epic, i.messages[0].body]),
-      [['board_note', 'Boards', 'Do the audit ticket first']],
+      w.items.map((i: any) => [i.kind, i.id, i.text]),
+      [['board_note', 'boards', 'Do the audit ticket first']],
     );
     const later = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'boards', since: w.checkedAt, wait_seconds: 0 })).value;
     assert.deepEqual(later.items, []);
+  });
+
+  test("a wait's digest depends on since alone; get_updates also hands over older unread notes", async () => {
+    const id = await epicId('boards');
+    await srv.call('POST', `/api/epics/${id}/messages`, ALICE, { body: 'Older, unread' });
+    const since = new Date(Date.now() + 5).toISOString();
+    await new Promise((r) => setTimeout(r, 10));
+    const w = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'boards', since, wait_seconds: 0 })).value;
+    assert.deepEqual(w.items, [], 'a note from before since is not this digest\'s');
+    const updates = (await srv.tool(AGENT, 'get_updates', { group_id: 'boards', since })).value;
+    assert.deepEqual(updates.boardMessages[0].messages.map((m: any) => m.body), ['Older, unread']);
   });
 
   test('a wait hands over notes; another without since has nothing', async () => {
@@ -344,7 +356,7 @@ test('upgrading to epics: real epics for groups with a ticket, stand-ins otherwi
   const resolveTicketUrl = () => null;
   try {
     let store = new Store({ path: file, resolveTicketUrl });
-    store.upsertGroup('default/train', { name: 'Train', ticket: '680' }, 'bot');
+    store.upsertGroup('default/train', { name: 'Train' }, 'bot');
     store.upsertGroup('default/plain', { name: 'Plain' }, 'bot');
     store.upsertLane('default/t-slot', { group: 'default/train' }, 'bot');
     const loose = store.createEscalation({ laneId: 'default/t-slot', question: 'Which ticket next?' }, 'bot');
@@ -353,7 +365,9 @@ test('upgrading to epics: real epics for groups with a ticket, stand-ins otherwi
     store.close();
     // Back to v17: no epics; a ticketless lane could be working.
     const db = new DatabaseSync(file);
+    // Back to v17, where groups carried a ticket.
     db.exec(`${UNDO_V18}
+      UPDATE groups SET ticket = '680' WHERE id = 'default/train';
       UPDATE lanes SET status = 'active' WHERE id = 'default/t-slot';`);
     db.close();
 
@@ -405,8 +419,7 @@ describe('review fixes', () => {
     await srv.call('POST', `/api/escalations/${q.id}/decide`, ALICE, { decision: 'Other', note: 'Ask product first' });
     const w = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'direct', since: start.checkedAt, wait_seconds: 0 })).value;
     const reply = w.items.find((i: any) => i.kind === 'reply');
-    assert.equal(reply.epic, 'Direct');
-    assert.equal(reply.lane, undefined);
+    assert.deepEqual(reply, { code: q.ref, kind: 'reply', id: q.id, text: 'Ask product first' });
     await srv.tool(AGENT, 'acknowledge_escalation', { id: q.ref });
   });
 
@@ -422,6 +435,11 @@ describe('review fixes', () => {
     await srv.tool(AGENT, 'update_lane', { lane_id: 'refs-slot', group: 'refs' });
     const cross = await ask({ lane_id: 'refs-slot', epic: 'refs2', question: 'Wrong group?' });
     assert.match(cross.text, /not this lane's/);
+    // History finds an epic's closed questions by its ref.
+    const q = (await ask({ epic: '850', question: 'Scope the audit?' })).value;
+    await srv.call('POST', `/api/escalations/${q.id}/withdraw`, ALICE, { note: 'moot' });
+    const found = (await srv.call('GET', '/api/history?q=%23850', ALICE)).body.items;
+    assert.deepEqual(found.map((e: any) => e.id), [q.id]);
   });
 
   test("a closed epic's tickets keep their link; questions follow a retired stand-in and a renamed epic", async () => {
@@ -456,8 +474,8 @@ test('upgrading to epics: two groups with one ticket, and a lane its own earlier
   const resolveTicketUrl = () => null;
   try {
     let store = new Store({ path: file, resolveTicketUrl });
-    store.upsertGroup('default/old-train', { name: 'Old train', ticket: '680' }, 'bot');
-    store.upsertGroup('default/new-train', { name: 'New train', ticket: '#680' }, 'bot');
+    store.upsertGroup('default/old-train', { name: 'Old train' }, 'bot');
+    store.upsertGroup('default/new-train', { name: 'New train' }, 'bot');
     store.upsertLane('default/b-slot', { group: 'default/new-train' }, 'bot');
     const loose = store.createEscalation({ laneId: 'default/b-slot', question: 'Which ticket?' }, 'bot');
     store.upsertLane('default/b-slot', { ticket: '501', status: 'active' }, 'bot');
@@ -465,6 +483,8 @@ test('upgrading to epics: two groups with one ticket, and a lane its own earlier
     // Back to v17, where the lane's own question still held it blocked after it took 501.
     const db = new DatabaseSync(file);
     db.exec(`${UNDO_V18}
+      UPDATE groups SET ticket = '680' WHERE id = 'default/old-train';
+      UPDATE groups SET ticket = '#680' WHERE id = 'default/new-train';
       UPDATE lanes SET status = 'blocked_human', blocked_since = updated_at WHERE id = 'default/b-slot';`);
     db.close();
 

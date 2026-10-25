@@ -26,21 +26,15 @@ A server can host several independent projects (apps), each with its own groups,
 
 ## Publishing state
 
-- **Start of a session:** call `update_group` once, with your `group_id` (the one your owner's policy gives you), your epic/train `name`, its `ticket`, and your Remote Control session URL in `links` (`{label: "Overseer session", url: …, kind: "session"}`). Register it before publishing lanes in it.
+- **Start of a session:** call `update_group` once, with your `group_id` (the one your owner's policy gives you), its `name`, and your Remote Control session URL in `links` (`{label: "Overseer session", url: …, kind: "session"}`). Register it before publishing lanes in it.
 - **Epics:** `update_epic` with `epic` (its ticket ref, or your `group_id` for the group's own epic):
+  - Your epic's ticket (the one the owner gave you): pass its ref as `epic` plus `group`, once. The group's earlier epic questions and board move to it.
   - `status_line`: one line on the epic's card, e.g. "3 of 5 lanes busy; next up #966". Use it for what's queued or waiting; never publish placeholder lanes.
-  - To add an epic the owner gave you, pass its ref as `epic` plus `group`. The group's earlier epic questions and board move to it.
   - `list_epics` shows your group's epics.
 - **Lanes are slots:** give each a stable `lane_id` (`slot-1` … `slot-5`, not one per ticket), and pass `group` on its first call. Publish a lane before raising escalations on it; unknown lanes and groups are errors, so a typo can't create a stray lane.
-- **Moving to another ticket:** `fill_lane` with the next `ticket` and what happens to the one the lane holds, in `previous`:
-  - `park` with a `reason` ("blocked on the vendor API"): set aside with its open questions, which stay in the owner's inbox but no longer block the lane.
-  - `done`, or `drop` to let it go unfinished.
+- **Moving to another ticket:** `fill_lane` with the next `ticket` and, in `previous`, what happens to the one the lane holds: `park` with a `reason` ("blocked on the vendor API") to pick it up later, `done`, or `drop` (unfinished). Its open questions stay in the owner's inbox either way, and block only the lane holding the ticket; dismiss ones that no longer matter.
 
-  Either way its open questions stay open in the owner's inbox; they block only the lane holding the ticket. Dismiss ones that no longer matter.
-
-  The ticket is created on first use. A parked (or done) one comes back in any lane with its questions and history: `fill_lane` it into a free slot. Leave `ticket` out to empty the lane. A ticket is in one lane at a time, so a worker and a reviewer on one ticket share a lane.
-
-  Pass `epic` when the ticket belongs to one of your group's epics, so the lane is listed under that epic's card.
+  A parked (or done) ticket comes back in any lane with its questions and history. Leave `ticket` out to empty the lane. A ticket is in one lane at a time, so a worker and a reviewer on one ticket share a lane. Pass `epic` when the ticket belongs to one of your group's epics, so the lane shows under its card.
 - **Empty lanes show idle:** a lane holding no ticket shows `idle` whatever status you publish.
 - **Tickets, not PRs:** `ticket` is the work item (`redmine:1234`, `967`, `#967` and its URL all name the same one). PRs and CI runs go in `links`.
 - **Waiting on another ticket:** pass `waiting_on` (e.g. `"945"`) with the lane's status; it clears itself once that ticket is done.
@@ -112,8 +106,8 @@ curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api
 The owner answers on the LaneSignal dashboard or phone app with one of three buttons, then you wait for the decision, acknowledge it and act on it.
 
 - **Say what each answer means** when you raise it: `accept_means` (one line: what you do on Accept) and `reject_means` (what you do on Reject). Pass `allow_reject: false` when rejecting makes no sense (e.g. "Rotate the leaked key?").
-- **Accept or Reject** arrive as a decision (a `decided` item in the wait), with any instructions in `note`: follow them.
-- **Other opens a conversation.** The escalation stays open and the wait returns it as a `reply` item, with the owner's new messages. Then either:
+- **Accept or Reject** arrive as a decision (a `decided` item in the wait), with any instructions after the answer in its `text` ("Accept: ship it Friday"): follow them.
+- **Other opens a conversation.** The escalation stays open and the wait returns it as a `reply` item, with the owner's new messages in `text`. Then either:
   - **act on it:** `acknowledge_escalation` takes their latest message as the decision (`Other`), then do what it says. Don't reply first: a reply pages the owner; or
   - **reply:** `reply_to_escalation` with a short question back or what you'll do. The owner answers again with Accept, Reject or another message.
 - **Keep messages short:** at most 500 characters, plain, no preamble or recap. Anything longer (a revised plan, a diff summary, a screenshot) goes in an attachment.
@@ -122,23 +116,21 @@ The owner answers on the LaneSignal dashboard or phone app with one of three but
 1. **Wait** for answers on your whole group (next section). Keep working on lanes that aren't blocked meanwhile.
 2. **Acknowledge first, then act:** call `acknowledge_escalation` as soon as an escalation is decided. It returns the final `decision` and `decisionNote` (the owner may correct a mis-tap until you acknowledge). Act on what it returns. Only the agent that raised an escalation can acknowledge it (or the overseer of the group its ticket or epic is in now); repeating an acknowledgement changes nothing.
 3. **Publish the next state in the same call:** pass `status` and `activity`, e.g. `status: "active", activity: "Dropping the column (A12)"`.
-4. **Answered in this session instead?** If the owner answers you here ("A12: drop it"), close it with `dismiss_escalation`: `justification` says what was decided and where, e.g. `"Sam: drop the column (in session, 2026-10-23)"`, plus `status` and `activity` as above. Dismiss moot escalations the same way, saying why ("Superseded by A14"). Only you can dismiss yours; the owner may also dismiss a stale one from the dashboard.
+4. **Answered in this session instead?** If the owner answers you here ("A12: drop it"), close it with `dismiss_escalation`: `justification` says what was decided and where, e.g. `"Sam: drop the column (in session, 2026-10-23)"`, plus `status` and `activity` as above. Dismiss moot escalations the same way, saying why ("Superseded by A14"). Only you (or your group's overseer) can dismiss yours; the owner may also dismiss a stale one from the dashboard.
 5. **Other lanes' questions:** if one affects your work, `add_position` with `agree`, `disagree` or `neutral` and a one-line reason, while it's still open.
 
 ## Waiting for answers
 
 Answers can take minutes or a day.
 
-- **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns a digest as soon as anything needs you, even when nothing is open: `items`, one per thing to handle, each with a `kind`:
+- **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns a digest as soon as anything needs you, even when nothing is open: `items`, one per thing to handle, `{code, kind, id, text}`. `code` is the escalation's; `id` is its id, or the lane, ticket or epic the item is about; `text` is the owner's words (a file they attached reads "[attached: plan.md (id …)]": fetch it with `curl -H "Authorization: Bearer $LANESIGNAL_KEY" "$base/api/attachments/<id>"`). Kinds:
   - `decided`: answered. Acknowledge and act on each one (above).
-  - `reply`: the owner answered Other; `messages` are theirs since you last wrote. Acknowledge and act, or reply (above).
+  - `reply`: the owner answered Other; `text` is what they wrote since you last did. Acknowledge and act, or reply (above).
   - `closed`: withdrawn by someone else (a person dismissed it).
   - `lane_removed`: a lane someone else took off the dashboard (including ones with nothing open). Stop work on it and don't publish to it again; publishing brings a lane back.
   - `ticket_moved`: a lane outside your group took one of your group's tickets (another overseer picked up one you parked). Don't fill a lane with it again.
   - `lane_note`: the owner's notes on a lane in scope, outside any escalation. Act on them like the owner's instructions; answer with `notify_owner` if useful. They also come back as `ownerMessages` from your next `update_lane` or `notify_owner` on that lane.
-  - `board_note`: the owner wrote on one of your group's epics' boards (`epic`). Act on it like a `lane_note`; answer with `notify_epic` if useful.
-
-  An epic's own question names its `epic` instead of a lane.
+  - `board_note`: the owner wrote on one of your group's epics' boards (`id` names the epic). Act on it like a `lane_note`; answer with `notify_epic` if useful.
 - **What repeats:** `decided` and `reply` come back on every wait until you acknowledge or reply. The rest come back once per `since`.
 - **`counts`** says how many are `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou`. If they show something you can't find in `items` (e.g. after a compaction), call `get_updates`: it returns everything in scope.
 - **`ready: false`:** the wait ran out with nothing new. Call again. With nothing open, the wait keeps waiting for the owner's notes, so keep it running in the background (below).

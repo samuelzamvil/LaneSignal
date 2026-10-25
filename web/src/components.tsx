@@ -158,6 +158,15 @@ export function RichText({ text }: { text: string }) {
   );
 }
 
+/** A ticket as cards and rows name it: a bare number reads "#945". */
+export const ticketLabel = (ref: string) => (/^\d+$/.test(ref) ? `#${ref}` : ref);
+
+/** A lane's ticket in words, for one line: "961 · waiting on #945", or "Idle · no ticket". */
+function laneTicketText(lane: Lane) {
+  if (!lane.ticket) return 'Idle · no ticket';
+  return lane.waitingOn ? `${lane.ticket} · waiting on ${ticketLabel(lane.waitingOn)}` : lane.ticket;
+}
+
 /** The lanes' list layout: one line per lane; tapping opens it. */
 export function LaneRow({ lane, now, onOpen }: { lane: Lane; now: number; onOpen: () => void }) {
   return (
@@ -165,7 +174,10 @@ export function LaneRow({ lane, now, onOpen }: { lane: Lane; now: number; onOpen
       <span className="ref">{lane.letter ?? ''}</span>
       <span className="lane-row-main">
         <span className="lane-row-name">{lane.name}</span>
-        <span className="muted lane-row-activity">{lane.activity ?? lane.id}</span>
+        <span className="muted lane-row-activity">
+          {laneTicketText(lane)}
+          {lane.activity && ` · ${lane.activity}`}
+        </span>
       </span>
       {hasNewMessage(lane) && (
         <span className="new-message" title="The agent wrote on this lane">
@@ -217,8 +229,8 @@ export function LaneCard({
       <div className="meta">
         {groupName && <span className="tag">{groupName}</span>}
         <TicketLink lane={lane} />
-        {!lane.ticket && lane.status === 'idle' && <span className="muted">no ticket</span>}
-        {lane.waitingOn && <span className="tag">waiting on {lane.waitingOn}</span>}
+        {!lane.ticket && <span className="muted">Idle · no ticket</span>}
+        {lane.waitingOn && <span className="tag">waiting on {ticketLabel(lane.waitingOn)}</span>}
         {lane.blockingEscalations > 0 && (
           <span className="esc-count">
             ⚑ {lane.blockingEscalations} decision{lane.blockingEscalations > 1 ? 's' : ''}

@@ -45,6 +45,8 @@ const UNDO_V16 = `
   ALTER TABLE escalations DROP COLUMN legacy_ref;
   ALTER TABLE groups DROP COLUMN owner;
   ALTER TABLE escalations DROP COLUMN ticket_id;
+  -- Before tickets, a lane held its ticket as text.
+  UPDATE lanes SET ticket = (SELECT t.display_ref FROM tickets t WHERE t.num = lanes.ticket_id) WHERE ticket IS NULL;
   ALTER TABLE lanes DROP COLUMN ticket_id;
   ALTER TABLE lane_events DROP COLUMN ticket_id;
   DROP TABLE tickets;

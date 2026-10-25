@@ -82,7 +82,7 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 | Tool | Who | Purpose |
 |---|---|---|
 | `list_projects` | any | The projects the credential reaches (id, key, name) |
-| `update_group` | agent | Name the epic/train, set its ticket, link the overseer's Remote Control session |
+| `update_group` | agent | Name the group and link the overseer's Remote Control session. Its epic's ticket goes in `update_epic`: a `ticket` passed here is ignored, with a `warning` saying so |
 | `update_lane` | agent | Create or update a lane: status, group, ticket, activity, links, `waiting_on`. Omitted fields stay unchanged. The group must be registered with `update_group` first; a new lane published without one joins the project's "Ungrouped" group. A lane holding no ticket shows `idle` whatever status is published (the result says so in `warning`). While a blocking escalation is open, the lane stays `blocked_human`. `completed` finishes the lane's ticket and empties the lane; a different `ticket` parks the one it held (use `fill_lane` instead). The owner's notes on the lane the agent hasn't seen come back in `ownerMessages` ([lane conversations](concepts.md#lane-conversations)) |
 | `fill_lane` | agent | Move a lane to another [ticket](concepts.md#tickets) in one call: `previous` says what happens to the one it holds (`park` with a `reason`, `done` or `drop`), `ticket` moves in (created on first use; a parked one comes back with its questions). `epic` names the [epic](concepts.md#epics) the ticket is for (its ref, or the group's id; `null` clears it), so the lane is listed under that epic's card. Also takes `update_lane`'s fields |
 | `remove_lane` | agent | Take a lane off the dashboard (archived; history kept). Its ticket is done if the lane was completed, otherwise parked, unless `previous` says otherwise; it keeps its questions |
@@ -114,17 +114,16 @@ This section applies with answering on the dashboard on (the default). With `LAN
 Answers can take minutes or a day. An overseer waits on its whole group with one call:
 
 - `wait_for_decisions` with `group_id` returns a **digest** as soon as anything in the group needs the agent. It waits for a change even when nothing is open, so one loop covers the whole session:
-  - `items`, one per thing to handle, each with a `kind`:
-    - `decided`: answered; act on `decision` and `note`
-    - `reply`: the owner answered Other; their `messages`
-    - `closed`: withdrawn by someone else, e.g. because a person removed the lane
-    - `lane_removed`: a lane someone else took off the dashboard, even with nothing open
-    - `lane_note`: the owner wrote on a lane in scope, outside any escalation
-    - `ticket_moved`: a lane outside the scope (usually another overseer's) took a ticket from one of these lanes
-    - `board_note`: on a group wait, someone wrote on one of the group's epics' boards (`epic`, and their `messages`)
-  - An epic's own question names its `epic` instead of a lane.
-  - The owner's words come in full. The agent's own question is shortened to its first 80 characters, enough to recognise it.
-  - `decided` and `reply` come back on every wait until the agent acknowledges or replies. The others come back once per `since`, and again if the agent repeats a `since`, so a wait that crashed before acting loses nothing.
+  - `items`, one per thing to handle, `{code, kind, id, text}`: `code` is the escalation's (with its project key when the key reaches several projects), `id` its id or the lane, ticket or epic the item is about, and `text` the owner's words in full (the agent's own text is left out). Kinds:
+    - `decided`: answered; `text` is the answer and any instructions ("Accept: ship it Friday")
+    - `reply`: the owner answered Other; `text` is what they wrote since the agent last did
+    - `closed`: withdrawn by someone else; `text` says how
+    - `lane_removed`: a lane someone else took off the dashboard, even with nothing open (`id` is the lane)
+    - `lane_note`: the owner wrote on a lane in scope, outside any escalation (`id` is the lane)
+    - `ticket_moved`: a lane outside the scope (usually another overseer's) took a ticket from one of these lanes (`id` is the ticket)
+    - `board_note`: on a group wait, someone wrote on one of the group's epics' boards (`id` names the epic)
+  - Files the owner attached are named in `text` with their id ("[attached: plan.md (id …)]"): fetch one with `GET /api/attachments/:id`.
+  - `decided` and `reply` come back on every wait until the agent acknowledges or replies. The others come back once per `since`, and again if the agent repeats a `since`, so a wait that crashed before acting loses nothing. With a `since`, the digest depends on nothing else (whether a note was handed over doesn't matter).
   - `counts`: `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies).
 - `ready: true` means there are items. `ready: false` means the wait ran out with nothing new: call again.
 - A group wait also covers the group's [epics](concepts.md#epics): their questions, and people's notes on their boards.
