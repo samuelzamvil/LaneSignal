@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { ZodError, type ZodType } from 'zod';
+import { z, ZodError, type ZodType } from 'zod';
 import { accessFor, approvesRequirements, briefMessages, briefWait, digestWait, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { oversizedImage, readUpload, sniff } from './attachments.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
@@ -448,11 +448,6 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   // ---- lanes ----
 
   /** A lane patch from a client, with its group qualified to the lane's project. */
-  const lanePatchOf = (project: string, body: unknown) => {
-    const patch = parse(s.lanePatch, body);
-    return { ...patch, group: patch.group ? q(project, patch.group) : patch.group };
-  };
-
   app.get('/api/lanes', any, (req, res) => {
     res.json(store.listLanes(acc(res).scope(projectQuery(req))).map(pub.lane));
   });
@@ -475,24 +470,61 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     });
   });
 
-  app.put('/api/lanes/:id', agent, (req, res) => {
+  /** Publishes a lane (a different ticket parks the one it held) or, with `strict`, switches tickets (fill). */
+  const publishLane = (req: Request, res: Response, strict: boolean) => {
     const id = parse(s.laneId, req.params.id);
     const group = typeof req.body?.group === 'string' ? req.body.group : undefined;
     const project = acc(res).pick(projectQuery(req), { lane: id, group });
+    const { previous, reason, waitingOn, ...rest } = parse(s.laneFill, req.body ?? {});
+    const patch = { ...rest, group: rest.group ? q(project, rest.group) : rest.group, ...(strict ? { ticket: rest.ticket ?? null } : {}) };
     // The dashboard's message bookkeeping is no use to the agent publishing.
     const { lastMessageId, lastAgentMessageId, unreadByAgent, ...lane } = pub.lane(
-      store.upsertLane(q(project, id), lanePatchOf(project, req.body), principalOf(res).name),
+      store.upsertLane(q(project, id), patch, principalOf(res).name, { previous, reason, waitingOn, strict }),
     );
     // The owner's notes on the lane reach a working agent the next time it publishes.
     const unread = store.takeUnreadForAgent(q(project, id));
     res.json(unread.length ? { ...lane, ownerMessages: briefMessages(unread) } : lane);
-  });
+  };
+  app.put('/api/lanes/:id', agent, (req, res) => publishLane(req, res, false));
+  app.put('/api/lanes/:id/fill', agent, (req, res) => publishLane(req, res, true));
 
   // Humans remove lanes from the dashboard; overseers remove lanes whose work is over.
   app.delete('/api/lanes/:id', any, (req, res) => {
     const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
-    store.deleteLane(q(project, String(req.params.id)), principalOf(res).name);
+    const release = parse(
+      z.object({ previous: s.ticketRelease.optional(), reason: z.string().max(500).optional(), project: z.string().optional() }),
+      req.query,
+    );
+    store.deleteLane(q(project, String(req.params.id)), principalOf(res).name, release);
     res.sendStatus(204);
+  });
+
+  // ---- tickets: held by lanes, parked, done ----
+
+  app.get('/api/tickets', any, (req, res) => {
+    const query = parse(s.ticketQuery, req.query);
+    const projects = acc(res).scope(query.project);
+    const tickets = query.group
+      ? projects.flatMap((p) => store.listTickets({ projects: [p], groupId: q(p, query.group!), states: query.state }))
+      : store.listTickets({ projects, states: query.state });
+    res.json(tickets.map(pub.ticket));
+  });
+
+  /** One ticket by any form of its ref (URL-encode it), with its escalations, history and the lanes it passed through. */
+  app.get('/api/tickets/:ref', any, (req, res) => {
+    const ref = String(req.params.ref);
+    const hits = acc(res)
+      .scope(projectQuery(req))
+      .flatMap((p) => store.getTicket(p, ref) ?? []);
+    if (hits.length > 1) throw new ValidationError(`"${ref}" is a ticket in several projects: say which (?project=)`);
+    const t = hits[0];
+    if (!t) throw new NotFoundError(`Ticket "${ref}" not found`);
+    res.json({
+      ticket: pub.ticket(t),
+      escalations: store.listEscalations({ ticketId: t.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 200 }).map(pub.escalation),
+      events: store.ticketEvents(t.id, 200).map((e) => ({ ...e, laneId: localId(e.laneId) })),
+      lanes: store.ticketLanes(t.id).map(localId),
+    });
   });
 
   // ---- attachments: files on escalations (a plan to read, a UI preview) ----

@@ -91,6 +91,7 @@ export async function exportZip(
         'lane_messages.csv  the conversations on lanes (the agent\'s notices and the owner\'s notes)',
         'lanes.csv          every lane, including archived ones (archived_at set)',
         'groups.csv         every group (epic/train/overseer), including archived ones',
+        'tickets.csv        every ticket lanes have held: held, parked, done or dropped (LaneSignal\'s record, not the tracker\'s)',
         'events.csv         lane history: status changes, escalation steps, recent activity text, conversation messages',
         ...(datasets.includes('requirements') ? ['requirements.csv   the owner\'s product decisions, including superseded and retired ones'] : []),
         '',

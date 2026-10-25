@@ -5,7 +5,7 @@ import { createAccounts } from '../src/accounts.ts';
 import { createApp } from '../src/app.ts';
 import { loadConfig } from '../src/config.ts';
 import { Store } from '../src/store.ts';
-import { ticketResolver } from '../src/tickets.ts';
+import { ticketRefs, ticketResolver } from '../src/tickets.ts';
 
 const AGENT = 'agent-token-0123456789';
 const ALICE = 'alice-token-0123456789';
@@ -26,7 +26,11 @@ before(async () => {
     LANESIGNAL_AUTH_SECRET: 'test-secret-0123456789-0123456789-0123',
     LANESIGNAL_TICKET_TEMPLATES: 'redmine=https://redmine.example/issues/{id},gh=https://github.com/o/r/issues/{id}',
   });
-  store = new Store({ path: ':memory:', resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem) });
+  store = new Store({
+    path: ':memory:',
+    resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem),
+    ticketRefs: ticketRefs(config.ticketTemplates, config.defaultTicketSystem),
+  });
   const accounts = await createAccounts(config, ':memory:');
   const app = createApp({ config, store, accounts, push: { fcm: false, ntfy: false } });
   const server = app.listen(0);
@@ -354,7 +358,8 @@ describe('mcp', () => {
     });
     // Agents get the escalation back in brief: not the whole question echoed.
     const brief = JSON.parse(created.result.content[0].text);
-    assert.match(brief.ref, /^[A-Z]+\d+$/);
+    // Coded with the lane's ticket: gh isn't the default system (redmine is), so its prefix stays.
+    assert.equal(brief.ref, 'gh:5A');
     assert.equal(brief.state, 'open');
     assert.equal(brief.acceptMeans, undefined);
     assert.equal(store.getEscalation(brief.id)?.acceptMeans, 'Merge it now');

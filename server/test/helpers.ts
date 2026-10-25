@@ -4,7 +4,7 @@ import { createAccounts } from '../src/accounts.ts';
 import { createApp } from '../src/app.ts';
 import { loadConfig } from '../src/config.ts';
 import { Store } from '../src/store.ts';
-import { ticketResolver } from '../src/tickets.ts';
+import { ticketRefs, ticketResolver } from '../src/tickets.ts';
 import { TrmnlPusher, type TrmnlOptions } from '../src/trmnl.ts';
 
 export const AGENT = 'agent-token-0123456789';
@@ -28,6 +28,7 @@ export async function startServer(env: Record<string, string> = {}, opts: { trmn
   const store = new Store({
     path: ':memory:',
     resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem),
+    ticketRefs: ticketRefs(config.ticketTemplates, config.defaultTicketSystem),
     waitGraceMs: 50,
     attachmentsPerItem: config.attachmentsPerItem,
   });
