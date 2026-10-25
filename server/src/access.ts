@@ -231,6 +231,7 @@ export const pub = {
       open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: localId(o.laneId) })),
       removedLanes: w.removedLanes.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
       laneMessages: w.laneMessages.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
+      movedTickets: w.movedTickets.filter((m) => keep(m.laneId)).map((m) => ({ ...m, laneId: localId(m.laneId) })),
     };
   },
   /** The event as a client sees it, or null when the caller can't see its project. */
@@ -352,6 +353,7 @@ export const digestWait = (w: WaitResult) => {
     ...w.closed.map((e) => compact({ kind: 'closed', ...esc(e), state: e.state, resolution: e.resolution })),
     ...w.removedLanes.map((l) => compact({ kind: 'lane_removed', lane: l.laneId, by: l.removedBy, at: l.at })),
     ...w.laneMessages.map((l) => ({ kind: 'lane_note', lane: l.laneId, messages: briefMessages(l.messages) })),
+    ...w.movedTickets.map((m) => compact({ kind: 'ticket_moved', ticket: m.ticket, lane: m.laneId, by: m.by, at: m.at })),
   ];
   return {
     // From the items themselves: `pub.wait` may have dropped some the caller no longer sees.
@@ -363,7 +365,7 @@ export const digestWait = (w: WaitResult) => {
 };
 
 /** A wait result with its escalations in brief. */
-export const briefWait = (w: WaitResult) => ({
+export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
   ...w,
   decided: w.decided.map(brief),
   replies: w.replies.map(({ projectKey: _key, ...r }) => ({ ...r, messages: briefMessages(r.messages) })),

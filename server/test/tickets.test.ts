@@ -291,6 +291,58 @@ describe('tickets', () => {
     }
   });
 
+  test("a parked ticket's status follows its questions", async () => {
+    await fill({ lane_id: 'slot-v', group: 'train', ticket: '750' });
+    const q = await ask('slot-v', 'Which vendor?');
+    await fill({ lane_id: 'slot-v', previous: 'park', reason: 'waiting on procurement' });
+    assert.equal((await ticket('750')).status, 'blocked_human');
+    const events: any[] = [];
+    const listen = (e: any) => events.push(e);
+    srv.store.events.on('change', listen);
+    try {
+      await srv.call('POST', `/api/escalations/${q.id}/decide`, ALICE, { decision: 'Accept' });
+    } finally {
+      srv.store.events.off('change', listen);
+    }
+    assert.equal((await ticket('750')).status, 'awaiting_agent');
+    assert.ok(events.some((e) => e.type === 'ticket' && e.ticket.ref === 'redmine:750' && e.ticket.status === 'awaiting_agent'));
+  });
+
+  test("a position on a parked ticket's question is in that ticket's history", async () => {
+    await fill({ lane_id: 'slot-w', group: 'train', ticket: '760' });
+    const q = await ask('slot-w', 'Split it?');
+    await fill({ lane_id: 'slot-w', ticket: '761', previous: 'park', reason: 'later' });
+    await srv.tool(REVIEWER, 'add_position', { id: q.ref, stance: 'agree', note: 'yes' });
+    assert.ok((await ticket('760')).history.some((h: any) => h.message.startsWith('reviewer agrees')));
+    assert.ok(!(await ticket('761')).history.some((h: any) => h.message.startsWith('reviewer agrees')));
+  });
+
+  test('waiting_on a ticket that is over is left out, with a warning', async () => {
+    await fill({ lane_id: 'slot-x', group: 'train', ticket: '770' });
+    await fill({ lane_id: 'slot-x', ticket: '771', previous: 'done' });
+    const res = await fill({ lane_id: 'slot-x', ticket: '771', waiting_on: '770' });
+    assert.match(res.value.warning, /770 is done already/);
+    assert.equal((await lane('slot-x')).waitingOn, null);
+  });
+
+  test("a group's wait hears when another overseer takes one of its tickets", async () => {
+    await srv.call('PUT', '/api/groups/third', REVIEWER, { name: 'Third' });
+    // A group of its own, so nothing else is waiting in it.
+    await srv.call('PUT', '/api/groups/moves', AGENT, { name: 'Moves' });
+    await fill({ lane_id: 'slot-y', group: 'moves', ticket: '780' });
+    await fill({ lane_id: 'slot-y', previous: 'park', reason: 'over to the reviewer' });
+    const start = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'moves', wait_seconds: 0 })).value;
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'moves', since: start.checkedAt, wait_seconds: 10 });
+    await new Promise((r) => setTimeout(r, 100));
+    await fill({ lane_id: 'their-y', group: 'third', ticket: '780' }, REVIEWER);
+    const w = (await waiting).value;
+    assert.equal(w.ready, true);
+    const moved = w.items.find((i: any) => i.kind === 'ticket_moved');
+    assert.deepEqual([moved.ticket, moved.lane, moved.by], ['780', 'their-y', 'reviewer']);
+    // The full format keeps its older shape.
+    assert.equal((await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'moves', wait_seconds: 0, format: 'full' })).value.movedTickets, undefined);
+  });
+
   test('tickets are listed, searched by code and exported', async () => {
     const listed = (await srv.tool(AGENT, 'list_tickets', { group_id: 'train' })).value;
     assert.ok(listed.some((t: any) => t.ref === '500' && t.state === 'in_lane'));

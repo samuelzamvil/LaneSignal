@@ -58,7 +58,7 @@ The rules:
 - **Blocked time** belongs to the ticket: a lane's blocked total is its current ticket's.
 - **Waiting on another ticket:** a lane can say its ticket waits on another ("waiting on 945"); that clears itself once 945 is done.
 - **PRs aren't tickets:** they go in the lane's links. Switching a lane from a Redmine ticket to a `gh:` ref gets a warning.
-- **Who may close its questions:** the agent that raised them, a person, or the overseer that registered the group the ticket is in now, so a ticket handed to another overseer goes with its questions.
+- **Who may close its questions:** the agent that raised them, a person, or the overseer of the group the ticket is in now (the key that last published it with `update_group`), so a ticket handed to another overseer goes with its questions.
 
 Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)"). Otherwise their publishes follow the same rules as `fill_lane`: a ticket another lane holds is refused, and a done one reopens.
 
@@ -155,7 +155,7 @@ open ──(human decides)──► decided ──(agent acknowledges)──► 
 3. The agent acknowledges before acting, and the acknowledgement returns the final answer. It usually publishes its next status in the same call.
 
 - If two humans answer at once, the second gets `409 Conflict`. **Change decision** replaces the answer until the agent acknowledges, e.g. after a mis-tap.
-- Only the agent that raised an escalation (any key of the same account with the same key name) acknowledges or dismisses it, so an overseer can't close another's by reusing a code. A person can on its behalf, and so can the overseer that registered the group its ticket is in now (`update_group`), so a ticket handed over goes with its questions.
+- Only the agent that raised an escalation (any key of the same account with the same key name) acknowledges or dismisses it, so an overseer can't close another's by reusing a code. A person can on its behalf, and so can the overseer of the group its ticket is in now (the key that last published it with `update_group`), so a ticket handed over goes with its questions.
 - You can still answer in the agent's own session (e.g. Remote Control), quoting the code ("A12: drop it"). The agent then dismisses the escalation with a justification ("Sam: drop it, in session"), which is the record on the dashboard and in exports. **Dismiss** on the dashboard closes a stale one whose session ended; the lane then shows as waiting on its agent (`awaiting_agent`) until the agent publishes again.
 - When a lane's last open blocking escalation is decided, the lane moves to `awaiting_agent`, which stops the blocked timer while the agent picks up the answer.
 - While an agent waits for answers on a lane, the lane shows **agent waiting**. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting.

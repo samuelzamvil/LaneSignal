@@ -116,6 +116,7 @@ Answers can take minutes or a day. An overseer waits on its whole group with one
     - `closed`: withdrawn by someone else, e.g. because a person removed the lane
     - `lane_removed`: a lane someone else took off the dashboard, even with nothing open
     - `lane_note`: the owner wrote on a lane in scope, outside any escalation
+    - `ticket_moved`: a lane outside the scope (usually another overseer's) took a ticket from one of these lanes
   - The owner's words come in full. The agent's own question is shortened to its first 80 characters, enough to recognise it.
   - `decided` and `reply` come back on every wait until the agent acknowledges or replies. The others come back once per `since`, and again if the agent repeats a `since`, so a wait that crashed before acting loses nothing.
   - `counts`: `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies).

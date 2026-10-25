@@ -742,3 +742,32 @@ test('upgrading to tickets marks the tickets of finished lanes done and archives
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('upgrading to tickets moves blocked state to the lane holding the ticket', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v15c-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    publishLane(store, 'default/twin', { status: 'active' }, 'bot');
+    const q = escalate(store, { laneId: 'default/twin', question: 'Blocked?' }, 'bot');
+    publishLane(store, 'default/holder', { status: 'active' }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      ${UNDO_V16}
+      UPDATE lanes SET ticket = 'gh:920', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = 'default/twin';
+      UPDATE lanes SET ticket = 'gh:920', updated_at = '2030-01-01T00:00:00.000Z' WHERE id = 'default/holder';
+      UPDATE meta SET value = '15' WHERE key = 'schema_version';
+    `);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    // The newer lane holds the ticket, so its question blocks that lane now; the twin waits on its agent.
+    assert.equal(store.getEscalation(q.id)?.ticketId, store.getLane('default/holder')?.ticketId);
+    assert.equal(store.getLane('default/holder')?.status, 'blocked_human');
+    assert.equal(store.getLane('default/twin')?.status, 'awaiting_agent');
+    assert.equal(store.getLane('default/twin')?.ticket, null);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

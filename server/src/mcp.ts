@@ -121,7 +121,7 @@ async function cancellable<T>(
 const GROUP_FILTER = z.string().max(64).optional().describe('Group (epic/train) id.');
 const GROUP_ALIAS = z.string().max(64).optional();
 
-const ID_HELP = 'Escalation id, or its code such as "A12" (or "LS-A12" to name the project too).';
+const ID_HELP = 'Escalation id, or its code such as "967A" or "A12" (or "LS-967A" to name the project too).';
 
 /** Every tool takes it; only keys and people with several projects need it. */
 const PROJECT = {
@@ -346,7 +346,7 @@ function buildServer(
       group_id: s.groupId.optional().describe('Wait on every lane in this group (your epic/train).'),
       group: s.groupId.optional().describe('Same as group_id.'),
       lane_ids: z.array(s.laneId).max(100).optional(),
-      ids: z.array(z.string()).max(100).optional().describe('Escalation ids or codes such as "A12".'),
+      ids: z.array(z.string()).max(100).optional().describe('Escalation ids or codes such as "967A" or "A12".'),
       since: z
         .string()
         .optional()
@@ -362,7 +362,8 @@ function buildServer(
           '`items`, one per thing to handle, each with a `kind`: `decided` (answered: acknowledge, then act on `decision` ' +
           'and `note`), `reply` (the owner answered Other: their `messages`; acknowledge and act, or reply_to_escalation), ' +
           '`closed` (withdrawn by someone else; "Lane removed by …" means stop that lane), `lane_removed` (stop work on ' +
-          'it), `lane_note` (the owner wrote on a lane: act on it, answer with notify_owner if useful). `decided` and ' +
+          'it), `lane_note` (the owner wrote on a lane: act on it, answer with notify_owner if useful), ' +
+          '`ticket_moved` (a lane outside your scope took one of its tickets). `decided` and ' +
           '`reply` come back on every wait until you handle them; the rest once per `since`. `counts` says how many are ' +
           '`open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies). If counts show something ' +
           'and items don\'t, call get_updates. `ready` is true when there are items; false means the wait ran out: call ' +
@@ -498,7 +499,7 @@ function buildServer(
       group_id: s.groupId.nullable().optional().describe('Your train/epic; omit for the whole project.'),
       group: s.groupId.nullable().optional(),
       all_projects: z.boolean().optional().describe('Only when the owner said it covers all their projects.'),
-      source_escalation: z.string().optional().describe('The escalation code it answered, e.g. "A12".'),
+      source_escalation: z.string().optional().describe('The escalation code it answered, e.g. "967A".'),
       decided_by: z
         .string()
         .max(100)
@@ -867,7 +868,7 @@ function buildServer(
               '`reject_means`, or `allow_reject: false` when rejecting makes no sense. '
             : '. ') +
           'Files (a plan, a screenshot) go in `attachments`: ids from uploading each to /api/attachments. ' +
-          'Returns its code (`ref`, e.g. "A12"), usable in every tool. The same open question again returns the first ' +
+          'Returns its code (`ref`: the lane\'s ticket and a letter, e.g. "967A"; "A12" on a lane holding no ticket), usable in every tool. The same open question again returns the first ' +
           '(`duplicate: true`); the same `question` as an open FYI of yours, raised as blocking, makes it block and notifies the owner (`upgraded: true`; fields you give replace the FYI\'s, new attachments are added). ' +
           (features.decisions
             ? 'Then wait with wait_for_decisions and acknowledge_escalation as soon as one is decided.'

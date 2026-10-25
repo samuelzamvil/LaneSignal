@@ -70,6 +70,7 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 | `positions_agree`, `positions_disagree`, `positions_neutral` | Counts of agent positions |
 | `links` | JSON |
 | `ticket_id` | The [ticket](#ticketscsv-every-ticket-lanes-have-held) it belongs to; empty for one raised on a lane holding no ticket |
+| `legacy_ref` | Its code from before tickets (`A12`), for escalations raised before the upgrade; it still resolves |
 
 ### `positions.csv` (one row per agent position)
 
