@@ -56,6 +56,8 @@ The first signed build still needs the old (debug-signed) app uninstalled once; 
 1. On first launch, enter the server URL (e.g. `https://lanesignal.example.com`) and sign in with your email and password.
 2. If the server has no accounts yet, the app shows the setup screen, which needs the setup code (see [accounts](accounts.md)).
 
+Behind [Cloudflare Access](cloudflare-access.md) with Managed OAuth, the app shows **Sign in with Cloudflare Access** instead: you sign in with Google in a Chrome Custom Tab, and the app keeps the refresh token encrypted with a key in the Android Keystore.
+
 The server must be reachable over **HTTPS**; see [Reverse proxy](reverse-proxy.md). For testing over plain HTTP on a LAN only, build with `LANESIGNAL_ALLOW_HTTP=1 npm run android:sync`.
 
 ## Push notifications

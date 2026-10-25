@@ -26,6 +26,10 @@ Every request carries one bearer credential, which gets one of two roles:
 - **Admin controls:** impersonation is disabled, and only admins change names.
 - **Telemetry:** off.
 
+## Cloudflare Access (beta)
+
+With `LANESIGNAL_CLOUDFLARE_ACCESS=true`, a request without a LaneSignal credential is signed in as the account whose email Cloudflare Access vouches for. Its `Cf-Access-Jwt-Assertion` is checked against your team's signing keys, issuer and AUD tag, and must not have expired. Changes signed in that way must come from LaneSignal's own origin or the app, because Access's cookie, unlike a bearer token, travels with cross-site requests. See [Sign in with Cloudflare Access](cloudflare-access.md#security).
+
 ## Agent keys
 
 - Stored hashed and shown once.

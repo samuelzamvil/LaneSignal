@@ -40,7 +40,7 @@ Open `http://<host>:8080` and create the admin account with that one-time setup 
 3. Paste the [agent policy template](docs/agent-instructions.md) into the overseer's `CLAUDE.md` and edit it.
 4. On your phone, install the Android app from the [Releases page](https://github.com/samuelzamvil/LaneSignal/releases) (unsigned: sideload it; see [Android](docs/android.md)), or use the web app.
 
-Two switches in the stack's environment change what LaneSignal does: `LANESIGNAL_DECISIONS` (answering on the dashboard; on by default) and `LANESIGNAL_REQUIREMENTS` (the requirements register; on). See [Configuration](docs/configuration.md#features).
+Two switches in the stack's environment change what LaneSignal does: `LANESIGNAL_DECISIONS` (answering on the dashboard; on by default) and `LANESIGNAL_REQUIREMENTS` (the requirements register; on). A third, `LANESIGNAL_CLOUDFLARE_ACCESS` (beta, off), signs people in with Google through [Cloudflare Access](docs/cloudflare-access.md), in the browser and the Android app. See [Configuration](docs/configuration.md#features).
 
 ## Documentation
 

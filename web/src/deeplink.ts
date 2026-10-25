@@ -6,6 +6,8 @@ export function routeFromAppLink(url: string): string | null {
   const m = /^lanesignal:\/\/(.*)$/i.exec(url.trim());
   if (!m) return null;
   const path = m[1].replace(/^\/+/, '').split(/[?#]/)[0];
+  // Cloudflare Access sign-in returns here; the sign-in screen handles it.
+  if (/^oauth\/callback\/?$/.test(path)) return null;
   // Any app or web page can open these links: pass on only known screens with plain, decodable segments.
   const known = /^(esc|lane|epic|lanes|reqs|history|settings)(\/|$)/.test(path) && /^[A-Za-z0-9._~%/-]*$/.test(path);
   const decodable = path.split('/').every((part) => {

@@ -1,11 +1,15 @@
+import { App as CapApp } from '@capacitor/app';
 import { useEffect, useState } from 'react';
+import { accessGuards, accessTokens, finishAccessSignIn, startAccessSignIn } from './access-session.ts';
 import { createClient, isNative, normalizeServer, publicApi, type Connection } from './api.ts';
 
-type Mode = 'signin' | 'setup' | 'token';
+type Mode = 'signin' | 'setup' | 'token' | 'access';
 
 /**
  * Email/password sign-in; first-run admin setup when the server has no
  * accounts yet; and a fallback for static access tokens from the server config.
+ * Behind Cloudflare Access (LANESIGNAL_CLOUDFLARE_ACCESS), the browser is already signed in by Access's
+ * cookie, and the app signs in through Access's Managed OAuth in a Custom Tab.
  */
 export function Login({ onConnected }: { onConnected: (c: Connection) => void }) {
   const [server, setServer] = useState('');
@@ -19,6 +23,62 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
   const [busy, setBusy] = useState(false);
   const base = normalizeServer(server);
 
+  // Browser on the LaneSignal server behind Access: Access's cookie already says who this is.
+  useEffect(() => {
+    if (isNative) return;
+    let cancelled = false;
+    fetch('/api/me')
+      .then(async (res) => {
+        if (cancelled) return;
+        const body = (await res.json().catch(() => ({}))) as { cloudflareAccess?: boolean; role?: string; error?: string };
+        if (res.ok && body.cloudflareAccess && body.role === 'human') onConnected({ server: '', token: '', kind: 'cloudflare' });
+        else if (res.status === 403 && body.error) setError(body.error);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The app: Access sends the Custom Tab back to the app with the authorization code (also when it started the app).
+  useEffect(() => {
+    if (!isNative) return;
+    const finish = (url: string | undefined) => {
+      if (!url) return;
+      finishAccessSignIn(url)
+        .then(async (access) => {
+          if (!access) return;
+          setBusy(true);
+          const c: Connection = { server: new URL(access.redirectUri).origin, token: '', kind: 'cloudflare', access };
+          const me = await createClient(c, accessTokens(access)).me();
+          if (me.role !== 'human') throw new Error('Cloudflare Access signed you in as an agent. Sign in with your account instead.');
+          onConnected(c);
+        })
+        .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+        .finally(() => setBusy(false));
+    };
+    void CapApp.getLaunchUrl().then((l) => finish(l?.url)).catch(() => {});
+    const h = CapApp.addListener('appUrlOpen', (e) => finish(e.url));
+    return () => void h.then((x) => x.remove());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // In the app, find out whether Cloudflare Access guards the server (then that's the way in).
+  useEffect(() => {
+    if (!isNative || !base) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      accessGuards(base)
+        .then((guarded) => !cancelled && setMode((m) => (guarded ? 'access' : m === 'access' ? 'signin' : m)))
+        .catch(() => {});
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [base]);
+
   // Ask the server whether it still needs its first account (debounced while typing a URL).
   useEffect(() => {
     if (isNative && !base) return;
@@ -26,7 +86,7 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
     const t = setTimeout(() => {
       publicApi
         .setupStatus(base)
-        .then((s) => !cancelled && setMode((m) => (s.needsSetup ? 'setup' : m === 'setup' ? 'signin' : m)))
+        .then((s) => !cancelled && setMode((m) => (m === 'access' ? m : s.needsSetup ? 'setup' : m === 'setup' ? 'signin' : m)))
         .catch(() => {});
     }, 400);
     return () => {
@@ -40,6 +100,10 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
     setBusy(true);
     setError(null);
     try {
+      if (mode === 'access') {
+        await startAccessSignIn(base);
+        return;
+      }
       if (mode === 'token') {
         const c: Connection = { server: base, token: token.trim(), kind: 'token' };
         const me = await createClient(c).me();
@@ -83,7 +147,12 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
             />
           </label>
         )}
-        {mode === 'token' ? (
+        {mode === 'access' ? (
+          <p className="hint">
+            This server is behind Cloudflare Access. Sign in with the account Access lets in (Google, or whatever your team
+            uses); LaneSignal signs you in as the person with that email.
+          </p>
+        ) : mode === 'token' ? (
           <label>
             Access token
             <input type="password" value={token} onChange={(e) => setToken(e.target.value)} required />
@@ -128,9 +197,9 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
         )}
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy}>
-          {busy ? 'Connecting…' : mode === 'setup' ? 'Create admin account' : 'Sign in'}
+          {busy ? 'Connecting…' : mode === 'setup' ? 'Create admin account' : mode === 'access' ? 'Sign in with Cloudflare Access' : 'Sign in'}
         </button>
-        {mode !== 'setup' && (
+        {mode !== 'setup' && mode !== 'access' && (
           <button type="button" className="link" onClick={() => setMode(mode === 'token' ? 'signin' : 'token')}>
             {mode === 'token' ? 'Sign in with email instead' : 'Use an access token instead'}
           </button>

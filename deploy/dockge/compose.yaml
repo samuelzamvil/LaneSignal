@@ -28,6 +28,9 @@ services:
       # the agent's session and the agent dismisses the alert. The requirements register is on.
       LANESIGNAL_DECISIONS: "${LANESIGNAL_DECISIONS:-true}"
       LANESIGNAL_REQUIREMENTS: "${LANESIGNAL_REQUIREMENTS:-true}"
+      # Sign-in through Cloudflare Access (beta, off): set it, LANESIGNAL_CF_ACCESS_TEAM_DOMAIN and
+      # LANESIGNAL_CF_ACCESS_AUD in .env. See docs/cloudflare-access.md.
+      LANESIGNAL_CLOUDFLARE_ACCESS: "${LANESIGNAL_CLOUDFLARE_ACCESS:-false}"
     volumes:
       # Named volume: Docker creates it owned by the container's user, so it
       # works without chown. Holds the database, auth secret and setup code.

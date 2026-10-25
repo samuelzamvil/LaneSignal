@@ -10,6 +10,7 @@ LaneSignal is a self-hosted dashboard for autonomous coding-agent **lanes** and 
 | [Install with Docker Compose](install-docker.md) | Plain `docker compose`, or building from source |
 | [First run: accounts and agent keys](accounts.md) | Setup code, adding people, creating keys, recovery |
 | [Reverse proxy and remote access](reverse-proxy.md) | HTTPS, Caddy, nginx, Tailscale, the client-IP setting |
+| [Sign in with Cloudflare Access (beta)](cloudflare-access.md) | Google sign-in through Cloudflare Access, in the browser and the Android app |
 | [Configuration reference](configuration.md) | Every environment variable |
 
 ## Use

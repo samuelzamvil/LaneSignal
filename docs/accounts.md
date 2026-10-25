@@ -27,6 +27,8 @@ Admins manage people under **Settings → People**:
 
 People can't rename themselves, because names are what decisions are attributed to.
 
+With [Cloudflare Access sign-in](cloudflare-access.md) on, people can also sign in with Google through Access; they're matched to their account by email, so add them with the email they use there.
+
 ## Agent keys
 
 Every person can create keys under **Settings → Keys**:

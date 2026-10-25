@@ -64,6 +64,22 @@ export interface Config {
   requirements: boolean;
   /** Hosts a project's TRMNL webhook URL may point at (TRMNL's own, plus self-hosted TRMNL servers). */
   trmnlHosts: string[];
+  /**
+   * Sign-in through Cloudflare Access (beta, off by default): people Access lets through are signed in as the
+   * LaneSignal account with their email, from the signed `Cf-Access-Jwt-Assertion` header. Null when off.
+   */
+  cloudflareAccess: CloudflareAccessConfig | null;
+  /** SHA-256 fingerprints of the Android app's signing certificates, for /.well-known/assetlinks.json (App Links). */
+  androidCertFingerprints: string[];
+}
+
+export interface CloudflareAccessConfig {
+  /** https://<team>.cloudflareaccess.com: the tokens' issuer, and where its signing keys are published. */
+  teamDomain: string;
+  /** Application Audience (AUD) tags of the Access application(s) in front of LaneSignal. */
+  audiences: string[];
+  /** Create an account (not an admin) for an email Access lets through that has none yet. */
+  createAccounts: boolean;
 }
 
 /** Optional JSON file (usually on the /config volume). Env vars win over it. */
@@ -139,6 +155,39 @@ function oneOf<T extends string>(name: string, value: string | undefined, allowe
   const v = value.trim().toLowerCase() as T;
   if (!allowed.includes(v)) throw new Error(`${name} must be one of ${allowed.join(', ')}, got "${value}"`);
   return v;
+}
+
+/** LANESIGNAL_CLOUDFLARE_ACCESS and its settings; a half-configured flag stops startup. */
+function parseCloudflareAccess(env: NodeJS.ProcessEnv): CloudflareAccessConfig | null {
+  if (!bool('LANESIGNAL_CLOUDFLARE_ACCESS', env.LANESIGNAL_CLOUDFLARE_ACCESS, false)) return null;
+  const raw = env.LANESIGNAL_CF_ACCESS_TEAM_DOMAIN?.trim();
+  if (!raw) throw new Error('LANESIGNAL_CLOUDFLARE_ACCESS needs LANESIGNAL_CF_ACCESS_TEAM_DOMAIN (e.g. myteam.cloudflareaccess.com)');
+  let teamDomain: string;
+  try {
+    const url = new URL(/^[a-z]+:\/\//i.test(raw) ? raw : `https://${raw}`);
+    if (url.protocol !== 'https:' || (url.pathname !== '/' && url.pathname !== '') || url.search) throw new Error();
+    teamDomain = url.origin;
+  } catch {
+    throw new Error(`LANESIGNAL_CF_ACCESS_TEAM_DOMAIN must be an https host like myteam.cloudflareaccess.com, got "${raw}"`);
+  }
+  const audiences = list(env.LANESIGNAL_CF_ACCESS_AUD) ?? [];
+  if (!audiences.length) {
+    throw new Error("LANESIGNAL_CLOUDFLARE_ACCESS needs LANESIGNAL_CF_ACCESS_AUD: the Access application's Application Audience (AUD) tag");
+  }
+  return {
+    teamDomain,
+    audiences,
+    createAccounts: bool('LANESIGNAL_CF_ACCESS_CREATE_ACCOUNTS', env.LANESIGNAL_CF_ACCESS_CREATE_ACCOUNTS, false),
+  };
+}
+
+/** "AA:BB:…" SHA-256 certificate fingerprints (colons optional); anything else stops startup. */
+function parseFingerprints(v: string | undefined): string[] {
+  return (list(v) ?? []).map((f) => {
+    const hex = f.replace(/:/g, '').toUpperCase();
+    if (!/^[0-9A-F]{64}$/.test(hex)) throw new Error(`LANESIGNAL_ANDROID_CERT_SHA256 entries must be SHA-256 fingerprints, got "${f}"`);
+    return hex.match(/../g)!.join(':');
+  });
 }
 
 const PROXY_KEYWORDS = new Set(['loopback', 'linklocal', 'uniquelocal']);
@@ -239,6 +288,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, true),
     requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),
     trmnlHosts: [...TRMNL_HOSTS, ...(list(env.LANESIGNAL_TRMNL_HOSTS) ?? []).map((h) => h.toLowerCase())],
+    cloudflareAccess: parseCloudflareAccess(env),
+    androidCertFingerprints: parseFingerprints(env.LANESIGNAL_ANDROID_CERT_SHA256),
   };
 }
 
