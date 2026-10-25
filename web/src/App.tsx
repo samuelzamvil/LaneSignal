@@ -11,8 +11,10 @@ import {
   type LaneStatus,
   type Principal,
   type PublicConfig,
+  type Ticket,
 } from './api.ts';
-import { Chips, GroupHeader, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout } from './components.tsx';
+import { Chips, GroupHeader, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout, useStored } from './components.tsx';
+import { onActiveTicket, ParkedRow, TicketDetail, TicketsContext } from './ticket-views.tsx';
 import { TicketLinksContext } from './linked-text.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
 import { routeFromAppLink } from './deeplink.ts';
@@ -37,6 +39,9 @@ interface Route {
   /** The lane's project; old links (#/lane/<id>) leave it out. */
   laneProject?: string;
   escId?: string;
+  /** A ticket's sheet: its project and ref. */
+  ticketProject?: string;
+  ticketRef?: string;
 }
 
 /** A URL path segment decoded, or null when it's malformed (e.g. "%E0" from a crafted link). */
@@ -55,6 +60,7 @@ function parseRoute(hash: string): Route {
   if (a === 'lane' && lb && lc) return { view: 'lanes', laneProject: lb, laneId: lc };
   if (a === 'lane' && lb && !c) return { view: 'lanes', laneId: lb };
   if (a === 'esc' && b) return { view: 'inbox', escId: b };
+  if (a === 'ticket' && lb && lc) return { view: 'lanes', ticketProject: lb, ticketRef: lc };
   // A closed escalation opened from History: closing it goes back there.
   if (a === 'history' && b) return { view: 'history', escId: b };
   if (a === 'lanes' || a === 'reqs' || a === 'history' || a === 'settings') return { view: a };
@@ -246,7 +252,7 @@ function Dashboard({
       if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select')) return;
       const r = parseRoute(location.hash);
       if (r.escId) closeTo(escFallback(r));
-      else if (r.laneId) closeTo('#/lanes');
+      else if (r.laneId || r.ticketRef) closeTo('#/lanes');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -274,7 +280,7 @@ function Dashboard({
       if (closeOverlay()) return;
       const r = parseRoute(location.hash);
       if (r.escId) closeTo(escFallback(r));
-      else if (r.laneId) closeTo('#/lanes');
+      else if (r.laneId || r.ticketRef) closeTo('#/lanes');
       else if (location.hash && location.hash !== '#/') history.back();
       else void CapApp.minimizeApp();
     });
@@ -318,6 +324,10 @@ function Dashboard({
   const replying = [...openByLane.values()].flat().filter((e) => e.turn === 'agent');
   const fyi = [...openByLane.values()].flat().filter((e) => !e.blocking && e.turn === 'owner');
   const decided = escalations.filter((e) => e.state === 'decided');
+  // "Active tickets only" hides questions whose ticket no lane holds; counts and badges still count them.
+  const [ticketFilter, setTicketFilter] = useStored<'all' | 'active'>('lanesignal.inbox.tickets', ['all', 'active'], 'all');
+  const shown = (list: Escalation[]) => (ticketFilter === 'active' ? list.filter((e) => onActiveTicket(e, live.tickets)) : list);
+  const parkedQuestions = escalations.filter((e) => !onActiveTicket(e, live.tickets)).length;
   // Old lane links carry no project: the one lane with that id, or the current/only project.
   const routeLaneProject = route.laneId
     ? (route.laneProject ??
@@ -341,6 +351,16 @@ function Dashboard({
           .map((e) => e.id + e.state),
       ].join('|')
     : '';
+  /** What a ticket's sheet refetches on: the ticket, the lane holding it, and its open questions. */
+  const ticketStamp = (id: number) => {
+    const t = live.tickets.get(String(id));
+    return [
+      t?.updatedAt,
+      t?.openEscalations,
+      t?.lane ? live.lanes.get(keyOf(t.project, t.lane))?.updatedAt : '',
+      ...[...live.escalations.values()].filter((e) => e.ticketId === id).map((e) => e.id + e.state + e.updatedAt),
+    ].join('|');
+  };
   // The route may name an escalation by its code (#/esc/A12, or #/esc/LS-A12 across projects).
   const routeEsc = route.escId
     ? (live.escalations.get(route.escId) ??
@@ -423,6 +443,14 @@ function Dashboard({
       (!activeGroups.length || (l.group !== null && activeGroups.includes(laneGroupKey(l)!))) &&
       (!activeStatuses.length || activeStatuses.includes(l.status)),
   );
+  // Parked tickets, under their group (left out while a status filter picks lanes by status).
+  const parkedAll = [...live.tickets.values()]
+    .filter((t) => t.state === 'parked' && inScope(t.project) && !activeStatuses.length)
+    .filter((t) => !activeGroups.length || (t.group !== null && activeGroups.includes(keyOf(t.project, t.group))))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const parkedIn = (groupId: string | null) => parkedAll.filter((t) => (t.group ? keyOf(t.project, t.group) : null) === groupId);
+  const leftLane = (t: Ticket) =>
+    t.lastLane ? (live.lanes.get(keyOf(t.project, t.lastLane))?.name ?? `${t.lastLane} (removed)`) : null;
   type Section = { key: string; title?: string; groupId?: string | null; lanes: typeof visible };
   let sections: Section[];
   if (filters.arrange === 'group') {
@@ -470,6 +498,16 @@ function Dashboard({
         </h2>
         <LayoutToggle layout={inboxLayout} onChange={setInboxLayout} />
       </div>
+      {(parkedQuestions > 0 || ticketFilter === 'active') && (
+        <label className="check inbox-filter">
+          <input
+            type="checkbox"
+            checked={ticketFilter === 'active'}
+            onChange={(e) => setTicketFilter(e.target.checked ? 'active' : 'all')}
+          />
+          Active tickets only{parkedQuestions > 0 && ` (${parkedQuestions} on tickets no lane holds)`}
+        </label>
+      )}
       {open.length === 0 && blockedLanes.length === 0 && (
         isLive && live.projects.length === 0 ? (
           <p className="empty">You're not in any project yet. Ask a project admin to add you.</p>
@@ -481,7 +519,10 @@ function Dashboard({
           <p className="empty">Nothing needs you. 🎉</p>
         )
       )}
-      {open.map((e) => (
+      {ticketFilter === 'active' && open.length > 0 && shown(open).length === 0 && (
+        <p className="empty">Nothing on tickets in a lane. {open.length} hidden: their tickets are parked or over.</p>
+      )}
+      {shown(open).map((e) => (
         escItem(e, seqOf(e))
       ))}
       {blockedLanes.length > 0 && (
@@ -499,30 +540,30 @@ function Dashboard({
           ))}
         </>
       )}
-      {replying.length > 0 && (
+      {shown(replying).length > 0 && (
         <>
           <h3 className="subhead">
-            Agent's turn · replying to you <span className="count">{replying.length}</span>
+            Agent's turn · replying to you <span className="count">{shown(replying).length}</span>
           </h3>
-          {replying.map((e) => (
+          {shown(replying).map((e) => (
             escItem(e)
           ))}
         </>
       )}
-      {fyi.length > 0 && (
+      {shown(fyi).length > 0 && (
         <>
           <h3 className="subhead">
-            FYI · agents keep working <span className="count">{fyi.length}</span>
+            FYI · agents keep working <span className="count">{shown(fyi).length}</span>
           </h3>
-          {fyi.map((e) => (
+          {shown(fyi).map((e) => (
             escItem(e, seqOf(e))
           ))}
         </>
       )}
-      {decided.length > 0 && (
+      {shown(decided).length > 0 && (
         <>
           <h3 className="subhead">Decided · awaiting agent</h3>
-          {decided.map((e) => (
+          {shown(decided).map((e) => (
             escItem(e)
           ))}
         </>
@@ -579,10 +620,10 @@ function Dashboard({
           )}
         </div>
       </div>
-      {visible.length === 0 && <p className="empty">No lanes match.</p>}
+      {visible.length === 0 && parkedAll.length === 0 && <p className="empty">No lanes match.</p>}
       {sections.map(
         (sec) =>
-          sec.lanes.length > 0 && (
+          (sec.lanes.length > 0 || (sec.groupId !== undefined && parkedIn(sec.groupId).length > 0)) && (
             <div key={sec.key} className="group">
               {sec.groupId !== undefined ? (
                 <GroupHeader
@@ -613,8 +654,14 @@ function Dashboard({
                   ),
                 )}
               </div>
+              {sec.groupId !== undefined && <ParkedRow tickets={parkedIn(sec.groupId)} now={now} laneName={leftLane} />}
             </div>
           ),
+      )}
+      {filters.arrange !== 'group' && parkedAll.length > 0 && (
+        <div className="group">
+          <ParkedRow tickets={parkedAll} now={now} laneName={leftLane} />
+        </div>
       )}
     </section>
   );
@@ -695,6 +742,7 @@ function Dashboard({
 
   return (
     <TicketLinksContext.Provider value={config}>
+      <TicketsContext.Provider value={live.tickets}>
       <div className={`app view-${route.view}`}>
         <header className="topbar">
           <a href="#/" className="brand">
@@ -819,6 +867,19 @@ function Dashboard({
             backTo={backLabel(escFallback(route))}
           />
         )}
+        {route.ticketRef && route.ticketProject && (
+          <TicketDetail
+            key={`${route.ticketProject}/${route.ticketRef}`}
+            project={route.ticketProject}
+            ticketRef={route.ticketRef}
+            client={client}
+            stamp={ticketStamp}
+            now={now}
+            laneName={(id) => live.lanes.get(keyOf(route.ticketProject!, id))?.name ?? null}
+            onClose={() => closeTo('#/lanes')}
+            backTo={backLabel('#/lanes')}
+          />
+        )}
         {route.laneId && routeLaneProject && (
           <LaneDetail
             laneId={route.laneId}
@@ -835,6 +896,7 @@ function Dashboard({
           />
         )}
       </div>
+      </TicketsContext.Provider>
     </TicketLinksContext.Provider>
   );
 }

@@ -60,6 +60,12 @@ The rules:
 - **PRs aren't tickets:** they go in the lane's links. Switching a lane from a Redmine ticket to a `gh:` ref gets a warning.
 - **Who may close its questions:** the agent that raised them, a person, or the overseer of the group the ticket is in now (the key that last published it with `update_group`), so a ticket handed to another overseer goes with its questions.
 
+**In the app:**
+
+- **Parked tickets:** under each group on the Lanes page, a **Parked** row (folded by default) lists the group's parked tickets with why, how many questions are open on each, and the lane each left.
+- **A ticket's sheet** opens from a lane's ticket, a parked ticket, or the ticket on a question. It shows where the ticket is, its questions, its history across lanes, and the lanes it passed through.
+- **A lane's sheet** marks each switch in its activity: "Parked 500: waiting on the vendor API key · filled with 501". Questions on it name their ticket, so one parked with an earlier ticket reads "500 · parked".
+
 Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)"). Otherwise their publishes follow the same rules as `fill_lane`: a ticket another lane holds is refused, and a done one reopens.
 
 ### Lane letters and escalation codes
@@ -130,8 +136,9 @@ Agents attach files they want you to read or see, such as a plan or a UI preview
 
 ### Inbox and History
 
-- **Needs you** lists open questions: blocking ones waiting on you first, then *Agent's turn* (you answered Other and the agent is replying), FYIs, and decisions the agent hasn't picked up yet. **Cards** shows each with its answer buttons; **List** shows one line each (code, question, lane, status). The choice is remembered on the device. **Lanes** has the same Cards / List switch: the list shows each lane's letter, name, activity, status and last update on one line.
-- **History** lists closed escalations, latest first, with how each ended (Accept, Reject, Other with the instructions, or Dismissed with the reason). Search covers the question, context, answers and conversations, and a code like `A12`; filter by outcome and group. Opening one shows the whole escalation and its conversation. The same list is `GET /api/history`.
+- **Needs you** lists open questions: blocking ones waiting on you first, then *Agent's turn* (you answered Other and the agent is replying), FYIs, and decisions the agent hasn't picked up yet. Each shows its code and the ticket it belongs to: a card shows 🎫 967 (dimmed with "parked" or "done" when no lane holds the ticket), and tapping it opens the ticket; a list row names it (967, or "967 (parked)"). **Cards** shows each with its answer buttons; **List** shows one line each (code, question, lane, status). The choice is remembered on the device. **Lanes** has the same Cards / List switch: the list shows each lane's letter, name, activity, status and last update on one line.
+- **Active tickets only**, on Needs you and History, hides questions whose ticket no lane holds (parked, done or dropped). It's off by default and remembered on the device; the "Needs you" count still includes them.
+- **History** lists closed escalations, latest first, with how each ended (Accept, Reject, Other with the instructions, or Dismissed with the reason). Search covers the question, context, answers and conversations, a code like `967A` or `A12`, and a ticket in any form (`967`, `#967`, `redmine:967`, its URL); filter by outcome and group. Opening one shows the whole escalation and its conversation. The same list is `GET /api/history`.
 - On a wide screen (1024 px and up), the list stays on the left and the open escalation or lane fills the right, so you can work down the list without closing anything.
 
 ### Many questions per lane

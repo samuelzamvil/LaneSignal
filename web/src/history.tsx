@@ -3,6 +3,7 @@ import type { Client, Escalation, Group, Lane, ProjectAccess } from './api.ts';
 import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
 import { openItem } from './nav.ts';
+import { useStored } from './components.tsx';
 
 type Outcome = '' | 'answered' | 'dismissed';
 
@@ -48,6 +49,7 @@ function HistoryRow({
         </span>
         <span className="muted history-where">
           {lane?.name ?? esc.laneId}
+          {esc.ticketRef && ` · ticket ${esc.ticketRef}`}
           {esc.messageCount > 0 && ` · ${esc.messageCount} message${esc.messageCount > 1 ? 's' : ''}`} ·{' '}
           <span title={absolute(esc.updatedAt)}>{ago(esc.updatedAt, now)}</span>
         </span>
@@ -85,6 +87,7 @@ export function HistoryPane({
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [outcome, setOutcome] = useState<Outcome>('');
+  const [ticketFilter, setTicketFilter] = useStored<'all' | 'active'>('lanesignal.history.tickets', ['all', 'active'], 'all');
   /** keyOf(project, group), or ''. */
   const [group, setGroup] = useState('');
   const [items, setItems] = useState<Escalation[] | null>(null);
@@ -107,6 +110,7 @@ export function HistoryPane({
     project: chosen?.project ?? (project || undefined),
     group: chosen?.id,
     outcome: outcome || undefined,
+    activeTickets: ticketFilter === 'active' || undefined,
   };
   const filterKey = JSON.stringify(filter);
   /** The filter the list shows; a response for another one is dropped. */
@@ -156,7 +160,7 @@ export function HistoryPane({
     <section className="pane history" aria-label="History">
       <h2>History</h2>
       <div className="filters">
-        <input type="search" placeholder="Search questions, answers and conversations…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input type="search" placeholder="Search questions, answers, conversations and tickets…" value={query} onChange={(e) => setQuery(e.target.value)} />
         <div className="filter-row">
           <label>
             Outcome
@@ -165,6 +169,10 @@ export function HistoryPane({
               <option value="answered">Answered</option>
               <option value="dismissed">Dismissed</option>
             </select>
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={ticketFilter === 'active'} onChange={(e) => setTicketFilter(e.target.checked ? 'active' : 'all')} />
+            Active tickets only
           </label>
           <label>
             {groupLabel}
@@ -180,7 +188,9 @@ export function HistoryPane({
         </div>
       </div>
       {error && <p className="error">{error}</p>}
-      {items && items.length === 0 && <p className="empty">{debounced || outcome || group ? 'Nothing matches.' : 'Nothing closed yet.'}</p>}
+      {items && items.length === 0 && (
+        <p className="empty">{debounced || outcome || group || ticketFilter === 'active' ? 'Nothing matches.' : 'Nothing closed yet.'}</p>
+      )}
       <div className="history-list">
         {items?.map((e) => (
           <HistoryRow

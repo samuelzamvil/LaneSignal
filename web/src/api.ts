@@ -15,6 +15,7 @@ import type {
   Requirement,
   RequirementStatus,
   StreamEvent,
+  Ticket,
   TrmnlPushResult,
   TrmnlView,
 } from '../../server/src/types.ts';
@@ -35,6 +36,7 @@ export type {
   Requirement,
   RequirementStatus,
   StreamEvent,
+  Ticket,
   TrmnlPushResult,
   TrmnlView,
 };
@@ -134,7 +136,8 @@ export function createClient(conn: Connection) {
     config: () => request<PublicConfig>('GET', '/api/config'),
     setQuietAlerts: (quietAlerts: boolean) => request<void>('PUT', '/api/settings/push', { quietAlerts }),
     snapshot: () =>
-      request<{ projects: ProjectAccess[]; groups: Group[]; lanes: Lane[]; escalations: Escalation[]; serverTime: string }>(
+      // A server from before tickets sends none.
+      request<{ projects: ProjectAccess[]; groups: Group[]; lanes: Lane[]; escalations: Escalation[]; tickets?: Ticket[]; serverTime: string }>(
         'GET',
         '/api/snapshot',
       ),
@@ -147,10 +150,24 @@ export function createClient(conn: Connection) {
     laneMessage: (project: string, id: string, body: string) =>
       request<LaneMessage>('POST', `/api/lanes/${encodeURIComponent(id)}/messages?project=${encodeURIComponent(project)}`, { body }),
     escalation: (id: string) => request<Escalation>('GET', `/api/escalations/${encodeURIComponent(id)}`),
+    /** A ticket by its canonical ref, with its escalations, history and the lanes it passed through. */
+    ticketDetail: (project: string, ref: string) =>
+      request<{ ticket: Ticket; escalations: Escalation[]; events: LaneEvent[]; lanes: string[] }>(
+        'GET',
+        `/api/tickets/${encodeURIComponent(ref)}?project=${encodeURIComponent(project)}`,
+      ),
     /** Closed escalations, latest first. `before` is the previous page's `next`. */
-    history: (f: { q?: string; project?: string; group?: string; outcome?: 'answered' | 'dismissed'; before?: { at: string; id: string } }) => {
+    history: (f: {
+      q?: string;
+      project?: string;
+      group?: string;
+      outcome?: 'answered' | 'dismissed';
+      activeTickets?: boolean;
+      before?: { at: string; id: string };
+    }) => {
       const qs = new URLSearchParams();
       if (f.q) qs.set('q', f.q);
+      if (f.activeTickets) qs.set('active_tickets', '1');
       if (f.project) qs.set('project', f.project);
       if (f.group) qs.set('group', f.group);
       if (f.outcome) qs.set('outcome', f.outcome);

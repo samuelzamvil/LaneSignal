@@ -216,7 +216,12 @@ export const pub = {
   lane: (l: Lane): Lane => ({ ...l, id: localId(l.id), group: l.group && localId(l.group) }),
   escalation: <E extends Escalation>(e: E): E => ({ ...e, laneId: localId(e.laneId) }),
   requirement: (r: Requirement): Requirement => ({ ...r, group: r.group && localId(r.group) }),
-  ticket: (t: Ticket): Ticket => ({ ...t, group: t.group && localId(t.group), lane: t.lane && localId(t.lane) }),
+  ticket: (t: Ticket): Ticket => ({
+    ...t,
+    group: t.group && localId(t.group),
+    lane: t.lane && localId(t.lane),
+    lastLane: t.lastLane && localId(t.lastLane),
+  }),
   /**
    * A wait result for a client. `projects` is what the caller sees *now*: a long wait
    * re-checks it, so someone removed from a project meanwhile gets nothing from it.
