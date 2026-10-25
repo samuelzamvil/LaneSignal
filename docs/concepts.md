@@ -164,6 +164,15 @@ References become links through URL templates (`LANESIGNAL_TICKET_TEMPLATES`):
 | `#1234` or `1234` | The default system's template |
 | `https://…` | Used as-is |
 
+Refs written in free text (messages, escalation context, recommendations, answers, notes, requirement justifications and attached Markdown plans) link too:
+
+| Written | Links to |
+|---|---|
+| `#1234` | The default system's ticket 1234 |
+| `redmine#1234` or `redmine:1234` | That system's ticket (the system name may be in any case; ids like `PROJ-12` work) |
+
+A system name that isn't configured (`foo#12`), a `#` stuck to a word or path (`PR#5`, `a/#5`), and `#` followed by letters (`#fff`) stay plain text. With no templates configured, only web addresses link.
+
 LaneSignal links to tickets but never syncs or edits them.
 
 ## Notifications

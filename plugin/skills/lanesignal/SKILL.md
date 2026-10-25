@@ -39,6 +39,7 @@ A server can host several independent projects (apps), each with its own groups,
 
 - **Removing:** when a lane's work stream is over for good, `remove_lane` takes it off the dashboard. Its history is kept.
 - **Writing for a phone:** keep `activity` to one line. Use ticket references like `gh:42` or `redmine:1234`.
+- **Ticket refs link:** in messages, escalation fields and justifications, `#1234` links to the default ticket system and `redmine#1234` (or `redmine:1234`) to that one. Write refs that way rather than pasting ticket URLs.
 
 ## Raising an escalation
 

@@ -3,6 +3,7 @@ import type { Client, Escalation, Group, Lane, LaneEvent, LaneMessage, LaneStatu
 import { AttachmentList } from './attachments.tsx';
 import { ago, absolute, blockedMs, duration, isStale, needsHuman, STATUS_META } from './format.ts';
 import { hasNewMessage, markMessagesSeen } from './seen.ts';
+import { LinkedText } from './linked-text.tsx';
 import { toast } from './toast.tsx';
 
 /** A choice from `allowed`, remembered on this device; `fallback` when nothing (valid) is stored. */
@@ -145,20 +146,11 @@ export function Links({ links }: { links: Link[] }) {
   );
 }
 
-/** Plain text with bare URLs made clickable. */
+/** Plain text with web addresses and ticket refs made clickable. */
 export function RichText({ text }: { text: string }) {
-  const parts = text.split(/(https?:\/\/[^\s)]+)/g);
   return (
     <p className="rich">
-      {parts.map((p, i) =>
-        i % 2 ? (
-          <a key={i} href={p} target="_blank" rel="noreferrer">
-            {p}
-          </a>
-        ) : (
-          p
-        ),
-      )}
+      <LinkedText text={text} />
     </p>
   );
 }

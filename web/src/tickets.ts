@@ -2,7 +2,8 @@
 // server's ticket templates: "#1234" goes to the default system, "redmine#1234" or "redmine:1234"
 // to that system. Bare web addresses are linked too.
 
-export type TicketLinks = { templates: Record<string, string>; defaultSystem: string | null };
+/** The server's config carries these; an older server may leave them out. */
+export type TicketLinks = { ticketTemplates?: Record<string, string>; defaultTicketSystem?: string | null };
 
 export type TextPart = { t: 'text'; text: string } | { t: 'link'; href: string; text: string };
 
@@ -21,8 +22,8 @@ function ticketUrl(template: string, id: string): string | null {
 
 /** Text split into plain runs and links. With no templates configured, only web addresses link. */
 export function linkTickets(text: string, links: TicketLinks | null): TextPart[] {
-  const systems = new Map(Object.entries(links?.templates ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
-  const fallback = links?.defaultSystem ? systems.get(links.defaultSystem.toLowerCase()) : undefined;
+  const systems = new Map(Object.entries(links?.ticketTemplates ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const fallback = links?.defaultTicketSystem ? systems.get(links.defaultTicketSystem.toLowerCase()) : undefined;
   const out: TextPart[] = [];
   let plain = '';
   let last = 0;
