@@ -9,6 +9,8 @@ export const lane = (over: Partial<Lane> = {}): Lane => ({
   status: 'active',
   ticket: null,
   ticketUrl: null,
+  ticketId: null,
+  waitingOn: null,
   activity: null,
   links: [],
   agent: 'bot',
@@ -29,6 +31,7 @@ export const lane = (over: Partial<Lane> = {}): Lane => ({
 export const escalation = (over: Partial<Escalation> = {}): Escalation => ({
   id: 'e1',
   ref: 'A1',
+  ticketId: null,
   project: 'p',
   projectKey: 'P',
   laneId: 'l1',

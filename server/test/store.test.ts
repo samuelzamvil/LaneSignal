@@ -5,9 +5,24 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { Store } from '../src/store.ts';
+import { ticketRefs } from '../src/tickets.ts';
 import { esc as escalate, lane as publishLane } from './publish.ts';
 
 const resolveTicketUrl = (t: string) => `https://tickets.example/${t.replace(/^gh:/, '')}`;
+
+/** Takes a database back from v16 (tickets), the first step of rolling it back further. */
+const UNDO_V16 = `
+  DROP INDEX escalations_ticket_code;
+  DROP INDEX escalations_ticket;
+  DROP INDEX lane_events_ticket;
+  ALTER TABLE escalations DROP COLUMN code;
+  ALTER TABLE escalations DROP COLUMN legacy_ref;
+  ALTER TABLE groups DROP COLUMN owner;
+  ALTER TABLE escalations DROP COLUMN ticket_id;
+  ALTER TABLE lanes DROP COLUMN ticket_id;
+  ALTER TABLE lane_events DROP COLUMN ticket_id;
+  DROP TABLE tickets;
+`;
 
 test('a lane can hold several open escalations and stays blocked until all are decided', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
@@ -51,7 +66,7 @@ test('upgrades a schema v1 database without losing escalations', () => {
 
     // Roll the file back to the v1 layout.
     const db = new DatabaseSync(file);
-    db.exec(`
+    db.exec(`${UNDO_V16}
       ALTER TABLE escalations DROP COLUMN ticket;
       ALTER TABLE escalations DROP COLUMN cost;
       ALTER TABLE escalations DROP COLUMN alternatives;
@@ -416,7 +431,7 @@ test('tokens registered before the upgrade are matched by name', () => {
     let store = new Store({ path: file, resolveTicketUrl });
     store.close();
     const db = new DatabaseSync(file);
-    db.exec(`
+    db.exec(`${UNDO_V16}
       PRAGMA foreign_keys = OFF;
       DROP INDEX lanes_project;
       DROP INDEX escalations_project;
@@ -520,7 +535,7 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
     const open = escalate(store, { laneId: 'default/live', question: 'Open?' }, 'bot');
     store.close();
     const db = new DatabaseSync(file);
-    db.exec(`
+    db.exec(`${UNDO_V16}
       PRAGMA foreign_keys = OFF;
       DROP INDEX lanes_project;
       DROP INDEX escalations_project;
@@ -553,7 +568,8 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
     db.close();
     store = new Store({ path: file, resolveTicketUrl });
     assert.equal(store.getLane('default/live')?.letter, 'A');
-    assert.equal(store.getLane('default/done')?.letter, null);
+    // Completed with nothing open: off the dashboard after the tickets upgrade (v16), its letter freed.
+    assert.equal(store.getLane('default/done'), null);
     assert.equal(store.getEscalation(open.id)?.ref, 'A1');
     assert.equal(store.getEscalation(old.id)?.ref, 'B1');
     assert.equal(escalate(store, { laneId: 'default/live', question: 'New?' }, 'bot').ref, 'A2');
@@ -612,6 +628,144 @@ test('upgrading to approvals leaves earlier requirements pending; history keeps 
     store = new Store({ path: file, resolveTicketUrl });
     assert.equal(store.getRequirement(current.id)?.status, 'pending');
     assert.equal(store.getRequirement(old.id)?.status, 'superseded');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrading to tickets moves each lane\'s ticket, escalations and history onto a ticket record', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v15-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    publishLane(store, 'default/live', { status: 'active', ticket: '#900' }, 'bot');
+    const open = escalate(store, { laneId: 'default/live', question: 'Ship it?' }, 'bot');
+    // Another live lane on the same ticket written another way, updated earlier.
+    publishLane(store, 'default/twin', { status: 'active', ticket: 'gh:900' }, 'bot');
+    publishLane(store, 'default/live', { activity: 'Newest' }, 'bot');
+    publishLane(store, 'default/finished', { status: 'active', ticket: 'gh:901' }, 'bot');
+    publishLane(store, 'default/finished', { status: 'completed' }, 'bot');
+    publishLane(store, 'default/no-ticket', { status: 'active' }, 'bot');
+    store.close();
+    // Back to v15: tickets as plain text on lanes, as before.
+    const db = new DatabaseSync(file);
+    db.exec(`
+      ${UNDO_V16}
+      UPDATE lanes SET ticket = '#900', status = 'blocked_human', archived_at = NULL WHERE id = 'default/live';
+      UPDATE lanes SET ticket = 'gh:901', status = 'completed', archived_at = NULL WHERE id = 'default/finished';
+      UPDATE lanes SET ticket = 'gh:900', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = 'default/twin';
+      UPDATE meta SET value = '15' WHERE key = 'schema_version';
+    `);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl, ticketRefs: ticketRefs({ gh: 'https://github.com/o/r/issues/{id}' }, 'gh') });
+    const live = store.getLane('default/live')!;
+    const t = store.getTicket('default', '900')!;
+    assert.equal(live.ticketId, t.id);
+    assert.equal(t.state, 'in_lane');
+    assert.equal(t.lane, 'default/live');
+    assert.equal(t.status, 'blocked_human');
+    // Its escalations and history belong to the ticket; old codes still resolve.
+    const migrated = store.getEscalation(open.id)!;
+    assert.equal(migrated.ticketId, t.id);
+    assert.equal(store.getEscalation(migrated.ref, 'default')?.id, open.id);
+    assert.ok(store.ticketEvents(t.id).some((e) => e.message.startsWith('Escalated')));
+    // New questions take the ticket's code.
+    assert.equal(escalate(store, { laneId: 'default/live', question: 'And docs?' }, 'bot').ref, '900A');
+    // The twin lane gave the ticket up to the newer one.
+    const twin = store.getLane('default/twin')!;
+    assert.equal(twin.ticket, null);
+    assert.equal(twin.ticketId, null);
+    assert.ok(store.laneEvents('default/twin').some((e) => e.message === '900 is held by lane "live"'));
+    // A completed lane with nothing open leaves the dashboard; its ticket is done.
+    assert.equal(store.getLane('default/finished'), null);
+    assert.equal(store.getTicket('default', 'gh:901')?.state, 'done');
+    assert.equal(store.getLane('default/no-ticket')?.ticketId, null);
+    // Opening it again changes nothing.
+    store.close();
+    store = new Store({ path: file, resolveTicketUrl, ticketRefs: ticketRefs({ gh: 'https://github.com/o/r/issues/{id}' }, 'gh') });
+    assert.equal(store.listTickets({ states: ['in_lane', 'parked', 'done', 'dropped'] }).length, 2);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('changing the ticket systems keeps finding the tickets lanes hold', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-refs-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    publishLane(store, 'default/slot', { status: 'active', ticket: '967' }, 'bot');
+    store.close();
+    // A default ticket system is configured later: "967" now means "redmine:967".
+    store = new Store({ path: file, resolveTicketUrl, ticketRefs: ticketRefs({ redmine: 'https://r.example/{id}' }, 'redmine') });
+    const res = store.upsertLane('default/slot', { ticket: '967', activity: 'Same ticket' }, 'bot');
+    assert.equal(res.warning, undefined);
+    assert.equal(store.getTicket('default', 'redmine:967')?.lane, 'default/slot');
+    assert.equal(store.listTickets({ states: ['in_lane', 'parked', 'done', 'dropped'] }).length, 1);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrading to tickets marks the tickets of finished lanes done and archives completed lanes', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v15b-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    publishLane(store, 'default/gone', { status: 'active' }, 'bot');
+    publishLane(store, 'default/shipped', { status: 'active' }, 'bot');
+    const fyi = escalate(store, { laneId: 'default/shipped', question: 'FYI: slow CI', blocking: false }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      ${UNDO_V16}
+      UPDATE lanes SET ticket = 'gh:910', archived_at = '2026-01-01T00:00:00.000Z' WHERE id = 'default/gone';
+      UPDATE lanes SET ticket = 'gh:911', status = 'completed' WHERE id = 'default/shipped';
+      UPDATE meta SET value = '15' WHERE key = 'schema_version';
+    `);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    // A lane that isn't live: its ticket is done.
+    assert.equal(store.getTicket('default', 'gh:910')?.state, 'done');
+    // A completed lane is archived; its escalations go to its ticket, and its open FYI stays open.
+    assert.equal(store.getLane('default/shipped'), null);
+    const shipped = store.getTicket('default', 'gh:911')!;
+    assert.equal(shipped.state, 'done');
+    assert.equal(store.getEscalation(fyi.id)?.ticketId, shipped.id);
+    assert.equal(store.getEscalation(fyi.id)?.state, 'open');
+    assert.match(store.getEscalation(fyi.id)!.ref, /^[A-Z]+\d+$/, 'old codes stay as they were');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrading to tickets moves blocked state to the lane holding the ticket', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v15c-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    publishLane(store, 'default/twin', { status: 'active' }, 'bot');
+    const q = escalate(store, { laneId: 'default/twin', question: 'Blocked?' }, 'bot');
+    publishLane(store, 'default/holder', { status: 'active' }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      ${UNDO_V16}
+      UPDATE lanes SET ticket = 'gh:920', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = 'default/twin';
+      UPDATE lanes SET ticket = 'gh:920', updated_at = '2030-01-01T00:00:00.000Z' WHERE id = 'default/holder';
+      UPDATE meta SET value = '15' WHERE key = 'schema_version';
+    `);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    // The newer lane holds the ticket, so its question blocks that lane now; the twin waits on its agent.
+    assert.equal(store.getEscalation(q.id)?.ticketId, store.getLane('default/holder')?.ticketId);
+    assert.equal(store.getLane('default/holder')?.status, 'blocked_human');
+    assert.equal(store.getLane('default/twin')?.status, 'awaiting_agent');
+    assert.equal(store.getLane('default/twin')?.ticket, null);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

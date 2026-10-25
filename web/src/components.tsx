@@ -203,7 +203,7 @@ export function LaneCard({
       <header>
         <h3>
           {lane.letter && (
-            <span className="lane-letter" title={`Lane ${lane.letter}: its questions are coded ${lane.letter} and a number`}>
+            <span className="lane-letter" title={`Lane ${lane.letter}`}>
               {lane.letter}
             </span>
           )}
@@ -214,6 +214,8 @@ export function LaneCard({
       <div className="meta">
         {groupName && <span className="tag">{groupName}</span>}
         <TicketLink lane={lane} />
+        {!lane.ticket && lane.status === 'idle' && <span className="muted">no ticket</span>}
+        {lane.waitingOn && <span className="tag">waiting on {lane.waitingOn}</span>}
         {lane.blockingEscalations > 0 && (
           <span className="esc-count">
             ⚑ {lane.blockingEscalations} decision{lane.blockingEscalations > 1 ? 's' : ''}
@@ -431,14 +433,11 @@ export function LaneDetail({
                   </dd>
                 </>
               )}
-              {data.lane.ticket && (
-                <>
-                  <dt>Ticket</dt>
-                  <dd>
-                    <TicketLink lane={data.lane} />
-                  </dd>
-                </>
-              )}
+              <dt>Ticket</dt>
+              <dd>
+                {data.lane.ticket ? <TicketLink lane={data.lane} /> : <span className="muted">none</span>}
+                {data.lane.waitingOn && ` · waiting on ${data.lane.waitingOn}`}
+              </dd>
               <dt>Agent</dt>
               <dd>{data.lane.agent ?? '—'}</dd>
               <dt>Updated</dt>

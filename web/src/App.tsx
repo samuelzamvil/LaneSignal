@@ -331,8 +331,13 @@ function Dashboard({
         live.lanes.get(routeLaneKey)?.updatedAt,
         live.lanes.get(routeLaneKey)?.lastMessageId,
         live.lanes.get(routeLaneKey)?.unreadByAgent,
+        // Raised on the lane, or on the ticket it holds (wherever that was raised).
         ...[...live.escalations.values()]
-          .filter((e) => keyOf(e.project, e.laneId) === routeLaneKey)
+          .filter(
+            (e) =>
+              keyOf(e.project, e.laneId) === routeLaneKey ||
+              (e.ticketId !== null && e.project === routeLaneProject && e.ticketId === live.lanes.get(routeLaneKey)?.ticketId),
+          )
           .map((e) => e.id + e.state),
       ].join('|')
     : '';

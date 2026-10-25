@@ -4,13 +4,14 @@ import {
   projectOf,
   NotFoundError,
   qualify,
+  UUID,
   ValidationError,
   type RequirementInput,
   type Store,
   type WaitResult,
   type WaitScope,
 } from './store.ts';
-import type { Escalation, Group, Lane, Message, Principal, ProjectRole, Requirement, StreamEvent } from './types.ts';
+import type { Escalation, Group, Lane, Message, Principal, ProjectRole, Requirement, StreamEvent, Ticket } from './types.ts';
 
 /**
  * What a caller may see and do across projects, and the translation between
@@ -117,7 +118,11 @@ export function accessFor(store: Store, principal: Principal): Access {
       const notFound = () => new NotFoundError(`Escalation "${idOrCode}" not found`);
       const inProject = project ? resolve(project) : undefined;
       let e: Escalation | null;
-      if (!inProject && /^#?[A-Za-z]{1,4}\d+$/.test(idOrCode.trim())) {
+      const text = idOrCode.trim();
+      // A bare code: a lane letter's ("A12") or a ticket's ("967A", "gh:632B"), not one keyed with a project.
+      const bare =
+        /^#?[A-Za-z]{1,4}\d+$/.test(text) || (!UUID.test(text) && /\d[A-Za-z]{1,4}$/.test(text) && !store.isKeyedCode(text));
+      if (!inProject && bare) {
         // A bare code: look only in the caller's projects; more than one match needs a project.
         const hits = visible.map((p) => store.getEscalation(idOrCode, p)).filter((x) => x !== null);
         if (hits.length > 1) {
@@ -129,7 +134,7 @@ export function accessFor(store: Store, principal: Principal): Access {
         e = store.getEscalation(idOrCode, inProject);
       }
       // A keyed code ("SH-A1") names its own project; anything else must be in the one asked for.
-      const keyed = /^#?[A-Za-z0-9]{1,10}[·:.-][A-Za-z]{1,4}\d+$/.test(idOrCode.trim());
+      const keyed = /^#?[A-Za-z0-9]{1,10}[·:.-][A-Za-z]{1,4}\d+$/.test(text) || store.isKeyedCode(text);
       if (!e || !visible.includes(e.project) || (inProject && !keyed && e.project !== inProject)) throw notFound();
       return e;
     },
@@ -211,6 +216,7 @@ export const pub = {
   lane: (l: Lane): Lane => ({ ...l, id: localId(l.id), group: l.group && localId(l.group) }),
   escalation: <E extends Escalation>(e: E): E => ({ ...e, laneId: localId(e.laneId) }),
   requirement: (r: Requirement): Requirement => ({ ...r, group: r.group && localId(r.group) }),
+  ticket: (t: Ticket): Ticket => ({ ...t, group: t.group && localId(t.group), lane: t.lane && localId(t.lane) }),
   /**
    * A wait result for a client. `projects` is what the caller sees *now*: a long wait
    * re-checks it, so someone removed from a project meanwhile gets nothing from it.
@@ -225,6 +231,7 @@ export const pub = {
       open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: localId(o.laneId) })),
       removedLanes: w.removedLanes.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
       laneMessages: w.laneMessages.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
+      movedTickets: w.movedTickets.filter((m) => keep(m.laneId)).map((m) => ({ ...m, laneId: localId(m.laneId) })),
     };
   },
   /** The event as a client sees it, or null when the caller can't see its project. */
@@ -243,6 +250,8 @@ export const pub = {
         return e.requirement.project === null || projects.includes(e.requirement.project)
           ? { ...e, requirement: pub.requirement(e.requirement) }
           : null;
+      case 'ticket':
+        return projects.includes(e.ticket.project) ? { ...e, ticket: pub.ticket(e.ticket) } : null;
     }
   },
 };
@@ -291,6 +300,21 @@ export const briefLane = (l: Lane, decisions: boolean) =>
     agentWaiting: decisions && l.agentWaiting ? true : undefined,
   });
 
+/** A ticket as agents read it: where it is and why, without bookkeeping (takes the public shape). */
+export const briefTicket = (t: Ticket) =>
+  compact({
+    ref: t.displayRef,
+    code: t.code,
+    state: t.state,
+    lane: t.lane,
+    group: t.group,
+    status: t.status,
+    parkReason: t.parkReason,
+    waitingOn: t.waitingOn,
+    openEscalations: t.openEscalations || undefined,
+    updatedAt: t.updatedAt,
+  });
+
 /** A requirement as agents read it: the decision and why, without bookkeeping. */
 export const briefRequirement = (r: Requirement) =>
   compact({
@@ -329,6 +353,7 @@ export const digestWait = (w: WaitResult) => {
     ...w.closed.map((e) => compact({ kind: 'closed', ...esc(e), state: e.state, resolution: e.resolution })),
     ...w.removedLanes.map((l) => compact({ kind: 'lane_removed', lane: l.laneId, by: l.removedBy, at: l.at })),
     ...w.laneMessages.map((l) => ({ kind: 'lane_note', lane: l.laneId, messages: briefMessages(l.messages) })),
+    ...w.movedTickets.map((m) => compact({ kind: 'ticket_moved', ticket: m.ticket, lane: m.laneId, by: m.by, at: m.at })),
   ];
   return {
     // From the items themselves: `pub.wait` may have dropped some the caller no longer sees.
@@ -340,7 +365,7 @@ export const digestWait = (w: WaitResult) => {
 };
 
 /** A wait result with its escalations in brief. */
-export const briefWait = (w: WaitResult) => ({
+export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
   ...w,
   decided: w.decided.map(brief),
   replies: w.replies.map(({ projectKey: _key, ...r }) => ({ ...r, messages: briefMessages(r.messages) })),
@@ -372,5 +397,9 @@ export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'ack
   // Older rows recorded the account alone ("user:<id>"); those match any key of that account.
   const me = ownerOf(a.principal);
   const mine = owner ? owner === me || (a.principal.userId !== undefined && owner === `user:${a.principal.userId}`) : e.createdBy === a.principal.name;
-  if (!mine) throw new ForbiddenError(`${e.ref} was raised by ${e.createdBy}; only that agent (or a person) can ${verb} it`);
+  // A ticket moved to another overseer's group goes with its questions: that overseer may close them too.
+  const overseer = e.ticketId !== null && store.ticketOverseer(e.ticketId) === me;
+  if (!mine && !overseer) {
+    throw new ForbiddenError(`${e.ref} was raised by ${e.createdBy}; only that agent (or a person) can ${verb} it, or the overseer of the group its ticket is in now`);
+  }
 }
