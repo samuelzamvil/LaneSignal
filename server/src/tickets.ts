@@ -5,15 +5,18 @@
  *   "#42" / "42"   -> default system's template
  *   "https://..."  -> used as-is
  */
-export function ticketResolver(templates: Record<string, string>, defaultSystem: string | null) {
+export function ticketResolver(configured: Record<string, string>, configuredDefault: string | null) {
+  // System names are matched in any case ("GH:7" is gh:7).
+  const templates = Object.fromEntries(Object.entries(configured).map(([k, v]) => [k.toLowerCase(), v]));
+  const defaultSystem = configuredDefault?.toLowerCase() ?? null;
   return (ticket: string): string | null => {
     const ref = ticket.trim();
     if (/^https?:\/\//i.test(ref)) return ref;
     const i = ref.indexOf(':');
     let system = defaultSystem;
     let id = ref;
-    if (i > 0 && templates[ref.slice(0, i)]) {
-      system = ref.slice(0, i);
+    if (i > 0 && templates[ref.slice(0, i).toLowerCase()]) {
+      system = ref.slice(0, i).toLowerCase();
       id = ref.slice(i + 1);
     }
     const template = system ? templates[system] : undefined;

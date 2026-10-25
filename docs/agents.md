@@ -122,7 +122,7 @@ Answers can take minutes or a day. An overseer waits on its whole group with one
     - `lane_note`: the owner wrote on a lane in scope, outside any escalation (`id` is the lane)
     - `ticket_moved`: a lane outside the scope (usually another overseer's) took a ticket from one of these lanes (`id` is the ticket)
     - `board_note`: on a group wait, someone wrote on one of the group's epics' boards (`id` names the epic)
-  - Files the owner attached are named in `text` ("[attached: plan.md]").
+  - Files the owner attached are named in `text` with their id ("[attached: plan.md (id …)]"): fetch one with `GET /api/attachments/:id`.
   - `decided` and `reply` come back on every wait until the agent acknowledges or replies. The others come back once per `since`, and again if the agent repeats a `since`, so a wait that crashed before acting loses nothing. With a `since`, the digest depends on nothing else (whether a note was handed over doesn't matter).
   - `counts`: `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies).
 - `ready: true` means there are items. `ready: false` means the wait ran out with nothing new: call again.

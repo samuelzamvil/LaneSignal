@@ -377,6 +377,11 @@ export class Store {
       if (ref === r.ref || this.db.prepare('SELECT 1 FROM epics WHERE project_id = ? AND ref = ?').get(r.project_id as string, ref)) continue;
       this.db.prepare('UPDATE epics SET ref = ? WHERE num = ?').run(ref, Number(r.num));
     }
+    // Escalations' own ticket field, stored canonical.
+    for (const r of this.db.prepare('SELECT id, ticket FROM escalations WHERE ticket IS NOT NULL').all() as Row[]) {
+      const ref = this.refs.canonical(r.ticket as string);
+      if (ref !== r.ticket) this.db.prepare('UPDATE escalations SET ticket = ? WHERE id = ?').run(ref, r.id as string);
+    }
     for (const r of this.db.prepare('SELECT num, waiting_on FROM tickets WHERE waiting_on IS NOT NULL').all() as Row[]) {
       const ref = this.refs.canonical(r.waiting_on as string);
       if (ref !== r.waiting_on) this.db.prepare('UPDATE tickets SET waiting_on = ? WHERE num = ?').run(ref, Number(r.num));
@@ -1140,7 +1145,10 @@ export class Store {
       group: r.group_archived ? null : ((r.group_id as string | null) ?? null),
       status: r.status as LaneStatus,
       ticket,
-      ticketUrl: ticket ? this.resolveTicketUrl(ticket) : null,
+      // From the canonical ref, as the ticket's own record resolves it.
+      ticketUrl: r.ticket_canonical
+        ? (this.resolveTicketUrl(r.ticket_canonical as string) ?? (/^https?:\/\//i.test(r.ticket_canonical as string) ? (r.ticket_canonical as string) : null))
+        : null,
       ticketId: r.ticket_id == null ? null : Number(r.ticket_id),
       waitingOn: r.ticket_waiting_on ? this.refs.display(r.ticket_waiting_on as string) : null,
       activity: (r.activity as string | null) ?? null,
@@ -1167,6 +1175,7 @@ export class Store {
          AND e.ticket_id = l.ticket_id) AS open_blocking,
       (SELECT t.waiting_on FROM tickets t WHERE t.num = l.ticket_id) AS ticket_waiting_on,
       (SELECT t.display_ref FROM tickets t WHERE t.num = l.ticket_id) AS ticket_ref,
+      (SELECT t.ref FROM tickets t WHERE t.num = l.ticket_id) AS ticket_canonical,
       (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived,
       (SELECT MAX(m.id) FROM lane_messages m WHERE m.lane_id = l.id) AS last_message_id,
       (SELECT MAX(m.id) FROM lane_messages m WHERE m.lane_id = l.id AND m.author_kind = 'agent') AS last_agent_message_id,
@@ -3887,6 +3896,8 @@ export class Store {
       const raw = this.db
         .prepare(
           `SELECT l.rowid AS _rid, l.*, g.name AS group_name,
+             (SELECT t.display_ref FROM tickets t WHERE t.num = l.ticket_id) AS ticket_ref,
+             (SELECT t.ref FROM tickets t WHERE t.num = l.ticket_id) AS ticket_canonical,
              (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id) AS escalations_total,
              (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open') AS escalations_open
            FROM lanes l LEFT JOIN groups g ON g.id = l.group_id ${w.sql.replace('WHERE ', "WHERE instr(l.id, '/~') = 0 AND ")}`,
@@ -3899,8 +3910,9 @@ export class Store {
         group_id: local(r.group_id),
         group_name: r.group_name,
         status: r.status,
-        ticket: r.ticket,
-        ticket_url: r.ticket ? this.resolveTicketUrl(r.ticket as string) : null,
+        // The ticket it holds now; a lane holding none (removed, or idle) shows none.
+        ticket: r.ticket_ref ?? null,
+        ticket_url: r.ticket_canonical ? this.resolveTicketUrl(r.ticket_canonical as string) : null,
         activity: r.activity,
         last_published_by: r.agent,
         created_at: r.created_at,

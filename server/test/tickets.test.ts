@@ -1,7 +1,7 @@
 // Tickets own their escalations and status history; lanes are slots that hold one at a time.
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
-import { ticketRefs } from '../src/tickets.ts';
+import { ticketRefs, ticketResolver } from '../src/tickets.ts';
 import { AGENT, ALICE, REVIEWER, startServer } from './helpers.ts';
 
 let srv: Awaited<ReturnType<typeof startServer>>;
@@ -38,6 +38,12 @@ describe('ticket refs', () => {
     assert.equal(upper.canonical('967'), 'redmine:967');
     assert.equal(upper.canonical('https://redmine.example/issues/967'), 'redmine:967');
     assert.equal(upper.display('redmine:967'), '967');
+    // Links resolve whatever case a stored ref has its system name in.
+    const url = ticketResolver({ Redmine: 'https://rm/issues/{id}', GH: 'https://gh/x/{id}' }, 'Redmine');
+    assert.equal(url('GH:7'), 'https://gh/x/7');
+    assert.equal(url('gh:7'), 'https://gh/x/7');
+    assert.equal(url('Redmine:967'), 'https://rm/issues/967');
+    assert.equal(url('967'), 'https://rm/issues/967');
   });
 });
 
@@ -373,6 +379,10 @@ describe('tickets', () => {
     // History finds a closed escalation by its ticket code.
     const found = (await srv.call('GET', '/api/history?q=500a', ALICE)).body.items;
     assert.deepEqual(found.map((e: any) => e.ref), ['500A']);
+    // lanes.csv shows the ticket a lane holds now, from its ticket record.
+    const lanesNow = (await srv.call('GET', '/api/export/lanes.json', ALICE)).body;
+    const held = (await srv.call('GET', '/api/lanes', ALICE)).body.filter((l: any) => l.ticket);
+    for (const l of held) assert.equal(lanesNow.find((r: any) => r.id === l.id).ticket, l.ticket, l.id);
     const csv = (await srv.call('GET', '/api/export/tickets.csv', ALICE)).body as string;
     assert.match(csv.split('\n')[0], /^id,project,ref,display_ref,code,ticket_url,group_id,lane_id,state,park_reason/);
     assert.match(csv, /redmine:640,640,640,.*,parked,Lane removed/);

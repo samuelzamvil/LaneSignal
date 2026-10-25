@@ -426,9 +426,11 @@ export const isEpicLane = (laneId: string) => /(^|\/)~epic-\d+$/.test(laneId);
 /** A lane id as clients know it; null for an epic's internal lane. */
 const pubLaneId = (laneId: string | null) => (laneId === null || isEpicLane(laneId) ? null : localId(laneId));
 
-/** The owner's messages as one text: each in full, with the names of any files attached. */
-const ownerWords = (messages: { body: string; attachments: { name: string }[] }[]) =>
-  messages.map((m) => (m.attachments.length ? `${m.body} [attached: ${m.attachments.map((f) => f.name).join(', ')}]` : m.body)).join('\n\n');
+/** The owner's messages as one text: each in full, with any files attached (name and id, for GET /api/attachments/:id). */
+const ownerWords = (messages: { body: string; attachments: { id: string; name: string }[] }[]) =>
+  messages
+    .map((m) => (m.attachments.length ? `${m.body} [attached: ${m.attachments.map((f) => `${f.name} (id ${f.id})`).join(', ')}]` : m.body))
+    .join('\n\n');
 
 /**
  * A wait result as a digest: one item per thing to handle, `{code, kind, id, text}`, with the owner's

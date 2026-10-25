@@ -162,3 +162,15 @@ test('a note in the same millisecond as a wait is returned once, and later ones 
     store.close();
   }
 });
+
+test("a note's files are named in the digest with their ids", async () => {
+  await srv.publish('d-files', { group: 'digest-files' });
+  const start = await wait('digest-files');
+  const form = new FormData();
+  form.append('file', new Blob(['# Plan'], { type: 'text/markdown' }), 'plan.md');
+  const up = await fetch(`${srv.base}/api/attachments`, { method: 'POST', headers: { authorization: `Bearer ${ALICE}` }, body: form });
+  const file = await up.json();
+  await srv.call('POST', '/api/lanes/d-files/messages', ALICE, { body: 'Read this first', attachments: [file.id] });
+  const w = await wait('digest-files', { since: start.checkedAt });
+  assert.deepEqual(w.items, [{ kind: 'lane_note', id: 'd-files', text: `Read this first [attached: plan.md (id ${file.id})]` }]);
+});

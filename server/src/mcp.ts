@@ -392,8 +392,8 @@ function buildServer(
       'wait_for_decisions',
       {
         description:
-          'Wait for what needs you in your group, some lanes or escalations. Returns `items` `{code, kind, id, text}`, ' +
-          '`text` being the owner\'s words. Kinds: `decided` (acknowledge, then act), `reply` (the owner answered Other), ' +
+          'Wait for what needs you in your group, some lanes or escalations; it waits even when nothing is open. Returns ' +
+          '`items` `{code, kind, id, text}` (the owner\'s words, or what happened). Kinds: `decided` (acknowledge, then act), `reply` (the owner answered Other), ' +
           '`closed`, `lane_removed`, `lane_note`, `board_note`, `ticket_moved`. `decided` and `reply` repeat until handled; ' +
           'the rest come once per `since`. `counts`: `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
           'it timed out: call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
@@ -779,9 +779,9 @@ function buildServer(
       'update_lane',
       {
         description:
-          `Publish a lane's state when it changes. Creates it on first call (\`group\` required then); omitted fields ` +
-          `are unchanged. ${STATUS_HELP} \`completed\` finishes its ticket and empties the lane. To change tickets use fill_lane. ` +
-          'PRs go in `links`, never `ticket`.' +
+          `Publish a lane's state when it changes. Creates it on first call (pass your \`group\`); omitted fields ` +
+          `are unchanged. ${STATUS_HELP} \`completed\` finishes its ticket and empties the lane. To change tickets use fill_lane ` +
+          '(a different `ticket` here parks the one it held). PRs go in `links`, never `ticket`.' +
           (features.decisions ? ' `ownerMessages`: the owner\'s notes on the lane.' : ''),
         inputSchema: {
           lane_id: s.laneId,
@@ -920,7 +920,8 @@ function buildServer(
       'request_epic_close',
       {
         description:
-          'Ask a person to close an epic whose work is over. Refused while any of its questions is open or unacknowledged.',
+          'Ask a person to close an epic whose work is over; they approve or decline in the app. Refused while any of its ' +
+          'questions is open or unacknowledged, and for a group standing in as its epic.',
         inputSchema: { epic: EPIC, reason: s.closeRequest.shape.reason, ...PROJECT_WRITE },
       },
       async ({ epic, reason, project }) => {

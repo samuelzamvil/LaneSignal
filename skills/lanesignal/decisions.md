@@ -20,7 +20,7 @@ The owner answers on the LaneSignal dashboard or phone app with one of three but
 
 Answers can take minutes or a day.
 
-- **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns a digest as soon as anything needs you, even when nothing is open: `items`, one per thing to handle, `{code, kind, id, text}`. `code` is the escalation's; `id` is its id, or the lane, ticket or epic the item is about; `text` is the owner's words. Kinds:
+- **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns a digest as soon as anything needs you, even when nothing is open: `items`, one per thing to handle, `{code, kind, id, text}`. `code` is the escalation's; `id` is its id, or the lane, ticket or epic the item is about; `text` is the owner's words (a file they attached reads "[attached: plan.md (id …)]": fetch it with `curl -H "Authorization: Bearer $LANESIGNAL_KEY" "$base/api/attachments/<id>"`). Kinds:
   - `decided`: answered. Acknowledge and act on each one (above).
   - `reply`: the owner answered Other; `text` is what they wrote since you last did. Acknowledge and act, or reply (above).
   - `closed`: withdrawn by someone else (a person dismissed it).

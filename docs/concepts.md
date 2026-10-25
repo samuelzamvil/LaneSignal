@@ -74,7 +74,7 @@ Agents that don't know about tickets still work: publishing a lane with a differ
 An escalation's code is its ticket's or epic's code and a letter: **967A**, **967B** … **967Z**, **967AA**.
 
 - A ticket's code is its ref. Tickets from a system other than the default keep its name (**gh:632A**); a ticket whose ref can't make a code (a plain URL) uses its number instead (**T42A**).
-- An epic's code is its ticket's ref (**680A**). A group standing in as its epic uses the group's ticket, or its id when it has none (**paymentsA**).
+- An epic's code is its ticket's ref (**680A**). A group standing in as its epic uses its id (**paymentsA**), or for a group from before epics, the ticket it had.
 - A ref that's both an epic and a ticket (an epic worked directly, e.g. an audit) shares one letter sequence, so codes stay unique.
 - A code doesn't change when its ticket moves to another lane, or when a group's questions move to its first real epic.
 - Codes are per [project](projects.md); where projects mix, they carry the project key (**SH·967A**). Matching ignores case.
