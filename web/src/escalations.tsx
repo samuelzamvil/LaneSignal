@@ -7,7 +7,7 @@ import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
 import { openItem, stepTo } from './nav.ts';
 import { toast } from './toast.tsx';
-import { TicketChip } from './ticket-views.tsx';
+import { TicketChip, useSeparateTicket, useTicketLabel } from './ticket-views.tsx';
 
 /** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
 export function isCodeOf(e: Escalation, code: string) {
@@ -339,6 +339,7 @@ function EscHead({
   /** Prefix the code with the project key, when several projects are on screen. */
   showProject: boolean;
 }) {
+  const separate = useSeparateTicket(esc);
   return (
     <div className="esc-head">
       <span className="ref" title="Use this code when talking to the agent about it">
@@ -354,7 +355,7 @@ function EscHead({
       {(group || lane?.group) && <span className="tag">{group?.name ?? lane?.group}</span>}
       {/* The ticket it belongs to, and what it's about when that's something else (e.g. a PR). */}
       <TicketChip esc={esc} />
-      {esc.ticket && esc.ticket !== esc.ticketRef && <TicketLink lane={esc} />}
+      {separate && <TicketLink lane={esc} />}
       <span className="when" title={absolute(esc.createdAt)}>
         {ago(esc.createdAt, now)}
       </span>
@@ -500,6 +501,7 @@ export function EscalationRow({
   /** It's the one open beside the list. */
   selected: boolean;
 }) {
+  const ticketLabel = useTicketLabel(esc);
   const href = `#/esc/${encodeURIComponent(esc.id)}`;
   const status =
     esc.state === 'decided'
@@ -526,7 +528,7 @@ export function EscalationRow({
         <span className="esc-row-question">{esc.question}</span>
         <span className="muted esc-row-where">
           {lane?.name ?? esc.laneId}
-          {esc.ticketRef && ` · ${esc.ticketRef}`}
+          {ticketLabel && ` · ${ticketLabel}`}
           {esc.attachments.length > 0 && (
             <>
               {' · '}

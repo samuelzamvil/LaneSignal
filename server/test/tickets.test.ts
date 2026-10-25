@@ -393,3 +393,32 @@ describe('tickets in the app', () => {
     assert.ok(!after.some((e: any) => e.id === q.id), 'parked now');
   });
 });
+
+describe('tickets in the app: live updates', () => {
+  test("a parked ticket's open count is sent again when one of its questions closes", async () => {
+    await fill({ lane_id: 'app-c', group: 'train', ticket: '820' });
+    const fyi = await ask('app-c', 'FYI: flaky', { blocking: false });
+    await ask('app-c', 'Keep it?');
+    await fill({ lane_id: 'app-c', previous: 'park', reason: 'later' });
+    const events: any[] = [];
+    const listen = (e: any) => events.push(e);
+    srv.store.events.on('change', listen);
+    try {
+      await srv.tool(AGENT, 'dismiss_escalation', { id: fyi.ref, justification: 'moot' });
+    } finally {
+      srv.store.events.off('change', listen);
+    }
+    const sent = events.find((e) => e.type === 'ticket' && e.ticket.ref === 'redmine:820');
+    assert.equal(sent?.ticket.openEscalations, 1);
+  });
+
+  test('a parked ticket in a removed group shows as ungrouped', async () => {
+    await srv.call('PUT', '/api/groups/gone-group', AGENT, { name: 'Gone' });
+    await fill({ lane_id: 'app-d', group: 'gone-group', ticket: '830' });
+    await fill({ lane_id: 'app-d', previous: 'park', reason: 'later' });
+    assert.equal((await srv.call('DELETE', '/api/groups/gone-group', ALICE)).status, 204);
+    const t = (await srv.call('GET', '/api/snapshot', ALICE)).body.tickets.find((x: any) => x.ref === 'redmine:830');
+    assert.equal(t.group, null);
+    assert.equal(t.lastLane, 'app-d');
+  });
+});

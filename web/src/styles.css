@@ -431,7 +431,7 @@ textarea {
   font-size: 0.8rem;
 }
 
-.sheet-ticket {
+.sheet.sheet-ticket {
   --kind: var(--accent);
 }
 .sheet-ticket .sheet-head {

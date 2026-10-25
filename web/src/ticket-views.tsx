@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react';
+import { TicketLinksContext } from './linked-text.tsx';
 import type { Client, Escalation, LaneEvent, Ticket } from './api.ts';
 import { FOLD, SheetSection, StatusPill, useStored, type Fold } from './components.tsx';
 import { absolute, ago, duration } from './format.ts';
@@ -36,6 +37,25 @@ export function TicketChip({ esc }: { esc: Pick<Escalation, 'project' | 'ticketI
       {away && <span className="ticket-state"> · {STATE_LABEL[t.state].toLowerCase()}</span>}
     </a>
   );
+}
+
+/**
+ * Whether a question's own `ticket` names something other than the ticket it belongs to (e.g. a PR),
+ * so it's worth showing too. Both are compared in short form ("redmine:500" is "500" for the default system).
+ */
+export function useSeparateTicket(esc: Pick<Escalation, 'ticket' | 'ticketRef'>) {
+  const { defaultTicketSystem } = useContext(TicketLinksContext) ?? {};
+  if (!esc.ticket) return false;
+  const short = defaultTicketSystem && esc.ticket.startsWith(`${defaultTicketSystem}:`) ? esc.ticket.slice(defaultTicketSystem.length + 1) : esc.ticket;
+  return short !== esc.ticketRef;
+}
+
+/** A question's ticket in words, for one-line rows: "500", or "500 (parked)" when no lane holds it. */
+export function useTicketLabel(esc: Pick<Escalation, 'ticketId' | 'ticketRef'>) {
+  const tickets = useContext(TicketsContext);
+  if (esc.ticketId === null || !esc.ticketRef) return null;
+  const t = tickets.get(String(esc.ticketId));
+  return t && t.state !== 'in_lane' ? `${esc.ticketRef} (${STATE_LABEL[t.state].toLowerCase()})` : esc.ticketRef;
 }
 
 /** Whether an escalation's ticket is in a lane (or it has none): what "Active tickets only" keeps. */
@@ -95,7 +115,7 @@ export function TicketDetail({
   project,
   ticketRef,
   client,
-  version,
+  stamp,
   now,
   laneName,
   onClose,
@@ -104,11 +124,11 @@ export function TicketDetail({
   project: string;
   ticketRef: string;
   client: Client;
-  /** Changes when something about the ticket changed, to refetch. */
-  version: string;
+  /** For a ticket's number: changes when something about it changed, to refetch. */
+  stamp: (ticketId: number) => string;
   now: number;
-  /** A lane's name from its id, when the client knows it. */
-  laneName: (laneId: string) => string;
+  /** A lane's name from its id; null for a lane the client doesn't have (removed). */
+  laneName: (laneId: string) => string | null;
   onClose: () => void;
   backTo: string;
 }) {
@@ -116,6 +136,8 @@ export function TicketDetail({
   const [error, setError] = useState<string | null>(null);
   const [escFold, setEscFold] = useStored<Fold>('lanesignal.ticket.escalations', FOLD, 'open');
   const [historyFold, setHistoryFold] = useStored<Fold>('lanesignal.ticket.history', FOLD, 'open');
+  // Known once loaded: whatever form the route wrote the ref in, the ticket's number follows it live.
+  const version = data ? stamp(data.ticket.id) : '';
 
   useEffect(() => {
     let cancelled = false;
@@ -133,9 +155,11 @@ export function TicketDetail({
   }, [client, project, ticketRef, version]);
 
   const t = data?.ticket;
-  const laneLink = (id: string) => (
-    <a href={`#/lane/${encodeURIComponent(project)}/${encodeURIComponent(id)}`}>{laneName(id)}</a>
-  );
+  const laneLink = (id: string) => {
+    const name = laneName(id);
+    // A removed lane has no sheet to open.
+    return name ? <a href={`#/lane/${encodeURIComponent(project)}/${encodeURIComponent(id)}`}>{name}</a> : <span>{id} (removed)</span>;
+  };
   const blocked = t ? t.blockedTotalMs + (t.blockedSince ? now - Date.parse(t.blockedSince) : 0) : 0;
 
   return (
@@ -242,7 +266,7 @@ export function TicketDetail({
                     <time title={absolute(ev.at)}>{ago(ev.at, now)}</time>
                     <span>
                       {ev.message}
-                      <span className="muted"> · {laneName(ev.laneId)}</span>
+                      <span className="muted"> · {laneName(ev.laneId) ?? ev.laneId}</span>
                     </span>
                     {ev.actor && <span className="actor">{ev.actor}</span>}
                   </li>

@@ -12,6 +12,7 @@ const resolveTicketUrl = (t: string) => `https://tickets.example/${t.replace(/^g
 
 /** Takes a database back from v16 (tickets), the first step of rolling it back further. */
 const UNDO_V16 = `
+  DROP INDEX IF EXISTS lane_events_ticket_switch;
   DROP INDEX escalations_ticket_code;
   DROP INDEX escalations_ticket;
   DROP INDEX lane_events_ticket;

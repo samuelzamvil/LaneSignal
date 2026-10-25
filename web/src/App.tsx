@@ -351,18 +351,16 @@ function Dashboard({
           .map((e) => e.id + e.state),
       ].join('|')
     : '';
-  // The ticket a ticket sheet shows, when the client has it: refetch when it or its questions change.
-  const routeTicket = route.ticketRef
-    ? [...live.tickets.values()].find(
-        (t) => t.project === route.ticketProject && [t.ref, t.displayRef].includes(route.ticketRef!),
-      )
-    : undefined;
-  const ticketVersion = route.ticketRef
-    ? [
-        routeTicket?.updatedAt,
-        ...[...live.escalations.values()].filter((e) => routeTicket && e.ticketId === routeTicket.id).map((e) => e.id + e.state),
-      ].join('|')
-    : '';
+  /** What a ticket's sheet refetches on: the ticket, the lane holding it, and its open questions. */
+  const ticketStamp = (id: number) => {
+    const t = live.tickets.get(String(id));
+    return [
+      t?.updatedAt,
+      t?.openEscalations,
+      t?.lane ? live.lanes.get(keyOf(t.project, t.lane))?.updatedAt : '',
+      ...[...live.escalations.values()].filter((e) => e.ticketId === id).map((e) => e.id + e.state + e.updatedAt),
+    ].join('|');
+  };
   // The route may name an escalation by its code (#/esc/A12, or #/esc/LS-A12 across projects).
   const routeEsc = route.escId
     ? (live.escalations.get(route.escId) ??
@@ -451,7 +449,8 @@ function Dashboard({
     .filter((t) => !activeGroups.length || (t.group !== null && activeGroups.includes(keyOf(t.project, t.group))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const parkedIn = (groupId: string | null) => parkedAll.filter((t) => (t.group ? keyOf(t.project, t.group) : null) === groupId);
-  const leftLane = (t: Ticket) => (t.lastLane ? (live.lanes.get(keyOf(t.project, t.lastLane))?.name ?? t.lastLane) : null);
+  const leftLane = (t: Ticket) =>
+    t.lastLane ? (live.lanes.get(keyOf(t.project, t.lastLane))?.name ?? `${t.lastLane} (removed)`) : null;
   type Section = { key: string; title?: string; groupId?: string | null; lanes: typeof visible };
   let sections: Section[];
   if (filters.arrange === 'group') {
@@ -519,6 +518,9 @@ function Dashboard({
         ) : (
           <p className="empty">Nothing needs you. 🎉</p>
         )
+      )}
+      {ticketFilter === 'active' && open.length > 0 && shown(open).length === 0 && (
+        <p className="empty">Nothing on tickets in a lane. {open.length} hidden: their tickets are parked or over.</p>
       )}
       {shown(open).map((e) => (
         escItem(e, seqOf(e))
@@ -867,12 +869,13 @@ function Dashboard({
         )}
         {route.ticketRef && route.ticketProject && (
           <TicketDetail
+            key={`${route.ticketProject}/${route.ticketRef}`}
             project={route.ticketProject}
             ticketRef={route.ticketRef}
             client={client}
-            version={ticketVersion}
+            stamp={ticketStamp}
             now={now}
-            laneName={(id) => live.lanes.get(keyOf(route.ticketProject!, id))?.name ?? id}
+            laneName={(id) => live.lanes.get(keyOf(route.ticketProject!, id))?.name ?? null}
             onClose={() => closeTo('#/lanes')}
             backTo={backLabel('#/lanes')}
           />

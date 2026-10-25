@@ -266,7 +266,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -559,6 +559,8 @@ export class Store {
         this.db.exec("UPDATE requirements SET status = 'pending' WHERE status = 'active'");
       }
       if (version < 16) this.migrateV16();
+      // v17: finding the lane a ticket last left reads only its ticket events.
+      if (version < 17) this.db.exec("CREATE INDEX IF NOT EXISTS lane_events_ticket_switch ON lane_events(ticket_id, id) WHERE kind = 'ticket'");
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -1365,12 +1367,18 @@ export class Store {
       displayRef: r.display_ref as string,
       code: r.code_ref as string,
       url: this.resolveTicketUrl(ref) ?? (/^https?:\/\//i.test(ref) ? ref : null),
-      group: (r.group_id as string | null) ?? null,
+      // A ticket in a removed group shows as ungrouped, like that group's lanes.
+      group:
+        r.group_id && !(this.db.prepare('SELECT archived_at FROM groups WHERE id = ?').get(r.group_id as string) as Row | undefined)?.archived_at
+          ? (r.group_id as string)
+          : null,
       lane: (r.lane_id as string | null) ?? null,
       lastLane:
+        (r.lane_id as string | null) ??
         ((this.db.prepare("SELECT lane_id FROM lane_events WHERE ticket_id = ? AND kind = 'ticket' ORDER BY id DESC LIMIT 1").get(Number(r.num)) as
           | Row
-          | undefined)?.lane_id as string | null) ?? null,
+          | undefined)?.lane_id as string | null) ??
+        null,
       state: r.state as TicketState,
       parkReason: (r.park_reason as string | null) ?? null,
       waitingOn: (r.waiting_on as string | null) ?? null,
@@ -1956,7 +1964,10 @@ export class Store {
       const holder = this.holderOf(current);
       const found = holder ? this.laneIncludingArchived(holder) : null;
       let statusChanged = false;
-      if (!found) loose = this.syncLooseTicket(current.ticketId, at);
+      if (!found) {
+        this.syncLooseTicket(current.ticketId, at);
+        loose = current.ticketId !== null;
+      }
       if (found && !found.archived && current.blocking) {
         const lane = found.lane;
         if (turn === 'agent' && lane.status === 'blocked_human' && this.openBlockingCount(lane.id) === 0) {
@@ -2279,7 +2290,10 @@ export class Store {
       // It blocks the lane holding its ticket (or, with no ticket, the lane it was raised in); none while parked.
       const holder = this.holderOf(before);
       const lane = holder ? this.getLane(holder) : null;
-      if (!lane) loose = this.syncLooseTicket(before.ticketId, at);
+      if (!lane) {
+        this.syncLooseTicket(before.ticketId, at);
+        loose = before.ticketId !== null;
+      }
       const blocks = !!lane && lane.status !== 'blocked_human';
       if (lane && blocks) this.applyLaneUpdate(lane, { status: 'blocked_human' }, actor, at);
       return { escalation: this.requireEscalation(id), lane: lane ? this.requireLane(lane.id) : null, blocks };
@@ -2665,7 +2679,9 @@ export class Store {
       const holder = this.holderOf(current);
       const found = holder ? this.laneIncludingArchived(holder) : null;
       if (!found) {
-        loose = this.syncLooseTicket(current.ticketId, at);
+        // A ticket no lane holds: its status may change, and its open count does.
+        this.syncLooseTicket(current.ticketId, at);
+        loose = current.ticketId !== null;
         return { escalation: this.requireEscalation(current.id), lane: null, unblocked: false };
       }
       const { lane, archived } = found;
