@@ -161,6 +161,14 @@ test('an expired or revoked grant signs out', async () => {
   await assert.rejects(source.token(), (err: Error) => err.name === 'SignedOut');
 });
 
+test("an outage doesn't throw the refresh token away", async () => {
+  let stored: string | null = 'oauth:refresh-0';
+  const down: Http = async () => ({ status: 503, headers: {}, body: '<html>' });
+  const source = createTokenSource(down, client, { get: async () => stored, set: async (v) => void (stored = v) });
+  await assert.rejects(source.token(), (err: Error) => err.name !== 'SignedOut');
+  assert.equal(stored, 'oauth:refresh-0');
+});
+
 test('callback links: the app link and the https App Link', () => {
   assert.deepEqual(callbackParams('lanesignal://oauth/callback?code=c1&state=s1'), { code: 'c1', state: 's1', error: null });
   assert.deepEqual(callbackParams(`${SERVER}/oauth/callback?code=c2&state=s2`), { code: 'c2', state: 's2', error: null });

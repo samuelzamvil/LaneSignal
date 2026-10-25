@@ -23,7 +23,7 @@ It's off by default. Turn it on with `LANESIGNAL_CLOUDFLARE_ACCESS=true`. It's a
 
   The email must belong to a LaneSignal account that exists and isn't banned. Otherwise the request is refused and the person is told so. Set `LANESIGNAL_CF_ACCESS_CREATE_ACCOUNTS=true` to give a new account (not an admin) to every email Access lets in instead.
 
-Password sign-in, agent keys and static tokens keep working beside it. A request that carries a LaneSignal credential (`Authorization: Bearer ls_…`, a session or a static token) uses that credential, whoever Access says it is.
+Password sign-in, agent keys and static tokens keep working beside it. A request that carries a LaneSignal credential (`Authorization: Bearer ls_…`, a session or a static token) uses that credential, whoever Access says it is. If the credential is wrong or revoked, the request is refused; it doesn't fall back to the Access identity.
 
 ## 1. Cloudflare
 
@@ -71,7 +71,9 @@ The first admin account is still created with the [setup code](accounts.md#first
 
 Settings shows *through Cloudflare Access* next to your name. **Agent keys** and **People** work as usual. LaneSignal keeps a session for each person signed in through Access and uses it for those screens. **Change password** isn't shown: your Google account is your password.
 
-When Access stops letting someone in (their refresh fails, or they're removed from the policy), the app shows *You were signed out*. Removing or banning their LaneSignal account cuts them off at once, as with a password sign-in.
+When Access stops letting someone in (their refresh fails, or they're removed from the policy), the app shows *You were signed out*. Removing or banning their LaneSignal account cuts them off at once, as with a password sign-in. With `LANESIGNAL_CF_ACCESS_CREATE_ACCOUNTS=true`, a removed person gets a new, empty account the next time they sign in, so take them out of the Access policy as well, or ban them instead.
+
+In the app, a server behind Access only offers Access sign-in: create the first admin account (with the setup code) in the browser.
 
 ## Optional: App Link
 
@@ -101,7 +103,7 @@ The service-token combination (an `Authorization` header that isn't Access's, ne
 ## Security
 
 - The assertion is only trusted after its signature, issuer, audience and expiry check out. The signing keys are cached for an hour and re-read when a token names a new key, so Cloudflare's key rotation needs nothing from you. If Cloudflare can't be reached for the keys, sign-in through Access fails; LaneSignal never falls back to trusting an unchecked assertion.
-- **Cross-site requests:** a browser sends Access's cookie on cross-site requests, which bearer tokens never are. So changes (anything but `GET`) signed in through Access are refused when their `Origin` is neither LaneSignal's own (its host, or `LANESIGNAL_PUBLIC_URL`) nor one of `LANESIGNAL_CORS_ORIGINS` (by default the Android app's).
-- The app's Managed OAuth access token is opaque to LaneSignal: only Cloudflare can resolve it, and LaneSignal ignores it if it's passed on. The refresh token never leaves the phone's Keystore-encrypted storage, except to Cloudflare's token endpoint.
+- **Cross-site requests:** a browser sends Access's cookie on cross-site requests, which bearer tokens never are. So changes (anything but `GET`) signed in through Access are refused when their `Origin` is neither LaneSignal's own (its host, or `LANESIGNAL_PUBLIC_URL`) nor one of `LANESIGNAL_CORS_ORIGINS` (by default the Android app's, which include `https://localhost` and `http://localhost`). A request with no `Origin` is let through: browsers send one with every cross-site request and every same-origin change, and other clients can't use Access's cookie without signing in anyway.
+- The app's Managed OAuth access token is opaque to LaneSignal: only Cloudflare can resolve it, and LaneSignal ignores it if it's passed on. The refresh token is stored only in the phone's Keystore-encrypted storage, and sent only to Cloudflare's token endpoint. While the app runs it's also held in the app's memory.
 - Long-lived connections (the event stream) re-check the assertion. When it expires, the stream ends and the app reconnects with a fresh token.
 - See also the [security model](security.md).

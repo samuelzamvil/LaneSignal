@@ -176,7 +176,8 @@ function tokensFrom(res: HttpResponse, previousRefresh: string | null): Tokens {
   if (res.status !== 200 || !accessToken) {
     const err = new AccessError(oauthError(res) ?? `Cloudflare Access answered ${res.status}`);
     // invalid_grant: the refresh token expired or was revoked, or the user no longer passes the policy.
-    if (obj(res.body).error === 'invalid_grant' || res.status === 400 || res.status === 401) err.name = 'SignedOut';
+    // Anything else (an outage, a proxy's error page) keeps the refresh token for the next try.
+    if (obj(res.body).error === 'invalid_grant') err.name = 'SignedOut';
     throw err;
   }
   const expiresIn = typeof b.expires_in === 'number' && b.expires_in > 0 ? b.expires_in : 900;
@@ -255,6 +256,8 @@ export function createTokenSource(
     },
     /** Revokes the refresh token (best effort) and forgets everything. */
     async signOut() {
+      // A refresh still under way would otherwise store its new refresh token after this.
+      await inflight?.catch(() => {});
       const refreshToken = current?.refreshToken ?? (await store.get());
       current = null;
       await store.set(null);

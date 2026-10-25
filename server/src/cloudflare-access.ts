@@ -21,7 +21,12 @@ export interface AccessIdentity {
 
 type Jwk = { kid?: string; kty?: string; alg?: string; n?: string; e?: string };
 
-const b64json = (part: string) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as Record<string, unknown>;
+/** A JWT part as an object; throws for anything else (null, a number, an array...). */
+const b64json = (part: string) => {
+  const v: unknown = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('not an object');
+  return v as Record<string, unknown>;
+};
 
 /**
  * Verifies the application token Cloudflare Access forwards in `Cf-Access-Jwt-Assertion`: an RS256 JWT signed

@@ -11,6 +11,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.nio.charset.StandardCharsets;
+import org.json.JSONObject;
 import java.security.KeyStore;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -75,7 +76,7 @@ public class SecureStoragePlugin extends Plugin {
         JSObject result = new JSObject();
         String stored = name == null ? null : prefs().getString(name, null);
         if (stored == null) {
-            result.put("value", null);
+            result.put("value", JSONObject.NULL);
             call.resolve(result);
             return;
         }
@@ -87,7 +88,7 @@ public class SecureStoragePlugin extends Plugin {
         } catch (Exception e) {
             // The key is gone or the data is damaged (e.g. restored onto another device): forget it, sign in again.
             prefs().edit().remove(name).apply();
-            result.put("value", null);
+            result.put("value", JSONObject.NULL);
         }
         call.resolve(result);
     }

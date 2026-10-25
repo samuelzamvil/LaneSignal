@@ -54,15 +54,18 @@ export function createAuth(
   }
 
   /**
-   * A LaneSignal bearer credential wins; otherwise the Access assertion. `unknownEmail` is set when Access
-   * verified someone LaneSignal has no (active) account for, so they can be told why they're refused.
+   * A LaneSignal bearer credential decides alone, valid or not: a revoked key never turns into the person
+   * Access vouches for. Only without one (or with Access's own Managed OAuth token, which Cloudflare may pass
+   * on) does the Access assertion count. `unknownEmail` is set when Access verified someone LaneSignal has no
+   * (active) account for, so they can be told why they're refused. `create` allows creating that account
+   * (LANESIGNAL_CF_ACCESS_CREATE_ACCOUNTS); re-checks of open connections never create one.
    */
-  async function identifyCredential(c: Credential): Promise<{ principal: Principal | null; unknownEmail?: string }> {
-    const principal = await identify(c.bearer);
-    if (principal || !access || !c.access) return { principal };
+  async function identifyCredential(c: Credential, create = true): Promise<{ principal: Principal | null; unknownEmail?: string }> {
+    if (c.bearer && !isAccessOAuthToken(c.bearer)) return { principal: await identify(c.bearer) };
+    if (!access || !c.access) return { principal: null };
     const who = await access.verifier.verify(c.access);
     if (!who) return { principal: null };
-    const viaAccess = await accounts.identifyAccess(who, access.createAccounts);
+    const viaAccess = await accounts.identifyAccess(who, create && access.createAccounts);
     return viaAccess ? { principal: viaAccess } : { principal: null, unknownEmail: who.email };
   }
 
@@ -94,8 +97,8 @@ export function createAuth(
   async function accessPrincipal(req: Request): Promise<Principal | null> {
     if (!access) return null;
     const c = credentialFrom(req);
-    if (await identify(c.bearer)) return null;
-    const { principal } = await identifyCredential({ access: c.access });
+    if (c.bearer && !isAccessOAuthToken(c.bearer)) return null;
+    const { principal } = await identifyCredential(c);
     return principal && sameSiteOk(req) ? principal : null;
   }
 
@@ -124,9 +127,16 @@ export function createAuth(
       // Long-lived requests (SSE, long-polls) re-check the credential while they stay open. An Access
       // assertion stops being valid when it expires, so a stream signed in that way ends and reconnects.
       // An account admin who is demoted loses every project they weren't a member of: treat that as invalid too.
+      // It must still be the same identity: an account removed and made again isn't the one that opened the stream.
       const stillValid = async () => {
-        const now = (await identifyCredential(credential)).principal;
-        return now !== null && !!now.superuser === !!principal.superuser;
+        const now = (await identifyCredential(credential, false)).principal;
+        return (
+          now !== null &&
+          now.role === principal.role &&
+          now.userId === principal.userId &&
+          now.name === principal.name &&
+          !!now.superuser === !!principal.superuser
+        );
       };
       res.locals.stillValid = stillValid;
       // Calls onInvalid as soon as a revocation (sign-out, key delete, ban, removal...) invalidates this credential.

@@ -112,6 +112,13 @@ describe('cloudflare access sign-in', () => {
     assert.equal(me.body.name, 'ops');
   });
 
+  test("a wrong or revoked LaneSignal credential never falls back to the Access identity", async () => {
+    const token = jwt({ email: 'ada@example.com' });
+    for (const bearer of ['ls_revoked-or-made-up-key-0123456789', 'not-a-session-token', 'x'.repeat(40)]) {
+      assert.equal((await srv.call('GET', '/api/me', { authorization: `Bearer ${bearer}`, ...as(token) })).status, 401, bearer);
+    }
+  });
+
   test('an email without an account is told why', async () => {
     const res = await srv.call('GET', '/api/me', as(jwt({ email: 'eve@example.com' })));
     assert.equal(res.status, 403);
@@ -131,6 +138,10 @@ describe('cloudflare access sign-in', () => {
       jwt({ common_name: 'client-id.access' }),
       'not.a.jwt',
       'garbage',
+      // Headers and claims that aren't objects.
+      'bnVsbA.e30.x',
+      'MQ.e30.x',
+      'e30.bnVsbA.x',
     ];
     for (const token of bad) assert.equal((await srv.call('GET', '/api/me', as(token))).status, 401, token);
     // Tampering with the claims breaks the signature.

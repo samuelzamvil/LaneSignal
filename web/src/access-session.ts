@@ -119,18 +119,28 @@ export async function startAccessSignIn(server: string): Promise<void> {
  */
 export async function finishAccessSignIn(url: string): Promise<AccessClient | null> {
   const params = callbackParams(url);
-  if (!params) return null;
+  // The link that started the app is handed out again on every later sign-in screen: use it once.
+  if (!params || handled.has(url)) return null;
+  handled.add(url);
   const pending = readJson<Pending>(PENDING_KEY);
+  // Only the matching callback ends the sign-in in progress; any app can open lanesignal:// links.
+  if (!pending || params.state !== pending.state) {
+    if (!pending) return null;
+    throw new AccessError("That sign-in link doesn't match the one started here. Try again.");
+  }
   localStorage.removeItem(PENDING_KEY);
   void Browser.close().catch(() => {});
   if (params.error) throw new AccessError(`Cloudflare Access: ${params.error}`);
-  if (!pending || Date.now() - pending.startedAt > PENDING_MAX_MS) throw new AccessError('That sign-in expired. Try again.');
-  if (!params.code || params.state !== pending.state) throw new AccessError("That sign-in link doesn't match the one started here. Try again.");
+  if (Date.now() - pending.startedAt > PENDING_MAX_MS) throw new AccessError('That sign-in expired. Try again.');
+  if (!params.code) throw new AccessError('Cloudflare Access sent no sign-in code. Try again.');
   const tokens = await exchangeCode(nativeHttp, pending.client, params.code, pending.verifier);
   if (tokens.refreshToken) await store(pending.client).set(tokens.refreshToken);
   sources.set(pending.client.resource, makeSource(pending.client, tokens));
   return pending.client;
 }
+
+/** Callback links already used (in this run of the app). */
+const handled = new Set<string>();
 
 const sources = new Map<string, TokenSource>();
 const makeSource = (c: AccessClient, initial?: Tokens) => createTokenSource(nativeHttp, c, store(c), initial);

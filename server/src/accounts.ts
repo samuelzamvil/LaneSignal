@@ -330,25 +330,29 @@ export async function createAccounts(config: Config, dbPath: string) {
      * The account with the email Cloudflare Access verified, if it exists and isn't banned. With `create`, an
      * email without an account gets one (not an admin, with a random password: they sign in through Access).
      */
-    identifyAccess(identity: AccessIdentity, create: boolean): Promise<Principal | null> {
-      const run = accessLock.then(async () => {
-        let user = userByEmail(identity.email);
-        if (!user && create && userCount() > 0) {
+    async identifyAccess(identity: AccessIdentity, create: boolean): Promise<Principal | null> {
+      let user = userByEmail(identity.email);
+      if (!user && create && userCount() > 0) {
+        const run = accessLock.then(async () => {
+          // Another request may have created it while this one waited.
+          if (userByEmail(identity.email)) return;
           const local = identity.email.split('@')[0] || identity.email;
           await auth.api.createUser({
             body: { email: identity.email, name: local, password: randomBytes(24).toString('base64url'), role: 'user' },
           });
           log.info('account created for a Cloudflare Access sign-in', { email: identity.email });
-          user = userByEmail(identity.email);
+        });
+        accessLock = run.catch(() => {});
+        try {
+          await run;
+        } catch (err) {
+          log.warn('cloudflare access sign-in failed', { email: identity.email, error: String(err) });
+          return null;
         }
-        if (!user || !ownerActive(user.id)) return null;
-        return { ...principalOfUser(user), cloudflareAccess: true };
-      });
-      accessLock = run.catch(() => {});
-      return run.catch((err: unknown) => {
-        log.warn('cloudflare access sign-in failed', { email: identity.email, error: String(err) });
-        return null;
-      });
+        user = userByEmail(identity.email);
+      }
+      if (!user || !ownerActive(user.id)) return null;
+      return { ...principalOfUser(user), cloudflareAccess: true };
     },
 
     /**
@@ -359,7 +363,9 @@ export async function createAccounts(config: Config, dbPath: string) {
       const rows = db
         .prepare('SELECT token, expiresAt FROM session WHERE userId = ? AND userAgent = ?')
         .all(userId, ACCESS_SESSION_AGENT) as { token: string; expiresAt: string | number }[];
-      const fresh = rows.find((r) => new Date(r.expiresAt).getTime() > Date.now() + 86_400_000);
+      // Reused while it has at least half its life (at most a day) left; each use extends it anyway.
+      const margin = Math.min(86_400_000, (config.sessionDays * 86_400_000) / 2);
+      const fresh = rows.find((r) => new Date(r.expiresAt).getTime() > Date.now() + margin);
       let token = fresh?.token;
       if (!token) {
         const c = await auth.$context;
