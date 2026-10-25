@@ -271,6 +271,44 @@ describe('changing direction', () => {
     assert.ok(!(again.value.similar ?? []).some((x: any) => x.id === id), 'rejected ones are never offered as similar');
   });
 
+  test('exports leave rejected requirements out for agents', async () => {
+    const id = (await record({ requirement: 'Receipts keep the store logo.', justification: 'Brand.', tags: ['receipt-logo'], decided_by: 'Sam' })).value.requirement.id;
+    await srv.call('POST', `/api/requirements/${id}/reject`, ALICE, { reason: 'TOPSECRET reason' });
+    const agent = await srv.call('GET', '/api/export/requirements.json', AGENT);
+    assert.ok(!agent.body.some((x: any) => x.id === id || x.rejection_reason === 'TOPSECRET reason'));
+    const person = await srv.call('GET', '/api/export/requirements.json', ALICE);
+    assert.ok(person.body.some((x: any) => x.id === id && x.rejection_reason === 'TOPSECRET reason'));
+  });
+
+  test('a rejected replacement leaves nothing pointing at it, and restoring it links it again', async () => {
+    const base = { justification: 'Ops.', tags: ['purge-window'], decided_by: 'Sam' };
+    const get = async (id: string) => (await srv.call('GET', `/api/requirements/${id}`, ALICE)).body;
+    const a = (await srv.call('POST', '/api/requirements', ALICE, { requirement: 'Purges run monthly.', justification: 'Ops.', tags: ['purge-window'] })).body.requirement;
+    const p = (await srv.tool(AGENT, 'supersede_requirement', { id: a.id, requirement: 'Purges run weekly.', ...base })).value.requirement;
+    const p2 = (await srv.tool(AGENT, 'supersede_requirement', { id: p.id, requirement: 'Purges run daily.', ...base })).value.requirement;
+    await srv.call('POST', `/api/requirements/${p2.id}/reject`, ALICE, { reason: 'Too often.' });
+    assert.deepEqual([(await get(a.id)).status, (await get(a.id)).supersededBy], ['active', null]);
+    assert.deepEqual([(await get(p.id)).status, (await get(p.id)).supersededBy], ['superseded', null], 'the swapped proposal no longer names it');
+    const seen = (await srv.tool(AGENT, 'find_requirements', { tags: ['purge-window'], statuses: ['active', 'superseded'] })).value;
+    assert.ok(!JSON.stringify(seen).includes(`"${p2.id}"`));
+    // Restored: the pending replacement again, so approving it supersedes the old decision.
+    assert.equal((await srv.call('POST', `/api/requirements/${p2.id}/restore`, ALICE)).body.status, 'pending');
+    assert.equal((await get(a.id)).supersededBy, p2.id);
+    await srv.call('POST', `/api/requirements/${p2.id}/approve`, ALICE);
+    assert.deepEqual([(await get(a.id)).status, (await get(a.id)).supersededBy], ['superseded', p2.id]);
+  });
+
+  test('restoring a rejected replacement is refused once what it replaced has moved on', async () => {
+    const base = { justification: 'Ops.', tags: ['archive-window'], decided_by: 'Sam' };
+    const a = (await srv.call('POST', '/api/requirements', ALICE, { requirement: 'Archives run monthly.', justification: 'Ops.', tags: ['archive-window'] })).body.requirement;
+    const p = (await srv.tool(AGENT, 'supersede_requirement', { id: a.id, requirement: 'Archives run weekly.', ...base })).value.requirement;
+    await srv.call('POST', `/api/requirements/${p.id}/reject`, ALICE, { reason: 'No.' });
+    await srv.tool(AGENT, 'supersede_requirement', { id: a.id, requirement: 'Archives run yearly.', ...base });
+    const res = await srv.call('POST', `/api/requirements/${p.id}/restore`, ALICE);
+    assert.equal(res.status, 409);
+    assert.equal((await srv.call('GET', `/api/requirements/${p.id}`, ALICE)).body.status, 'rejected');
+  });
+
   test('an agent\'s replacement leaves the old decision in force until it is approved', async () => {
     const base = { justification: 'Ops review.', tags: ['export-window'], decided_by: 'Sam' };
     const old = (await srv.call('POST', '/api/requirements', ALICE, { requirement: 'Exports run nightly.', justification: 'Ops.', tags: ['export-window'] })).body.requirement;

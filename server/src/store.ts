@@ -210,6 +210,8 @@ export interface ExportFilter {
   laneId?: string;
   /** Projects to include (requirements for all projects are always included); undefined = every project. */
   projects?: string[];
+  /** Include rejected requirements (only people who approve requirements see them). */
+  includeRejected?: boolean;
 }
 
 export interface GroupPatch {
@@ -598,8 +600,9 @@ export class Store {
       if (version < 17) this.db.exec("CREATE INDEX IF NOT EXISTS lane_events_ticket_switch ON lane_events(ticket_id, id) WHERE kind = 'ticket'");
       if (version < 18) this.migrateV18();
       // v19: rejecting a pending requirement says why.
+      // The requirements a rejected replacement was to replace, so restoring it can link them again.
       if (version < 19 && !this.hasColumn('requirements', 'rejection_reason')) {
-        this.db.exec('ALTER TABLE requirements ADD COLUMN rejection_reason TEXT');
+        this.db.exec('ALTER TABLE requirements ADD COLUMN rejection_reason TEXT; ALTER TABLE requirements ADD COLUMN rejected_replacing TEXT');
       }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
@@ -3854,6 +3857,7 @@ export class Store {
       }
       if (filter.from) (parts.push('created_at >= ?'), params.push(filter.from));
       if (filter.to) (parts.push('created_at < ?'), params.push(filter.to));
+      if (!filter.includeRejected) parts.push("status <> 'rejected'");
       const raw = this.db
         .prepare(`SELECT num AS _rid, * FROM requirements WHERE ${parts.join(' AND ')} ORDER BY num LIMIT ?`)
         .all(...params, limit) as Row[];
@@ -4776,19 +4780,36 @@ export class Store {
 
   /**
    * Undoes a retire or a rejection (e.g. a mis-tap). A retired requirement is active (approved)
-   * again; a rejected one goes back to waiting for approval, its reason cleared.
+   * again; a rejected one goes back to waiting for approval, its reason cleared, and is again the
+   * pending replacement of what it was to replace (409 if that has changed since).
    */
   restoreRequirement(id: string): Requirement {
-    const requirement = this.tx(() => {
+    const { requirement, relinked } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (current.status !== 'retired' && current.status !== 'rejected') {
         throw new ConflictError(`${current.id} is ${current.status}; only retired or rejected requirements can be restored`);
       }
+      const num = this.requirementNum(current.id)!;
+      const at = this.now().toISOString();
+      const replacing =
+        current.status === 'rejected'
+          ? (JSON.parse(((this.db.prepare('SELECT rejected_replacing FROM requirements WHERE num = ?').get(num) as Row).rejected_replacing as string | null) ?? '[]') as number[])
+          : [];
+      for (const old of replacing) {
+        const req = this.requireRequirement(String(old));
+        if (!inForce(req) || req.supersededBy) {
+          throw new ConflictError(
+            `${current.id} was to replace ${req.id}, which has ${req.supersededBy ? `another replacement waiting (${req.supersededBy})` : `become ${req.status}`} since; record the change again instead`,
+          );
+        }
+        this.db.prepare('UPDATE requirements SET superseded_by = ?, updated_at = ? WHERE num = ?').run(num, at, old);
+      }
       this.db
-        .prepare('UPDATE requirements SET status = ?, rejection_reason = NULL, updated_at = ? WHERE num = ?')
-        .run(current.status === 'rejected' ? 'pending' : 'active', this.now().toISOString(), this.requirementNum(current.id)!);
-      return this.requireRequirement(current.id);
+        .prepare('UPDATE requirements SET status = ?, rejection_reason = NULL, rejected_replacing = NULL, updated_at = ? WHERE num = ?')
+        .run(current.status === 'rejected' ? 'pending' : 'active', at, num);
+      return { requirement: this.requireRequirement(current.id), relinked: replacing.map((n) => this.requireRequirement(String(n))) };
     });
+    for (const old of relinked) this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });
     return requirement;
   }
@@ -4796,16 +4817,23 @@ export class Store {
   /**
    * Takes a requirement out of force: retired (an active one no longer applies, nothing replaces
    * it) or rejected (a pending record a person turned down, with their reason). A requirement it
-   * was to replace no longer has a replacement waiting.
+   * was to replace no longer has a replacement waiting; a rejected one remembers which, for a
+   * restore, and nothing points at it any more (not even a proposal it was swapped in for).
    */
   private withdrawRequirement(current: Requirement, status: 'retired' | 'rejected', reason: string | null): Requirement {
     const { requirement, kept } = this.tx(() => {
       const at = this.now().toISOString();
       const num = this.requirementNum(current.id)!;
-      this.db.prepare('UPDATE requirements SET status = ?, rejection_reason = ?, updated_at = ? WHERE num = ?').run(status, reason, at, num);
       const kept = this.replacedBy(num);
-      for (const old of kept) this.db.prepare('UPDATE requirements SET superseded_by = NULL, updated_at = ? WHERE num = ?').run(at, old);
-      return { requirement: this.requireRequirement(current.id), kept: kept.map((n) => this.requireRequirement(String(n))) };
+      const pointing =
+        status === 'rejected'
+          ? (this.db.prepare('SELECT num FROM requirements WHERE superseded_by = ?').all(num) as Row[]).map((r) => Number(r.num))
+          : kept;
+      for (const old of pointing) this.db.prepare('UPDATE requirements SET superseded_by = NULL, updated_at = ? WHERE num = ?').run(at, old);
+      this.db
+        .prepare('UPDATE requirements SET status = ?, rejection_reason = ?, rejected_replacing = ?, updated_at = ? WHERE num = ?')
+        .run(status, reason, status === 'rejected' && kept.length ? JSON.stringify(kept) : null, at, num);
+      return { requirement: this.requireRequirement(current.id), kept: pointing.map((n) => this.requireRequirement(String(n))) };
     });
     for (const old of kept) this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });

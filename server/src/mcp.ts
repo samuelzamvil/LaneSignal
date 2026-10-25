@@ -485,6 +485,7 @@ function buildServer(
             to: f.to,
             laneId: f.lane ? q(a.pick(project, { lane: f.lane }), f.lane) : undefined,
             projects: a.scope(project),
+            includeRejected: approvesRequirements(who),
           });
           const start = offset ?? 0;
           let page = rows.slice(start, start + (limit ?? 100));

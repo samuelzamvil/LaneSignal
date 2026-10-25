@@ -66,6 +66,7 @@ function RejectForm({ req, client, onDone }: { req: Requirement; client: Client;
   async function reject(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
+    setError(null);
     try {
       await client.rejectRequirement(req.id, reason);
       onDone();

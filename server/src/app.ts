@@ -1108,6 +1108,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       to: query.to,
       laneId: query.lane ? q(a.pick(query.project, { lane: query.lane }), query.lane) : undefined,
       projects: a.scope(query.project),
+      includeRejected: approvesRequirements(principalOf(res)),
     };
   };
   const stamp = () => new Date().toISOString().slice(0, 10);
@@ -1183,9 +1184,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.write('retry: 3000\n\n');
     const seesRejected = approvesRequirements(principalOf(res));
     const send = (e: StreamEvent) => {
-      // Rejected requirements are for people only.
-      if (e.type === 'requirement' && e.requirement.status === 'rejected' && !seesRejected) return;
       const visible = pub.event(e, projects);
+      // Rejected requirements are for people only: others just learn it's gone.
+      if (visible?.type === 'requirement' && visible.requirement.status === 'rejected' && !seesRejected) {
+        res.write(`event: requirement_removed\ndata: ${JSON.stringify({ type: 'requirement_removed', id: visible.requirement.id })}\n\n`);
+        return;
+      }
       if (visible) res.write(`event: ${visible.type}\ndata: ${JSON.stringify(visible)}\n\n`);
     };
     // Close the stream as soon as its credential stops being valid: checked on every heartbeat
