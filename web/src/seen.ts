@@ -25,19 +25,21 @@ function write(all: Record<string, number>) {
   }
 }
 
+/** Something with an agent's messages: a lane, or an epic's board (id "~epic-<n>", see epicSeenKey). */
+type Board = Pick<Lane, 'project' | 'id' | 'lastAgentMessageId'>;
 const keyOf = (lane: Pick<Lane, 'project' | 'id'>) => `${lane.project}/${lane.id}`;
 
 /**
  * The agent wrote on the lane since this device last opened it. A device that has never tracked this
  * (a new install, or the upgrade that turned earlier notices into messages) marks nothing.
  */
-export function hasNewMessage(lane: Lane): boolean {
+export function hasNewMessage(lane: Board): boolean {
   const all = read();
   return all !== null && lane.lastAgentMessageId != null && lane.lastAgentMessageId > (all[keyOf(lane)] ?? 0);
 }
 
 /** On a device that has never tracked messages: what the lanes hold now counts as read. */
-export function baselineSeen(lanes: Iterable<Lane>) {
+export function baselineSeen(lanes: Iterable<Board>) {
   if (read() !== null) return;
   const list = [...lanes];
   // A server from before lane conversations doesn't say: baseline once it does, or its notices would all be new.

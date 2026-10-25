@@ -87,7 +87,8 @@ describe('screen data', () => {
     assert.equal(p.card?.code, latest.ref);
     assert.equal(p.card?.label, 'Needs you');
     assert.equal(p.card?.lane, 'Auth rework');
-    assert.equal(p.card?.group, null);
+    // A lane published without a group is in its project's "Ungrouped" group.
+    assert.equal(p.card?.group, 'Ungrouped');
     assert.equal(p.card?.title, 'Drop the legacy table?');
     assert.equal(p.card?.recommendation, 'Drop it in 0042');
     assert.equal(p.card?.accept, 'Write migration 0042');

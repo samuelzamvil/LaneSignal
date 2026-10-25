@@ -8,10 +8,11 @@ Project: \`<project-id>\` (pass it as \`project\` on every LaneSignal call; dele
 
 **Publishing**
 - Register the group at the start of every session. Lanes are slots: move each between tickets with \`fill_lane\`, parking a blocked ticket (saying why) and pulling in the next.
+- Keep the epic's status line current (\`update_epic\`) with what's queued or waiting, instead of placeholder lanes. Ask about direction, scope and which tickets to file on the epic, not on a lane.
 - Publish when a lane's situation changes, not on a timer.
 - Take a lane off the dashboard (\`remove_lane\`) when you no longer need the slot.
 - Notify me (\`notify_owner\`) when a PR merges or you start a new ticket. Nothing else.
-- When I write on a lane, act on it; answer with \`notify_owner\` if I asked something or you change course.
+- When I write on a lane or an epic's board, act on it; answer with \`notify_owner\` (or \`notify_epic\`) if I asked something or you change course.
 
 **Escalate to me** (I answer in LaneSignal, or here in this session):
 - destructive or irreversible changes (data deletion, migrations without a rollback, force pushes)

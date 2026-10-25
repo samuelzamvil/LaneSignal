@@ -1,4 +1,4 @@
-import type { Escalation, Group, Lane, StreamEvent, Ticket } from './api.ts';
+import type { Epic, Escalation, Group, Lane, StreamEvent, Ticket } from './api.ts';
 
 /** Lane and group ids are unique within a project; client maps key them by both. */
 export const keyOf = (project: string, id: string) => `${project}/${id}`;
@@ -9,6 +9,8 @@ export interface Entities {
   escalations: Map<string, Escalation>;
   /** Keyed by the ticket's number (unique across projects). */
   tickets: Map<string, Ticket>;
+  /** Open epics (and ones waiting for close approval), keyed by number (unique across projects). */
+  epics: Map<string, Epic>;
 }
 
 const UNRESOLVED = new Set(['open', 'decided']);
@@ -24,6 +26,7 @@ export function applyEvent(s: Entities, e: StreamEvent): Entities {
   const lanes = new Map(s.lanes);
   const escalations = new Map(s.escalations);
   const tickets = new Map(s.tickets);
+  const epics = new Map(s.epics);
   if (e.type === 'group') {
     const k = keyOf(e.group.project, e.group.id);
     if (newer(groups, k, e.group)) groups.set(k, e.group);
@@ -35,13 +38,19 @@ export function applyEvent(s: Entities, e: StreamEvent): Entities {
   }
   if (e.type === 'lane_deleted') {
     lanes.delete(keyOf(e.project, e.id));
-    // The lane's own questions are withdrawn with it; a ticket's stay open with the ticket.
-    for (const [id, esc] of escalations) if (esc.project === e.project && esc.laneId === e.id && esc.ticketId === null) escalations.delete(id);
+    // Questions stay with their ticket or epic; only older ones that had neither go with the lane.
+    for (const [id, esc] of escalations) {
+      if (esc.project === e.project && esc.laneId === e.id && esc.ticketId === null && !esc.epicId) escalations.delete(id);
+    }
   }
   if (e.type === 'escalation' && newer(escalations, e.escalation.id, e.escalation)) {
     if (UNRESOLVED.has(e.escalation.state)) escalations.set(e.escalation.id, e.escalation);
     else escalations.delete(e.escalation.id);
   }
   if (e.type === 'ticket' && newer(tickets, String(e.ticket.id), e.ticket)) tickets.set(String(e.ticket.id), e.ticket);
-  return { groups, lanes, escalations, tickets };
+  if (e.type === 'epic' && newer(epics, String(e.epic.id), e.epic)) {
+    if (e.epic.state === 'closed') epics.delete(String(e.epic.id));
+    else epics.set(String(e.epic.id), e.epic);
+  }
+  return { groups, lanes, escalations, tickets, epics };
 }

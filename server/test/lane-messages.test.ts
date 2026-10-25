@@ -187,7 +187,8 @@ test('lane conversations export as lane_messages', async () => {
 });
 
 test('the lane page keeps every unresolved escalation, however many closed ones follow', async () => {
-  await srv.publish('busy-lane');
+  // Holding no ticket: the lane lists the questions raised on it (its group's epic's), not a ticket's.
+  await srv.publish('busy-lane', { ticket: null });
   const open = (await srv.call('POST', '/api/escalations', AGENT, { laneId: 'busy-lane', question: 'Still open?' })).body;
   for (let i = 0; i < 51; i++) {
     const e = (await srv.call('POST', '/api/escalations', AGENT, { laneId: 'busy-lane', question: `Done ${i}?`, blocking: false })).body;

@@ -4,6 +4,7 @@ import {
   ApiError,
   isNative,
   type Client,
+  type Epic,
   type Escalation,
   type Group,
   type Lane,
@@ -24,6 +25,8 @@ export interface LiveData {
   escalations: Map<string, Escalation>;
   /** Held and parked tickets, and any an unresolved escalation belongs to; keyed by number. */
   tickets: Map<string, Ticket>;
+  /** Open epics (and ones waiting for close approval), keyed by number. */
+  epics: Map<string, Epic>;
   link: LinkState;
   /** Bumps on every event so detail views can refetch. */
   version: number;
@@ -53,6 +56,7 @@ export function useLiveData(client: Client): LiveData {
     lanes: new Map(),
     escalations: new Map(),
     tickets: new Map(),
+    epics: new Map(),
     link: 'connecting',
     version: 0,
     requirementsVersion: 0,
@@ -93,6 +97,7 @@ export function useLiveData(client: Client): LiveData {
                     lanes: new Map(snap.lanes.map((l) => [keyOf(l.project, l.id), l])),
                     escalations: new Map(snap.escalations.map((e) => [e.id, e])),
                     tickets: new Map((snap.tickets ?? []).map((t) => [String(t.id), t])),
+                    epics: new Map((snap.epics ?? []).map((ep) => [String(ep.id), ep])),
                   };
                   for (const e of pending) base = applyEvent(base, e);
                   pending = null;

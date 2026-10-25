@@ -24,7 +24,8 @@ describe('alerts', () => {
 
   test('an alert blocks the lane; dismissing it with a justification unblocks it', async () => {
     const a = await alert('Drop legacy_role?');
-    assert.match(a.ref, /^[A-Z]+\d+$/);
+    // The lane's ticket ("drop-col", no usable code of its own: T<n>) and a letter.
+    assert.match(a.ref, /^T\d+A$/);
     assert.equal((await lane()).status, 'blocked_human');
     const bare = await srv.tool(AGENT, 'dismiss_escalation', { id: a.ref });
     assert.equal(bare.isError, true, 'a justification is required');

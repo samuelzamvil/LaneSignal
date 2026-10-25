@@ -7,6 +7,7 @@ import { LinkedText } from './linked-text.tsx';
 import { toast } from './toast.tsx';
 import { withSwitchMarkers } from './switches.ts';
 import { TicketChip } from './ticket-views.tsx';
+import { EpicChip } from './epic-views.tsx';
 
 /** A choice from `allowed`, remembered on this device; `fallback` when nothing (valid) is stored. */
 export function useStored<T extends string>(key: string, allowed: readonly T[], fallback: T): [T, (v: T) => void] {
@@ -254,10 +255,16 @@ export function LaneCard({
 }
 
 /**
- * Writing to a lane's agent. Nothing blocks: the agent gets the note the next time it publishes the
- * lane, writes on it or waits on it.
+ * Writing to a lane's agent (or on an epic's board, for its overseer). Nothing blocks: the agent gets
+ * the note the next time it publishes the lane, writes on it or waits on it.
  */
-function LaneComposer({ onSend }: { onSend: (body: string) => Promise<void> }) {
+export function LaneComposer({
+  onSend,
+  placeholder = 'Write to the agent (it reads this next time it reports in)',
+}: {
+  onSend: (body: string) => Promise<void>;
+  placeholder?: string;
+}) {
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -278,7 +285,7 @@ function LaneComposer({ onSend }: { onSend: (body: string) => Promise<void> }) {
   return (
     <div className="lane-composer">
       <textarea
-        placeholder="Write to the agent (it reads this next time it reports in)"
+        placeholder={placeholder}
         value={body}
         maxLength={2000}
         rows={2}
@@ -502,8 +509,9 @@ export function LaneDetail({
                       <a href={`#/esc/${e.id}`} className="esc-row">
                         <span className="state">{e.state}</span> {e.question}
                       </a>{' '}
-                      {/* Its ticket: this lane's, or one parked or finished since. */}
+                      {/* Its ticket (this lane's, or one parked or finished since), or the epic it went to. */}
                       <TicketChip esc={e} />
+                      <EpicChip esc={e} />
                       {e.decision && (
                         <span className="decision">
                           {' '}
@@ -590,8 +598,8 @@ export function LaneDetail({
                 className="ghost danger"
                 onClick={() => {
                   const fate = data.lane.ticket
-                    ? `Its ticket ${data.lane.ticket} is ${data.lane.status === 'completed' ? 'marked done' : 'parked'} and keeps its questions; questions raised while it held no ticket are withdrawn.`
-                    : 'Its open questions are withdrawn.';
+                    ? `Its ticket ${data.lane.ticket} is ${data.lane.status === 'completed' ? 'marked done' : 'parked'} and keeps its questions.`
+                    : 'Questions raised on it stay with its epic.';
                   if (confirm(`Remove "${data.lane.name}" from the dashboard? ${fate} Its history stays available in exports.`)) {
                     client
                       .deleteLane(data.lane.project, data.lane.id)

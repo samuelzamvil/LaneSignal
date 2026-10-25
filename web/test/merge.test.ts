@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { applyEvent, type Entities } from '../src/merge.ts';
-import { escalation, lane, ticket } from './fixtures.ts';
+import { epic, escalation, lane, ticket } from './fixtures.ts';
 
-const empty = (): Entities => ({ groups: new Map(), lanes: new Map(), escalations: new Map(), tickets: new Map() });
+const empty = (): Entities => ({ groups: new Map(), lanes: new Map(), escalations: new Map(), tickets: new Map(), epics: new Map() });
 
 test('lane events add and update lanes, but an older copy never wins', () => {
   let s = applyEvent(empty(), { type: 'lane', lane: lane({ updatedAt: '2026-10-01T00:00:02Z', activity: 'new' }) });
@@ -70,4 +70,19 @@ test("removing a lane drops its own questions but keeps its tickets'", () => {
   s = applyEvent(s, { type: 'escalation', escalation: escalation({ id: 'ticket', ticketId: 1 }) });
   s = applyEvent(s, { type: 'lane_deleted', id: 'l1', project: 'p' });
   assert.deepEqual([...s.escalations.keys()], ['ticket']);
+});
+
+test('epic events keep open epics; a closed one leaves', () => {
+  let s = applyEvent(empty(), { type: 'epic', epic: epic({ statusLine: '2 of 3 lanes busy' }) });
+  assert.equal(s.epics.get('7')?.statusLine, '2 of 3 lanes busy');
+  s = applyEvent(s, { type: 'epic', epic: epic({ state: 'close_requested', updatedAt: '2026-10-01T00:00:01Z' }) });
+  assert.equal(s.epics.get('7')?.state, 'close_requested');
+  s = applyEvent(s, { type: 'epic', epic: epic({ state: 'closed', updatedAt: '2026-10-01T00:00:02Z' }) });
+  assert.equal(s.epics.has('7'), false);
+});
+
+test("removing a lane keeps the questions raised on it for its epic", () => {
+  let s = applyEvent(empty(), { type: 'escalation', escalation: escalation({ epicId: 7, epicName: 'Checkout revamp' }) });
+  s = applyEvent(s, { type: 'lane_deleted', id: 'l1', project: 'p' });
+  assert.equal(s.escalations.has('e1'), true);
 });

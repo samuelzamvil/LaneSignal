@@ -92,6 +92,8 @@ export async function exportZip(
         'lanes.csv          every lane, including archived ones (archived_at set)',
         'groups.csv         every group (epic/train/overseer), including archived ones',
         'tickets.csv        every ticket lanes have held: held, parked, done or dropped (LaneSignal\'s record, not the tracker\'s)',
+        'epics.csv          every epic (a group\'s long-lived tickets, and groups standing in as their own), closed ones too',
+        'epic_messages.csv  the message boards on epics (the overseer\'s posts and people\'s notes)',
         'events.csv         lane history: status changes, escalation steps, recent activity text, conversation messages',
         ...(datasets.includes('requirements') ? ['requirements.csv   the owner\'s product decisions, including superseded and retired ones'] : []),
         '',

@@ -205,7 +205,7 @@ describe('escalation lifecycle', () => {
     const unpublished = await call('POST', '/api/escalations', AGENT, { laneId: 'train-a', question: 'Too early?' });
     assert.equal(unpublished.status, 404, 'the lane must be published first');
     assert.match(unpublished.body.error, /Lane "train-a" not found: publish it first/);
-    await call('PUT', '/api/lanes/train-a', AGENT, {});
+    await call('PUT', '/api/lanes/train-a', AGENT, { ticket: '500' });
     const res = await call('POST', '/api/escalations', AGENT, {
       laneId: 'train-a',
       context: 'legacy_role has had no reads for 90 days.',

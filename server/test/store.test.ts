@@ -10,8 +10,33 @@ import { esc as escalate, lane as publishLane } from './publish.ts';
 
 const resolveTicketUrl = (t: string) => `https://tickets.example/${t.replace(/^gh:/, '')}`;
 
-/** Takes a database back from v16 (tickets), the first step of rolling it back further. */
+/**
+ * Takes a database back from v18 (epics): their tables and columns, their internal lanes, and the
+ * "Ungrouped" groups lanes without a group were put in.
+ */
+const UNDO_V18 = `
+  DELETE FROM lane_events WHERE lane_id LIKE '%/~epic-%';
+  DELETE FROM escalations WHERE lane_id LIKE '%/~epic-%';
+  DELETE FROM lanes WHERE id LIKE '%/~epic-%';
+  UPDATE lanes SET group_id = NULL WHERE group_id LIKE '%/ungrouped';
+  DELETE FROM groups WHERE id LIKE '%/ungrouped';
+  DROP INDEX escalations_epic;
+  ALTER TABLE escalations DROP COLUMN epic_id;
+  ALTER TABLE tickets DROP COLUMN epic_id;
+  DROP INDEX attachments_epic_message;
+  ALTER TABLE attachments DROP COLUMN epic_message_id;
+  DROP TABLE epic_messages;
+  DROP TABLE epics;
+`;
+
+/**
+ * Takes a database back from v16 (tickets), the first step of rolling it back further. Escalations
+ * get the lane-letter codes they had then (their lane's letter, numbered by their global number).
+ */
 const UNDO_V16 = `
+  ${UNDO_V18}
+  UPDATE escalations SET letter_index = COALESCE((SELECT l.letter_index FROM lanes l WHERE l.id = escalations.lane_id), 0), seq = ref
+    WHERE letter_index IS NULL;
   DROP INDEX IF EXISTS lane_events_ticket_switch;
   DROP INDEX escalations_ticket_code;
   DROP INDEX escalations_ticket;
@@ -185,14 +210,15 @@ test('positions are capped per escalation', () => {
   store.close();
 });
 
-test('removing a lane withdraws its waiting escalation instead of leaving the agent hanging', async () => {
+test('removing a lane releases a wait on its question instead of leaving the agent hanging; the question stays open', async () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
   const e = escalate(store, { laneId: 'default/l', question: 'Q?' }, 'bot');
   const waiting = store.waitForDecision(e.id, 5000);
   store.deleteLane('default/l', 'alice');
   const result = await waiting;
-  assert.equal(result.state, 'withdrawn');
-  assert.equal(result.resolution, 'Lane removed by alice');
+  // Its ticket is parked with it, still waiting on the owner.
+  assert.equal(result.state, 'open');
+  assert.equal(store.getTicket('default', 'l')?.state, 'parked');
   store.close();
 });
 
@@ -207,12 +233,13 @@ test('removing a lane archives it: hidden from the dashboard, kept for export, r
 
   assert.equal(store.getLane('default/l'), null);
   assert.deepEqual(store.listLanes(), []);
-  assert.deepEqual(store.listEscalations(), []);
+  // The parked ticket's question still waits on the owner.
+  assert.deepEqual(store.listEscalations().map((e) => e.question), ['Still open?']);
   assert.deepEqual(
     store.exportRows('escalations').map((r) => [r.question, r.state]),
     [
       ['Q?', 'acknowledged'],
-      ['Still open?', 'withdrawn'],
+      ['Still open?', 'open'],
     ],
   );
   const lanes = store.exportRows('lanes');
@@ -349,15 +376,15 @@ test('removing a blocked lane ends its blocked spell; decided answers survive an
   assert.equal(lane.status, 'idle');
   assert.equal(lane.blocked_seconds_total, 60);
   const states = Object.fromEntries(store.exportRows('escalations').map((r) => [r.question, r.state]));
-  assert.deepEqual(states, { 'Decided?': 'decided', 'Open?': 'withdrawn' });
-  assert.ok(
-    store.exportRows('events').some((e) => e.kind === 'escalation' && e.message === 'Escalation closed: Lane removed by alice'),
-  );
+  // The parked ticket keeps both: nothing is withdrawn.
+  assert.deepEqual(states, { 'Decided?': 'decided', 'Open?': 'open' });
+  assert.equal(store.getTicket('default', 'a')?.parkReason, 'Lane removed');
 
   // The agent acting on the earlier answer can still acknowledge it, without the lane reappearing.
   changes.length = 0;
   store.acknowledgeEscalation(decided.id, 'done', 'bot');
-  assert.deepEqual(changes, ['escalation']);
+  // The parked ticket it belongs to is re-sent (its counts changed); the lane isn't.
+  assert.deepEqual(changes, ['escalation', 'ticket']);
 
   publishLane(store, 'default/a', { activity: 'back' }, 'bot');
   assert.equal(store.getLane('default/a')?.status, 'idle');
@@ -478,38 +505,34 @@ test('tokens registered before the upgrade are matched by name', () => {
   }
 });
 
-test('active lanes get letters, smallest free first; finished lanes give theirs back', () => {
+test('lanes get letters as card labels, smallest free first; a removed lane gives its back once nothing is pending', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
-  publishLane(store, 'default/one', {}, 'bot');
-  publishLane(store, 'default/two', {}, 'bot');
+  publishLane(store, 'default/one', { ticket: '1' }, 'bot');
+  publishLane(store, 'default/two', { ticket: '2' }, 'bot');
   assert.equal(store.getLane('default/one')?.letter, 'A');
   assert.equal(store.getLane('default/two')?.letter, 'B');
+  // Codes come from the tickets, not the letters.
   const a1 = escalate(store, { laneId: 'default/one', question: 'First?', blocking: false }, 'bot');
   const b1 = escalate(store, { laneId: 'default/two', question: 'Other lane?' }, 'bot');
-  assert.deepEqual([a1.ref, b1.ref], ['A1', 'B1']);
-  // Completing a lane keeps its letter while a question is still unanswered...
+  assert.deepEqual([a1.ref, b1.ref], ['1A', '2A']);
+  // A slot that finishes its ticket keeps its letter, idle for the next one.
   publishLane(store, 'default/one', { status: 'completed' }, 'bot');
+  assert.equal(store.getLane('default/one')?.status, 'idle');
   assert.equal(store.getLane('default/one')?.letter, 'A');
-  store.decideEscalation(a1.id, 'yes', null, 'alice');
-  assert.equal(store.getLane('default/one')?.letter, 'A', 'decided but not picked up yet');
-  store.acknowledgeEscalation(a1.id, null, 'bot');
-  assert.equal(store.getLane('default/one')?.letter, null);
-  // ...and the next lane takes the free letter; codes keep counting so they never repeat.
-  publishLane(store, 'default/three', {}, 'bot');
-  assert.equal(store.getLane('default/three')?.letter, 'A');
-  const next = escalate(store, { laneId: 'default/three', question: 'Reused letter?' }, 'bot');
-  assert.equal(next.ref, 'A2');
-  assert.equal(store.getEscalation('A1')?.id, a1.id);
-  assert.equal(store.getEscalation('#a2')?.id, next.id);
-  // A finished lane that gets a new question takes a letter again.
-  const back = escalate(store, { laneId: 'default/one', question: 'One more?' }, 'bot');
-  assert.equal(store.getLane('default/one')?.letter, 'C');
-  assert.equal(back.ref, 'C1');
-  // Removing a lane frees its letter once nothing is pending.
+  // Removing a lane keeps its letter while a question raised there is unresolved...
   store.deleteLane('default/two', 'alice');
-  assert.equal(store.listLanes().find((l) => l.id === 'two'), undefined);
-  publishLane(store, 'default/four', {}, 'bot');
+  assert.equal(store.listLanes().find((l) => l.id === 'default/two'), undefined);
+  publishLane(store, 'default/three', { ticket: '3' }, 'bot');
+  assert.equal(store.getLane('default/three')?.letter, 'C');
+  store.decideEscalation(b1.id, 'yes', null, 'alice');
+  store.acknowledgeEscalation(b1.id, null, 'bot');
+  // ...then the next lane takes the free letter; codes never repeat.
+  publishLane(store, 'default/four', { ticket: '4' }, 'bot');
   assert.equal(store.getLane('default/four')?.letter, 'B');
+  const next = escalate(store, { laneId: 'default/three', question: 'Next?' }, 'bot');
+  assert.equal(next.ref, '3A');
+  assert.equal(store.getEscalation('1a')?.id, a1.id);
+  assert.equal(store.getEscalation('#3A')?.id, next.id);
   store.close();
 });
 
@@ -518,8 +541,10 @@ test('letters go past Z like spreadsheet columns', () => {
   for (let i = 0; i < 28; i++) publishLane(store, `default/lane-${i}`, {}, 'bot');
   assert.equal(store.getLane('default/lane-25')?.letter, 'Z');
   assert.equal(store.getLane('default/lane-26')?.letter, 'AA');
-  assert.equal(escalate(store, { laneId: 'default/lane-27', question: 'Far?' }, 'bot').ref, 'AB1');
-  assert.equal(store.getEscalation('ab1')?.laneId, 'default/lane-27');
+  assert.equal(store.getLane('default/lane-27')?.letter, 'AB');
+  // Codes are the ticket's: lane-27's ticket here.
+  assert.equal(escalate(store, { laneId: 'default/lane-27', question: 'Far?' }, 'bot').ref, 'lane-27A');
+  assert.equal(store.getEscalation('LANE-27a')?.laneId, 'default/lane-27');
   store.close();
 });
 
@@ -537,6 +562,8 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
     store.close();
     const db = new DatabaseSync(file);
     db.exec(`${UNDO_V16}
+      -- Before tickets, a completed lane stayed completed.
+      UPDATE lanes SET status = 'completed' WHERE id = 'default/done';
       PRAGMA foreign_keys = OFF;
       DROP INDEX lanes_project;
       DROP INDEX escalations_project;
@@ -573,7 +600,8 @@ test('upgrading gives active lanes letters first and keeps every code unique', (
     assert.equal(store.getLane('default/done'), null);
     assert.equal(store.getEscalation(open.id)?.ref, 'A1');
     assert.equal(store.getEscalation(old.id)?.ref, 'B1');
-    assert.equal(escalate(store, { laneId: 'default/live', question: 'New?' }, 'bot').ref, 'A2');
+    // New questions take the lane's ticket's code ("live": T<n>).
+    assert.match(escalate(store, { laneId: 'default/live', question: 'New?' }, 'bot').ref, /^T\d+A$/);
     // Numbers from before the upgrade (#1 was the first escalation) still resolve.
     assert.equal(store.getEscalation('#1')?.id, old.id);
     assert.equal(store.getEscalation('2')?.id, open.id);
@@ -647,7 +675,7 @@ test('upgrading to tickets moves each lane\'s ticket, escalations and history on
     publishLane(store, 'default/live', { activity: 'Newest' }, 'bot');
     publishLane(store, 'default/finished', { status: 'active', ticket: 'gh:901' }, 'bot');
     publishLane(store, 'default/finished', { status: 'completed' }, 'bot');
-    publishLane(store, 'default/no-ticket', { status: 'active' }, 'bot');
+    publishLane(store, 'default/no-ticket', { status: 'active', ticket: null }, 'bot');
     store.close();
     // Back to v15: tickets as plain text on lanes, as before.
     const db = new DatabaseSync(file);
@@ -765,7 +793,8 @@ test('upgrading to tickets moves blocked state to the lane holding the ticket', 
     // The newer lane holds the ticket, so its question blocks that lane now; the twin waits on its agent.
     assert.equal(store.getEscalation(q.id)?.ticketId, store.getLane('default/holder')?.ticketId);
     assert.equal(store.getLane('default/holder')?.status, 'blocked_human');
-    assert.equal(store.getLane('default/twin')?.status, 'awaiting_agent');
+    // Holding no ticket now, the twin shows idle (epics' upgrade, v18).
+    assert.equal(store.getLane('default/twin')?.status, 'idle');
     assert.equal(store.getLane('default/twin')?.ticket, null);
     store.close();
   } finally {

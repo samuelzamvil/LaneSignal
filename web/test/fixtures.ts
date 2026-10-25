@@ -1,4 +1,4 @@
-import type { Escalation, Lane, Ticket } from '../src/api.ts';
+import type { Epic, Escalation, Lane, Ticket } from '../src/api.ts';
 
 export const lane = (over: Partial<Lane> = {}): Lane => ({
   id: 'l1',
@@ -33,6 +33,8 @@ export const escalation = (over: Partial<Escalation> = {}): Escalation => ({
   ref: 'A1',
   ticketId: null,
   ticketRef: null,
+  epicId: null,
+  epicName: null,
   project: 'p',
   projectKey: 'P',
   laneId: 'l1',
@@ -78,6 +80,7 @@ export const ticket = (over: Partial<Ticket> = {}): Ticket => ({
   group: null,
   lane: null,
   lastLane: null,
+  epicId: null,
   state: 'parked',
   parkReason: null,
   waitingOn: null,
@@ -86,6 +89,32 @@ export const ticket = (over: Partial<Ticket> = {}): Ticket => ({
   blockedSince: null,
   blockedTotalMs: 0,
   openEscalations: 0,
+  createdAt: '2026-10-01T00:00:00.000Z',
+  updatedAt: '2026-10-01T00:00:00.000Z',
+  closedAt: null,
+  ...over,
+});
+
+export const epic = (over: Partial<Epic> = {}): Epic => ({
+  id: 7,
+  project: 'p',
+  group: 'g1',
+  ref: 'redmine:680',
+  displayRef: '680',
+  url: null,
+  code: '680',
+  name: 'Checkout revamp',
+  links: [],
+  statusLine: null,
+  state: 'open',
+  standIn: false,
+  closeReason: null,
+  closeRequestedBy: null,
+  openEscalations: 0,
+  blockingEscalations: 0,
+  lastMessageId: null,
+  lastAgentMessageId: null,
+  unreadByAgent: 0,
   createdAt: '2026-10-01T00:00:00.000Z',
   updatedAt: '2026-10-01T00:00:00.000Z',
   closedAt: null,
