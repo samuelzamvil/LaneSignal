@@ -30,20 +30,21 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * issue's URL) are one ticket:
  *
  *   "967" / "#967"                  -> "<default system>:967" (just "967" with no default system)
- *   "Redmine:#967"                  -> "redmine:967" (a configured system keeps its configured case)
+ *   "Redmine:#967"                  -> "redmine:967" (system names are lower-case)
  *   a URL one template produces     -> "<system>:<id>"
  *   any other URL                   -> unchanged
  *
  * `display` turns a canonical ref back into its short form: the default system's refs lose
  * their prefix ("967"), others keep it ("gh:632").
  */
-export function ticketRefs(templates: Record<string, string>, defaultSystem: string | null) {
-  const systems = new Map(Object.keys(templates).map((k) => [k.toLowerCase(), k]));
+export function ticketRefs(templates: Record<string, string>, configuredDefault: string | null) {
+  const defaultSystem = configuredDefault?.toLowerCase() ?? null;
+  const systems = new Map(Object.keys(templates).map((k) => [k.toLowerCase(), k.toLowerCase()]));
   const patterns = Object.entries(templates).flatMap(([system, template]) => {
     const i = template.indexOf('{id}');
     if (i < 0) return [];
     const re = new RegExp(`^${escapeRegExp(template.slice(0, i))}([^/?#]+)${escapeRegExp(template.slice(i + 4))}$`, 'i');
-    return [{ system, re }];
+    return [{ system: system.toLowerCase(), re }];
   });
   const canonical = (raw: string): string => {
     const ref = raw.trim();

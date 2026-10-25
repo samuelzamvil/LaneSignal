@@ -46,7 +46,9 @@ describe('overseer publishes its group and lanes', () => {
       links: [{ label: 'Overseer', url: 'https://claude.ai/code/session_x', kind: 'session' }],
     });
     assert.equal(group.isError, false, group.text);
-    assert.deepEqual(group.value, { id: 'payments', project: 'default' }, 'what was sent is not echoed back');
+    // What was sent is not echoed back; a group's ticket is its epic's now, so that one is refused with a pointer.
+    assert.deepEqual(Object.keys(group.value).sort(), ['id', 'project', 'warning']);
+    assert.match(group.value.warning, /update_epic with epic "gh:900" and group "payments"/);
 
     for (const [id, ticket] of [
       ['pay-1', 'gh:901'],
@@ -64,7 +66,7 @@ describe('overseer publishes its group and lanes', () => {
 
     const snap = (await srv.call('GET', '/api/snapshot', ALICE)).body;
     assert.equal(snap.groups.find((g: any) => g.id === 'payments').name, 'Payments train');
-    assert.equal(snap.groups.find((g: any) => g.id === 'payments').ticketUrl, 'https://github.com/o/r/issues/900');
+    assert.equal(snap.groups.find((g: any) => g.id === 'payments').ticket, null, "a group's ticket is read-only");
     const lanes = snap.lanes.filter((l: any) => l.group === 'payments');
     assert.deepEqual(lanes.map((l: any) => l.id).sort(), ['pay-1', 'pay-2']);
     assert.ok(lanes.every((l: any) => l.status === 'active' && l.agent === 'overseer'));

@@ -33,6 +33,11 @@ describe('ticket refs', () => {
     assert.equal(refs.display('gh:12'), 'gh:12');
     // No templates: just the number.
     assert.equal(ticketRefs({}, null).canonical('#42'), '42');
+    // System names are lower-case, however they're configured.
+    const upper = ticketRefs({ Redmine: 'https://redmine.example/issues/{id}' }, 'Redmine');
+    assert.equal(upper.canonical('967'), 'redmine:967');
+    assert.equal(upper.canonical('https://redmine.example/issues/967'), 'redmine:967');
+    assert.equal(upper.display('redmine:967'), '967');
   });
 });
 
@@ -73,7 +78,9 @@ describe('tickets', () => {
     const back = await fill({ lane_id: 'slot-a', ticket: 'https://redmine.example/issues/500', previous: 'done' });
     assert.equal(back.isError, false, back.text);
     const again = await lane('slot-a');
-    assert.equal(again.ticket, 'https://redmine.example/issues/500');
+    // The lane shows the ticket as its record has it (as first written), however it was named this time.
+    assert.equal(again.ticket, '500');
+    assert.equal(again.ticketUrl, 'https://redmine.example/issues/500');
     assert.equal(again.status, 'awaiting_agent');
     assert.equal((await ticket('501')).state, 'done');
     const t500 = await ticket('500');
@@ -347,7 +354,7 @@ describe('tickets', () => {
     const w = (await waiting).value;
     assert.equal(w.ready, true);
     const moved = w.items.find((i: any) => i.kind === 'ticket_moved');
-    assert.deepEqual([moved.ticket, moved.lane, moved.by], ['780', 'their-y', 'reviewer']);
+    assert.deepEqual([moved.id, moved.text], ['780', 'Taken into lane their-y by reviewer']);
     // The full format keeps its older shape.
     assert.equal((await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'moves', wait_seconds: 0, format: 'full' })).value.movedTickets, undefined);
   });

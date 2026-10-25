@@ -78,6 +78,10 @@ describe('several projects', () => {
     assert.equal((await srv.call('GET', '/api/escalations/SH-500A', ALICE)).body.id, shop.id);
     assert.equal((await srv.call('GET', `/api/escalations/${encodeURIComponent('MAIN·500A')}`, ALICE)).body.id, main.id);
     assert.equal((await srv.call('GET', '/api/escalations/500A?project=shop', ALICE)).body.id, shop.id);
+    // A key reaching several projects reads digest codes with their project key.
+    await srv.call('POST', `/api/escalations/${shop.id}/decide`, ALICE, { decision: 'Accept' });
+    const digest = (await srv.call('GET', '/api/wait?lane=auth&project=shop&timeout=0', AGENT)).body;
+    assert.deepEqual(digest.items.map((i: any) => [i.kind, i.code]), [['decided', 'SH-500A']]);
     const lanes = (await srv.call('GET', '/api/lanes', ALICE)).body;
     assert.deepEqual(
       lanes.filter((l: any) => l.id === 'auth').map((l: any) => l.project).sort(),

@@ -7,7 +7,7 @@ An overseer agent session runs several lanes for a body of tickets, an epic or a
 A group has:
 
 - a name
-- the epic/train ticket
+- its [epics](#epics), which carry the epic/train ticket (a group's own `ticket` from before epics is kept, read-only)
 - links, most usefully the overseer's Remote Control session, so a decision is one tap from the conversation that owns it
 
 The overseer registers its group with `update_group` before publishing lanes in it. Every lane is in a group: a lane published without one joins the project's **Ungrouped** group. The lane list is arranged by group by default, and groups that need you sort first. Each group has at least one [epic](#epics), whose card heads the group's lanes.

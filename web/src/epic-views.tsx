@@ -38,15 +38,17 @@ export function EpicChip({ esc }: { esc: Pick<Escalation, 'project' | 'epicId' |
   );
 }
 
-/** The epic's ticket: a link to its tracker when there's one. */
-function EpicTicket({ epic }: { epic: Epic }) {
-  if (!epic.displayRef) return null;
-  return epic.url ? (
-    <a className="ticket" href={epic.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
-      {epic.displayRef}
+/** The epic's ticket (for a group standing in as its epic, the group's), a link to its tracker when there's one. */
+function EpicTicket({ epic, group }: { epic: Epic; group?: Group }) {
+  const ref = epic.displayRef ?? (epic.standIn ? group?.ticket : null);
+  const url = epic.displayRef ? epic.url : (group?.ticketUrl ?? null);
+  if (!ref) return null;
+  return url ? (
+    <a className="ticket" href={url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+      {ref}
     </a>
   ) : (
-    <span className="ticket">{epic.displayRef}</span>
+    <span className="ticket">{ref}</span>
   );
 }
 
@@ -125,7 +127,7 @@ export function EpicCard({
         <span className="count">{lanes}</span>
         {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
         {epic.blockingEscalations > 0 && <span className="pill tone-danger">Waiting on you</span>}
-        <EpicTicket epic={epic} />
+        <EpicTicket epic={epic} group={group} />
         {hasNewMessage(board(epic)) && (
           <span className="new-message" title="The overseer wrote on this epic's board: open it to read">
             💬
@@ -227,11 +229,11 @@ export function EpicDetail({
         {epic && data && (
           <div className="sheet-body">
             <dl className="facts">
-              {epic.displayRef && (
+              {(epic.displayRef || (epic.standIn && group?.ticket)) && (
                 <>
                   <dt>Ticket</dt>
                   <dd>
-                    <EpicTicket epic={epic} />
+                    <EpicTicket epic={epic} group={group} />
                   </dd>
                 </>
               )}

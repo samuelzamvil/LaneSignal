@@ -26,21 +26,15 @@ A server can host several independent projects (apps), each with its own groups,
 
 ## Publishing state
 
-- **Start of a session:** call `update_group` once, with your `group_id` (the one your owner's policy gives you), your epic/train `name`, its `ticket`, and your Remote Control session URL in `links` (`{label: "Overseer session", url: …, kind: "session"}`). Register it before publishing lanes in it.
+- **Start of a session:** call `update_group` once, with your `group_id` (the one your owner's policy gives you), its `name`, and your Remote Control session URL in `links` (`{label: "Overseer session", url: …, kind: "session"}`). Register it before publishing lanes in it.
 - **Epics:** `update_epic` with `epic` (its ticket ref, or your `group_id` for the group's own epic):
+  - Your epic's ticket (the one the owner gave you): pass its ref as `epic` plus `group`, once. The group's earlier epic questions and board move to it.
   - `status_line`: one line on the epic's card, e.g. "3 of 5 lanes busy; next up #966". Use it for what's queued or waiting; never publish placeholder lanes.
-  - To add an epic the owner gave you, pass its ref as `epic` plus `group`. The group's earlier epic questions and board move to it.
   - `list_epics` shows your group's epics.
 - **Lanes are slots:** give each a stable `lane_id` (`slot-1` … `slot-5`, not one per ticket), and pass `group` on its first call. Publish a lane before raising escalations on it; unknown lanes and groups are errors, so a typo can't create a stray lane.
-- **Moving to another ticket:** `fill_lane` with the next `ticket` and what happens to the one the lane holds, in `previous`:
-  - `park` with a `reason` ("blocked on the vendor API"): set aside with its open questions, which stay in the owner's inbox but no longer block the lane.
-  - `done`, or `drop` to let it go unfinished.
+- **Moving to another ticket:** `fill_lane` with the next `ticket` and, in `previous`, what happens to the one the lane holds: `park` with a `reason` ("blocked on the vendor API") to pick it up later, `done`, or `drop` (unfinished). Its open questions stay in the owner's inbox either way, and block only the lane holding the ticket; dismiss ones that no longer matter.
 
-  Either way its open questions stay open in the owner's inbox; they block only the lane holding the ticket. Dismiss ones that no longer matter.
-
-  The ticket is created on first use. A parked (or done) one comes back in any lane with its questions and history: `fill_lane` it into a free slot. Leave `ticket` out to empty the lane. A ticket is in one lane at a time, so a worker and a reviewer on one ticket share a lane.
-
-  Pass `epic` when the ticket belongs to one of your group's epics, so the lane is listed under that epic's card.
+  A parked (or done) ticket comes back in any lane with its questions and history. Leave `ticket` out to empty the lane. A ticket is in one lane at a time, so a worker and a reviewer on one ticket share a lane. Pass `epic` when the ticket belongs to one of your group's epics, so the lane shows under its card.
 - **Empty lanes show idle:** a lane holding no ticket shows `idle` whatever status you publish.
 - **Tickets, not PRs:** `ticket` is the work item (`redmine:1234`, `967`, `#967` and its URL all name the same one). PRs and CI runs go in `links`.
 - **Waiting on another ticket:** pass `waiting_on` (e.g. `"945"`) with the lane's status; it clears itself once that ticket is done.

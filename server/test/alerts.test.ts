@@ -54,7 +54,7 @@ describe('alerts', () => {
     const a = await alert('Mine?');
     const other = await srv.tool(REVIEWER, 'dismiss_escalation', { id: a.ref, justification: 'not mine' });
     assert.equal(other.isError, true);
-    assert.match(other.text, /only that agent \(or a person\) can dismiss it/);
+    assert.match(other.text, /only that agent, the overseer of the group its \w+ is in, or a person can dismiss it/);
     await srv.tool(AGENT, 'dismiss_escalation', { id: a.ref, justification: 'moot' });
   });
 

@@ -132,7 +132,9 @@ describe('lanes', () => {
       ticket: 'redmine:4700',
       links: [{ label: 'Overseer session', url: 'https://claude.ai/code/session_x', kind: 'session' }],
     });
-    assert.equal(updated.body.ticketUrl, 'https://redmine.example/issues/4700');
+    // A group's ticket is read-only now: its epic carries it.
+    assert.equal(updated.body.ticket, null);
+    assert.match(updated.body.warning, /POST \/api\/epics/);
     const snap = (await call('GET', '/api/snapshot', ALICE)).body;
     assert.equal(snap.groups[0].name, 'Payments epic');
     assert.equal((await call('PUT', '/api/groups/x', ALICE, { name: 'nope' })).status, 403);

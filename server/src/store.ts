@@ -125,11 +125,14 @@ export interface WaitScope {
   /** Who is waiting: their own withdrawals aren't reported back to them. */
   viewer?: string;
   /**
-   * `digest` (the default): ready only when there's something to handle, and the owner's lane notes
-   * since `since` come back again, so a crashed wait that repeats its `since` loses nothing. `full`:
-   * the older behaviour, ready at once when nothing is open, notes handed over once.
+   * `digest`: ready only when there's something to handle; with `since`, the owner's notes are those
+   * written since then (whether or not handed over), so a crashed wait that repeats its `since` loses
+   * nothing. `full`: the older behaviour, ready at once when nothing is open, notes handed over once.
+   * Left out (get_updates): unread notes, plus any since `since`.
    */
   mode?: 'digest' | 'full';
+  /** Set by waitForDecisions: whether `since` came from the agent (false when it defaulted to now). */
+  givenSince?: boolean;
 }
 
 export interface WaitResult {
@@ -1054,7 +1057,8 @@ export class Store {
   /**
    * Must run inside a transaction. Publishing to an archived group brings it
    * back; returns true in that case so callers re-emit its lanes, which clients
-   * have been showing as ungrouped.
+   * have been showing as ungrouped. A group's `ticket` is read-only (its epic has it now):
+   * `patch.ticket` is ignored.
    */
   private writeGroup(id: string, patch: GroupPatch, actor: string | null, at: string, owner?: string): boolean {
     const restored =
@@ -1062,20 +1066,19 @@ export class Store {
     const existing = this.getGroup(id);
     if (!existing) {
       this.db
-        .prepare('INSERT INTO groups (id, name, ticket, links, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(id, patch.name ?? localId(id), patch.ticket ?? null, JSON.stringify(patch.links ?? []), actor, at, at);
+        .prepare('INSERT INTO groups (id, name, links, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, patch.name ?? localId(id), JSON.stringify(patch.links ?? []), actor, at, at);
       if (owner) this.db.prepare('UPDATE groups SET owner = ? WHERE id = ?').run(owner, id);
       // Every group has an epic: a new one starts with its stand-in.
       this.ensureEpic(id, at);
       return false;
     }
     if (owner) this.db.prepare('UPDATE groups SET owner = ? WHERE id = ?').run(owner, id);
-    if (patch.name === undefined && patch.ticket === undefined && patch.links === undefined) return restored;
+    if (patch.name === undefined && patch.links === undefined) return restored;
     this.db
-      .prepare('UPDATE groups SET name = ?, ticket = ?, links = ?, agent = ?, updated_at = ? WHERE id = ?')
+      .prepare('UPDATE groups SET name = ?, links = ?, agent = ?, updated_at = ? WHERE id = ?')
       .run(
         patch.name ?? existing.name,
-        patch.ticket !== undefined ? patch.ticket : existing.ticket,
         JSON.stringify(patch.links ?? existing.links),
         actor ?? existing.agent,
         at,
@@ -1126,8 +1129,8 @@ export class Store {
   // ---- lanes -------------------------------------------------------------
 
   private laneFromRow(r: Row): Lane {
-    // A lane shows a ticket only while it holds one; text left from before tickets stays for export.
-    const ticket = r.ticket_id == null ? null : ((r.ticket as string | null) ?? null);
+    // The ticket it holds, as first written. lanes.ticket is read-only (text from before tickets, for export).
+    const ticket = (r.ticket_ref as string | null) ?? null;
     return {
       id: r.id as string,
       project: r.project_id as string,
@@ -1163,6 +1166,7 @@ export class Store {
       (SELECT COUNT(*) FROM escalations e WHERE e.state = 'open' AND e.blocking = 1 AND e.turn = 'owner'
          AND e.ticket_id = l.ticket_id) AS open_blocking,
       (SELECT t.waiting_on FROM tickets t WHERE t.num = l.ticket_id) AS ticket_waiting_on,
+      (SELECT t.display_ref FROM tickets t WHERE t.num = l.ticket_id) AS ticket_ref,
       (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived,
       (SELECT MAX(m.id) FROM lane_messages m WHERE m.lane_id = l.id) AS last_message_id,
       (SELECT MAX(m.id) FROM lane_messages m WHERE m.lane_id = l.id AND m.author_kind = 'agent') AS last_agent_message_id,
@@ -1278,8 +1282,8 @@ export class Store {
         const status = ticket?.trim() ? (rest.status ?? 'active') : 'idle';
         this.db
           .prepare(
-            `INSERT INTO lanes (id, name, group_id, status, ticket, activity, links, agent, created_at, updated_at, status_since, blocked_since)
-             VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO lanes (id, name, group_id, status, activity, links, agent, created_at, updated_at, status_since, blocked_since)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             id,
@@ -1366,7 +1370,7 @@ export class Store {
     }
     this.db
       .prepare(
-        `UPDATE lanes SET name = ?, group_id = CASE WHEN ? THEN ? ELSE group_id END, status = ?, ticket = ?, activity = ?, links = ?, agent = ?,
+        `UPDATE lanes SET name = ?, group_id = CASE WHEN ? THEN ? ELSE group_id END, status = ?, activity = ?, links = ?, agent = ?,
            updated_at = ?, status_since = ?, blocked_since = ?, blocked_total_ms = ? WHERE id = ?`,
       )
       .run(
@@ -1376,7 +1380,6 @@ export class Store {
         patch.group !== undefined ? 1 : 0,
         patch.group ?? null,
         status,
-        patch.ticket !== undefined ? patch.ticket : existing.ticket,
         patch.activity !== undefined ? patch.activity : existing.activity,
         JSON.stringify(patch.links ?? existing.links),
         actor ?? existing.agent,
@@ -1407,7 +1410,7 @@ export class Store {
       // End any blocked spell now, so archived time isn't counted as blocked.
       const now = this.requireLane(id);
       if (now.status === 'blocked_human') this.applyLaneUpdate(now, { status: 'idle' }, actor, at);
-      this.db.prepare('UPDATE lanes SET ticket = NULL, ticket_id = NULL, archived_at = ?, updated_at = ? WHERE id = ?').run(at, at, id);
+      this.db.prepare('UPDATE lanes SET ticket_id = NULL, archived_at = ?, updated_at = ? WHERE id = ?').run(at, at, id);
       this.addEvent(id, at, 'status', 'Lane removed', actor, null);
       this.syncLetter(id);
     });
@@ -1551,7 +1554,7 @@ export class Store {
     this.db.prepare('UPDATE groups SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL').run(id);
     if (!this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(id)) {
       this.db
-        .prepare("INSERT INTO groups (id, name, ticket, links, agent, created_at, updated_at) VALUES (?, 'Ungrouped', NULL, '[]', NULL, ?, ?)")
+        .prepare("INSERT INTO groups (id, name, links, agent, created_at, updated_at) VALUES (?, 'Ungrouped', '[]', NULL, ?, ?)")
         .run(id, at, at);
     }
     this.ensureEpic(id, at);
@@ -1873,14 +1876,14 @@ export class Store {
   }
 
   /** People's notes on an epic's board its overseer hasn't been handed, plus (with `since`) those written at or after it. */
-  private unreadEpicByAgent(num: number, since?: string): LaneMessage[] {
+  private unreadEpicByAgent(num: number, since?: string, onlySince = false): LaneMessage[] {
     return (
       this.db
         .prepare(
           `SELECT m.* FROM epic_messages m JOIN epics e ON e.num = m.epic_id
-           WHERE m.epic_id = ? AND m.author_kind = 'owner' AND (m.id > e.agent_read_id OR m.created_at >= ?) ORDER BY m.id`,
+           WHERE m.epic_id = ? AND m.author_kind = 'owner' AND ((? = 0 AND m.id > e.agent_read_id) OR m.created_at >= ?) ORDER BY m.id`,
         )
-        .all(num, since ?? '\uffff') as Row[]
+        .all(num, onlySince ? 1 : 0, since ?? '\uffff') as Row[]
     ).map((r) => this.laneMessageFromRow(r, undefined, 'epic_message_id'));
   }
 
@@ -2134,14 +2137,8 @@ export class Store {
     const held = lane.ticketId !== null ? this.ticketRow(lane.ticketId) : null;
     // The ticket it holds already: a plain update (the ref may be written another way this time, or the
     // ticket systems may have changed since it was stored).
-    if (held && (ref === held.ref || ref === this.refs.canonical(held.display_ref as string))) {
-      this.db.prepare('UPDATE lanes SET ticket = ? WHERE id = ?').run(written, lane.id);
-      return undefined;
-    }
-    if (!held && !ref) {
-      this.db.prepare('UPDATE lanes SET ticket = NULL WHERE id = ?').run(lane.id);
-      return undefined;
-    }
+    if (held && (ref === held.ref || ref === this.refs.canonical(held.display_ref as string))) return undefined;
+    if (!held && !ref) return undefined;
     const project = projectOf(lane.id);
     let target = ref ? (this.db.prepare('SELECT * FROM tickets WHERE project_id = ? AND ref = ?').get(project, ref) as Row | undefined) : undefined;
     if (target?.lane_id && target.lane_id !== lane.id) {
@@ -2224,7 +2221,7 @@ export class Store {
 
   /** Must run inside a transaction. A lane with no ticket: idle, unless a question of its own still blocks it. */
   private emptyLane(lane: Lane, actor: string | null, at: string) {
-    this.db.prepare('UPDATE lanes SET ticket = NULL, ticket_id = NULL WHERE id = ?').run(lane.id);
+    this.db.prepare('UPDATE lanes SET ticket_id = NULL WHERE id = ?').run(lane.id);
     const status: LaneStatus = this.openBlockingCount(lane.id) > 0 ? 'blocked_human' : 'idle';
     this.setLaneStatus(lane, status, 0, actor, at);
   }
@@ -2238,7 +2235,7 @@ export class Store {
     const num = Number(t.num);
     touched.tickets.add(num);
     // Its escalations keep the lane they were raised in (lane_id, for history); they count where the ticket is.
-    this.db.prepare('UPDATE lanes SET ticket = ?, ticket_id = ? WHERE id = ?').run(written, num, lane.id);
+    this.db.prepare('UPDATE lanes SET ticket_id = ? WHERE id = ?').run(num, lane.id);
     // Blocked by the ticket's questions.
     const blocking = this.openBlockingCount(lane.id) > 0;
     const was = t.status as LaneStatus;
@@ -2496,10 +2493,11 @@ export class Store {
       where.push(
         `(${fields.map((f) => `${f} LIKE ? ESCAPE '\\'`).join(' OR ')}
           OR EXISTS (SELECT 1 FROM messages m WHERE m.escalation_id = escalations.id AND m.body LIKE ? ESCAPE '\\')
-          OR code = ? COLLATE NOCASE OR ticket_id IN (SELECT num FROM tickets WHERE ref = ?)${code ? ' OR (letter_index = ? AND seq = ?)' : ''})`,
+          OR code = ? COLLATE NOCASE OR ticket_id IN (SELECT num FROM tickets WHERE ref = ?)
+          OR epic_id IN (SELECT num FROM epics WHERE ref = ?)${code ? ' OR (letter_index = ? AND seq = ?)' : ''})`,
       );
-      // A ticket ref in any form ("967", "#967", "redmine:967", its URL) finds that ticket's escalations.
-      params.push(...fields.map(() => like), like, text.replace(/^#/, ''), this.refs.canonical(text));
+      // A ticket's or epic's ref in any form ("967", "#967", "redmine:967", its URL) finds its escalations.
+      params.push(...fields.map(() => like), like, text.replace(/^#/, ''), this.refs.canonical(text), this.refs.canonical(text));
       if (code) params.push(indexOfLetter(code[1].toUpperCase()), Number(code[2]));
     }
     if (filter.before) {
@@ -3079,16 +3077,17 @@ export class Store {
 
   /**
    * The owner's messages on a lane that its agent hasn't been handed yet, oldest first, plus (with
-   * `since`) those written at or after it, handed over or not.
+   * `since`) those written at or after it, handed over or not. `onlySince`: just those since `since`
+   * (a wait's digest, which depends on `since` alone).
    */
-  private unreadByAgent(laneId: string, since?: string): LaneMessage[] {
+  private unreadByAgent(laneId: string, since?: string, onlySince = false): LaneMessage[] {
     return (
       this.db
         .prepare(
           `SELECT m.* FROM lane_messages m JOIN lanes l ON l.id = m.lane_id
-           WHERE m.lane_id = ? AND m.author_kind = 'owner' AND (m.id > l.agent_read_id OR m.created_at >= ?) ORDER BY m.id`,
+           WHERE m.lane_id = ? AND m.author_kind = 'owner' AND ((? = 0 AND m.id > l.agent_read_id) OR m.created_at >= ?) ORDER BY m.id`,
         )
-        .all(laneId, since ?? '\uffff') as Row[]
+        .all(laneId, onlySince ? 1 : 0, since ?? '\uffff') as Row[]
     ).map((r) => this.laneMessageFromRow(r));
   }
 
@@ -3533,6 +3532,8 @@ export class Store {
     this.floorMs = Math.max(this.floorMs, checkedMs);
     const checkedAt = new Date(checkedMs).toISOString();
     const digest = scope.mode !== 'full';
+    // A wait's digest depends on `since` alone; get_updates (no mode) also hands over what the agent hasn't had.
+    const onlySince = scope.mode === 'digest' && !!scope.since && scope.givenSince !== false;
     const named = (scope.ids ?? []).map((id) => this.requireEscalation(id));
     const byId = new Map<string, StoredEscalation>(named.map((e) => [e.id, e]));
     const laneIds = new Set<string>();
@@ -3562,7 +3563,7 @@ export class Store {
     // The owner's notes on every lane in scope, the lanes of escalations named in `ids` included.
     const laneMessages: WaitResult['laneMessages'] = [];
     for (const laneId of new Set([...laneIds, ...named.map((e) => e.laneId)])) {
-      const unread = this.unreadByAgent(laneId, digest ? scope.since : undefined);
+      const unread = this.unreadByAgent(laneId, digest ? scope.since : undefined, onlySince);
       if (unread.length && this.getLane(laneId)) laneMessages.push({ laneId, messages: unread });
     }
     for (const laneId of laneIds) {
@@ -3626,9 +3627,10 @@ export class Store {
             .all(epicId, scope.since, scope.viewer ?? '') as Row[];
           for (const row of rows) closedById.set(row.id as string, this.escalationFromRow(row));
         }
-        const unread = this.unreadEpicByAgent(epicId, digest ? scope.since : undefined);
+        const unread = this.unreadEpicByAgent(epicId, digest ? scope.since : undefined, onlySince);
         if (unread.length) {
-          boardMessages.push({ project: r.project_id as string, epicId, epic: (r.display_ref as string | null) ?? (r.name as string), messages: unread });
+          // Named as tools take it: its ref, or the group's id for a stand-in.
+          boardMessages.push({ project: r.project_id as string, epicId, epic: (r.display_ref as string | null) ?? localId(r.group_id as string), messages: unread });
         }
       }
     }
@@ -3730,7 +3732,8 @@ export class Store {
    * a new question during the wait.
    */
   waitForDecisions(scope: WaitScope, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
-    scope = { ...scope, since: scope.since ?? this.now().toISOString() };
+    // Without a `since` of its own, the wait still hands over notes the agent hasn't had.
+    scope = { ...scope, since: scope.since ?? this.now().toISOString(), givenSince: scope.givenSince ?? !!scope.since };
     const first = this.decisionsFor(scope);
     if (first.ready || timeoutMs <= 0 || signal?.aborted) return Promise.resolve(first);
     const held = new Set<string>();

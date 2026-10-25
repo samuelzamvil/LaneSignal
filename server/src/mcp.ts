@@ -124,7 +124,7 @@ async function cancellable<T>(
 const GROUP_FILTER = z.string().max(64).optional().describe('Group (epic/train) id.');
 const GROUP_ALIAS = z.string().max(64).optional();
 
-const ID_HELP = 'Escalation id, or its code such as "967A" or "A12" (or "LS-967A" to name the project too).';
+const ID_HELP = 'Escalation id or code ("967A"; "LS-967A" names the project).';
 
 /** Every tool takes it; only keys and people with several projects need it. */
 const PROJECT = {
@@ -392,21 +392,12 @@ function buildServer(
       'wait_for_decisions',
       {
         description:
-          'Wait for what needs you across your group, some lanes, or specific escalations. Returns a digest: ' +
-          '`items`, one per thing to handle, each with a `kind`: `decided` (answered: acknowledge, then act on `decision` ' +
-          'and `note`), `reply` (the owner answered Other: their `messages`; acknowledge and act, or reply_to_escalation), ' +
-          '`closed` (withdrawn by someone else, e.g. dismissed by a person), `lane_removed` (stop work on ' +
-          'it), `lane_note` (the owner wrote on a lane: act on it, answer with notify_owner if useful), ' +
-          '`ticket_moved` (a lane outside your scope took one of its tickets), `board_note` (with your group: someone wrote on ' +
-          'one of its epics\' boards; answer with notify_epic if useful). An epic\'s question names its `epic`. `decided` and ' +
-          '`reply` come back on every wait until you handle them; the rest once per `since`. `counts` says how many are ' +
-          '`open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies). If counts show something ' +
-          'and items don\'t, call get_updates. `ready` is true when there are items; false means the wait ran out: call ' +
-          'again with `since` set to `checkedAt`. It waits for a change even when nothing is open, and holds your session ' +
-          'meanwhile: with nothing open, wait in the background (GET /api/wait as a shell command) or pass ' +
-          '`wait_seconds: 0` for a quick check. Default wait 300s; up to 3600s if your MCP client allows calls that long. ' +
-          '`format: "full"` returns the older shape (decided, replies, closed, open, removedLanes, laneMessages), which ' +
-          'also returns at once when nothing is open.',
+          'Wait for what needs you in your group, some lanes or escalations. Returns `items` `{code, kind, id, text}`, ' +
+          '`text` being the owner\'s words. Kinds: `decided` (acknowledge, then act), `reply` (the owner answered Other), ' +
+          '`closed`, `lane_removed`, `lane_note`, `board_note`, `ticket_moved`. `decided` and `reply` repeat until handled; ' +
+          'the rest come once per `since`. `counts`: `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
+          'it timed out: call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
+          '0 for a quick check). `format: "full"`: the older shape.',
         inputSchema: {
           ...waitInput,
           wait_seconds: z.number().int().min(0).max(3600).optional(),
@@ -429,7 +420,7 @@ function buildServer(
           // A cancelled call never reaches the agent: its notes stay unread.
           if (!extra.signal.aborted) store.handOver(value, visible);
           const result = pub.wait(value, timeout ? visible : undefined);
-          return json(format === 'full' ? briefWait(result) : digestWait(result));
+          return json(format === 'full' ? briefWait(result) : digestWait(result, a.projects.length > 1));
         } catch (err) {
           return fail(err);
         }
@@ -440,12 +431,8 @@ function buildServer(
       'get_updates',
       {
         description:
-          'Everything in scope that involves you, without waiting: escalations decided and not yet acknowledged ' +
-          '(`decided`), ones the owner answered Other (`replies`), ones still waiting on the owner (`open`), the owner\'s ' +
-          'unread notes on lanes (`laneMessages`, plus any since `since`) and, with your group, on its epics\' boards ' +
-          '(`boardMessages`), and, with `since`, escalations withdrawn and ' +
-          'lanes removed by someone else since then. Call it after a restart, or when you\'ve lost track of what ' +
-          'wait_for_decisions reported.',
+          'Everything in scope that involves you, without waiting: `decided`, `replies`, `open`, unread `laneMessages` and ' +
+          '`boardMessages`, and with `since`, what was withdrawn or removed since. For restarts, or when you lost track.',
         inputSchema: waitInput,
         annotations: { readOnlyHint: true },
       },
@@ -732,14 +719,27 @@ function buildServer(
       'update_group',
       {
         description:
-          'Register or update your group (the epic/train you oversee): `name`, `ticket`, and your Remote Control ' +
-          'session in `links` with kind "session", so the dashboard links people straight to you.',
-        inputSchema: { group_id: s.groupId, ...s.groupPatch.shape, ...PROJECT_WRITE },
+          'Register or update your group (the train you oversee): `name`, and your Remote Control session in `links` ' +
+          'with kind "session", so the dashboard links people straight to you. Its epic\'s ticket goes in update_epic.',
+        inputSchema: {
+          group_id: s.groupId,
+          ...s.groupPatch.shape,
+          ticket: s.groupPatch.shape.ticket.describe('Ignored: name the epic with update_epic.'),
+          ...PROJECT_WRITE,
+        },
       },
-      async ({ group_id, project, ...patch }) => {
+      async ({ group_id, project, ticket, ...patch }) => {
         try {
           const group = store.upsertGroup(q(a.pick(project, { group: group_id }), group_id), patch, who.name, ownerOf(who));
-          return json({ id: localId(group.id), project: group.project });
+          return json(
+            compact({
+              id: localId(group.id),
+              project: group.project,
+              warning: ticket?.trim()
+                ? `A group's ticket is now its epic's: update_epic with epic "${ticket.trim()}" and group "${group_id}" adds it.`
+                : undefined,
+            }),
+          );
         } catch (err) {
           return fail(err);
         }
@@ -779,14 +779,10 @@ function buildServer(
       'update_lane',
       {
         description:
-          `Publish a lane's state on meaningful changes (not on a timer). Creates it on first call; omitted fields ` +
-          `are unchanged. ${STATUS_HELP} \`group\`: your group, registered first with update_group. While a blocking ` +
-          'escalation is open the lane stays blocked_human. `completed` finishes the lane\'s ticket and leaves the lane ' +
-          'idle for the next one. To move a lane to another ticket, use fill_lane (here a different `ticket` parks the ' +
-          'one it held). Tickets look like "gh:42" or "redmine:1234"; PRs go in `links`, never `ticket`.' +
-          (features.decisions
-            ? ' Result `ownerMessages`: the owner\'s notes on this lane; act on them.'
-            : ''),
+          `Publish a lane's state when it changes. Creates it on first call (\`group\` required then); omitted fields ` +
+          `are unchanged. ${STATUS_HELP} \`completed\` finishes its ticket and empties the lane. To change tickets use fill_lane. ` +
+          'PRs go in `links`, never `ticket`.' +
+          (features.decisions ? ' `ownerMessages`: the owner\'s notes on the lane.' : ''),
         inputSchema: {
           lane_id: s.laneId,
           ...s.lanePatch.shape,
@@ -812,15 +808,10 @@ function buildServer(
       'fill_lane',
       {
         description:
-          'Move a lane to another ticket in one call (lanes are slots, tickets move through them). `previous` says ' +
-          'what happens to the ticket the lane holds now: `park` (set aside to pick up again; `reason` required, e.g. ' +
-          '"blocked on the vendor API"), `done` or `drop` (let go unfinished). Required when the lane holds a ticket, ' +
-          'and not needed to refill it with the ticket it already holds. `ticket` moves in, created on first use: a ' +
-          'parked, done or dropped one comes back with its escalations and history; leave it out to empty the lane (idle). ' +
-          'A ticket is in one lane at a time. A ticket\'s open questions stay open and in the owner\'s inbox whatever ' +
-          'happens to it, and block only the lane holding it. `epic` names the epic the ticket is for (its ref, or the ' +
-          'group\'s id; null clears it), so the lane is listed under that epic\'s card. Also takes the fields of ' +
-          `update_lane (status, activity, ...), applied to the lane after the switch. A lane holding no ticket shows idle. ${STATUS_HELP}`,
+          'Move a lane to another ticket. `previous` (required when the lane holds a different ticket): `park` (with ' +
+          '`reason`), `done` or `drop`. `ticket` moves in (created on first use; a parked or done one comes back with ' +
+          'its questions); leave it out to empty the lane. A ticket is in one lane at a time. `epic`: the epic the ' +
+          'ticket is for. Takes update_lane\'s fields too, applied after the switch.',
         inputSchema: {
           lane_id: s.laneId,
           ticket: z.string().max(300).nullable().optional().describe('The ticket to work next; leave out or null to empty the lane.'),
@@ -856,10 +847,8 @@ function buildServer(
       'remove_lane',
       {
         description:
-          'Take a lane off the dashboard when you no longer need the slot. Its ticket is let go as `previous` says ' +
-          '(default: `done` if the lane is completed, else `park` with the reason "Lane removed"); the ticket keeps its ' +
-          'open escalations, and those raised while the lane held no ticket stay with the epic. Its history is kept. ' +
-          'Publishing to the same lane id brings it back.',
+          'Take a lane off the dashboard. Its ticket goes as `previous` says (default: done if completed, else parked); ' +
+          'questions stay open with their ticket or epic. Publishing the lane again brings it back.',
         inputSchema: { lane_id: s.laneId, previous: s.ticketRelease.optional(), reason: z.string().max(500).nullable().optional(), ...PROJECT_WRITE },
       },
       async ({ lane_id, previous, reason, project }) => {
@@ -878,10 +867,8 @@ function buildServer(
       'update_epic',
       {
         description:
-          'Set an epic\'s status line (one line on its card, e.g. "3 of 5 lanes busy; next up #966": use it instead of ' +
-          'placeholder lanes), name, ref or links. Name a group\'s epic by the group\'s id. A ticket ref no epic has yet, ' +
-          'with `group`, adds that epic to the group (so does giving a group\'s stand-in epic a `ref`); the group\'s ' +
-          'earlier questions and board move to it.',
+          'Set an epic\'s `status_line` (one line on its card, e.g. "3 of 5 lanes busy; next up #966"), name, ref or ' +
+          'links. A ref no epic has yet, with `group`, adds that epic to the group. Returns `ownerMessages` from its board.',
         inputSchema: {
           epic: EPIC,
           group: s.groupId.optional().describe('To add a new epic: the group it belongs to.'),
@@ -907,10 +894,8 @@ function buildServer(
       'notify_epic',
       {
         description:
-          'Write on an epic\'s message board, for the durable conversation that steers its work (direction, scope, ' +
-          'which tickets to file next), with a quiet phone notification. One per epic per minute. Questions that need ' +
-          'an answer go in create_escalation with `epic`. Returns `ownerMessages`: people\'s notes on the board you ' +
-          'hadn\'t seen.',
+          'Write on an epic\'s board (direction, scope, which tickets next), with a quiet push. One per epic per minute. ' +
+          'Returns `ownerMessages`: notes on the board you hadn\'t seen.',
         inputSchema: {
           epic: EPIC,
           message: s.notice.shape.message,
@@ -935,8 +920,7 @@ function buildServer(
       'request_epic_close',
       {
         description:
-          'Ask a person to close an epic whose work is over; they approve or decline in the app. Refused while it has ' +
-          'open questions, or answered ones you haven\'t acknowledged. A group\'s stand-in epic isn\'t closed.',
+          'Ask a person to close an epic whose work is over. Refused while any of its questions is open or unacknowledged.',
         inputSchema: { epic: EPIC, reason: s.closeRequest.shape.reason, ...PROJECT_WRITE },
       },
       async ({ epic, reason, project }) => {
@@ -981,22 +965,11 @@ function buildServer(
       'create_escalation',
       {
         description:
-          'Ask the owner: notifies their phone and blocks the lane holding its ticket (`blocking: false` for an FYI). One per decision; ' +
-          'the lane must be published first. On a lane holding no ticket it goes to the group\'s epic (`epic` says which ' +
-          'when the group has several). For durable questions that steer the work (direction, scope, which tickets to ' +
-          'file), raise it on the epic: `epic`, with no `lane_id`. An epic\'s questions show on its card and block no ' +
-          'lane. Write it to be understood from a phone: `question`, `context`, ' +
-          '`recommendation`, `cost`, `alternatives`' +
-          (features.decisions
-            ? '. The owner answers Accept, Reject or Other (with instructions): say in one line each what `accept_means` and ' +
-              '`reject_means`, or `allow_reject: false` when rejecting makes no sense. '
-            : '. ') +
-          'Files (a plan, a screenshot) go in `attachments`: ids from uploading each to /api/attachments. ' +
-          'Returns its code (`ref`: its ticket\'s or epic\'s code and a letter, e.g. "967A"), usable in every tool. The same open question again returns the first ' +
-          '(`duplicate: true`); the same `question` as an open FYI of yours, raised as blocking, makes it block and notifies the owner (`upgraded: true`; fields you give replace the FYI\'s, new attachments are added). ' +
-          (features.decisions
-            ? 'Then wait with wait_for_decisions and acknowledge_escalation as soon as one is decided.'
-            : 'The owner answers in your session, quoting the code; then dismiss_escalation with what they decided.'),
+          'Ask the owner, one decision per call: notifies their phone and blocks the lane holding its ticket ' +
+          '(`blocking: false` for an FYI). Raised on a lane (published first), it\'s the lane\'s ticket\'s, or its ' +
+          'group\'s epic\'s if it holds none; `epic` with no `lane_id` raises it on the epic (blocks no lane). ' +
+          'Returns its code (`ref`, e.g. "967A"). The same open question again returns the first (`duplicate: true`); ' +
+          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`).',
         inputSchema: {
           lane_id: s.laneId.optional().describe('The lane it\'s raised in; leave out to raise it on `epic`.'),
           epic: s.epicName.optional().describe('The epic it\'s for: its ref, or the group\'s id.'),
@@ -1067,7 +1040,7 @@ function buildServer(
             'A human may correct a mis-tap until you acknowledge. ' +
             'Pass `status` and `activity` to publish what the lane does next in the same call; otherwise the lane ' +
             'keeps its current status (usually awaiting_agent). Repeating it returns the same result. Only the agent that ' +
-            'raised the escalation (or a person) can acknowledge it.',
+            'raised it, the overseer of the group its ticket or epic is in, or a person, can acknowledge it.',
           inputSchema: {
             id: z.string().describe(ID_HELP),
             note: z.string().max(5000).optional(),
@@ -1094,7 +1067,7 @@ function buildServer(
             `Write in an open escalation's conversation: a short reply after the owner answered Other (a question back, ` +
             `or what you'll do), or a short update while they decide, only when something changed. At most ` +
             `${AGENT_MESSAGE_MAX} characters, plain and to the point: put anything longer in a file and pass its id in ` +
-            '`attachments`. Notifies the owner. Only the agent that raised the escalation can reply, or the overseer of the group its ticket is in now.',
+            '`attachments`. Notifies the owner. Only the agent that raised it can reply, or the overseer of the group its ticket or epic is in.',
           inputSchema: {
             id: z.string().describe(ID_HELP),
             message: z.string().min(1).max(5000),
@@ -1125,7 +1098,7 @@ function buildServer(
             : 'Close an alert once it is dealt with: the owner answered in your session, or it became moot. ') +
           '`justification` says what was decided and where, for the record (e.g. "Sam: drop the column, in the session"). ' +
           'Pass `status` and `activity` to publish what the lane does next; a lane this unblocks goes back to active. ' +
-          'Only the agent that raised it can dismiss it, or the overseer of the group its ticket is in now.',
+          'Only the agent that raised it can dismiss it, or the overseer of the group its ticket or epic is in.',
         inputSchema: {
           id: z.string().describe(ID_HELP),
           justification: z.string().trim().min(1).max(2000),
