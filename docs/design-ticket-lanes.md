@@ -297,7 +297,8 @@ Each PR is shippable on its own, with tests, wiki updates and an adversarial rev
 
 **PR 2 (tickets, server)** follows this plan. Where the plan is silent, these filled the gap:
 
-- **Held over to PR 4 with epics:** stand-in epics, the "Ungrouped" stand-in group, `epic_id` and `fill_lane`'s `epic`. Until then, a question raised on a lane holding no ticket keeps a lane-letter code (A12).
+- **Held over to PR 4 with epics:** stand-in epics, the "Ungrouped" stand-in group, `epic_id` and `fill_lane`'s `epic`.
+- **Until epics (owner's decision):** a question raised on a lane holding no ticket keeps today's behaviour: it blocks that lane and gets a lane-letter code (A12). A lane goes `idle` when it lets its ticket go without taking another; the migration leaves ticketless lanes' status as it is (step 3's "set to idle" comes with epics).
 - **Two live lanes on one ticket at upgrade:** they share the ticket record, and the more recently updated lane holds it. The other lane's history says which lane holds it.
 - **The overseer of a ticket's group** is the key that registered the group with `update_group`, compared like a raiser (account and key name).
 - **Changing the ticket systems later** (e.g. adding a default) re-derives tickets' canonical refs at startup from how each was first written; codes don't change.
