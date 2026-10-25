@@ -58,17 +58,19 @@ function RequirementRow({ req, scopeName, onToggle }: { req: Requirement; scopeN
   );
 }
 
-/** Rejecting a pending record needs the reason, which is kept with it. */
-function RejectForm({ req, client, onDone }: { req: Requirement; client: Client; onDone: () => void }) {
+/**
+ * Rejecting a pending record asks for confirmation with the reason, which is required and kept
+ * with it: the same confirmation as answering an escalation.
+ */
+function RejectConfirm({ req, client, onDone }: { req: Requirement; client: Client; onDone: () => void }) {
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  async function reject(e: React.FormEvent) {
-    e.preventDefault();
+  async function send() {
     setBusy(true);
     setError(null);
     try {
-      await client.rejectRequirement(req.id, reason);
+      await client.rejectRequirement(req.id, reason.trim());
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -77,28 +79,29 @@ function RejectForm({ req, client, onDone }: { req: Requirement; client: Client;
     }
   }
   return (
-    <form className="stack" onSubmit={reject} onClick={(e) => e.stopPropagation()}>
+    <div className="answer-confirm tone-reject" onClick={(e) => e.stopPropagation()}>
+      <p>
+        Reject <strong>{req.id}</strong>?
+        <span className="answer-means"> It's kept for history, and agents stop seeing it.</span>
+      </p>
       <textarea
-        value={reason}
-        rows={3}
-        maxLength={2000}
-        onChange={(e) => setReason(e.target.value)}
-        aria-label="Why it is rejected"
-        placeholder="Why is this rejected? (required)"
-        required
         autoFocus
+        placeholder="Why it's rejected (required)"
+        value={reason}
+        maxLength={2000}
+        rows={3}
+        onChange={(e) => setReason(e.target.value)}
       />
-      <p className="hint">Kept with {req.id} for history. Agents stop seeing it.</p>
       {error && <p className="error">{error}</p>}
       <div className="actions">
-        <button className="danger" disabled={busy || !reason.trim()}>
-          Reject
+        <button className="primary" disabled={busy || !reason.trim()} onClick={() => void send()}>
+          {busy ? 'Sending…' : `Reject ${req.id}`}
         </button>
-        <button type="button" className="ghost" onClick={onDone}>
-          Cancel
+        <button className="ghost" disabled={busy} onClick={onDone}>
+          Back
         </button>
       </div>
-    </form>
+    </div>
   );
 }
 
@@ -193,9 +196,9 @@ function RequirementCard({
           </h3>
           <RichText text={req.justification} />
           {req.status === 'rejected' && req.rejectionReason && (
-            <div className="req-rejection">
-              <strong>Rejected:</strong> <LinkedText text={req.rejectionReason} />
-            </div>
+            <p className="note">
+              Rejected: <LinkedText text={req.rejectionReason} />
+            </p>
           )}
           <div className="req-tags">
             {req.tags.map((t) => (
@@ -214,7 +217,7 @@ function RequirementCard({
             )}{' '}
             · recorded by {req.recordedBy} · {absolute(req.createdAt)}
           </p>
-          {rejecting && <RejectForm req={req} client={client} onDone={() => setRejecting(false)} />}
+          {rejecting && <RejectConfirm req={req} client={client} onDone={() => setRejecting(false)} />}
           {canEdit && inForce(req) && !rejecting && (
             <div className="actions">
               {req.status === 'pending' && (
