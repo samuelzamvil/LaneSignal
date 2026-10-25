@@ -30,6 +30,16 @@
                 <data android:scheme="lanesignal" />
             </intent-filter>
 
+            <!-- Cloudflare Access sign-in returns to https://<server>/oauth/callback. With the server's host built in
+                 (LANESIGNAL_APP_LINK_HOST) and its /.well-known/assetlinks.json, Android opens that link in the app
+                 directly; otherwise the page there forwards to lanesignal://oauth/callback. See docs/cloudflare-access.md. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="${appLinkHost}" android:pathPrefix="/oauth/callback" />
+            </intent-filter>
+
         </activity>
 
         <provider

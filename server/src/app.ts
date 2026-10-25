@@ -7,7 +7,8 @@ import { z, ZodError, type ZodType } from 'zod';
 import { accessFor, approvesRequirements, briefMessages, briefWait, digestWait, escalationTarget, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { oversizedImage, readUpload, sniff } from './attachments.ts';
 import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
-import { createAuth, principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
+import { createAuth, principalOf, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
+import { createAccessVerifier } from './cloudflare-access.ts';
 import type { Config } from './config.ts';
 import { log } from './log.ts';
 import { mcpHandler } from './mcp.ts';
@@ -51,7 +52,14 @@ export interface AppOptions {
   trmnl?: TrmnlPusher;
   /** The TRMNL plugin's files (integrations/trmnl), zipped for download. */
   trmnlDir?: string;
+  /** Fetches Cloudflare Access's signing keys (tests pass a fake). */
+  accessFetch?: typeof fetch;
 }
+
+/** The OAuth redirect URI the Android app registers with Cloudflare Access (Managed OAuth). */
+export const OAUTH_CALLBACK_PATH = '/oauth/callback';
+
+const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 const parse = <T>(schema: ZodType<T>, value: unknown): T => schema.parse(value);
 
@@ -61,9 +69,20 @@ const h = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => 
   Promise.resolve(fn(req, res)).catch(next);
 };
 
-export function createApp({ config, store, accounts, push, webDir, skillFile, trmnl, trmnlDir }: AppOptions) {
+export function createApp({ config, store, accounts, push, webDir, skillFile, trmnl, trmnlDir, accessFetch }: AppOptions) {
   const app = express();
-  const auth = createAuth(config.tokens, accounts);
+  const cf = config.cloudflareAccess;
+  const access: AccessAuth | null = cf && {
+    verifier: createAccessVerifier(cf, accessFetch),
+    createAccounts: cf.createAccounts,
+    trustedOrigins: (req) => {
+      const origins = [...config.corsOrigins];
+      if (config.publicUrl) origins.push(new URL(config.publicUrl).origin);
+      if (req.headers.host) origins.push(`https://${req.headers.host}`, `http://${req.headers.host}`);
+      return origins;
+    },
+  };
+  const auth = createAuth(config.tokens, accounts, access);
   if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy);
   app.disable('x-powered-by');
 
@@ -103,13 +122,59 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   // Accounts, sessions and agent keys (Better Auth). Mounted before the JSON parser: it reads raw bodies.
   const authHandler = toNodeHandler(accounts.auth);
-  app.all('/api/auth/{*splat}', (req, res) => {
-    // Bearer only: ignore cookies Better Auth may have set, so a stale cookie can't stand in for the bearer.
-    delete req.headers.cookie;
-    // The rate limiter keys on this; derived from the socket or trusted proxies only, never the client.
-    req.headers[CLIENT_IP_HEADER] = req.ip ?? req.socket.remoteAddress ?? 'unknown';
-    void authHandler(req, res);
-  });
+  app.all(
+    '/api/auth/{*splat}',
+    h(async (req, res) => {
+      // Bearer only: ignore cookies Better Auth may have set, so a stale cookie can't stand in for the bearer.
+      delete req.headers.cookie;
+      // The rate limiter keys on this; derived from the socket or trusted proxies only, never the client.
+      req.headers[CLIENT_IP_HEADER] = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+      // Someone signed in through Cloudflare Access has no session of their own: use the one kept for them,
+      // so agent keys and people management work the same.
+      const viaAccess = await auth.accessPrincipal(req);
+      if (viaAccess?.userId) req.headers.authorization = `Bearer ${await accounts.accessSessionToken(viaAccess.userId)}`;
+      void authHandler(req, res);
+    }),
+  );
+
+  if (cf) {
+    /**
+     * Managed OAuth's redirect URI for the Android app (Cloudflare only allows https ones). With a verified
+     * App Link, Android hands this URL straight to the app; otherwise the browser lands here and is sent on
+     * to the app's own lanesignal:// link. The code is useless without the app's PKCE verifier.
+     */
+    app.get(OAUTH_CALLBACK_PATH, (req, res) => {
+      const forward = new URLSearchParams();
+      for (const k of ['code', 'state', 'error', 'error_description']) {
+        if (typeof req.query[k] === 'string') forward.set(k, req.query[k] as string);
+      }
+      const target = escapeHtml(`lanesignal://oauth/callback?${forward}`);
+      res
+        .set({
+          'cache-control': 'no-store',
+          'referrer-policy': 'no-referrer',
+          'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
+        })
+        .type('html')
+        .send(
+          `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="refresh" content="0;url=${target}">` +
+            `<title>LaneSignal</title><body style="font-family:sans-serif;text-align:center;padding:3em 1em">` +
+            `<p>Signed in. Returning to LaneSignal…</p><p><a href="${target}">Open LaneSignal</a></p></body>`,
+        );
+    });
+  }
+
+  // Android App Links: lets the app open the OAuth callback above directly (LANESIGNAL_ANDROID_CERT_SHA256).
+  if (config.androidCertFingerprints.length) {
+    app.get('/.well-known/assetlinks.json', (_req, res) => {
+      res.json([
+        {
+          relation: ['delegate_permission/common.handle_all_urls'],
+          target: { namespace: 'android_app', package_name: 'dev.lanesignal.app', sha256_cert_fingerprints: config.androidCertFingerprints },
+        },
+      ]);
+    });
+  }
 
   app.use(express.json({ limit: '256kb' }));
 
@@ -245,6 +310,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       decisions: config.decisions,
       requirements: config.requirements,
       quietAlerts: store.quietAlerts(),
+      ...(cf ? { cloudflareAccess: true } : {}),
     };
     res.json(body);
   });

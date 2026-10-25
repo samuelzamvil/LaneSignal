@@ -10,6 +10,7 @@ Set these in the stack's environment (Compose / `.env`); there's no switch in th
 |---|---|---|
 | `LANESIGNAL_DECISIONS` | `true` | Answering in LaneSignal. On (the default), escalations get answer buttons on the dashboard and phone app, and agents wait for and acknowledge the decision. `false` makes LaneSignal alerts only: you answer in the agent's own session (e.g. Remote Control) and the agent dismisses the alert with a justification; the dashboard is read-only apart from dismissing stale alerts. See [Lanes, groups and escalations](concepts.md#escalations) |
 | `LANESIGNAL_REQUIREMENTS` | `true` | The [requirements](requirements.md) register: a durable, searchable record of the owner's decisions outside the repository. `false` removes its tools, page, API and export |
+| `LANESIGNAL_CLOUDFLARE_ACCESS` | `false` | Beta. [Sign in with Cloudflare Access](cloudflare-access.md): people Access lets in are signed in as the account with their email, in the browser and (through Access's Managed OAuth) in the Android app. Needs the settings under [Cloudflare Access](#cloudflare-access) |
 
 ## Server
 
@@ -39,6 +40,17 @@ Set these in the stack's environment (Compose / `.env`); there's no switch in th
 | `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | Optional static agent tokens. Prefer [agent keys](accounts.md#agent-keys) |
 
 In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "token" }`.
+
+## Cloudflare Access
+
+Only read with `LANESIGNAL_CLOUDFLARE_ACCESS=true`. See [Sign in with Cloudflare Access](cloudflare-access.md) for the Cloudflare side.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `LANESIGNAL_CF_ACCESS_TEAM_DOMAIN` | | Required: `myteam.cloudflareaccess.com`. The tokens' issuer, and where their signing keys are published |
+| `LANESIGNAL_CF_ACCESS_AUD` | | Required: the Access application's Application Audience (AUD) tag; comma-separated for several |
+| `LANESIGNAL_CF_ACCESS_CREATE_ACCOUNTS` | `false` | `true` gives every email Access lets in an account (not an admin) on first sign-in. Off, they need an account an admin added |
+| `LANESIGNAL_ANDROID_CERT_SHA256` | | The Android app's signing-certificate SHA-256 fingerprints (comma-separated), served as `/.well-known/assetlinks.json` so the sign-in callback opens the app directly. Read whether or not the flag is on |
 
 ## Lanes and tickets
 

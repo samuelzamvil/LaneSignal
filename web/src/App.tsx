@@ -20,6 +20,7 @@ import { EpicCard, EpicDetail, EpicsContext, epicRoute, hasLane, laneKeyOf } fro
 import { epicShows, epicsOnScreen, laneEpic } from './epics.ts';
 import { TicketLinksContext } from './linked-text.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
+import { accessSignOut, accessTokens } from './access-session.ts';
 import { routeFromAppLink } from './deeplink.ts';
 import { compareLanes, needsHuman, STATUS_META } from './format.ts';
 import { keyOf } from './merge.ts';
@@ -166,7 +167,13 @@ export default function App() {
         await teardownPush(client);
         // End the server-side session too (static access tokens have none).
         if (conn.kind === 'session') await client.signOut().catch(() => {});
+        // Cloudflare Access: revoke the app's refresh token, or end the browser's Access session.
+        if (conn.kind === 'cloudflare' && conn.access) await accessSignOut(conn.access).catch(() => {});
         saveConnection(null);
+        if (conn.kind === 'cloudflare' && !conn.access) {
+          location.href = '/cdn-cgi/access/logout';
+          return;
+        }
         setConn(null);
       }}
     />
@@ -184,7 +191,7 @@ function Dashboard({
   /** Replaces this device's session token (after a password change). */
   onNewSession: (token: string) => void;
 }) {
-  const client = useMemo(() => createClient(conn), [conn]);
+  const client = useMemo(() => createClient(conn, conn.access ? accessTokens(conn.access) : undefined), [conn]);
   const [config, setConfig] = useState<PublicConfig | null>(null);
   const [me, setMe] = useState<Principal | null>(null);
   const [authError, setAuthError] = useState(false);
@@ -419,6 +426,14 @@ function Dashboard({
             <>
               <h1>Token rejected</h1>
               <p>The server no longer accepts this token.</p>
+            </>
+          ) : conn.kind === 'cloudflare' ? (
+            <>
+              <h1>You were signed out</h1>
+              <p>
+                Your Cloudflare Access sign-in ended (it expired, Access no longer lets you in, or an admin removed your
+                LaneSignal account). Sign in again to continue.
+              </p>
             </>
           ) : (
             <>
@@ -746,7 +761,7 @@ function Dashboard({
         <dt>Signed in as</dt>
         <dd>
           {me ? `${me.name}${me.email ? ` · ${me.email}` : ''}${me.admin ? ' (admin)' : ''}` : '…'}
-          {conn.kind !== 'session' && ' · access token'}
+          {conn.kind === 'cloudflare' ? ' · through Cloudflare Access' : conn.kind !== 'session' && ' · access token'}
         </dd>
         <dt>Connection</dt>
         <dd>{live.link}</dd>
@@ -799,7 +814,8 @@ function Dashboard({
             requirements={config.requirements}
           />
           {me.admin && <PeopleSection client={client} me={me} />}
-          <PasswordSection client={client} onNewSession={onNewSession} />
+          {/* Signed in through Cloudflare Access: there's no LaneSignal password to change. */}
+          {conn.kind !== 'cloudflare' && <PasswordSection client={client} onNewSession={onNewSession} />}
         </>
       ) : (
         <p className="hint">Sign in with an account to manage agent keys and people.</p>
