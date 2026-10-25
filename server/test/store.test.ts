@@ -16,6 +16,8 @@ const UNDO_V16 = `
   DROP INDEX escalations_ticket;
   DROP INDEX lane_events_ticket;
   ALTER TABLE escalations DROP COLUMN code;
+  ALTER TABLE escalations DROP COLUMN legacy_ref;
+  ALTER TABLE groups DROP COLUMN owner;
   ALTER TABLE escalations DROP COLUMN ticket_id;
   ALTER TABLE lanes DROP COLUMN ticket_id;
   ALTER TABLE lane_events DROP COLUMN ticket_id;
@@ -708,7 +710,7 @@ test('changing the ticket systems keeps finding the tickets lanes hold', () => {
   }
 });
 
-test('upgrading to tickets parks the tickets of removed lanes and leaves completed lanes their open questions', () => {
+test('upgrading to tickets marks the tickets of finished lanes done and archives completed lanes', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v15b-'));
   const file = path.join(dir, 'lanesignal.db');
   try {
@@ -726,17 +728,15 @@ test('upgrading to tickets parks the tickets of removed lanes and leaves complet
     `);
     db.close();
     store = new Store({ path: file, resolveTicketUrl });
-    const parked = store.getTicket('default', 'gh:910')!;
-    assert.equal(parked.state, 'parked');
-    assert.equal(parked.parkReason, 'Lane removed');
-    // Publishing the removed lane again takes its ticket back.
-    store.upsertLane('default/gone', { status: 'active' }, 'bot');
-    assert.equal(store.getLane('default/gone')?.ticketId, parked.id);
-    // The completed lane keeps its open FYI as its own: still counted, and withdrawn if it's removed.
-    assert.equal(store.getEscalation(fyi.id)?.ticketId, null);
-    assert.equal(store.getLane('default/shipped')?.openEscalations, 1);
-    store.deleteLane('default/shipped', 'alice');
-    assert.equal(store.getEscalation(fyi.id)?.state, 'withdrawn');
+    // A lane that isn't live: its ticket is done.
+    assert.equal(store.getTicket('default', 'gh:910')?.state, 'done');
+    // A completed lane is archived; its escalations go to its ticket, and its open FYI stays open.
+    assert.equal(store.getLane('default/shipped'), null);
+    const shipped = store.getTicket('default', 'gh:911')!;
+    assert.equal(shipped.state, 'done');
+    assert.equal(store.getEscalation(fyi.id)?.ticketId, shipped.id);
+    assert.equal(store.getEscalation(fyi.id)?.state, 'open');
+    assert.match(store.getEscalation(fyi.id)!.ref, /^[A-Z]+\d+$/, 'old codes stay as they were');
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

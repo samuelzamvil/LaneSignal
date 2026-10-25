@@ -163,7 +163,7 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
     'allow_reject', 'attachments', 'blocking', 'state', 'created_by',
     'created_at', 'decided_by', 'decided_at', 'decision', 'decision_note', 'followed_recommendation',
     'acknowledged_at', 'resolution', 'closed_at', 'seconds_to_decision', 'seconds_to_acknowledge', 'seconds_open',
-    'positions_agree', 'positions_disagree', 'positions_neutral', 'links', 'ticket_id',
+    'positions_agree', 'positions_disagree', 'positions_neutral', 'links', 'ticket_id', 'legacy_ref',
   ],
   positions: ['escalation_id', 'escalation_ref', 'project', 'lane_id', 'question', 'agent', 'stance', 'note', 'at'],
   lanes: [
@@ -279,10 +279,12 @@ type Row = Record<string, unknown>;
 
 /** What a ticket switch changed besides the lane itself, for events once the transaction commits. */
 interface Touched {
-  /** Escalations withdrawn or moved to another lane. */
+  /** Escalations withdrawn. */
   escalations: Set<string>;
-  /** Other lanes whose escalations moved away. */
+  /** Other lanes to send again (e.g. ones whose ticket waited on a finished one). */
   lanes: Set<string>;
+  /** Tickets filled, parked, done, dropped, or whose waiting_on changed. */
+  tickets: Set<number>;
 }
 
 /** Escalation ids. */
@@ -593,7 +595,12 @@ export class Store {
       this.db.exec(`
         ALTER TABLE escalations ADD COLUMN ticket_id INTEGER;
         ALTER TABLE escalations ADD COLUMN code TEXT;
+        ALTER TABLE escalations ADD COLUMN legacy_ref TEXT;
       `);
+      // Codes from before tickets (A12, or the global number before lane codes): kept, and resolving, forever.
+      for (const r of this.db.prepare('SELECT rowid AS rid, ref, letter_index, seq FROM escalations').all() as Row[]) {
+        this.db.prepare('UPDATE escalations SET legacy_ref = ? WHERE rowid = ?').run(this.codeOf(r), Number(r.rid));
+      }
     }
     if (!this.hasColumn('lane_events', 'ticket_id')) this.db.exec('ALTER TABLE lane_events ADD COLUMN ticket_id INTEGER');
     // Who registered the group (its overseer's key, as escalations record their raiser).
@@ -608,7 +615,7 @@ export class Store {
     const lanes = this.db
       .prepare(
         `SELECT id, project_id, group_id, ticket, status, status_since, blocked_since, blocked_total_ms, created_at,
-           (archived_at IS NULL AND status <> 'completed') AS live, (archived_at IS NOT NULL AND status <> 'completed') AS removed
+           (archived_at IS NULL AND status <> 'completed') AS live
          FROM lanes WHERE ticket IS NOT NULL AND trim(ticket) <> '' AND ticket_id IS NULL
          ORDER BY live DESC, updated_at DESC`,
       )
@@ -619,46 +626,31 @@ export class Store {
       const raw = (l.ticket as string).trim();
       const ref = this.refs.canonical(raw);
       const live = Number(l.live) === 1;
-      // Removed mid-work: parked, as removing a lane does now. Completed: done.
-      const removed = Number(l.removed) === 1;
       const held = this.db.prepare('SELECT num, lane_id FROM tickets WHERE project_id = ? AND ref = ?').get(project, ref) as Row | undefined;
-      if (held && live) {
-        // Another live lane holds it already: this one keeps its escalations and stops claiming the ticket.
+      if (held && live && held.lane_id) {
+        // Lanes that share a ref share one ticket, and a ticket is in one lane: the newer lane holds it.
         this.db.prepare('UPDATE lanes SET ticket = NULL WHERE id = ?').run(laneId);
         this.addEvent(laneId, at, 'ticket', `${this.refs.display(ref)} is held by lane "${localId(held.lane_id as string)}"`, null, null);
-        continue;
       }
       const num = held
         ? Number(held.num)
         : this.insertTicket(project, ref, raw, {
             group: (l.group_id as string | null) ?? null,
             lane: live ? laneId : null,
-            state: live ? 'in_lane' : removed ? 'parked' : 'done',
+            state: live ? 'in_lane' : 'done',
             status: l.status as LaneStatus,
             statusSince: l.status_since as string,
             blockedSince: live ? ((l.blocked_since as string | null) ?? null) : null,
             blockedTotalMs: Number(l.blocked_total_ms),
             at: (l.created_at as string) ?? at,
-            closedAt: live || removed ? null : at,
+            closedAt: live ? null : at,
           });
-      if (!held && removed) this.db.prepare("UPDATE tickets SET park_reason = 'Lane removed' WHERE num = ?").run(num);
-      if (live) this.db.prepare('UPDATE lanes SET ticket_id = ? WHERE id = ?').run(num, laneId);
-      // A lane that's over keeps its unresolved questions as its own, so they still count on it and
-      // removing it still withdraws them; the ticket takes its closed ones.
-      this.db
-        .prepare(
-          `UPDATE escalations SET ticket_id = ? WHERE lane_id = ? AND ticket_id IS NULL${live || removed ? '' : " AND state IN ('acknowledged', 'withdrawn')"}`,
-        )
-        .run(num, laneId);
+      if (live && !held) this.db.prepare('UPDATE lanes SET ticket_id = ? WHERE id = ?').run(num, laneId);
+      this.db.prepare('UPDATE escalations SET ticket_id = ? WHERE lane_id = ? AND ticket_id IS NULL').run(num, laneId);
       this.db.prepare('UPDATE lane_events SET ticket_id = ? WHERE lane_id = ? AND ticket_id IS NULL').run(num, laneId);
     }
-    // Completed lanes leave the dashboard once nothing on them waits on anyone.
-    const done = this.db
-      .prepare(
-        `SELECT id FROM lanes l WHERE archived_at IS NULL AND status = 'completed'
-           AND NOT EXISTS (SELECT 1 FROM escalations e WHERE e.lane_id = l.id AND e.state IN ('open', 'decided'))`,
-      )
-      .all() as Row[];
+    // Completed lanes leave the dashboard; their tickets are done, so they don't come back as idle slots.
+    const done = this.db.prepare(`SELECT id FROM lanes WHERE archived_at IS NULL AND status = 'completed'`).all() as Row[];
     for (const r of done) {
       this.db.prepare('UPDATE lanes SET archived_at = ?, letter_index = NULL WHERE id = ?').run(at, r.id as string);
       this.addEvent(r.id as string, at, 'status', 'Lane removed (completed, on upgrade)', null);
@@ -998,9 +990,10 @@ export class Store {
 
   private static LANE_SELECT = `
     SELECT l.*,
-      (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open' AND (e.ticket_id IS NULL OR e.ticket_id = l.ticket_id)) AS open_escalations,
-      (SELECT COUNT(*) FROM escalations e WHERE e.lane_id = l.id AND e.state = 'open' AND e.blocking = 1 AND e.turn = 'owner'
-         AND (e.ticket_id IS NULL OR e.ticket_id = l.ticket_id)) AS open_blocking,
+      (SELECT COUNT(*) FROM escalations e WHERE e.state = 'open'
+         AND ((e.ticket_id IS NULL AND e.lane_id = l.id) OR e.ticket_id = l.ticket_id)) AS open_escalations,
+      (SELECT COUNT(*) FROM escalations e WHERE e.state = 'open' AND e.blocking = 1 AND e.turn = 'owner'
+         AND ((e.ticket_id IS NULL AND e.lane_id = l.id) OR e.ticket_id = l.ticket_id)) AS open_blocking,
       (SELECT t.waiting_on FROM tickets t WHERE t.num = l.ticket_id) AS ticket_waiting_on,
       (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived,
       (SELECT MAX(m.id) FROM lane_messages m WHERE m.lane_id = l.id) AS last_message_id,
@@ -1091,22 +1084,18 @@ export class Store {
     let createdGroup: Group | null = null;
     let groupRestored = false;
     let previous: LaneStatus | null = null;
-    const touched: Touched = { escalations: new Set(), lanes: new Set() };
+    const touched: Touched = { escalations: new Set(), lanes: new Set(), tickets: new Set() };
     let warning: string | undefined;
     let finished = false;
     const lane = this.tx(() => {
       const at = this.now().toISOString();
-      const restored = this.restoreLane(id, actor, at);
+      this.restoreLane(id, actor, at);
       previous = this.getLane(id)?.status ?? null;
       if (patch.group && !this.getGroup(patch.group)) {
         groupRestored = this.writeGroup(patch.group, {}, actor, at);
         createdGroup = this.getGroup(patch.group);
       }
-      const { ticket: given, ...rest } = patch;
-      // A restored lane takes back the ticket it held when it was removed, unless told otherwise.
-      const kept = restored && given === undefined ? ((this.getLane(id)?.ticket as string | null) ?? null) : null;
-      const ticket = given !== undefined ? given : kept !== null ? kept : undefined;
-      if (kept !== null) this.db.prepare('UPDATE lanes SET ticket = NULL WHERE id = ?').run(id);
+      const { ticket, ...rest } = patch;
       let existing = this.getLane(id);
       if (!existing) {
         const status = rest.status ?? 'active';
@@ -1144,6 +1133,8 @@ export class Store {
         finished = true;
       }
       if (fill.waitingOn !== undefined) {
+        const holding = this.requireLane(id).ticketId;
+        if (holding !== null) touched.tickets.add(holding);
         const note = this.setWaitingOn(this.requireLane(id), fill.waitingOn, at);
         if (note) warning = [warning, note].filter(Boolean).join(' ');
       }
@@ -1210,23 +1201,23 @@ export class Store {
    * are those raised while the lane held no ticket. Publishing to the same lane id later restores it.
    */
   deleteLane(id: string, actor: string | null = null, release: { previous?: TicketRelease; reason?: string | null } = {}) {
-    const touched: Touched = { escalations: new Set(), lanes: new Set() };
+    const touched: Touched = { escalations: new Set(), lanes: new Set(), tickets: new Set() };
     this.tx(() => {
       const lane = this.getLane(id);
       if (!lane) throw new NotFoundError(`Lane "${localId(id)}" not found`);
       const at = this.now().toISOString();
       if (lane.ticketId !== null) {
-        const how = release.previous ?? 'park';
+        const how = release.previous ?? (lane.status === 'completed' ? 'done' : 'park');
         this.releaseTicket(lane, how, release.reason?.trim() || (how === 'park' ? 'Lane removed' : null), actor, at, touched);
       }
       // Only unanswered questions are withdrawn. Decided ones keep their answer and
       // can still be acknowledged by an agent that's acting on it.
-      // The lane's own (raised while it held no ticket), and any left on it from a ticket that's over.
-      const ownOrOver = `lane_id = ? AND state = 'open' AND (ticket_id IS NULL OR ticket_id IN (SELECT num FROM tickets WHERE state IN ('done', 'dropped')))`;
-      const pending = (this.db.prepare(`SELECT id FROM escalations WHERE ${ownOrOver}`).all(id) as Row[]).map((r) => r.id as string);
+      // The lane's own questions (raised while it held no ticket); a ticket's stay with the ticket.
+      const own = `lane_id = ? AND state = 'open' AND ticket_id IS NULL`;
+      const pending = (this.db.prepare(`SELECT id FROM escalations WHERE ${own}`).all(id) as Row[]).map((r) => r.id as string);
       const resolution = `Lane removed${actor ? ` by ${actor}` : ''}`;
       this.db
-        .prepare(`UPDATE escalations SET state = 'withdrawn', resolution = COALESCE(resolution, ?), withdrawn_by = ?, updated_at = ? WHERE ${ownOrOver}`)
+        .prepare(`UPDATE escalations SET state = 'withdrawn', resolution = COALESCE(resolution, ?), withdrawn_by = ?, updated_at = ? WHERE ${own}`)
         .run(resolution, actor ?? '', at, id);
       for (const eid of pending) {
         this.addEvent(id, at, 'escalation', `Escalation closed: ${resolution}`, actor, null);
@@ -1235,8 +1226,7 @@ export class Store {
       // End any blocked spell now, so archived time isn't counted as blocked.
       const now = this.requireLane(id);
       if (now.status === 'blocked_human') this.applyLaneUpdate(now, { status: 'idle' }, actor, at);
-      // The ticket's text stays, so publishing to the lane again takes it back if no other lane has.
-      this.db.prepare('UPDATE lanes SET ticket_id = NULL, archived_at = ?, updated_at = ? WHERE id = ?').run(at, at, id);
+      this.db.prepare('UPDATE lanes SET ticket = NULL, ticket_id = NULL, archived_at = ?, updated_at = ? WHERE id = ?').run(at, at, id);
       this.addEvent(id, at, 'status', 'Lane removed', actor, null);
       this.syncLetter(id);
     });
@@ -1436,11 +1426,6 @@ export class Store {
     // The ticket it holds already: a plain update (the ref may be written another way this time, or the
     // ticket systems may have changed since it was stored).
     if (held && (ref === held.ref || ref === this.refs.canonical(held.display_ref as string))) {
-      if (fill.previous && fill.previous !== 'park') {
-        throw new ValidationError(
-          `Lane "${localId(lane.id)}" already holds ${this.ticketName(held)}: to finish it, publish status completed, or fill_lane with the next ticket`,
-        );
-      }
       this.db.prepare('UPDATE lanes SET ticket = ? WHERE id = ?').run(written, lane.id);
       return undefined;
     }
@@ -1451,14 +1436,9 @@ export class Store {
     const project = projectOf(lane.id);
     let target = ref ? (this.db.prepare('SELECT * FROM tickets WHERE project_id = ? AND ref = ?').get(project, ref) as Row | undefined) : undefined;
     if (target?.lane_id && target.lane_id !== lane.id) {
-      const where = `${this.ticketName(target)} is in lane "${localId(target.lane_id as string)}"; a ticket is in one lane at a time (a worker and a reviewer share one)`;
-      if (fill.strict) throw new ConflictError(where);
-      // An older agent publishing a lane on a ticket another lane holds: the rest of its update still counts.
-      return `${where}. This lane keeps ${held ? this.ticketName(held) : 'no ticket'}.`;
-    }
-    // An older agent repeating the ticket its lane just finished doesn't reopen it: fill_lane does that.
-    if (!fill.strict && target && (target.state === 'done' || target.state === 'dropped')) {
-      return `${this.ticketName(target)} is ${target.state}: fill_lane with it to reopen it.`;
+      throw new ConflictError(
+        `${this.ticketName(target)} is in lane "${localId(target.lane_id as string)}"; a ticket is in one lane at a time (a worker and a reviewer share one)`,
+      );
     }
     let how = fill.previous;
     let reason = fill.reason?.trim() || null;
@@ -1469,16 +1449,14 @@ export class Store {
           `Lane "${localId(lane.id)}" holds ${this.ticketName(held)}: say what happens to it with previous (park, done or drop)`,
         );
       }
-      how = 'park';
-      reason ??= 'switched (legacy call)';
-      warning = `Parked ${this.ticketName(held)}. To say it's done or dropped instead, switch tickets with fill_lane and previous.`;
+      // The plan's default for both calls: done if the lane was completed, otherwise parked, which loses nothing.
+      how = lane.status === 'completed' ? 'done' : 'park';
+      if (how === 'park') reason ??= 'switched (legacy call)';
     }
     if (held && how === 'park' && !reason) throw new ValidationError(`Say why ${this.ticketName(held)} is parked (reason)`);
     const system = (r: string) => (/^https?:\/\//i.test(r) ? null : r.includes(':') ? r.slice(0, r.indexOf(':')) : null);
     if (held && ref && system(ref) === 'gh' && system(held.ref as string) !== 'gh') {
-      warning = [warning, `Switched from ${this.ticketName(held)} to ${this.refs.display(ref)}: PRs go in links, never ticket.`]
-        .filter(Boolean)
-        .join(' ');
+      warning = `Switched from ${this.ticketName(held)} to ${this.refs.display(ref)}: PRs go in links, never ticket.`;
     }
     if (held) this.releaseTicket(lane, how!, reason, actor, at, touched);
     if (!ref) {
@@ -1511,6 +1489,7 @@ export class Store {
     const name = this.ticketName(t);
     // A blocked spell ends here: time parked isn't counted as blocked.
     const blockedTotalMs = lane.blockedTotalMs + (lane.blockedSince ? Date.parse(at) - Date.parse(lane.blockedSince) : 0);
+    touched.tickets.add(lane.ticketId);
     const state: TicketState = how === 'park' ? 'parked' : how === 'done' ? 'done' : 'dropped';
     this.db
       .prepare(
@@ -1523,24 +1502,14 @@ export class Store {
       how === 'park' ? `Parked ${name}: ${reason}` : how === 'done' ? `${name} done${reason ? `: ${reason}` : ''}` : `Dropped ${name}${reason ? `: ${reason}` : ''}`;
     this.addEvent(lane.id, at, 'ticket', label, actor, lane.ticketId);
     if (how === 'park') return;
-    // A finished ticket's unanswered questions are moot. Decided ones, and ones the owner answered
-    // Other (the agent's turn), can still be acknowledged.
-    const open = this.db
-      .prepare("SELECT id FROM escalations WHERE ticket_id = ? AND state = 'open' AND turn = 'owner'")
-      .all(lane.ticketId) as Row[];
-    const resolution = `${name} ${how === 'done' ? 'done' : 'dropped'}${actor ? ` by ${actor}` : ''}`;
-    for (const r of open) {
-      this.db
-        .prepare(`UPDATE escalations SET state = 'withdrawn', resolution = COALESCE(resolution, ?), withdrawn_by = ?, updated_at = ? WHERE id = ?`)
-        .run(resolution, actor ?? '', at, r.id as string);
-      this.addEvent(lane.id, at, 'escalation', `Escalation closed: ${resolution}`, actor, lane.ticketId);
-      touched.escalations.add(r.id as string);
-    }
-    // Nothing waits on a ticket that's over; the lanes holding those that did show it.
+    // Its open questions stay as they are: in the inbox, answered as ever. Nothing waits on a ticket that's over; the lanes holding those that did show it.
     const waiting = this.db
       .prepare('SELECT lane_id FROM tickets WHERE project_id = ? AND waiting_on = ? AND lane_id IS NOT NULL')
       .all(projectOf(lane.id), t.ref as string) as Row[];
     for (const w of waiting) touched.lanes.add(w.lane_id as string);
+    for (const r of this.db.prepare('SELECT num FROM tickets WHERE project_id = ? AND waiting_on = ?').all(projectOf(lane.id), t.ref as string) as Row[]) {
+      touched.tickets.add(Number(r.num));
+    }
     this.db.prepare('UPDATE tickets SET waiting_on = NULL WHERE project_id = ? AND waiting_on = ?').run(projectOf(lane.id), t.ref as string);
   }
 
@@ -1558,21 +1527,8 @@ export class Store {
    */
   private takeTicket(lane: Lane, t: Row, written: string, fresh: boolean, actor: string | null, at: string, touched: Touched) {
     const num = Number(t.num);
-    // Its escalations follow it, so the lane, its group's waits and the inbox all see them here.
-    const moving = this.db
-      .prepare("SELECT id, lane_id, state FROM escalations WHERE ticket_id = ? AND lane_id <> ?")
-      .all(num, lane.id) as Row[];
-    for (const e of moving) {
-      touched.lanes.add(e.lane_id as string);
-      if (e.state === 'open' || e.state === 'decided') touched.escalations.add(e.id as string);
-    }
-    // Unresolved ones get a new updated_at: unchanged, it would make them look just raised to the notifiers.
-    this.db
-      .prepare(
-        `UPDATE escalations SET updated_at = CASE WHEN lane_id <> ? AND state IN ('open', 'decided') THEN ? ELSE updated_at END, lane_id = ?
-         WHERE ticket_id = ?`,
-      )
-      .run(lane.id, at, lane.id, num);
+    touched.tickets.add(num);
+    // Its escalations keep the lane they were raised in (lane_id, for history); they count where the ticket is.
     this.db.prepare('UPDATE lanes SET ticket = ?, ticket_id = ? WHERE id = ?').run(written, num, lane.id);
     // Blocked by the ticket's questions, or by ones the lane raised while it held none.
     const blocking = this.openBlockingCount(lane.id) > 0;
@@ -1629,6 +1585,10 @@ export class Store {
       if (id === exceptLane) continue;
       const l = this.getLane(id);
       if (l) this.emit({ type: 'lane', lane: l });
+    }
+    for (const num of touched.tickets) {
+      const r = this.db.prepare('SELECT * FROM tickets WHERE num = ?').get(num) as Row | undefined;
+      if (r) this.emit({ type: 'ticket', ticket: this.ticketFromRow(r) });
     }
   }
 
@@ -1901,9 +1861,10 @@ export class Store {
         message.author,
         current.ticketId,
       );
-      const found = this.laneIncludingArchived(current.laneId);
+      const holder = this.holderOf(current);
+      const found = holder ? this.laneIncludingArchived(holder) : null;
       let statusChanged = false;
-      if (found && !found.archived && current.blocking && this.ofLane(current, found.lane)) {
+      if (found && !found.archived && current.blocking) {
         const lane = found.lane;
         if (turn === 'agent' && lane.status === 'blocked_human' && this.openBlockingCount(lane.id) === 0) {
           this.applyLaneUpdate(lane, { status: 'awaiting_agent' }, null, at);
@@ -1915,7 +1876,7 @@ export class Store {
       }
       return {
         escalation: this.requireEscalation(current.id),
-        lane: found && !found.archived ? this.requireLane(current.laneId) : null,
+        lane: found && !found.archived ? this.requireLane(found.lane.id) : null,
         statusChanged,
         duplicate: false,
         reply: current.turn === 'agent',
@@ -2074,11 +2035,11 @@ export class Store {
     const existing = (
       this.db
         .prepare(
-          `SELECT id, question FROM escalations WHERE lane_id = ? AND state = 'open'
-             AND ticket_id IS (SELECT ticket_id FROM lanes WHERE id = escalations.lane_id)
+          `SELECT id, question FROM escalations WHERE state = 'open'
+             AND ((ticket_id IS NULL AND lane_id = ?) OR ticket_id = (SELECT ticket_id FROM lanes WHERE id = ?))
              AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`,
         )
-        .all(input.laneId, owner ?? actor) as Row[]
+        .all(input.laneId, input.laneId, owner ?? actor) as Row[]
     ).find((r) => norm(r.question as string) === norm(input.question));
     if (existing) {
       const id = existing.id as string;
@@ -2146,7 +2107,7 @@ export class Store {
           input.recommendedOption ?? null,
           input.cost ?? null,
           JSON.stringify(input.alternatives ?? []),
-          input.ticket ?? null,
+          input.ticket?.trim() ? this.refs.canonical(input.ticket) : null,
           JSON.stringify(
             (input.positions ?? []).map((p) => ({ agent: p.agent, stance: p.stance, note: p.note ?? null, at })),
           ),
@@ -2204,7 +2165,7 @@ export class Store {
           given(input.context) as string | null,
           given(input.recommendation) as string | null,
           given(input.cost) as string | null,
-          given(input.ticket) as string | null,
+          input.ticket?.trim() ? this.refs.canonical(input.ticket) : null,
           list(input.alternatives),
           list(input.links),
           list(input.options),
@@ -2220,13 +2181,15 @@ export class Store {
       if (input.allowReject === false) this.db.prepare('UPDATE escalations SET reject_means = NULL WHERE id = ?').run(id);
       this.linkAttachments(id, input.attachments ?? [], owner ?? actor);
       this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${before.question}`, actor, before.ticketId);
-      const lane = this.requireLane(before.laneId);
-      const blocks = lane.status !== 'blocked_human' && this.ofLane(before, lane);
-      if (blocks) this.applyLaneUpdate(lane, { status: 'blocked_human' }, actor, at);
-      return { escalation: this.requireEscalation(id), lane: this.requireLane(before.laneId), blocks };
+      // It blocks the lane holding its ticket (or, with no ticket, the lane it was raised in); none while parked.
+      const holder = this.holderOf(before);
+      const lane = holder ? this.getLane(holder) : null;
+      const blocks = !!lane && lane.status !== 'blocked_human';
+      if (lane && blocks) this.applyLaneUpdate(lane, { status: 'blocked_human' }, actor, at);
+      return { escalation: this.requireEscalation(id), lane: lane ? this.requireLane(lane.id) : null, blocks };
     });
     this.emit({ type: 'escalation', escalation, raised: true });
-    this.emit({ type: 'lane', lane, statusChanged: blocks });
+    if (lane) this.emit({ type: 'lane', lane, statusChanged: blocks });
     return escalation;
   }
 
@@ -2485,17 +2448,23 @@ export class Store {
         // After the agent's reply the escalation holds its lane blocked again; acknowledging releases it.
         current.turn === 'owner',
       );
-      if (lane && (lane.status || lane.activity !== undefined) && this.getLane(escalation.laneId)) {
-        this.upsertLane(escalation.laneId, lane, actor);
-      }
+      this.publishAfterClose(escalation, lane, actor);
       return escalation;
     }
     const escalation = close();
-    // Only for lanes still on the dashboard: publishing would otherwise restore a removed lane.
-    if (lane && (lane.status || lane.activity !== undefined) && this.getLane(escalation.laneId)) {
-      this.upsertLane(escalation.laneId, lane, actor);
-    }
+    this.publishAfterClose(escalation, lane, actor);
     return escalation;
+  }
+
+  /**
+   * The lane's next state, given with an acknowledgement: published to the lane the escalation counts
+   * on (its ticket's lane), only while that lane is on the dashboard (publishing would restore a removed
+   * one), and not at all while its ticket is parked.
+   */
+  private publishAfterClose(escalation: Escalation, lane: Pick<LanePatch, 'status' | 'activity'> | undefined, actor: string) {
+    if (!lane || (!lane.status && lane.activity === undefined)) return;
+    const holder = this.holderOf(escalation);
+    if (holder && this.getLane(holder)) this.upsertLane(holder, lane, actor);
   }
 
   /** Agent (or human) closes an escalation without a dashboard decision, e.g. it was answered in Remote Control. */
@@ -2528,17 +2497,14 @@ export class Store {
     byAgent = true,
   ): Escalation {
     const before = this.requireEscalation(id);
-    const laneBefore = this.getLane(before.laneId)?.status;
+    const holder = this.holderOf(before);
+    const laneBefore = holder ? this.getLane(holder)?.status : undefined;
     // A lane showing the agent working on the owner's Other counts as unblocked by the dismissal too.
     const wasBlocked = laneBefore === 'blocked_human' || (before.state === 'open' && before.turn === 'agent' && laneBefore === 'awaiting_agent');
     const escalation = this.withdrawEscalation(id, justification, actor);
-    const after = this.getLane(escalation.laneId);
+    // The lane it counted on: its ticket's (none while parked), or where it was raised.
+    const after = holder ? this.getLane(holder) : null;
     if (!after) return escalation;
-    // A parked ticket's question says nothing about the lane's current work.
-    if (!this.ofLane(before, after)) {
-      if (lane.status || lane.activity !== undefined) this.upsertLane(after.id, { status: lane.status, activity: lane.activity }, actor);
-      return escalation;
-    }
     const status = lane.status ?? (byAgent && wasBlocked && after.status === 'awaiting_agent' ? 'active' : undefined);
     if (status || lane.activity !== undefined) this.upsertLane(after.id, { status, activity: lane.activity }, actor);
     return escalation;
@@ -2551,17 +2517,26 @@ export class Store {
   private openBlockingCount(laneId: string) {
     const r = this.db
       .prepare(
-        `SELECT COUNT(*) AS n FROM escalations e JOIN lanes l ON l.id = e.lane_id
-         WHERE e.lane_id = ? AND e.state = 'open' AND e.blocking = 1 AND e.turn = 'owner'
-           AND (e.ticket_id IS NULL OR e.ticket_id = l.ticket_id)`,
+        `SELECT COUNT(*) AS n FROM escalations e
+         WHERE e.state = 'open' AND e.blocking = 1 AND e.turn = 'owner'
+           AND ((e.ticket_id IS NULL AND e.lane_id = ?) OR e.ticket_id = (SELECT ticket_id FROM lanes WHERE id = ?))`,
       )
-      .get(laneId) as Row;
+      .get(laneId, laneId) as Row;
     return Number(r.n);
   }
 
-  /** Whether an escalation is its lane's: raised with no ticket, or its ticket is the one the lane holds. */
+  /** Whether an escalation counts on a lane: raised there with no ticket, or its ticket is the one the lane holds. */
   private ofLane(e: Escalation, lane: Lane) {
-    return e.ticketId === null || e.ticketId === lane.ticketId;
+    return e.ticketId === null ? e.laneId === lane.id : e.ticketId === lane.ticketId;
+  }
+
+  /**
+   * The lane an escalation counts on: where it was raised if it has no ticket, else the lane holding
+   * its ticket (none while the ticket is parked or over). Its `laneId` stays where it was raised.
+   */
+  private holderOf(e: Escalation): string | null {
+    if (e.ticketId === null) return e.laneId;
+    return ((this.db.prepare('SELECT lane_id FROM tickets WHERE num = ?').get(e.ticketId) as Row | undefined)?.lane_id as string | null) ?? null;
   }
 
   /**
@@ -2588,19 +2563,20 @@ export class Store {
       this.addEvent(current.laneId, at, 'escalation', message, actor, current.ticketId);
       // A finished lane gives its letter back once nothing is left for anyone to answer or pick up.
       this.syncLetter(current.laneId);
-      const found = this.laneIncludingArchived(current.laneId);
-      if (!found) throw new NotFoundError(`Lane "${localId(current.laneId)}" not found`);
+      // The lane it counts on: its ticket's (none while parked), or where it was raised.
+      const holder = this.holderOf(current);
+      const found = holder ? this.laneIncludingArchived(holder) : null;
+      if (!found) return { escalation: this.requireEscalation(current.id), lane: null, unblocked: false };
       const { lane, archived } = found;
       const unblocked =
         !archived &&
         mayUnblock &&
         current.state === 'open' &&
         current.blocking &&
-        this.ofLane(current, lane) &&
         lane.status === 'blocked_human' &&
         this.openBlockingCount(lane.id) === 0;
       if (unblocked) this.applyLaneUpdate(lane, { status: 'awaiting_agent' }, null, at);
-      return { escalation: this.requireEscalation(current.id), lane: archived ? null : this.requireLane(current.laneId), unblocked };
+      return { escalation: this.requireEscalation(current.id), lane: archived ? null : this.requireLane(lane.id), unblocked };
     });
     this.emit({ type: 'escalation', escalation });
     // Emitted either way (the open-escalation count changed), except for archived lanes,
@@ -2752,6 +2728,29 @@ export class Store {
                AND COALESCE(withdrawn_by, '') <> ?`,
           )
           .all(laneId, scope.since, scope.viewer ?? '') as Row[];
+        for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
+      }
+    }
+    // Questions also count where their ticket is: those of tickets the lanes hold, and a group's parked ones.
+    const ticketIds = new Set<number>();
+    for (const laneId of laneIds) {
+      const held = (this.db.prepare('SELECT ticket_id FROM lanes WHERE id = ?').get(laneId) as Row | undefined)?.ticket_id;
+      if (held != null) ticketIds.add(Number(held));
+    }
+    if (scope.groupId) {
+      for (const r of this.db.prepare("SELECT num FROM tickets WHERE group_id = ? AND state = 'parked'").all(scope.groupId) as Row[]) {
+        ticketIds.add(Number(r.num));
+      }
+    }
+    for (const ticketId of ticketIds) {
+      for (const e of this.listEscalations({ ticketId, states: ['open', 'decided'] })) byId.set(e.id, e);
+      if (scope.since) {
+        const rows = this.db
+          .prepare(
+            `SELECT * FROM escalations WHERE ticket_id = ? AND state = 'withdrawn' AND updated_at >= ?
+               AND COALESCE(withdrawn_by, '') <> ?`,
+          )
+          .all(ticketId, scope.since, scope.viewer ?? '') as Row[];
         for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
       }
     }
@@ -3167,6 +3166,7 @@ export class Store {
         positions_neutral: count('neutral'),
         links: e.links,
         ticket_id: e.ticket_id,
+        legacy_ref: e.legacy_ref,
       };
     });
   }

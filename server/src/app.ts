@@ -459,9 +459,17 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json({
       lane: pub.lane(lane),
       // Every unresolved escalation, however many closed ones came after it, plus the latest 50 closed ones.
+      // Raised on the lane, plus those of the ticket it holds (raised wherever it was before).
       escalations: [
-        ...store.listEscalations({ laneId: lane.id }),
-        ...store.listEscalations({ laneId: lane.id, states: ['acknowledged', 'withdrawn'], limit: 50 }),
+        ...new Map(
+          [
+            ...store.listEscalations({ laneId: lane.id }),
+            ...store.listEscalations({ laneId: lane.id, states: ['acknowledged', 'withdrawn'], limit: 50 }),
+            ...(lane.ticketId !== null
+              ? store.listEscalations({ ticketId: lane.ticketId, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 100 })
+              : []),
+          ].map((e) => [e.id, e]),
+        ).values(),
       ]
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
         .map(pub.escalation),

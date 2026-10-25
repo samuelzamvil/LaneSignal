@@ -779,9 +779,9 @@ function buildServer(
           'what happens to the ticket the lane holds now: `park` (set aside to pick up again; `reason` required, e.g. ' +
           '"blocked on the vendor API"), `done` or `drop` (let go unfinished). Required when the lane holds a ticket, ' +
           'and not needed to refill it with the ticket it already holds. `ticket` moves in, created on first use: a ' +
-          'parked one from any lane comes back with its escalations and history; leave it out to empty the lane (idle). ' +
-          'A ticket is in one lane at a time. Parked questions stay open and in the owner\'s inbox; a done or dropped ' +
-          'ticket\'s unanswered ones are withdrawn. Also takes the fields of update_lane (status, activity, ...), ' +
+          'parked, done or dropped one comes back with its escalations and history; leave it out to empty the lane (idle). ' +
+          'A ticket is in one lane at a time. A ticket\'s open questions stay open and in the owner\'s inbox whatever ' +
+          'happens to it, and block only the lane holding it. Also takes the fields of update_lane (status, activity, ...), ' +
           `applied to the lane after the switch. ${STATUS_HELP}`,
         inputSchema: {
           lane_id: s.laneId,
@@ -812,10 +812,10 @@ function buildServer(
       {
         description:
           'Take a lane off the dashboard when you no longer need the slot. Its ticket is let go as `previous` says ' +
-          '(default `park`, with the reason "Lane removed"; publish status completed first, or pass `done`, when it\'s ' +
-          'finished): a parked ticket keeps its open escalations; a done or dropped one\'s are dismissed' +
+          '(default: `done` if the lane is completed, else `park` with the reason "Lane removed"); the ticket keeps its ' +
+          'open escalations. Those raised while the lane held no ticket are dismissed' +
           (features.decisions ? ' (decided ones can still be acknowledged)' : '') +
-          ', as are those raised while the lane held no ticket. Its history is kept. Publishing to the same lane id brings it back.',
+          '. Its history is kept. Publishing to the same lane id brings it back.',
         inputSchema: { lane_id: s.laneId, previous: s.ticketRelease.optional(), reason: z.string().max(500).nullable().optional(), ...PROJECT_WRITE },
       },
       async ({ lane_id, previous, reason, project }) => {

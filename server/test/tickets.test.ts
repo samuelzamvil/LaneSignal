@@ -84,10 +84,9 @@ describe('tickets', () => {
     assert.ok(history.includes('Parked 500: waiting on the vendor API key'));
     assert.ok(history.some((m: string) => m.startsWith('Escalated 500A')));
     assert.ok(!history.some((m: string) => m.includes('501A')), "501's questions stay with 501");
-    // 501's FYI went with it: done, so its unanswered question was withdrawn.
+    // 501's FYI stays with 501, open in the inbox, though 501 is done.
     const t501 = await ticket('501');
-    assert.deepEqual(t501.escalations.map((e: any) => [e.ref, e.state]), [['501A', 'withdrawn']]);
-    assert.match(t501.escalations[0].resolution, /501 done by overseer/);
+    assert.deepEqual(t501.escalations.map((e: any) => [e.ref, e.state]), [['501A', 'open']]);
     // Acknowledging the parked-time answer works as ever, and the ticket's next question continues its letters.
     assert.equal((await srv.tool(AGENT, 'acknowledge_escalation', { id: '500a', status: 'active' })).isError, false);
     assert.equal((await ask('slot-a', 'Rotate the old key?')).ref, '500B');
@@ -117,16 +116,22 @@ describe('tickets', () => {
     const e = await lane('slot-e');
     assert.equal(e.status, 'blocked_human');
     assert.equal(e.blockingEscalations, 1);
-    const moved = (await srv.call('GET', `/api/escalations/${q.id}`, ALICE)).body;
-    assert.equal(moved.laneId, 'slot-e');
+    // It stays recorded on the lane it was raised in, and shows on the lane holding its ticket.
+    const kept = (await srv.call('GET', `/api/escalations/${q.id}`, ALICE)).body;
+    assert.equal(kept.laneId, 'slot-d');
+    assert.ok((await srv.call('GET', '/api/lanes/slot-e', ALICE)).body.escalations.some((x: any) => x.id === q.id));
+    assert.equal((await lane('slot-d')).openEscalations, 0);
+    // A group's wait sees the questions of the tickets its lanes hold.
+    const w = (await srv.tool(AGENT, 'get_updates', { lane_ids: ['slot-e'] })).value;
+    assert.ok(w.open.some((x: any) => x.id === q.id));
     assert.deepEqual((await ticket('610')).lanes, ['slot-d', 'slot-e']);
   });
 
-  test('update_lane with another ticket parks the old one and says so', async () => {
+  test('update_lane with another ticket parks the old one', async () => {
     await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-f', group: 'train', ticket: '620' });
     const res = await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-f', ticket: '621' });
     assert.equal(res.isError, false, res.text);
-    assert.match(res.value.warning, /Parked 620.*fill_lane/);
+    assert.equal(res.value.warning, undefined);
     const old = await ticket('620');
     assert.equal(old.state, 'parked');
     assert.equal(old.parkReason, 'switched (legacy call)');
@@ -146,7 +151,8 @@ describe('tickets', () => {
     const done = await ticket('630');
     assert.equal(done.state, 'done');
     assert.equal(done.status, 'completed');
-    assert.equal((await srv.call('GET', `/api/escalations/${fyi.id}`, ALICE)).body.state, 'withdrawn');
+    // Its open questions stay open, in the inbox.
+    assert.equal((await srv.call('GET', `/api/escalations/${fyi.id}`, ALICE)).body.state, 'open');
   });
 
   test('remove_lane parks its ticket by default, or lets it go as told', async () => {
@@ -161,7 +167,12 @@ describe('tickets', () => {
     const gone = await ask('slot-i', 'Still needed?');
     assert.equal((await srv.call('DELETE', '/api/lanes/slot-i?previous=drop&reason=superseded', AGENT)).status, 204);
     assert.equal((await ticket('641')).state, 'dropped');
-    assert.equal((await srv.call('GET', `/api/escalations/${gone.id}`, ALICE)).body.state, 'withdrawn');
+    assert.equal((await srv.call('GET', `/api/escalations/${gone.id}`, ALICE)).body.state, 'open');
+    // Questions the lane raised while it held no ticket are withdrawn with it, as before.
+    await fill({ lane_id: 'slot-u', group: 'train' });
+    const own = await ask('slot-u', 'Anything for me?');
+    await srv.call('DELETE', '/api/lanes/slot-u', AGENT);
+    assert.equal((await srv.call('GET', `/api/escalations/${own.id}`, ALICE)).body.state, 'withdrawn');
   });
 
   test('waiting_on names another ticket and clears once that one is done', async () => {
@@ -202,25 +213,19 @@ describe('tickets', () => {
     assert.equal((await ticket('660')).escalations.length, 0);
   });
 
-  test("older agents' publishes never fail over tickets", async () => {
+  test('update_lane follows fill_lane: a held ticket is refused, a done one reopens', async () => {
     await fill({ lane_id: 'pr-967', group: 'train', ticket: '967' });
-    // A review lane on the same ticket: its update still counts, and it says why it holds no ticket.
-    const review = await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967-review', group: 'train', ticket: '967', activity: 'Reviewing' });
-    assert.equal(review.isError, false, review.text);
-    assert.match(review.value.warning, /967 is in lane "pr-967".*keeps no ticket/);
-    assert.equal((await lane('pr-967-review')).activity, 'Reviewing');
-    // Completed, then the same full state again: the ticket stays done.
+    const review = await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967-review', group: 'train', ticket: '967' });
+    assert.equal(review.isError, true);
+    assert.match(review.text, /967 is in lane "pr-967"/);
+    assert.equal((await srv.call('PUT', '/api/lanes/pr-967-review', AGENT, { group: 'train', ticket: '#967' })).status, 409);
     await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967', status: 'completed' });
-    const again = await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967', ticket: '967', activity: 'Cleanup' });
-    assert.match(again.value.warning, /967 is done: fill_lane with it to reopen it/);
     assert.equal((await ticket('967')).state, 'done');
-    assert.equal((await lane('pr-967')).activity, 'Cleanup');
-    // fill_lane reopens it.
-    assert.equal((await fill({ lane_id: 'pr-967', ticket: '967' })).isError, false);
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967', ticket: '967' });
     assert.equal((await ticket('967')).state, 'in_lane');
   });
 
-  test("finishing a ticket keeps questions the owner answered Other", async () => {
+  test("finishing a ticket leaves questions the owner answered Other to acknowledge", async () => {
     await fill({ lane_id: 'slot-n', group: 'train', ticket: '700' });
     const q = await ask('slot-n', 'Which flag name?');
     await srv.call('POST', `/api/escalations/${q.id}/decide`, ALICE, { decision: 'Other', note: 'retry_v2' });
@@ -238,18 +243,19 @@ describe('tickets', () => {
     assert.equal(o.blockingEscalations, 1);
   });
 
-  test('a removed lane published again takes its ticket back', async () => {
+  test('a removed lane published again comes back without its ticket, which stays parked', async () => {
     await fill({ lane_id: 'slot-p', group: 'train', ticket: '720' });
     await srv.call('DELETE', '/api/lanes/slot-p', ALICE);
     await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-p', status: 'active' });
-    assert.equal((await lane('slot-p')).ticket, '720');
-    assert.equal((await ticket('720')).state, 'in_lane');
+    assert.equal((await lane('slot-p')).ticket, null);
+    assert.equal((await ticket('720')).state, 'parked');
   });
 
-  test('fill_lane input that would do nothing, or undo the call, is caught', async () => {
+  test('fill_lane with the ticket the lane holds is a plain update; waiting_on alongside completed still publishes', async () => {
     await fill({ lane_id: 'slot-q', group: 'train', ticket: '730' });
-    const same = await fill({ lane_id: 'slot-q', ticket: '730', previous: 'done' });
-    assert.match(same.text, /already holds 730: to finish it, publish status completed/);
+    const same = await fill({ lane_id: 'slot-q', ticket: '730', previous: 'done', activity: 'Still on it' });
+    assert.equal(same.isError, false, same.text);
+    assert.equal((await ticket('730')).state, 'in_lane');
     // waiting_on alongside completed: the publish still goes through.
     const both = await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-q', status: 'completed', waiting_on: '731' });
     assert.equal(both.isError, false, both.text);
@@ -267,10 +273,9 @@ describe('tickets', () => {
       await fill({ lane_id: 'slot-r', previous: 'park', reason: 'later' });
       events.length = 0;
       await fill({ lane_id: 'slot-s', group: 'train', ticket: '740' });
-      // The moved question isn't announced as new.
-      const moved = events.find((e) => e.type === 'escalation' && e.escalation.id === q.id);
-      assert.ok(moved, 'its move is sent');
-      assert.notEqual(moved.escalation.createdAt, moved.escalation.updatedAt);
+      // The ticket's move is sent; its question isn't announced again.
+      assert.ok(events.some((e) => e.type === 'ticket' && e.ticket.lane === 'default/slot-s' && e.ticket.state === 'in_lane'));
+      assert.ok(!events.some((e) => e.type === 'escalation' && e.escalation.id === q.id));
       // Completing announces completion, though the lane shows idle.
       await fill({ lane_id: 'slot-t', group: 'train', ticket: '741', waiting_on: '740' });
       events.length = 0;
@@ -298,8 +303,8 @@ describe('tickets', () => {
     assert.equal(one.ticket.url, 'https://redmine.example/issues/500');
     assert.equal((await srv.call('GET', '/api/tickets/9999', ALICE)).status, 404);
     // History finds a closed escalation by its ticket code.
-    const found = (await srv.call('GET', '/api/history?q=501a', ALICE)).body.items;
-    assert.deepEqual(found.map((e: any) => e.ref), ['501A']);
+    const found = (await srv.call('GET', '/api/history?q=500a', ALICE)).body.items;
+    assert.deepEqual(found.map((e: any) => e.ref), ['500A']);
     const csv = (await srv.call('GET', '/api/export/tickets.csv', ALICE)).body as string;
     assert.match(csv.split('\n')[0], /^id,project,ref,display_ref,code,ticket_url,group_id,lane_id,state,park_reason/);
     assert.match(csv, /redmine:640,640,640,.*,parked,Lane removed/);

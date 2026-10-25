@@ -38,7 +38,7 @@ Its history keeps every status change and escalation step. Routine activity text
 
 Tapping a lane opens its page: its details, then **Escalations**, **Conversation** and **Recent activity**. Tap a heading to fold that part away. Folded or open is remembered on the device, for every lane. Escalations show the **Active** ones (open, or answered and not yet picked up by the agent) unless you pick **Historical** (acknowledged or dismissed) or **All**; that choice is remembered too. While Conversation is folded, the agent's new messages aren't marked as read.
 
-**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md). People remove lanes in the app; overseers remove theirs with `remove_lane` when they no longer need the slot. A removed lane's ticket is parked, so nothing on it is lost.
+**Removing** a lane or group from the dashboard archives it rather than deleting it, so its escalations and history stay available for [export](export.md). People remove lanes in the app; overseers remove theirs with `remove_lane` when they no longer need the slot. A removed lane's ticket is parked (or done, if the lane was completed), and keeps its questions.
 
 ## Tickets
 
@@ -51,15 +51,16 @@ A ticket is what a lane works on. It owns its escalations and its status history
 The rules:
 
 - **One record per ticket:** `967`, `#967`, `redmine:967` and the Redmine URL are the same ticket (refs are put into one form, using the default ticket system). A ticket is created the first time a lane is filled with it.
-- **One lane at a time:** filling a lane with a ticket another lane holds is refused. A worker and a reviewer on one ticket share a lane. Any lane can take a parked ticket.
-- **Letting go:** a lane lets its ticket go as **parked** (to pick up again, with a reason), **done**, or **dropped** (unfinished). A done or dropped ticket's unanswered questions are withdrawn; decided ones, and ones you answered Other, can still be acknowledged. A lane published as `completed` marks its ticket done and empties (`idle`), ready for the next.
+- **One lane at a time:** filling a lane with a ticket another lane holds is refused. A worker and a reviewer on one ticket share a lane. Any lane can take a parked ticket, and filling a lane with a done or dropped one reopens it.
+- **Questions keep their lane:** an escalation stays recorded on the lane it was raised in (for history and export), and counts, blocks and is waited on where its ticket is now.
+- **Letting go:** a lane lets its ticket go as **parked** (to pick up again, with a reason), **done**, or **dropped** (unfinished). Whatever happens to a ticket, its open questions stay open and in your inbox, answered as ever; they block only the lane holding it. A lane published as `completed` marks its ticket done and empties (`idle`), ready for the next.
 - **Not a tracker:** a ticket's state here only says whether a lane holds it and how the last one let it go. Its real status lives in Redmine, GitHub or wherever it's tracked; LaneSignal never syncs it.
 - **Blocked time** belongs to the ticket: a lane's blocked total is its current ticket's.
 - **Waiting on another ticket:** a lane can say its ticket waits on another ("waiting on 945"); that clears itself once 945 is done.
 - **PRs aren't tickets:** they go in the lane's links. Switching a lane from a Redmine ticket to a `gh:` ref gets a warning.
 - **Who may close its questions:** the agent that raised them, a person, or the overseer that registered the group the ticket is in now, so a ticket handed to another overseer goes with its questions.
 
-Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)"). Their publishes never fail over tickets: naming a ticket another lane holds, or one that's done, leaves the lane's ticket as it is and says so in a warning, and the rest of the update applies. A removed lane that's published again takes back the ticket it held, if no other lane has.
+Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)"). Otherwise their publishes follow the same rules as `fill_lane`: a ticket another lane holds is refused, and a done one reopens.
 
 ### Lane letters and escalation codes
 

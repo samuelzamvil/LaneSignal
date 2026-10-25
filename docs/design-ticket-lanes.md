@@ -295,23 +295,14 @@ Each PR is shippable on its own, with tests, wiki updates and an adversarial rev
 
 ## As built
 
-What the PRs changed from this plan, and why.
+**PR 2 (tickets, server)** follows this plan. Where the plan is silent, these filled the gap:
 
-**PR 2 (tickets, server):**
-
-- **Escalations follow their ticket.** When a ticket moves to another lane, its escalations move with it (`lane_id`), so the lane, its group's waits and the inbox all see them there. The lanes a ticket passed through are in its history (`get_ticket`), so no separate "raised in" column is needed.
-- **Lanes with no ticket keep the status their agent publishes.** A lane only goes `idle` when it lets its ticket go without taking another. That way agents that never set a ticket keep working as before. The migration doesn't reset them either.
-- **Questions on a lane with no ticket keep lane-letter codes (A12)** until epics arrive (PR 4), which take them over.
-- **No `legacy_ref` column.** `ref` is the code, new or old, and old codes resolve as before.
-- **The "Ungrouped" stand-in group** moves to PR 4, where it's needed for stand-in epics.
-- **Two live lanes on one ticket at upgrade:** the more recently updated lane keeps it. The other lane drops its ticket, and its history says which lane holds it.
-- **Older agents' publishes never fail over tickets.** `update_lane` naming a ticket another lane holds, or one that's done, leaves the lane's ticket as it is, applies the rest, and returns a `warning`. Only `fill_lane` gets the `409`, and only `fill_lane` reopens a done ticket.
-- **`remove_lane` always parks by default.** A lane holding a ticket can't stay `completed` (completing lets the ticket go), so "done if completed" never applied. Publish `completed` first, or pass `previous: done`.
-- **A removed lane published again takes its ticket back**, if no other lane holds it.
-- **The overseer of a ticket's group** is the key that registered it with `update_group`, compared like a raiser (account and key name).
-- **At upgrade, lanes that were removed mid-work park their tickets** ("Lane removed"), as removing a lane does now. Completed lanes keep their unresolved questions as their own, so those still count and removing the lane withdraws them.
+- **Held over to PR 4 with epics:** stand-in epics, the "Ungrouped" stand-in group, `epic_id` and `fill_lane`'s `epic`. Until then, a question raised on a lane holding no ticket keeps a lane-letter code (A12).
+- **Two live lanes on one ticket at upgrade:** they share the ticket record, and the more recently updated lane holds it. The other lane's history says which lane holds it.
+- **The overseer of a ticket's group** is the key that registered the group with `update_group`, compared like a raiser (account and key name).
 - **Changing the ticket systems later** (e.g. adding a default) re-derives tickets' canonical refs at startup from how each was first written; codes don't change.
-- **Finishing a ticket keeps the questions the owner answered Other**: like decided ones, they wait for the agent.
+- **Notifications:** completing a lane still sends the "completed" notification and TRMNL card, though the lane shows `idle` afterwards.
+- **`waiting_on` alongside `completed`** in one call: the lane ends up holding no ticket, so `waiting_on` is left out with a warning rather than failing the whole call.
 
 ## Risks
 

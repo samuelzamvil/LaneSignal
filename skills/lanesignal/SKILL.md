@@ -29,9 +29,11 @@ A server can host several independent projects (apps), each with its own groups,
 - **Lanes are slots:** give each a stable `lane_id` (`slot-1` … `slot-5`, not one per ticket), and pass `group` on its first call. Publish a lane before raising escalations on it; unknown lanes and groups are errors, so a typo can't create a stray lane.
 - **Moving to another ticket:** `fill_lane` with the next `ticket` and what happens to the one the lane holds, in `previous`:
   - `park` with a `reason` ("blocked on the vendor API"): set aside with its open questions, which stay in the owner's inbox but no longer block the lane.
-  - `done`, or `drop` to let it go unfinished: its unanswered questions are withdrawn.
+  - `done`, or `drop` to let it go unfinished.
 
-  The ticket is created on first use. A parked one comes back in any lane with its questions and history: `fill_lane` it into a free slot. Leave `ticket` out to empty the lane (it shows idle). A ticket is in one lane at a time, so a worker and a reviewer on one ticket share a lane.
+  Either way its open questions stay open in the owner's inbox; they block only the lane holding the ticket. Dismiss ones that no longer matter.
+
+  The ticket is created on first use. A parked (or done) one comes back in any lane with its questions and history: `fill_lane` it into a free slot. Leave `ticket` out to empty the lane (it shows idle). A ticket is in one lane at a time, so a worker and a reviewer on one ticket share a lane.
 - **Tickets, not PRs:** `ticket` is the work item (`redmine:1234`, `967`, `#967` and its URL all name the same one). PRs and CI runs go in `links`.
 - **Waiting on another ticket:** pass `waiting_on` (e.g. `"945"`) with the lane's status; it clears itself once that ticket is done.
 - `list_tickets` shows the tickets your lanes hold and the parked ones; `get_ticket` shows one with its questions and history.
@@ -46,7 +48,7 @@ A server can host several independent projects (apps), each with its own groups,
   | `idle` | nothing to do right now |
   | `completed` | its ticket is done: the ticket closes and the lane empties (idle), ready for the next |
 
-- **Removing:** when you no longer need a slot, `remove_lane` takes it off the dashboard. Its ticket is parked unless you pass `previous` (publish `completed` first when it's finished). Its history is kept.
+- **Removing:** when you no longer need a slot, `remove_lane` takes it off the dashboard. Its ticket is done if the lane is completed, otherwise parked, unless you pass `previous`. Its history is kept.
 - **Writing for a phone:** keep `activity` to one line. Use ticket references like `gh:42` or `redmine:1234`.
 
 ## Raising an escalation

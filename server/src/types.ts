@@ -408,4 +408,6 @@ export type StreamEvent =
   | { type: 'lane_deleted'; id: string; project: string }
   /** `raised`: an FYI that now needs the owner, notified like a new question. `replied`: the agent answered the owner's Other (`reply`) or posted an update while they decide. */
   | { type: 'escalation'; escalation: Escalation; raised?: boolean; replied?: 'reply' | 'update' }
+  /** A ticket filled into a lane, parked, done or dropped, or what it waits on changed. */
+  | { type: 'ticket'; ticket: Ticket }
   | { type: 'requirement'; requirement: Requirement };

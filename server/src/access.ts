@@ -249,6 +249,8 @@ export const pub = {
         return e.requirement.project === null || projects.includes(e.requirement.project)
           ? { ...e, requirement: pub.requirement(e.requirement) }
           : null;
+      case 'ticket':
+        return projects.includes(e.ticket.project) ? { ...e, ticket: pub.ticket(e.ticket) } : null;
     }
   },
 };
