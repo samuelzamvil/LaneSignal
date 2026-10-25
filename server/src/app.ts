@@ -1014,9 +1014,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const projects = a.scope(query.project);
     const group = query.group ? q(a.pick(query.project, { group: query.group }), query.group) : undefined;
     if (group && !store.groupExists(group)) throw new NotFoundError(`Group "${query.group}" not found`);
+    // Rejected records are for people only: agents (and Claude sessions on a personal key) never get them back.
+    const statuses = approvesRequirements(principalOf(res)) ? query.status : query.status?.filter((x) => x !== 'rejected');
+    if (statuses && !statuses.length) return void res.json([]);
     res.json(
       store
-        .findRequirements({ query: query.q, tags: query.tag, group, projects, statuses: query.status, limit: query.limit })
+        .findRequirements({ query: query.q, tags: query.tag, group, projects, statuses, limit: query.limit })
         .map(pub.requirement),
     );
   });
@@ -1029,10 +1032,10 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json(store.requirementTags(group, a.scope(projectQuery(req))));
   });
 
-  /** A requirement the caller may see: one for all projects, or one of the caller's projects. */
+  /** A requirement the caller may see: one for all projects, or one of the caller's projects. Agents and personal keys don't see rejected ones. */
   const visibleRequirement = (res: Response, id: string) => {
     const found = store.getRequirement(id);
-    if (!found || (found.project !== null && !acc(res).projects.includes(found.project))) {
+    if (!found || (found.status === 'rejected' && !approvesRequirements(principalOf(res))) || (found.project !== null && !acc(res).projects.includes(found.project))) {
       throw new NotFoundError('Requirement not found');
     }
     return found;
@@ -1081,6 +1084,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
     res.json(pub.requirement(store.restoreRequirement(current.id)));
+  });
+
+  app.post('/api/requirements/:id/reject', human, requirementsOnly, (req, res) => {
+    const current = visibleRequirement(res, String(req.params.id));
+    acc(res).requireWritable(current);
+    res.json(pub.requirement(store.rejectRequirement(current.id, parse(s.requirementReject, req.body).reason)));
   });
 
   app.post('/api/requirements/:id/retire', human, requirementsOnly, (req, res) => {
@@ -1172,7 +1181,10 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       'x-accel-buffering': 'no',
     });
     res.write('retry: 3000\n\n');
+    const seesRejected = approvesRequirements(principalOf(res));
     const send = (e: StreamEvent) => {
+      // Rejected requirements are for people only.
+      if (e.type === 'requirement' && e.requirement.status === 'rejected' && !seesRejected) return;
       const visible = pub.event(e, projects);
       if (visible) res.write(`event: ${visible.type}\ndata: ${JSON.stringify(visible)}\n\n`);
     };

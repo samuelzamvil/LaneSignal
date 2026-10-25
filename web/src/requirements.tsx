@@ -10,13 +10,14 @@ const STATUS_LABEL: Record<Requirement['status'], string> = {
   active: 'Active',
   superseded: 'Superseded',
   retired: 'Retired',
+  rejected: 'Rejected',
 };
 
 /** Still applies: approved, or waiting for a person's approval. */
 const inForce = (r: Requirement) => r.status === 'pending' || r.status === 'active';
 
 /**
- * Pending, superseded or retired (nothing for active, the usual case), and a replacement
+ * Pending, superseded, retired or rejected (nothing for active, the usual case), and a replacement
  * waiting for approval: a requirement in force that names its successor.
  */
 function StatusBadge({ req, onOpen }: { req: Requirement; onOpen?: (id: string) => void }) {
@@ -54,6 +55,49 @@ function RequirementRow({ req, scopeName, onToggle }: { req: Requirement; scopeN
       </span>
       <StatusBadge req={req} />
     </button>
+  );
+}
+
+/** Rejecting a pending record needs the reason, which is kept with it. */
+function RejectForm({ req, client, onDone }: { req: Requirement; client: Client; onDone: () => void }) {
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function reject(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await client.rejectRequirement(req.id, reason);
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form className="stack" onSubmit={reject} onClick={(e) => e.stopPropagation()}>
+      <textarea
+        value={reason}
+        rows={3}
+        maxLength={2000}
+        onChange={(e) => setReason(e.target.value)}
+        aria-label="Why it is rejected"
+        placeholder="Why is this rejected? (required)"
+        required
+        autoFocus
+      />
+      <p className="hint">Kept with {req.id} for history. Agents stop seeing it.</p>
+      {error && <p className="error">{error}</p>}
+      <div className="actions">
+        <button className="danger" disabled={busy || !reason.trim()}>
+          Reject
+        </button>
+        <button type="button" className="ghost" onClick={onDone}>
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -122,6 +166,7 @@ function RequirementCard({
   replaces?: string;
 }) {
   const [editing, setEditing] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
     <article className={`req-card ${req.status}`}>
@@ -146,6 +191,11 @@ function RequirementCard({
             <LinkedText text={req.requirement} />
           </h3>
           <RichText text={req.justification} />
+          {req.status === 'rejected' && req.rejectionReason && (
+            <div className="req-rejection">
+              <strong>Rejected:</strong> <LinkedText text={req.rejectionReason} />
+            </div>
+          )}
           <div className="req-tags">
             {req.tags.map((t) => (
               <button key={t} className="chip-tag" onClick={() => onTag(t)}>
@@ -163,7 +213,8 @@ function RequirementCard({
             )}{' '}
             · recorded by {req.recordedBy} · {absolute(req.createdAt)}
           </p>
-          {canEdit && inForce(req) && (
+          {rejecting && <RejectForm req={req} client={client} onDone={() => setRejecting(false)} />}
+          {canEdit && inForce(req) && !rejecting && (
             <div className="actions">
               {req.status === 'pending' && (
                 <button className="primary" onClick={() => client.approveRequirement(req.id).catch((e: Error) => setError(e.message))}>
@@ -173,21 +224,25 @@ function RequirementCard({
               <button className="ghost" onClick={() => setEditing(true)}>
                 Edit wording
               </button>
-              <button
-                className="ghost danger"
-                onClick={() => {
-                  const ask =
-                    req.status === 'pending'
-                      ? `Reject ${req.id}? It's retired: kept for history, but agents stop following it.`
-                      : `Retire ${req.id}? It no longer applies, and nothing replaces it.`;
-                  if (confirm(ask)) client.retireRequirement(req.id).catch((e: Error) => setError(e.message));
-                }}
-              >
-                {req.status === 'pending' ? 'Reject' : 'Retire'}
-              </button>
+              {req.status === 'pending' ? (
+                <button className="ghost danger" onClick={() => setRejecting(true)}>
+                  Reject
+                </button>
+              ) : (
+                <button
+                  className="ghost danger"
+                  onClick={() => {
+                    if (confirm(`Retire ${req.id}? It no longer applies, and nothing replaces it.`)) {
+                      client.retireRequirement(req.id).catch((e: Error) => setError(e.message));
+                    }
+                  }}
+                >
+                  Retire
+                </button>
+              )}
             </div>
           )}
-          {canEdit && req.status === 'retired' && (
+          {canEdit && (req.status === 'retired' || req.status === 'rejected') && (
             <div className="actions">
               <button className="ghost" onClick={() => client.restoreRequirement(req.id).catch((e: Error) => setError(e.message))}>
                 Restore
@@ -259,7 +314,7 @@ export function RequirementsPane({
         tags,
         project: chosen?.project ?? (project || undefined),
         group: chosen?.id,
-        statuses: pendingOnly ? ['pending'] : showOld ? ['pending', 'active', 'superseded', 'retired'] : ['pending', 'active'],
+        statuses: pendingOnly ? ['pending'] : showOld ? ['pending', 'active', 'superseded', 'retired', 'rejected'] : ['pending', 'active'],
       })
       // The server pairs a pending change with the requirement it would replace; this filter shows the pending side only.
       .then((r) => {
@@ -320,7 +375,7 @@ export function RequirementsPane({
               checked={showOld}
               onChange={(e) => (setShowOld(e.target.checked), e.target.checked && setPendingOnly(false))}
             />
-            Superseded &amp; retired
+            Superseded, retired &amp; rejected
           </label>
           <label className="check">
             <input

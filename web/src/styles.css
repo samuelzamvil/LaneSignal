@@ -1560,8 +1560,17 @@ textarea {
 }
 
 .req-card.superseded,
-.req-card.retired {
+.req-card.retired,
+.req-card.rejected {
   opacity: 0.7;
+}
+
+.req-rejection {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border-left: 3px solid var(--danger);
 }
 
 .req-card.pending {
@@ -1600,7 +1609,8 @@ textarea {
 }
 
 .req-row.superseded,
-.req-row.retired {
+.req-row.retired,
+.req-row.rejected {
   opacity: 0.7;
 }
 

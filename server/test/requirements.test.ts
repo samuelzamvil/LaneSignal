@@ -230,11 +230,45 @@ describe('changing direction', () => {
     assert.equal(approved.body.status, 'active');
     assert.equal((await srv.tool(AGENT, 'get_requirement', { id })).value.status, undefined, 'active is the quiet default');
     assert.equal((await srv.call('POST', `/api/requirements/${id}/approve`, ALICE)).status, 409);
-    // Retiring a pending record rejects it; restoring it is a person's approval.
+    // A pending record is rejected with a reason, not retired; restoring it puts it back up for approval.
     const other = (await record({ requirement: 'Refunds over $500 need a second approver.', justification: 'Fraud.', tags: ['refund-limits'], decided_by: 'Sam' })).value.requirement.id;
-    assert.equal((await srv.call('POST', `/api/requirements/${other}/retire`, ALICE)).body.status, 'retired');
+    assert.equal((await srv.call('POST', `/api/requirements/${other}/retire`, ALICE)).status, 409, 'pending ones are rejected, not retired');
+    assert.equal((await srv.call('POST', `/api/requirements/${other}/reject`, ALICE, {})).status, 400, 'a reason is required');
+    assert.equal((await srv.call('POST', `/api/requirements/${other}/reject`, ALICE, { reason: '   ' })).status, 400);
+    assert.equal((await srv.call('POST', `/api/requirements/${other}/reject`, AGENT, { reason: 'No.' })).status, 403);
+    const rejected = (await srv.call('POST', `/api/requirements/${other}/reject`, ALICE, { reason: 'Sam never said $500.' })).body;
+    assert.deepEqual([rejected.status, rejected.rejectionReason], ['rejected', 'Sam never said $500.']);
     assert.equal((await srv.call('POST', `/api/requirements/${other}/approve`, ALICE)).status, 409);
-    assert.equal((await srv.call('POST', `/api/requirements/${other}/restore`, ALICE)).body.status, 'active');
+    assert.equal((await srv.call('POST', `/api/requirements/${other}/reject`, ALICE, { reason: 'Again.' })).status, 409);
+    const restored = (await srv.call('POST', `/api/requirements/${other}/restore`, ALICE)).body;
+    assert.deepEqual([restored.status, restored.rejectionReason], ['pending', null]);
+    assert.equal((await srv.call('POST', `/api/requirements/${other}/approve`, ALICE)).body.status, 'active');
+  });
+
+  test('rejected requirements are hidden from agents and default searches', async () => {
+    const id = (await record({ requirement: 'Invoices are emailed as PDFs only.', justification: 'Accounting.', tags: ['invoice-format'], decided_by: 'Sam' })).value.requirement.id;
+    await srv.call('POST', `/api/requirements/${id}/reject`, ALICE, { reason: 'Misheard: HTML too.' });
+    // Default searches skip them, for people and agents alike.
+    assert.deepEqual((await srv.call('GET', '/api/requirements?tag=invoice-format', ALICE)).body, []);
+    assert.deepEqual((await srv.tool(AGENT, 'find_requirements', { tags: ['invoice-format'] })).value, []);
+    assert.deepEqual((await srv.tool(AGENT, 'find_requirements', { query: id })).value, [], 'not even by id');
+    assert.deepEqual((await srv.tool(AGENT, 'find_requirements', { query: 'invoices PDFs', statuses: ['pending', 'active', 'superseded', 'retired'] })).value, []);
+    assert.equal((await srv.tool(AGENT, 'find_requirements', { query: 'invoices', statuses: ['rejected'] })).isError, true, 'agents cannot ask for them');
+    assert.match((await srv.tool(AGENT, 'get_requirement', { id })).text, /not found/);
+    assert.equal((await srv.tool(AGENT, 'supersede_requirement', { id, requirement: 'Invoices are HTML.', justification: 'x', tags: ['invoice-format'], decided_by: 'Sam' })).isError, true);
+    assert.equal((await srv.call('GET', `/api/requirements/${id}`, AGENT)).status, 404);
+    assert.deepEqual((await srv.call('GET', '/api/requirements?tag=invoice-format&status=rejected', AGENT)).body, []);
+    assert.deepEqual((await srv.call('GET', `/api/requirements?q=${id}`, ALICE)).body, [], 'by id too, unless asked for');
+    assert.deepEqual((await srv.call('GET', '/api/requirements/tags', ALICE)).body.filter((t: any) => t.tag === 'invoice-format'), []);
+    // People asking for them get them, with the reason.
+    const shown = (await srv.call('GET', '/api/requirements?tag=invoice-format&status=rejected', ALICE)).body;
+    assert.deepEqual(shown.map((x: any) => [x.id, x.rejectionReason]), [[id, 'Misheard: HTML too.']]);
+    assert.equal((await srv.call('GET', `/api/requirements/${id}`, ALICE)).body.status, 'rejected');
+    // The same decision can be recorded again; the rejected one doesn't count as a duplicate.
+    const again = await record({ requirement: 'Invoices are emailed as PDFs only.', justification: 'Accounting.', tags: ['invoice-format'], decided_by: 'Sam' });
+    assert.equal(again.value.duplicate, undefined);
+    assert.notEqual(again.value.requirement.id, id);
+    assert.ok(!(again.value.similar ?? []).some((x: any) => x.id === id), 'rejected ones are never offered as similar');
   });
 
   test('an agent\'s replacement leaves the old decision in force until it is approved', async () => {
@@ -256,7 +290,7 @@ describe('changing direction', () => {
     const twice = await srv.tool(AGENT, 'supersede_requirement', { id: old.id, requirement: 'Exports run weekly.', ...base });
     assert.match(twice.text, /already has a replacement waiting/);
     // Rejected: the old one is clear again and can be replaced afresh.
-    await srv.call('POST', `/api/requirements/${first.id}/retire`, ALICE);
+    await srv.call('POST', `/api/requirements/${first.id}/reject`, ALICE, { reason: 'Hourly is too often.' });
     now = (await srv.call('GET', `/api/requirements/${old.id}`, ALICE)).body;
     assert.deepEqual([now.status, now.supersededBy], ['active', null]);
     const second = (await srv.tool(AGENT, 'supersede_requirement', { id: old.id, requirement: 'Exports run every 6 hours.', ...base })).value.requirement;

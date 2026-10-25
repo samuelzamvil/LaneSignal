@@ -375,9 +375,10 @@ export interface Principal {
 
 /**
  * `pending` until a person approves it (agents' records start there), then `active`;
- * `superseded` or `retired` once it no longer applies.
+ * `superseded` or `retired` once it no longer applies. `rejected`: a person turned down the pending
+ * record (with a reason); agents never see those.
  */
-export type RequirementStatus = 'pending' | 'active' | 'superseded' | 'retired';
+export type RequirementStatus = 'pending' | 'active' | 'superseded' | 'retired' | 'rejected';
 
 /**
  * A product decision made by the owner, kept so it can be found later without
@@ -399,6 +400,8 @@ export interface Requirement {
   status: RequirementStatus;
   /** Set when superseded: the requirement that replaced this one. */
   supersededBy: string | null;
+  /** Set when rejected: why the person turned it down. */
+  rejectionReason: string | null;
   /** The person who made the decision. */
   decidedBy: string;
   /** Code of the escalation the decision came from, if any (e.g. "A12"). */

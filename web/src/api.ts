@@ -238,6 +238,8 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
     editRequirement: (id: string, patch: { requirement?: string; justification?: string; tags?: string[] }) =>
       request<Requirement>('PATCH', `/api/requirements/${encodeURIComponent(id)}`, patch),
     approveRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/approve`, {}),
+    rejectRequirement: (id: string, reason: string) =>
+      request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/reject`, { reason }),
     retireRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/retire`, {}),
     restoreRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/restore`, {}),
     deleteLane: (project: string, id: string) =>

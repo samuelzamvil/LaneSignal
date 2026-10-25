@@ -6,7 +6,7 @@ Product direction tends to get buried in tickets and agent sessions, and finding
 - **One decision per requirement**, so it can be found, cited and replaced on its own.
 - **Short.** The requirement is at most 300 characters and the justification at most 800, so agents can read many of them cheaply.
 - **A person approves.** What an agent records starts **pending** and stays pending until a person approves it on the Requirements page; a requirement a person records is approved as it's recorded. Pending requirements still turn up in every search, marked `pending`, so agents follow them, but the owner hasn't yet confirmed the agent wrote the decision down right. Requirements recorded before approvals existed are pending too. Records made with a [personal key](accounts.md#personal-keys) (Claude in your own session) are pending as well, and approving takes a signed-in person, not a key.
-- **Nothing is deleted.** When the owner changes direction, the new requirement *supersedes* the old one, which stays (marked) so the history of why is kept. A requirement retired by mistake can be restored.
+- **Nothing is deleted.** When the owner changes direction, the new requirement *supersedes* the old one, which stays (marked) so the history of why is kept. A requirement retired or rejected by mistake can be restored.
 - **Retries don't duplicate.** Recording the same requirement again from the same escalation returns the first (`duplicate: true`). A second, different decision from the same answer is stored, and `similar` shows the first.
 
 ## A requirement
@@ -21,7 +21,8 @@ Product direction tends to get buried in tickets and agent sessions, and finding
 | `group` | The train/epic it belongs to, or none for **product-wide** (the whole project) |
 | `decidedBy` | The person who decided, e.g. "Sam (Remote Control, 2026-10-23)". Taken from the escalation when it was answered on the dashboard |
 | `sourceEscalation` | The alert the decision answered (e.g. `A12`; `SH-A12` on an all-projects requirement), if any. It must be in the requirement's project. When the owner answered in the agent's session, the agent cites it together with `decidedBy` |
-| `status` | `pending` (recorded, waiting for a person's approval), `active` (approved), `superseded` (with `supersededBy`) or `retired` (no longer applies, nothing replaces it; also how a pending one is rejected) |
+| `status` | `pending` (recorded, waiting for a person's approval), `active` (approved), `superseded` (with `supersededBy`), `retired` (an approved one that no longer applies, nothing replaces it) or `rejected` (a pending record a person turned down) |
+| `rejectionReason` | Why a person rejected it; required when rejecting, set only on `rejected` ones |
 | `recordedBy` | The agent key or person that wrote it down |
 
 ### Tags
@@ -43,12 +44,14 @@ Tags exist to find things, so they must be specific:
 | `supersede_requirement` | The owner changed their mind: record the new decision and mark the old one superseded. From an agent the new one is pending, and the old one stays in force (its `supersededBy` names the replacement) until a person approves the replacement; rejecting it leaves the old one as it was. Superseding a pending replacement swaps the proposal: it's marked superseded and the old requirement waits on the new one, so changes never chain. Searches return the pair together, which can take a result a little past `limit` |
 | `get_requirement`, `list_requirement_tags` | Read one; see tags in use |
 
+**Rejected requirements are hidden from agents.** No MCP tool returns them (`find_requirements` doesn't accept `rejected` in `statuses`, not even an id finds one, and `get_requirement` says it's not found), they never show up as `similar` or count towards tags, and the REST API and event stream leave them out for agent and personal keys too. An agent can record the same decision again; it starts pending like any other.
+
 The service doesn't decide *when* agents record requirements; that's the project owner's policy, in the overseer's instructions.
 
 ## In the app
 
-**Requirements** (bottom bar on phones, top bar on desktop) lists pending and active requirements, newest first, with search, a group filter, and tag filters (tap a tag). Pending ones carry a **Pending approval** badge, and one with a replacement waiting shows **Replacement R… pending**; tick **Pending approval only** to work through them (it lists only pending ones, not the approved requirements they would replace). Tick **Superseded & retired** to see the history. **Cards / List** switches between full cards and one line per requirement (tap a line to open its card); the choice is remembered on the device.
+**Requirements** (bottom bar on phones, top bar on desktop) lists pending and active requirements, newest first, with search, a group filter, and tag filters (tap a tag). Pending ones carry a **Pending approval** badge, and one with a replacement waiting shows **Replacement R… pending**; tick **Pending approval only** to work through them (it lists only pending ones, not the approved requirements they would replace). Tick **Superseded, retired & rejected** to see the history; a rejected one shows why. **Cards / List** switches between full cards and one line per requirement (tap a line to open its card); the choice is remembered on the device.
 
-People **approve** a pending requirement (or **reject** it, which retires it), **edit wording** (fix phrasing, justification or tags without changing the meaning) and **retire** a requirement. Restoring a retired one makes it active again. A change of decision is a supersede, recorded like any other decision.
+People **approve** a pending requirement or **reject** it, saying why (the reason is required and kept with it), **edit wording** (fix phrasing, justification or tags without changing the meaning) and **retire** an approved requirement. Restoring a retired one makes it active again; restoring a rejected one puts it back up for approval, its reason cleared. A change of decision is a supersede, recorded like any other decision.
 
 Requirements are part of the [export](export.md) (`requirements.csv`).
