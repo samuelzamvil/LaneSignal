@@ -5,8 +5,8 @@ LaneSignal keeps everything needed for analysis:
 - every escalation, including decided, acknowledged and withdrawn ones
 - every requirement, including superseded and retired ones
 - every agent position
-- every conversation, on escalations and on lanes
-- every lane and group, including ones that were removed from the dashboard (they're archived, not deleted)
+- every conversation, on escalations, on lanes and on epics' boards
+- every lane, group and epic, including ones that were removed from the dashboard or closed (they're archived, not deleted)
 - each lane's full status and escalation history
 
 Only routine activity text is capped, at the last `LANESIGNAL_EVENT_RETENTION` entries per lane.
@@ -30,14 +30,14 @@ curl -fsS -H "authorization: Bearer $KEY" "https://lanesignal.example.com/api/ex
 
 | Parameter | Applies to | Format |
 |---|---|---|
-| `from` | escalations (by creation time), positions (by when each was taken), messages and lane_messages (by when each was written), events (by time), requirements (by creation time) | `YYYY-MM-DD` (midnight UTC), or an ISO timestamp with a zone such as `2026-10-01T09:00:00Z` or `…+02:00`. Inclusive |
+| `from` | escalations (by creation time), positions (by when each was taken), messages, lane_messages and epic_messages (by when each was written), events (by time), requirements (by creation time) | `YYYY-MM-DD` (midnight UTC), or an ISO timestamp with a zone such as `2026-10-01T09:00:00Z` or `…+02:00`. Inclusive |
 | `to` | same | same, exclusive. Must be after `from` |
 | `project` | everything | a project id or key. Without it, every project you can see. Requirements for all projects are always included |
 | `lane` (`lane_id` in MCP) | escalations, positions, messages, lane_messages, events, lanes | a lane id (with `project`, if you can see several) |
 
 Unknown parameters, timestamps without a zone, and impossible dates (`2026-02-30`) are rejected with `400`, rather than silently ignored or reinterpreted.
 
-Lanes and groups are always exported in full (within the project filter), so filtered escalations can still be joined to them.
+Lanes, groups, tickets and epics are always exported in full (within the project filter), so filtered escalations can still be joined to them.
 
 Every dataset has a `project` column (the project id; empty in `requirements.csv` for requirements that apply to all projects). Lane, group and escalation codes are unique only within a project, so join on `project` plus the id. See [Projects](projects.md).
 
@@ -51,8 +51,8 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 
 | Column | Meaning |
 |---|---|
-| `id`, `ref` | The escalation's id and its code (`967A`, or `A12` for one raised on a lane holding no ticket) |
-| `lane_id`, `lane_name`, `group_id`, `group_name` | What it belongs to (the group as the lane has it now, even if the group was archived) |
+| `id`, `ref` | The escalation's id and its code: its ticket's or epic's code and a letter (`967A`, `680A`), or from before tickets `A12` |
+| `lane_id`, `lane_name`, `group_id`, `group_name` | The lane it was raised in and that lane's group (as the lane has it now, even if the group was archived). Empty for a question raised on an epic directly; `epic_id` says which |
 | `ticket`, `ticket_url` | The escalation's own reference, e.g. the plan PR |
 | `question`, `context`, `recommendation`, `recommended_option`, `cost`, `alternatives`, `options` | The question as asked |
 | `accept_means`, `reject_means`, `allow_reject` | What Accept and Reject meant, and whether Reject was offered |
@@ -69,14 +69,17 @@ Text that a spreadsheet would read as a formula (starting with `=`, `+`, `-`, `@
 | `seconds_open` | Time until decided or closed, or until now if still open |
 | `positions_agree`, `positions_disagree`, `positions_neutral` | Counts of agent positions |
 | `links` | JSON |
-| `ticket_id` | The [ticket](#ticketscsv-every-ticket-lanes-have-held) it belongs to; empty for one raised on a lane holding no ticket |
+| `ticket_id` | The [ticket](#ticketscsv-every-ticket-lanes-have-held) it belongs to; empty for an epic's |
 | `legacy_ref` | Its code from before tickets (`A12`), for escalations raised before the upgrade; it still resolves |
+| `epic_id` | The [epic](#epicscsv-every-epic) it belongs to (raised on the epic, or on a lane holding no ticket); empty for a ticket's |
 
 ### `positions.csv` (one row per agent position)
 
 `escalation_id`, `escalation_ref`, `lane_id`, `question`, `agent`, `stance` (`agree`, `disagree` or `neutral`), `note`, `at`.
 
 ### `lanes.csv` (every lane, including archived ones)
+
+Epics' questions raised on the epic directly are recorded on an internal lane per epic; those lanes aren't listed here.
 
 | Column | Meaning |
 |---|---|
@@ -112,13 +115,33 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 | `escalations_total`, `escalations_open` | Counts |
 | `created_at`, `updated_at`, `closed_at` | Timing (`closed_at` once done or dropped) |
 
+### `epics.csv` (every epic)
+
+| Column | Meaning |
+|---|---|
+| `id` | The epic's number (escalations refer to it as `epic_id`) |
+| `group_id` | The group it belongs to |
+| `ref`, `display_ref` | Its ticket's canonical reference and how it was first written; empty for a group standing in as its epic |
+| `code` | What its escalation codes start with (`680`, the group's ticket or id for a stand-in, or `E7` when the ref can't be one) |
+| `name`, `ticket_url`, `links` | |
+| `stand_in` | `true` for the group standing in as its epic |
+| `state` | `open`, `close_requested` or `closed` |
+| `status_line` | The overseer's one line on its card |
+| `close_reason`, `close_requested_by` | The overseer's close request, while it waits for a person |
+| `escalations_total`, `escalations_open` | Counts |
+| `created_at`, `updated_at`, `closed_at` | Timing (`closed_at` once closed, or for a stand-in, once it stepped aside) |
+
+### `epic_messages.csv` (epics' boards)
+
+`id`, `project`, `epic_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message on an epic's board (the overseer's posts and people's notes), oldest first. A stand-in's board moves with it to the group's first real epic.
+
 ### `requirements.csv` (the owner's product decisions)
 
 `id` (`R14`), `group_id` (empty for product-wide), `requirement`, `justification`, `tags`, `status` (`pending`, `active`, `superseded`, `retired`), `superseded_by`, `decided_by`, `source_escalation`, `recorded_by`, `created_at`, `updated_at`. Every requirement is included, whatever its status; `from`/`to` filter by creation time. See [Requirements](requirements.md).
 
 ### `messages.csv` (conversations)
 
-`id`, `escalation_id`, `escalation_ref`, `project`, `lane_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message, oldest first.
+`id`, `escalation_id`, `escalation_ref`, `project`, `lane_id` (empty for a question raised on an epic directly), `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message, oldest first.
 
 ### `lane_messages.csv` (lane conversations)
 
@@ -126,7 +149,7 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 
 ### `events.csv` (lane history)
 
-`id`, `lane_id`, `at`, `kind`, `message`, `actor`, `ticket_id` (the ticket it concerns). The `kind` column is one of:
+`id`, `lane_id` (empty for the steps of a question raised on an epic directly), `at`, `kind`, `message`, `actor`, `ticket_id` (the ticket it concerns). The `kind` column is one of:
 
 - **`status`:** every status change, plus lane created, removed and restored
 - **`escalation`:** asked, positions, decided, acknowledged, withdrawn
@@ -143,8 +166,7 @@ To rebuild blocked time per lane over a period, pair the status changes in `stat
 
 - hides it from the dashboard
 - lets its ticket go: done if the lane was completed, otherwise parked (`remove_lane` takes `previous` to say otherwise). The ticket keeps its questions, open ones included
-- withdraws the **unanswered** escalations raised while it held no ticket, so waiting agents get an answer ("Lane removed by …"). Each withdrawal is recorded in the history
-- leaves **decided** escalations as they are, so an agent already acting on an answer can still acknowledge it
+- leaves the escalations raised while it held no ticket with the group's epic, open ones included
 - ends a blocked spell: a lane removed while `blocked_human` is set to `idle`, so archived time isn't counted as blocked
 - keeps the lane, its escalations and its history
 

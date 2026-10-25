@@ -7,6 +7,7 @@ import {
   saveConnection,
   type Client,
   type Connection,
+  type Epic,
   type Escalation,
   type LaneStatus,
   type Principal,
@@ -15,6 +16,8 @@ import {
 } from './api.ts';
 import { Chips, GroupHeader, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout, useStored } from './components.tsx';
 import { onActiveTicket, ParkedRow, TicketDetail, TicketsContext } from './ticket-views.tsx';
+import { EpicCard, EpicDetail, EpicsContext, epicRoute, hasLane, laneKeyOf } from './epic-views.tsx';
+import { epicShows, epicsOnScreen, laneEpic } from './epics.ts';
 import { TicketLinksContext } from './linked-text.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
 import { routeFromAppLink } from './deeplink.ts';
@@ -42,6 +45,8 @@ interface Route {
   /** A ticket's sheet: its project and ref. */
   ticketProject?: string;
   ticketRef?: string;
+  /** An epic's sheet: its number. */
+  epicId?: number;
 }
 
 /** A URL path segment decoded, or null when it's malformed (e.g. "%E0" from a crafted link). */
@@ -61,6 +66,7 @@ function parseRoute(hash: string): Route {
   if (a === 'lane' && lb && !c) return { view: 'lanes', laneId: lb };
   if (a === 'esc' && b) return { view: 'inbox', escId: b };
   if (a === 'ticket' && lb && lc) return { view: 'lanes', ticketProject: lb, ticketRef: lc };
+  if (a === 'epic' && lb && lc && /^\d{1,12}$/.test(lc)) return { view: 'lanes', epicId: Number(lc) };
   // A closed escalation opened from History: closing it goes back there.
   if (a === 'history' && b) return { view: 'history', escId: b };
   if (a === 'lanes' || a === 'reqs' || a === 'history' || a === 'settings') return { view: a };
@@ -189,8 +195,14 @@ function Dashboard({
   // Lane cards mark new agent messages until the lane is opened.
   useSeenVersion();
   useEffect(() => {
-    if (live.syncedAt !== null) baselineSeen(live.lanes.values());
-  }, [live.syncedAt, live.lanes]);
+    if (live.syncedAt !== null) {
+      baselineSeen([
+        ...live.lanes.values(),
+        // Epic boards, keyed as the epic card reads them.
+        ...[...live.epics.values()].map((e) => ({ project: e.project, id: `~epic-${e.id}`, lastAgentMessageId: e.lastAgentMessageId })),
+      ]);
+    }
+  }, [live.syncedAt, live.lanes, live.epics]);
   const [route, navigate] = useRoute();
   const [filters, setFilters] = useFilters();
 
@@ -252,7 +264,7 @@ function Dashboard({
       if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select')) return;
       const r = parseRoute(location.hash);
       if (r.escId) closeTo(escFallback(r));
-      else if (r.laneId || r.ticketRef) closeTo('#/lanes');
+      else if (r.laneId || r.ticketRef || r.epicId) closeTo('#/lanes');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -280,7 +292,7 @@ function Dashboard({
       if (closeOverlay()) return;
       const r = parseRoute(location.hash);
       if (r.escId) closeTo(escFallback(r));
-      else if (r.laneId || r.ticketRef) closeTo('#/lanes');
+      else if (r.laneId || r.ticketRef || r.epicId) closeTo('#/lanes');
       else if (location.hash && location.hash !== '#/') history.back();
       else void CapApp.minimizeApp();
     });
@@ -307,15 +319,20 @@ function Dashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [live.escalations, projectFilter],
   );
-  const laneOf = (e: { project: string; laneId: string }) => live.lanes.get(keyOf(e.project, e.laneId));
+  const laneOf = (e: Escalation) => live.lanes.get(laneKeyOf(e));
   const groupOfLane = (l: { project: string; group: string | null } | undefined) =>
     l?.group ? live.groups.get(keyOf(l.project, l.group)) : undefined;
+  /** An escalation's group: its lane's, or for one raised on an epic, the epic's. */
+  const groupOfEsc = (e: Escalation) => {
+    const epic = e.epicId ? live.epics.get(String(e.epicId)) : undefined;
+    return !hasLane(e.laneId) && epic ? live.groups.get(keyOf(epic.project, epic.group)) : groupOfLane(laneOf(e));
+  };
   // Inbox order: lanes by their oldest open question, then each lane's questions in order,
   // so a batch ("four questions from #921") reads top to bottom.
   const openByLane = new Map<string, typeof escalations>();
   for (const e of escalations) {
     if (e.state !== 'open') continue;
-    const k = keyOf(e.project, e.laneId);
+    const k = laneKeyOf(e);
     openByLane.set(k, [...(openByLane.get(k) ?? []), e]);
   }
   // Counts and badges are for blocking questions waiting on you; FYI ones, and ones where the
@@ -345,12 +362,24 @@ function Dashboard({
         ...[...live.escalations.values()]
           .filter(
             (e) =>
-              keyOf(e.project, e.laneId) === routeLaneKey ||
+              laneKeyOf(e) === routeLaneKey ||
               (e.ticketId !== null && e.project === routeLaneProject && e.ticketId === live.lanes.get(routeLaneKey)?.ticketId),
           )
           .map((e) => e.id + e.state),
       ].join('|')
     : '';
+  /** What an epic's sheet refetches on: the epic, its open questions, and its lanes. */
+  const epicStamp = (id: number) => {
+    const ep = live.epics.get(String(id));
+    return [
+      ep?.updatedAt,
+      ep?.lastMessageId,
+      ep?.unreadByAgent,
+      ep?.openEscalations,
+      ...[...live.escalations.values()].filter((e) => e.epicId === id).map((e) => e.id + e.state + e.updatedAt),
+      ...[...live.lanes.values()].filter((l) => ep && l.project === ep.project && l.group === ep.group).map((l) => l.updatedAt),
+    ].join('|');
+  };
   /** What a ticket's sheet refetches on: the ticket, the lane holding it, and its open questions. */
   const ticketStamp = (id: number) => {
     const t = live.tickets.get(String(id));
@@ -370,10 +399,10 @@ function Dashboard({
   // Closed escalations drop out of the live map, which also changes this key.
   const escVersion = route.escId ? (routeEsc?.updatedAt ?? 'closed') : '';
   const seqOf = (e: (typeof escalations)[number]) => {
-    const siblings = openByLane.get(keyOf(e.project, e.laneId)) ?? [];
+    const siblings = openByLane.get(laneKeyOf(e)) ?? [];
     return siblings.length > 1 ? { index: siblings.indexOf(e), total: siblings.length } : undefined;
   };
-  const escLaneKey = routeEsc ? keyOf(routeEsc.project, routeEsc.laneId) : null;
+  const escLaneKey = routeEsc ? laneKeyOf(routeEsc) : null;
   /** In the combined view with several projects, codes and groups carry their project. */
   const showProject = multiProject && !projectFilter;
   const blockedLanes = lanes.filter((l) => l.status === 'blocked_human' && l.blockingEscalations === 0);
@@ -451,16 +480,18 @@ function Dashboard({
   const parkedIn = (groupId: string | null) => parkedAll.filter((t) => (t.group ? keyOf(t.project, t.group) : null) === groupId);
   const leftLane = (t: Ticket) =>
     t.lastLane ? (live.lanes.get(keyOf(t.project, t.lastLane))?.name ?? `${t.lastLane} (removed)`) : null;
+  const epicsOf = (groupId: string | null) => epicsOnScreen(groupId, live.epics.values());
   type Section = { key: string; title?: string; groupId?: string | null; lanes: typeof visible };
   let sections: Section[];
   if (filters.arrange === 'group') {
     // Groups needing a human first, then alphabetical; ungrouped lanes last.
     const ids: (string | null)[] = [...groupIds, null];
+    const urgent = (sec: Section) => sec.lanes.some(needsHuman) || epicsOf(sec.groupId ?? null).some((e) => e.blockingEscalations > 0);
     sections = ids
       .map((id) => ({ key: id ?? '', groupId: id, lanes: visible.filter((l) => laneGroupKey(l) === id) }))
       .sort(
         (a, b) =>
-          Number(b.lanes.some(needsHuman)) - Number(a.lanes.some(needsHuman)) ||
+          Number(urgent(b)) - Number(urgent(a)) ||
           Number(a.groupId === null) - Number(b.groupId === null) ||
           groupName(a.groupId ?? null).localeCompare(groupName(b.groupId ?? null)),
       );
@@ -481,7 +512,7 @@ function Dashboard({
         esc={e}
         seq={seq}
         lane={laneOf(e)}
-        group={groupOfLane(laneOf(e))}
+        group={groupOfEsc(e)}
         now={now}
         client={client}
         staleMinutes={config.staleMinutes}
@@ -621,28 +652,20 @@ function Dashboard({
         </div>
       </div>
       {visible.length === 0 && parkedAll.length === 0 && <p className="empty">No lanes match.</p>}
-      {sections.map(
-        (sec) =>
-          (sec.lanes.length > 0 || (sec.groupId !== undefined && parkedIn(sec.groupId).length > 0)) && (
-            <div key={sec.key} className="group">
-              {sec.groupId !== undefined ? (
-                <GroupHeader
-                  group={sec.groupId ? live.groups.get(sec.groupId) : undefined}
-                  name={groupName(sec.groupId)}
-                  lanes={sec.lanes}
-                />
-              ) : (
-                sec.title && (
-                  <h3 className="subhead">
-                    {sec.title} <span className="count">{sec.lanes.length}</span>
-                  </h3>
-                )
-              )}
-              <div className={laneLayout === 'list' ? 'lane-list' : 'lane-grid'}>
-                {sec.lanes.map((l) =>
-                  laneLayout === 'list' ? (
-                    <LaneRow key={keyOf(l.project, l.id)} lane={l} now={now} onOpen={() => navigate(laneRoute(l.project, l.id))} />
-                  ) : (
+      {sections.map((sec) => {
+        const epics = sec.groupId !== undefined ? epicsOf(sec.groupId) : [];
+        // An epic's card shows while a status filter is off, or a group filter picks its group.
+        const epicCards = !activeStatuses.length && (!activeGroups.length || (!!sec.groupId && activeGroups.includes(sec.groupId)));
+        const shows = sec.lanes.length > 0 || (sec.groupId !== undefined && parkedIn(sec.groupId).length > 0) || (epicCards && epics.some(epicShows));
+        if (!shows) return null;
+        const group = sec.groupId ? live.groups.get(sec.groupId) : undefined;
+        const laneList = (list: typeof visible) =>
+          list.length > 0 && (
+            <div className={laneLayout === 'list' ? 'lane-list' : 'lane-grid'}>
+              {list.map((l) =>
+                laneLayout === 'list' ? (
+                  <LaneRow key={keyOf(l.project, l.id)} lane={l} now={now} onOpen={() => navigate(laneRoute(l.project, l.id))} />
+                ) : (
                   <LaneCard
                     key={keyOf(l.project, l.id)}
                     lane={l}
@@ -651,13 +674,61 @@ function Dashboard({
                     groupName={filters.arrange === 'group' || !l.group ? null : groupName(laneGroupKey(l))}
                     onOpen={() => navigate(laneRoute(l.project, l.id))}
                   />
-                  ),
-                )}
-              </div>
-              {sec.groupId !== undefined && <ParkedRow tickets={parkedIn(sec.groupId)} now={now} laneName={leftLane} />}
+                ),
+              )}
             </div>
-          ),
-      )}
+          );
+        const card = (e: Epic, under: typeof visible) => (
+          <EpicCard
+            key={e.id}
+            epic={e}
+            group={group}
+            name={e.standIn ? groupName(sec.groupId ?? null) : showProject ? `${projectKeyOf(e.project)} · ${e.name}` : e.name}
+            lanes={under.length}
+            needYou={under.filter(needsHuman).length}
+            client={client}
+            canApprove={me?.role === 'human' && !me.personalKey}
+            onOpen={() => navigate(epicRoute(e.project, e.id))}
+          />
+        );
+        // Each lane once: under its ticket's epic, or under the group (its stand-in's card when it has no epic of its own).
+        const real = epics.filter((e) => !e.standIn);
+        const rest = sec.lanes.filter((l) => !laneEpic(l, real, live.tickets));
+        return (
+          <div key={sec.key} className="group">
+            {sec.groupId === undefined ? (
+              sec.title && (
+                <h3 className="subhead">
+                  {sec.title} <span className="count">{sec.lanes.length}</span>
+                </h3>
+              )
+            ) : real.length > 0 ? (
+              <>
+                {real.map((e) => {
+                  const under = sec.lanes.filter((l) => laneEpic(l, real, live.tickets) === e);
+                  return (
+                    <div key={e.id}>
+                      {card(e, under)}
+                      {laneList(under)}
+                    </div>
+                  );
+                })}
+                {rest.length > 0 && (
+                  <h4 className="group-rest">
+                    {groupName(sec.groupId)} <span className="count">{rest.length}</span>
+                  </h4>
+                )}
+              </>
+            ) : epics[0] ? (
+              card(epics[0], sec.lanes)
+            ) : (
+              <GroupHeader group={group} name={groupName(sec.groupId)} lanes={sec.lanes} />
+            )}
+            {laneList(sec.groupId !== undefined && real.length > 0 ? rest : sec.lanes)}
+            {sec.groupId !== undefined && <ParkedRow tickets={parkedIn(sec.groupId)} now={now} laneName={leftLane} />}
+          </div>
+        );
+      })}
       {filters.arrange !== 'group' && parkedAll.length > 0 && (
         <div className="group">
           <ParkedRow tickets={parkedAll} now={now} laneName={leftLane} />
@@ -743,6 +814,7 @@ function Dashboard({
   return (
     <TicketLinksContext.Provider value={config}>
       <TicketsContext.Provider value={live.tickets}>
+      <EpicsContext.Provider value={live.epics}>
       <div className={`app view-${route.view}`}>
         <header className="topbar">
           <a href="#/" className="brand">
@@ -867,6 +939,25 @@ function Dashboard({
             backTo={backLabel(escFallback(route))}
           />
         )}
+        {route.epicId !== undefined && (
+          <EpicDetail
+            key={route.epicId}
+            id={route.epicId}
+            client={client}
+            version={epicStamp(route.epicId)}
+            now={now}
+            group={(() => {
+              const ep = live.epics.get(String(route.epicId));
+              return ep ? live.groups.get(keyOf(ep.project, ep.group)) : undefined;
+            })()}
+            groupLabel={config.groupLabel}
+            canWrite={me?.role === 'human' && config.decisions}
+            canApprove={me?.role === 'human' && !me.personalKey}
+            laneName={(project, id) => live.lanes.get(keyOf(project, id))?.name ?? null}
+            onClose={() => closeTo('#/lanes')}
+            backTo={backLabel('#/lanes')}
+          />
+        )}
         {route.ticketRef && route.ticketProject && (
           <TicketDetail
             key={`${route.ticketProject}/${route.ticketRef}`}
@@ -896,6 +987,7 @@ function Dashboard({
           />
         )}
       </div>
+      </EpicsContext.Provider>
       </TicketsContext.Provider>
     </TicketLinksContext.Provider>
   );

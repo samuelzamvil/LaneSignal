@@ -64,7 +64,7 @@ The server is a small TypeScript app on Node's built-in `node:sqlite`, so there 
 
 **Built:**
 
-- lanes grouped by epic/train (one overseer, many lanes)
+- lanes grouped by epic/train (one overseer, many lanes); tickets that move between lanes, parked and picked up again; epics with their own questions and message board
 - structured escalations with batches, positions and an acknowledgement lifecycle
 - live updates in the browser and the Android app
 - push for decisions only

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AGENT_MESSAGE_MAX } from './store.ts';
-import { LANE_STATUSES, STANCES, TICKET_STATES } from './types.ts';
+import { EPIC_STATES, LANE_STATUSES, STANCES, TICKET_STATES } from './types.ts';
 
 export const laneId = z
   .string()
@@ -40,7 +40,37 @@ export const laneFill = lanePatch.extend({
   previous: ticketRelease.optional(),
   reason: z.string().max(500).nullable().optional(),
   waitingOn: z.string().max(300).nullable().optional(),
+  /** The epic the lane's ticket is for (its ref, or the group's id); null clears it. */
+  epic: z.string().max(300).nullable().optional(),
 });
+
+/** An epic, as agents name it: any form of its ticket's ref, or a group's id for that group's epic. */
+export const epicName = z.string().trim().min(1).max(300);
+
+/** The status line on an epic's card, e.g. "3 of 5 lanes busy; next up #966". */
+export const statusLine = z.string().max(300).nullable().optional();
+
+/** PUT /api/epics/:id */
+export const epicPatch = z.object({
+  name: z.string().min(1).max(200).optional(),
+  ref: z.string().max(300).optional(),
+  links: z.array(link).max(20).optional(),
+  statusLine,
+});
+
+/** POST /api/epics: a real epic for a group, by its ticket's ref. */
+export const epicCreate = epicPatch.extend({ group: groupId, ref: z.string().trim().min(1).max(300) });
+
+export const epicQuery = z
+  .object({
+    group: groupId.optional(),
+    state: z.preprocess((v) => (typeof v === 'string' ? v.split(',').filter(Boolean) : v), z.array(z.enum(EPIC_STATES)).max(3)).optional(),
+    project: z.string().max(40).optional(),
+  })
+  .strict();
+
+export const closeRequest = z.object({ reason: z.string().trim().min(1).max(1000) });
+export const closeDecision = z.object({ approve: z.boolean() });
 
 export const ticketQuery = z
   .object({
@@ -58,7 +88,10 @@ export const position = z.object({
 });
 
 export const escalationFields = {
-  laneId,
+  /** The lane it's raised in; may be left out when it's raised on an epic. */
+  laneId: laneId.optional(),
+  /** The epic it's for: needed when raised on an epic directly, or from a lane holding no ticket in a group with several epics. */
+  epic: epicName.optional(),
   question: z.string().min(1).max(1000),
   context: z.string().max(20_000).nullable().optional(),
   recommendation: z.string().max(10_000).nullable().optional(),
@@ -84,6 +117,7 @@ export const notice = z.object({
 
 export const escalationInput = z
   .object(escalationFields)
+  .refine((e) => e.laneId || e.epic, { message: 'Say where it\'s raised: laneId, or epic', path: ['laneId'] })
   .refine((e) => !e.recommendedOption || (e.options ?? []).includes(e.recommendedOption), {
     message: 'recommendedOption must be one of options',
     path: ['recommendedOption'],

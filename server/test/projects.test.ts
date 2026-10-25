@@ -68,15 +68,16 @@ describe('several projects', () => {
     assert.match(both.body.error, /Say which project/);
   });
 
-  test('lane ids and codes are per project; KEY-A1 names one across projects', async () => {
+  test('lane ids and codes are per project; KEY-500A names one across projects', async () => {
+    for (const p of ['default', 'shop']) assert.equal((await srv.call('PUT', `/api/lanes/auth?project=${p}`, AGENT, { ticket: '500' })).status, 200);
     const main = (await srv.call('POST', '/api/escalations?project=default', AGENT, { laneId: 'auth', question: 'Main?' })).body;
     const shop = (await srv.call('POST', '/api/escalations?project=shop', AGENT, { laneId: 'auth', question: 'Shop?' })).body;
-    assert.equal(main.ref, 'A1');
-    assert.equal(shop.ref, 'A1');
+    assert.equal(main.ref, '500A');
+    assert.equal(shop.ref, '500A');
     assert.equal(shop.projectKey, 'SH');
-    assert.equal((await srv.call('GET', '/api/escalations/SH-A1', ALICE)).body.id, shop.id);
-    assert.equal((await srv.call('GET', `/api/escalations/${encodeURIComponent('MAIN·A1')}`, ALICE)).body.id, main.id);
-    assert.equal((await srv.call('GET', '/api/escalations/A1?project=shop', ALICE)).body.id, shop.id);
+    assert.equal((await srv.call('GET', '/api/escalations/SH-500A', ALICE)).body.id, shop.id);
+    assert.equal((await srv.call('GET', `/api/escalations/${encodeURIComponent('MAIN·500A')}`, ALICE)).body.id, main.id);
+    assert.equal((await srv.call('GET', '/api/escalations/500A?project=shop', ALICE)).body.id, shop.id);
     const lanes = (await srv.call('GET', '/api/lanes', ALICE)).body;
     assert.deepEqual(
       lanes.filter((l: any) => l.id === 'auth').map((l: any) => l.project).sort(),
@@ -217,10 +218,10 @@ describe('review findings', () => {
   });
 
   test('bare codes resolve within your own projects only; ambiguous ones ask for a project', async () => {
-    // Rae sees only the shop, so A1 there is unambiguous even though the main project has an A1.
-    const shopA1 = (await srv.call('GET', '/api/escalations/A1', people.Rae.token)).body;
+    // Rae sees only the shop, so 500A there is unambiguous even though the main project has a 500A.
+    const shopA1 = (await srv.call('GET', '/api/escalations/500A', people.Rae.token)).body;
     assert.equal(shopA1.project, 'shop');
-    const both = await srv.call('GET', '/api/escalations/A1', ALICE);
+    const both = await srv.call('GET', '/api/escalations/500A', ALICE);
     assert.equal(both.status, 400);
     assert.match(both.body.error, /several projects/);
     // An id with the wrong project is not found.
@@ -252,7 +253,7 @@ describe('review findings', () => {
       requirement: 'Guest checkout is allowed.',
       justification: 'x',
       tags: ['guest-checkout'],
-      sourceEscalation: 'SH-A1',
+      sourceEscalation: 'SH-500A',
     });
     assert.equal(res.status, 400);
     assert.match(res.body.error, /another project/);

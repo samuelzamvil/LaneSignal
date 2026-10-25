@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, Lane, Position } from './api.ts';
 import { AttachmentList } from './attachments.tsx';
 import { Links, RichText, TicketLink } from './components.tsx';
@@ -8,6 +8,7 @@ import { keyOf } from './merge.ts';
 import { openItem, stepTo } from './nav.ts';
 import { toast } from './toast.tsx';
 import { TicketChip, useSeparateTicket, useTicketLabel } from './ticket-views.tsx';
+import { EpicChip, EpicsContext, hasLane, laneKeyOf } from './epic-views.tsx';
 
 /** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
 export function isCodeOf(e: Escalation, code: string) {
@@ -345,16 +346,20 @@ function EscHead({
       <span className="ref" title="Use this code when talking to the agent about it">
         {showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref}
       </span>
-      <a
-        className="lane-ref"
-        href={`#/lane/${encodeURIComponent(esc.project)}/${encodeURIComponent(esc.laneId)}`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {lane?.name ?? esc.laneId}
-      </a>
+      {/* Raised on an epic directly, it has no lane to open. */}
+      {hasLane(esc.laneId) && (
+        <a
+          className="lane-ref"
+          href={`#/lane/${encodeURIComponent(esc.project)}/${encodeURIComponent(esc.laneId)}`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {lane?.name ?? esc.laneId}
+        </a>
+      )}
       {(group || lane?.group) && <span className="tag">{group?.name ?? lane?.group}</span>}
-      {/* The ticket it belongs to, and what it's about when that's something else (e.g. a PR). */}
+      {/* The ticket or epic it belongs to, and what it's about when that's something else (e.g. a PR). */}
       <TicketChip esc={esc} />
+      <EpicChip esc={esc} />
       {separate && <TicketLink lane={esc} />}
       <span className="when" title={absolute(esc.createdAt)}>
         {ago(esc.createdAt, now)}
@@ -527,7 +532,8 @@ export function EscalationRow({
       <span className="esc-row-main">
         <span className="esc-row-question">{esc.question}</span>
         <span className="muted esc-row-where">
-          {lane?.name ?? esc.laneId}
+          {hasLane(esc.laneId) ? (lane?.name ?? esc.laneId) : `◆ ${esc.epicName ?? 'epic'}`}
+          {hasLane(esc.laneId) && esc.epicName && ` · ◆ ${esc.epicName}`}
           {ticketLabel && ` · ${ticketLabel}`}
           {esc.attachments.length > 0 && (
             <>
@@ -592,6 +598,7 @@ export function EscalationDetail({
   /** Where closing goes, named on the back button. */
   backTo: string;
 }) {
+  const epics = useContext(EpicsContext);
   const [loaded, setLoaded] = useState<Escalation | null>(null);
   const [changing, setChanging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -601,7 +608,10 @@ export function EscalationDetail({
   // Fetch by id when the live data already resolved the code: a bare code is ambiguous across projects.
   const target = currentId ?? id;
   const esc = loaded && (loaded.id === target || isCodeOf(loaded, id)) ? loaded : null;
-  const lane = esc ? lanes.get(keyOf(esc.project, esc.laneId)) : undefined;
+  const lane = esc ? lanes.get(laneKeyOf(esc)) : undefined;
+  // Its lane's group, or for one raised on an epic, the epic's.
+  const epic = esc?.epicId ? epics.get(String(esc.epicId)) : undefined;
+  const group = lane?.group ? groups.get(keyOf(lane.project, lane.group)) : epic ? groups.get(keyOf(epic.project, epic.group)) : undefined;
 
   useEffect(() => {
     sheet.current?.scrollTo(0, 0);
@@ -670,7 +680,7 @@ export function EscalationDetail({
             <EscHead
               esc={esc}
               lane={lane}
-              group={lane?.group ? groups.get(keyOf(lane.project, lane.group)) : undefined}
+              group={group}
               now={now}
               showProject={showProject}
             />
@@ -786,7 +796,6 @@ export function EscalationDetail({
               <section className="esc-section answer">
                 <h4>Answer</h4>
                 {(() => {
-                  const group = lane?.group ? groups.get(keyOf(lane.project, lane.group)) : undefined;
                   const session = sessionLink(group);
                   return (
                     <p className="hint">

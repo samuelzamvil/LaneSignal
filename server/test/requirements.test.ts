@@ -172,7 +172,7 @@ describe('review fixes', () => {
     const base = { requirement: 'X.', justification: 'Y.', tags: ['x-y'], decidedBy: 'Sam' };
     assert.equal((await srv.call('POST', '/api/requirements', AGENT, { ...base, group_id: 'payments' })).status, 400);
     assert.equal((await srv.call('POST', '/api/requirements', AGENT, { ...base, requirement: '   ' })).status, 400);
-    const both = await srv.call('POST', '/api/requirements', ALICE, { ...base, sourceEscalation: 'A1' });
+    const both = await srv.call('POST', '/api/requirements', ALICE, { ...base, sourceEscalation: 'pay-1A' });
     assert.equal(both.status, 400);
     assert.match(both.body.error, /either source_escalation or decided_by/);
     const dedup = await srv.call('POST', '/api/requirements', AGENT, { ...base, tags: ['A-B', 'a-b', 'c-d', 'e-f'] });
@@ -180,7 +180,7 @@ describe('review fixes', () => {
     assert.deepEqual(dedup.body.requirement.tags, ['a-b', 'c-d', 'e-f']);
     const blank = await srv.call('PATCH', `/api/requirements/${dedup.body.requirement.id}`, ALICE, { requirement: '  ' });
     assert.equal(blank.status, 400);
-    const mcp = await record({ requirement: 'X.', justification: 'Y.', tags: ['x-y'], decided_by: 'Sam', source_escalation: 'A1' });
+    const mcp = await record({ requirement: 'X.', justification: 'Y.', tags: ['x-y'], decided_by: 'Sam', source_escalation: 'pay-1A' });
     assert.match(mcp.text, /source_escalation or decided_by/);
   });
 });
