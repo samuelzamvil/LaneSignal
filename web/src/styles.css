@@ -1581,7 +1581,8 @@ textarea {
 }
 
 .req-card.superseded,
-.req-card.retired {
+.req-card.retired,
+.req-card.rejected {
   opacity: 0.7;
 }
 
@@ -1621,7 +1622,8 @@ textarea {
 }
 
 .req-row.superseded,
-.req-row.retired {
+.req-row.retired,
+.req-row.rejected {
   opacity: 0.7;
 }
 

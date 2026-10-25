@@ -199,7 +199,7 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
   messages: ['id', 'escalation_id', 'escalation_ref', 'project', 'lane_id', 'from', 'author', 'body', 'attachments', 'at'],
   lane_messages: ['id', 'project', 'lane_id', 'from', 'author', 'body', 'attachments', 'at'],
   requirements: [
-    'id', 'project', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'decided_by',
+    'id', 'project', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'rejection_reason', 'decided_by',
     'source_escalation', 'recorded_by', 'created_at', 'updated_at',
   ],
 };
@@ -210,6 +210,8 @@ export interface ExportFilter {
   laneId?: string;
   /** Projects to include (requirements for all projects are always included); undefined = every project. */
   projects?: string[];
+  /** Include rejected requirements (only people who approve requirements see them). */
+  includeRejected?: boolean;
 }
 
 export interface GroupPatch {
@@ -290,7 +292,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -597,6 +599,11 @@ export class Store {
       // v17: finding the lane a ticket last left reads only its ticket events.
       if (version < 17) this.db.exec("CREATE INDEX IF NOT EXISTS lane_events_ticket_switch ON lane_events(ticket_id, id) WHERE kind = 'ticket'");
       if (version < 18) this.migrateV18();
+      // v19: rejecting a pending requirement says why.
+      // The requirements a rejected replacement was to replace, so restoring it can link them again.
+      if (version < 19 && !this.hasColumn('requirements', 'rejection_reason')) {
+        this.db.exec('ALTER TABLE requirements ADD COLUMN rejection_reason TEXT; ALTER TABLE requirements ADD COLUMN rejected_replacing TEXT');
+      }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -3850,6 +3857,7 @@ export class Store {
       }
       if (filter.from) (parts.push('created_at >= ?'), params.push(filter.from));
       if (filter.to) (parts.push('created_at < ?'), params.push(filter.to));
+      if (!filter.includeRejected) parts.push("status <> 'rejected'");
       const raw = this.db
         .prepare(`SELECT num AS _rid, * FROM requirements WHERE ${parts.join(' AND ')} ORDER BY num LIMIT ?`)
         .all(...params, limit) as Row[];
@@ -3864,6 +3872,7 @@ export class Store {
           tags: req.tags.join(' | '),
           status: req.status,
           superseded_by: req.supersededBy,
+          rejection_reason: req.rejectionReason,
           decided_by: req.decidedBy,
           source_escalation: req.sourceEscalation,
           recorded_by: req.recordedBy,
@@ -4330,6 +4339,7 @@ export class Store {
       tags: JSON.parse(r.tags as string) as string[],
       status: r.status as RequirementStatus,
       supersededBy: r.superseded_by == null ? null : `R${Number(r.superseded_by)}`,
+      rejectionReason: (r.rejection_reason as string | null) ?? null,
       decidedBy: r.decided_by as string,
       // Within a project its code is enough; an all-projects requirement names the project too.
       sourceEscalation: source ? (r.project_id ? source.ref : `${source.projectKey}-${source.ref}`) : null,
@@ -4412,10 +4422,12 @@ export class Store {
       where.push('EXISTS (SELECT 1 FROM json_each(r.tags) WHERE value = ?)');
       params.push(tag.toLowerCase());
     }
-    // An id ("R14") finds that requirement, whatever its status.
+    // An id ("R14") finds that requirement, whatever its status, except a rejected one unless asked for.
     if (filter.query && this.requirementNum(filter.query) !== null && /^r/i.test(filter.query.trim())) {
       const one = this.getRequirement(filter.query);
-      return one && (!filter.projects || one.project === null || filter.projects.includes(one.project))
+      return one &&
+        (one.status !== 'rejected' || statuses.includes('rejected')) &&
+        (!filter.projects || one.project === null || filter.projects.includes(one.project))
         ? this.withPendingChanges([one], filter.projects)
         : [];
     }
@@ -4766,38 +4778,82 @@ export class Store {
     return requirement;
   }
 
-  /** Undoes a retire (e.g. a mis-tap): a person restores it, so it is active (approved) again. */
+  /**
+   * Undoes a retire or a rejection (e.g. a mis-tap). A retired requirement is active (approved)
+   * again; a rejected one goes back to waiting for approval, its reason cleared, and is again the
+   * pending replacement of what it was to replace (409 if that has changed since).
+   */
   restoreRequirement(id: string): Requirement {
-    const requirement = this.tx(() => {
+    const { requirement, relinked } = this.tx(() => {
       const current = this.requireRequirement(id);
-      if (current.status !== 'retired') throw new ConflictError(`${current.id} is ${current.status}; only retired requirements can be restored`);
+      if (current.status !== 'retired' && current.status !== 'rejected') {
+        throw new ConflictError(`${current.id} is ${current.status}; only retired or rejected requirements can be restored`);
+      }
+      const num = this.requirementNum(current.id)!;
+      const at = this.now().toISOString();
+      const replacing =
+        current.status === 'rejected'
+          ? (JSON.parse(((this.db.prepare('SELECT rejected_replacing FROM requirements WHERE num = ?').get(num) as Row).rejected_replacing as string | null) ?? '[]') as number[])
+          : [];
+      for (const old of replacing) {
+        const req = this.requireRequirement(String(old));
+        if (!inForce(req) || req.supersededBy) {
+          throw new ConflictError(
+            `${current.id} was to replace ${req.id}, which has ${req.supersededBy ? `another replacement waiting (${req.supersededBy})` : `become ${req.status}`} since; record the change again instead`,
+          );
+        }
+        this.db.prepare('UPDATE requirements SET superseded_by = ?, updated_at = ? WHERE num = ?').run(num, at, old);
+      }
       this.db
-        .prepare("UPDATE requirements SET status = 'active', updated_at = ? WHERE num = ?")
-        .run(this.now().toISOString(), this.requirementNum(current.id)!);
-      return this.requireRequirement(current.id);
+        .prepare('UPDATE requirements SET status = ?, rejection_reason = NULL, rejected_replacing = NULL, updated_at = ? WHERE num = ?')
+        .run(current.status === 'rejected' ? 'pending' : 'active', at, num);
+      return { requirement: this.requireRequirement(current.id), relinked: replacing.map((n) => this.requireRequirement(String(n))) };
     });
+    for (const old of relinked) this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });
     return requirement;
   }
 
   /**
-   * Withdraws a requirement with no replacement (the decision no longer applies), or rejects a
-   * pending one. A requirement it was to replace no longer has a replacement waiting.
+   * Takes a requirement out of force: retired (an active one no longer applies, nothing replaces
+   * it) or rejected (a pending record a person turned down, with their reason). A requirement it
+   * was to replace no longer has a replacement waiting; a rejected one remembers which, for a
+   * restore, and nothing points at it any more (not even a proposal it was swapped in for).
    */
-  retireRequirement(id: string): Requirement {
+  private withdrawRequirement(current: Requirement, status: 'retired' | 'rejected', reason: string | null): Requirement {
     const { requirement, kept } = this.tx(() => {
-      const current = this.requireRequirement(id);
-      if (!inForce(current)) throw new ConflictError(`${current.id} is already ${current.status}`);
       const at = this.now().toISOString();
       const num = this.requirementNum(current.id)!;
-      this.db.prepare("UPDATE requirements SET status = 'retired', updated_at = ? WHERE num = ?").run(at, num);
       const kept = this.replacedBy(num);
-      for (const old of kept) this.db.prepare('UPDATE requirements SET superseded_by = NULL, updated_at = ? WHERE num = ?').run(at, old);
-      return { requirement: this.requireRequirement(current.id), kept: kept.map((n) => this.requireRequirement(String(n))) };
+      const pointing =
+        status === 'rejected'
+          ? (this.db.prepare('SELECT num FROM requirements WHERE superseded_by = ?').all(num) as Row[]).map((r) => Number(r.num))
+          : kept;
+      for (const old of pointing) this.db.prepare('UPDATE requirements SET superseded_by = NULL, updated_at = ? WHERE num = ?').run(at, old);
+      this.db
+        .prepare('UPDATE requirements SET status = ?, rejection_reason = ?, rejected_replacing = ?, updated_at = ? WHERE num = ?')
+        .run(status, reason, status === 'rejected' && kept.length ? JSON.stringify(kept) : null, at, num);
+      return { requirement: this.requireRequirement(current.id), kept: pointing.map((n) => this.requireRequirement(String(n))) };
     });
     for (const old of kept) this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });
     return requirement;
+  }
+
+  /** Withdraws an active requirement with no replacement: the decision no longer applies. A pending one is rejected instead. */
+  retireRequirement(id: string): Requirement {
+    const current = this.requireRequirement(id);
+    if (current.status === 'pending') throw new ConflictError(`${current.id} is pending; reject it with a reason instead of retiring it`);
+    if (current.status !== 'active') throw new ConflictError(`${current.id} is already ${current.status}`);
+    return this.withdrawRequirement(current, 'retired', null);
+  }
+
+  /** A person turns down a pending record, saying why. Agents no longer see it. */
+  rejectRequirement(id: string, reason: string): Requirement {
+    const current = this.requireRequirement(id);
+    if (current.status !== 'pending') throw new ConflictError(`${current.id} is ${current.status}; only pending requirements can be rejected`);
+    if (!reason.trim()) throw new ValidationError('Say why the requirement is rejected');
+    return this.withdrawRequirement(current, 'rejected', reason.trim());
   }
 
   // ---- push tokens -------------------------------------------------------
