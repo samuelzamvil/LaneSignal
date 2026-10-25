@@ -356,9 +356,12 @@ describe('changing direction', () => {
     await srv.call('POST', `/api/requirements/${r4.id}/reject`, ALICE, { reason: 'No.' });
     assert.equal((await srv.call('POST', `/api/requirements/${r3.id}/reject`, ALICE, { reason: 'Never decided.' })).body.status, 'rejected');
     assert.equal((await get(r3.id)).supersededBy, null);
-    // Restoring either brings back a lone pending record; neither claims the other.
+    // Restoring R3 brings back a lone pending record; R4 stays rejected. Restoring R4 then makes it R3's change again.
     await srv.call('POST', `/api/requirements/${r3.id}/restore`, ALICE);
     assert.deepEqual([(await get(r3.id)).status, (await get(r3.id)).supersededBy], ['pending', null]);
+    assert.equal((await get(r4.id)).status, 'rejected');
+    await srv.call('POST', `/api/requirements/${r4.id}/restore`, ALICE);
+    assert.deepEqual([(await get(r3.id)).supersededBy, (await get(r4.id)).status], [r4.id, 'pending']);
     // An active one with a pending change isn't retired out from under it either.
     const a = (await srv.call('POST', '/api/requirements', ALICE, { requirement: 'Cache is per region.', justification: 'Ops.', tags: ['cache-ttl'] })).body.requirement;
     const b = (await srv.tool(AGENT, 'supersede_requirement', { id: a.id, requirement: 'Cache is global.', ...base })).value.requirement;

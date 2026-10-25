@@ -4806,16 +4806,18 @@ export class Store {
         this.db.prepare('UPDATE requirements SET superseded_by = ?, updated_at = ? WHERE num = ?').run(num, at, old);
       }
       // Its own replacement (only on records withdrawn before that was refused) counts while it's a
-      // lone pending change; once approved, this one was replaced and isn't brought back beside it.
+      // lone pending change; anything else means the line moved on, and it isn't brought back beside it.
       const next = current.supersededBy ? this.getRequirement(current.supersededBy) : null;
-      if (next?.status === 'active') throw new ConflictError(`${current.id} was replaced by ${next.id} since; it can't be restored beside it`);
+      if (next && (next.status !== 'pending' || next.supersededBy)) {
+        throw new ConflictError(`${current.id} was replaced by ${next.id} since; it can't be restored beside it`);
+      }
       this.db
         .prepare(
           'UPDATE requirements SET status = ?, superseded_by = ?, rejection_reason = NULL, rejected_replacing = NULL, updated_at = ? WHERE num = ?',
         )
         .run(
           current.status === 'rejected' ? 'pending' : 'active',
-          next?.status === 'pending' && !next.supersededBy ? this.requirementNum(next.id)! : null,
+          next ? this.requirementNum(next.id)! : null,
           at,
           num,
         );
@@ -4843,17 +4845,15 @@ export class Store {
       const kept = this.replacedBy(num);
       const pointing =
         status === 'rejected'
-          ? (
-              this.db
-                .prepare("SELECT num FROM requirements WHERE superseded_by = ? AND status IN ('pending', 'active', 'superseded')")
-                .all(num) as Row[]
-            ).map((r) => Number(r.num))
-          : kept;
-      for (const old of pointing) this.db.prepare('UPDATE requirements SET superseded_by = NULL, updated_at = ? WHERE num = ?').run(at, old);
+          ? (this.db.prepare('SELECT num, status FROM requirements WHERE superseded_by = ?').all(num) as Row[])
+          : kept.map((n) => ({ num: n, status: 'active' }));
+      for (const old of pointing) this.db.prepare('UPDATE requirements SET superseded_by = NULL, updated_at = ? WHERE num = ?').run(at, Number(old.num));
+      // Restore links back only what it can: requirements in force, and proposals it was swapped in for.
+      const relink = pointing.filter((r) => ['pending', 'active', 'superseded'].includes(r.status as string)).map((r) => Number(r.num));
       this.db
         .prepare('UPDATE requirements SET status = ?, rejection_reason = ?, rejected_replacing = ?, updated_at = ? WHERE num = ?')
-        .run(status, reason, status === 'rejected' && pointing.length ? JSON.stringify(pointing) : null, at, num);
-      return { requirement: this.requireRequirement(current.id), kept: pointing.map((n) => this.requireRequirement(String(n))) };
+        .run(status, reason, status === 'rejected' && relink.length ? JSON.stringify(relink) : null, at, num);
+      return { requirement: this.requireRequirement(current.id), kept: pointing.map((r) => this.requireRequirement(String(r.num))) };
     });
     for (const old of kept) this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });
