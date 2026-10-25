@@ -205,7 +205,7 @@ export interface Escalation {
   project: string;
   /** Short key of that project, so codes can be shown as "LS·A12" where projects mix. */
   projectKey: string;
-  laneId: string;
+  laneId: string | null;
   /** The decision being asked for; doubles as the headline. */
   question: string;
   /** Background a human needs to answer without opening the session. */

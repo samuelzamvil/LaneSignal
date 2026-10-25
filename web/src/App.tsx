@@ -16,7 +16,7 @@ import {
 } from './api.ts';
 import { Chips, GroupHeader, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout, useStored } from './components.tsx';
 import { onActiveTicket, ParkedRow, TicketDetail, TicketsContext } from './ticket-views.tsx';
-import { EpicCard, EpicDetail, EpicsContext, epicRoute, isEpicLane } from './epic-views.tsx';
+import { EpicCard, EpicDetail, EpicsContext, epicRoute, hasLane, laneKeyOf } from './epic-views.tsx';
 import { epicShows, epicsOnScreen, laneEpic } from './epics.ts';
 import { TicketLinksContext } from './linked-text.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
@@ -319,20 +319,20 @@ function Dashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [live.escalations, projectFilter],
   );
-  const laneOf = (e: { project: string; laneId: string }) => live.lanes.get(keyOf(e.project, e.laneId));
+  const laneOf = (e: Escalation) => live.lanes.get(laneKeyOf(e));
   const groupOfLane = (l: { project: string; group: string | null } | undefined) =>
     l?.group ? live.groups.get(keyOf(l.project, l.group)) : undefined;
   /** An escalation's group: its lane's, or for one raised on an epic, the epic's. */
   const groupOfEsc = (e: Escalation) => {
     const epic = e.epicId ? live.epics.get(String(e.epicId)) : undefined;
-    return isEpicLane(e.laneId) && epic ? live.groups.get(keyOf(epic.project, epic.group)) : groupOfLane(laneOf(e));
+    return !hasLane(e.laneId) && epic ? live.groups.get(keyOf(epic.project, epic.group)) : groupOfLane(laneOf(e));
   };
   // Inbox order: lanes by their oldest open question, then each lane's questions in order,
   // so a batch ("four questions from #921") reads top to bottom.
   const openByLane = new Map<string, typeof escalations>();
   for (const e of escalations) {
     if (e.state !== 'open') continue;
-    const k = keyOf(e.project, e.laneId);
+    const k = laneKeyOf(e);
     openByLane.set(k, [...(openByLane.get(k) ?? []), e]);
   }
   // Counts and badges are for blocking questions waiting on you; FYI ones, and ones where the
@@ -362,7 +362,7 @@ function Dashboard({
         ...[...live.escalations.values()]
           .filter(
             (e) =>
-              keyOf(e.project, e.laneId) === routeLaneKey ||
+              laneKeyOf(e) === routeLaneKey ||
               (e.ticketId !== null && e.project === routeLaneProject && e.ticketId === live.lanes.get(routeLaneKey)?.ticketId),
           )
           .map((e) => e.id + e.state),
@@ -399,10 +399,10 @@ function Dashboard({
   // Closed escalations drop out of the live map, which also changes this key.
   const escVersion = route.escId ? (routeEsc?.updatedAt ?? 'closed') : '';
   const seqOf = (e: (typeof escalations)[number]) => {
-    const siblings = openByLane.get(keyOf(e.project, e.laneId)) ?? [];
+    const siblings = openByLane.get(laneKeyOf(e)) ?? [];
     return siblings.length > 1 ? { index: siblings.indexOf(e), total: siblings.length } : undefined;
   };
-  const escLaneKey = routeEsc ? keyOf(routeEsc.project, routeEsc.laneId) : null;
+  const escLaneKey = routeEsc ? laneKeyOf(routeEsc) : null;
   /** In the combined view with several projects, codes and groups carry their project. */
   const showProject = multiProject && !projectFilter;
   const blockedLanes = lanes.filter((l) => l.status === 'blocked_human' && l.blockingEscalations === 0);

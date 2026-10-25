@@ -113,7 +113,8 @@ export function ntfyLinks(config: Pick<Config, 'publicUrl' | 'ntfyOpen'>, route:
 
 /** The agent's message on a lane (a milestone, maybe with files): quiet, and opens the lane. */
 /** "Group / Lane". A question raised on a group's own epic is filed on a lane named like the group: just "Group". */
-function whereOf(store: Store, laneId: string) {
+function whereOf(store: Store, laneId: string | null) {
+  if (laneId === null) return '';
   const lane = store.getLane(laneId);
   const parts = [lane?.group ? store.getGroup(lane.group)?.name : undefined, lane?.name ?? localId(laneId)].filter((x): x is string => !!x);
   return [...new Set(parts)].join(' / ');
@@ -222,7 +223,7 @@ export function startNotifier(
       return {
         title: `${reply ? 'Reply' : 'Update'} ${code} · ${where}`,
         body: esc.lastMessage!.body,
-        data: { escalationId: esc.id, laneId: localId(esc.laneId), project: esc.project },
+        data: { escalationId: esc.id, laneId: localId(esc.laneId ?? ''), project: esc.project },
         route: `#/esc/${esc.id}`,
         urgent,
         project: esc.project,
@@ -242,7 +243,7 @@ export function startNotifier(
         body: e.escalation.recommendation
           ? `${e.escalation.question}\nRecommended: ${e.escalation.recommendation}`
           : e.escalation.question,
-        data: { escalationId: e.escalation.id, laneId: localId(e.escalation.laneId), project: e.escalation.project },
+        data: { escalationId: e.escalation.id, laneId: localId(e.escalation.laneId ?? ''), project: e.escalation.project },
         route: `#/esc/${e.escalation.id}`,
         urgent,
         project: e.escalation.project,

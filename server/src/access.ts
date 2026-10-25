@@ -271,7 +271,8 @@ export function requirementInputFor(
 export const pub = {
   group: (g: Group): Group => ({ ...g, id: localId(g.id) }),
   lane: (l: Lane): Lane => ({ ...l, id: localId(l.id), group: l.group && localId(l.group) }),
-  escalation: <E extends Escalation>(e: E): E => ({ ...e, laneId: localId(e.laneId) }),
+  // An epic's own question has no lane a client knows: its internal lane is never shown.
+  escalation: <E extends Escalation>(e: E): E => ({ ...e, laneId: pubLaneId(e.laneId) }),
   requirement: (r: Requirement): Requirement => ({ ...r, group: r.group && localId(r.group) }),
   epic: (e: Epic): Epic => ({ ...e, group: localId(e.group) }),
   ticket: (t: Ticket): Ticket => ({
@@ -285,13 +286,13 @@ export const pub = {
    * re-checks it, so someone removed from a project meanwhile gets nothing from it.
    */
   wait: (w: WaitResult, projects?: string[]): WaitResult => {
-    const keep = (laneId: string) => !projects || projects.includes(projectOf(laneId));
+    const keep = (laneId: string | null) => !projects || (laneId !== null && projects.includes(projectOf(laneId)));
     return {
       ...w,
       decided: w.decided.filter((e) => keep(e.laneId)).map(pub.escalation),
       closed: w.closed.filter((e) => keep(e.laneId)).map(pub.escalation),
-      replies: w.replies.filter((r) => keep(r.laneId)).map((r) => ({ ...r, laneId: localId(r.laneId) })),
-      open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: localId(o.laneId) })),
+      replies: w.replies.filter((r) => keep(r.laneId)).map((r) => ({ ...r, laneId: pubLaneId(r.laneId) })),
+      open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: pubLaneId(o.laneId) })),
       removedLanes: w.removedLanes.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
       laneMessages: w.laneMessages.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
       movedTickets: w.movedTickets.filter((m) => keep(m.laneId)).map((m) => ({ ...m, laneId: localId(m.laneId) })),
@@ -333,7 +334,7 @@ export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean 
     upgraded: e.upgraded,
     turn: e.state === 'open' && e.turn === 'agent' ? 'agent' : undefined,
     projectKey: e.projectKey,
-    laneId: isEpicLane(e.laneId) ? undefined : e.laneId,
+    laneId: e.laneId === null || isEpicLane(e.laneId) ? undefined : e.laneId,
     // An epic's question: which epic (its lane, if any, is only where it was raised).
     epic: e.epicName,
     state: e.state,
@@ -422,6 +423,9 @@ export const briefMessages = (messages: Message[]) =>
 /** An epic's internal lane (its own questions are raised there), in either id form. */
 export const isEpicLane = (laneId: string) => /(^|\/)~epic-\d+$/.test(laneId);
 
+/** A lane id as clients know it; null for an epic's internal lane. */
+const pubLaneId = (laneId: string | null) => (laneId === null || isEpicLane(laneId) ? null : localId(laneId));
+
 /** The start of an agent's own question, so a digest item says which one without echoing it. */
 const gist = (text: string) => (text.length > 80 ? `${text.slice(0, 79)}…` : text);
 
@@ -432,11 +436,11 @@ const gist = (text: string) => (text.length > 80 ? `${text.slice(0, 79)}…` : t
  */
 export const digestWait = (w: WaitResult) => {
   // An epic's own question has no lane: its epic says where it is.
-  const esc = (e: { ref: string; laneId: string; question: string; projectKey?: string | null; epicName?: string | null }) =>
+  const esc = (e: { ref: string; laneId: string | null; question: string; projectKey?: string | null; epicName?: string | null }) =>
     compact({
       code: e.ref,
       project: e.projectKey ?? undefined,
-      lane: isEpicLane(e.laneId) ? undefined : e.laneId,
+      lane: e.laneId === null || isEpicLane(e.laneId) ? undefined : e.laneId,
       epic: e.epicName ?? undefined,
       question: gist(e.question),
     });

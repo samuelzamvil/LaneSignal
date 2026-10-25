@@ -4,7 +4,7 @@ import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
 import { openItem } from './nav.ts';
 import { useStored } from './components.tsx';
-import { isEpicLane } from './epic-views.tsx';
+import { hasLane, laneKeyOf } from './epic-views.tsx';
 
 type Outcome = '' | 'answered' | 'dismissed';
 
@@ -49,9 +49,9 @@ function HistoryRow({
           {outcome.text && <span className="history-note"> {outcome.text}</span>}
         </span>
         <span className="muted history-where">
-          {isEpicLane(esc.laneId) ? `◆ ${esc.epicName ?? 'epic'}` : (lane?.name ?? esc.laneId)}
+          {hasLane(esc.laneId) ? (lane?.name ?? esc.laneId) : `◆ ${esc.epicName ?? 'epic'}`}
           {esc.ticketRef && ` · ticket ${esc.ticketRef}`}
-          {!isEpicLane(esc.laneId) && esc.epicName && ` · ◆ ${esc.epicName}`}
+          {hasLane(esc.laneId) && esc.epicName && ` · ◆ ${esc.epicName}`}
           {esc.messageCount > 0 && ` · ${esc.messageCount} message${esc.messageCount > 1 ? 's' : ''}`} ·{' '}
           <span title={absolute(esc.updatedAt)}>{ago(esc.updatedAt, now)}</span>
         </span>
@@ -198,7 +198,7 @@ export function HistoryPane({
           <HistoryRow
             key={e.id}
             esc={e}
-            lane={lanes.get(keyOf(e.project, e.laneId))}
+            lane={lanes.get(laneKeyOf(e))}
             now={now}
             showProject={multiProject}
             selected={selectedId === e.id}

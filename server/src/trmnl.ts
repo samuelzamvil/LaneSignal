@@ -127,7 +127,8 @@ function laneAndGroup(store: Store, laneId: string) {
 
 function where(store: Store, laneId: string) {
   const { lane, group } = laneAndGroup(store, laneId);
-  return [group, lane].filter(Boolean).join(' / ');
+  // A question raised on a group's own epic is filed on a lane named like the group.
+  return [...new Set([group, lane].filter(Boolean))].join(' / ');
 }
 
 /** The status pill of the app's list rows. */
@@ -148,7 +149,7 @@ function escalationCard(store: Store, e: Escalation): CardData {
     type: 'escalation',
     label: statusOf(e),
     code: e.ref,
-    ...laneAndGroup(store, e.laneId),
+    ...laneAndGroup(store, e.laneId ?? ''),
     title: clip(e.question, 200) ?? '',
     context: clip(e.context, 360),
     message: e.lastMessage ? clip(`${e.lastMessage.from === 'agent' ? 'Agent' : 'You'}: ${e.lastMessage.body}`, 300) : null,

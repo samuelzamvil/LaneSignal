@@ -12,8 +12,15 @@ export const EpicsContext = createContext<Map<string, Epic>>(new Map());
 /** An epic's sheet. */
 export const epicRoute = (project: string, id: number) => `#/epic/${encodeURIComponent(project)}/${id}`;
 
-/** An epic's own questions are raised on its internal lane ("~epic-<n>"), which isn't a lane anyone opens. */
-export const isEpicLane = (laneId: string) => /^~epic-\d+$/.test(laneId);
+/**
+ * Whether a question was raised on a lane anyone can open. One raised on an epic directly has none
+ * (`laneId` null; servers from before this change sent its internal lane, "~epic-<n>").
+ */
+export const hasLane = (laneId: string | null): laneId is string => laneId !== null && !/^~epic-\d+$/.test(laneId);
+
+/** A question's lane key, or its epic's for one raised on the epic: questions are grouped by it. */
+export const laneKeyOf = (e: Pick<Escalation, 'project' | 'laneId' | 'epicId'>) =>
+  `${e.project}/${hasLane(e.laneId) ? e.laneId : `~epic-${e.epicId}`}`;
 
 /** An epic's board, as the per-device "new message" marker keys it. */
 const board = (e: Epic) => ({ project: e.project, id: `~epic-${e.id}`, lastAgentMessageId: e.lastAgentMessageId });
@@ -255,7 +262,7 @@ export function EpicDetail({
                     <a href={`#/esc/${e.id}`} className="esc-row">
                       <span className="state">{e.ref}</span> {e.question}
                     </a>
-                    {!isEpicLane(e.laneId) && <span className="muted"> · from {lane(e.laneId)}</span>}
+                    {hasLane(e.laneId) && <span className="muted"> · from {lane(e.laneId)}</span>}
                     {e.decision && (
                       <span className="decision">
                         {' '}

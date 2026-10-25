@@ -8,7 +8,7 @@ import { keyOf } from './merge.ts';
 import { openItem, stepTo } from './nav.ts';
 import { toast } from './toast.tsx';
 import { TicketChip, useSeparateTicket, useTicketLabel } from './ticket-views.tsx';
-import { EpicChip, EpicsContext, isEpicLane } from './epic-views.tsx';
+import { EpicChip, EpicsContext, hasLane, laneKeyOf } from './epic-views.tsx';
 
 /** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
 export function isCodeOf(e: Escalation, code: string) {
@@ -347,7 +347,7 @@ function EscHead({
         {showProject ? `${esc.projectKey}·${esc.ref}` : esc.ref}
       </span>
       {/* Raised on an epic directly, it has no lane to open. */}
-      {!isEpicLane(esc.laneId) && (
+      {hasLane(esc.laneId) && (
         <a
           className="lane-ref"
           href={`#/lane/${encodeURIComponent(esc.project)}/${encodeURIComponent(esc.laneId)}`}
@@ -532,8 +532,8 @@ export function EscalationRow({
       <span className="esc-row-main">
         <span className="esc-row-question">{esc.question}</span>
         <span className="muted esc-row-where">
-          {isEpicLane(esc.laneId) ? `◆ ${esc.epicName ?? 'epic'}` : (lane?.name ?? esc.laneId)}
-          {!isEpicLane(esc.laneId) && esc.epicName && ` · ◆ ${esc.epicName}`}
+          {hasLane(esc.laneId) ? (lane?.name ?? esc.laneId) : `◆ ${esc.epicName ?? 'epic'}`}
+          {hasLane(esc.laneId) && esc.epicName && ` · ◆ ${esc.epicName}`}
           {ticketLabel && ` · ${ticketLabel}`}
           {esc.attachments.length > 0 && (
             <>
@@ -608,7 +608,7 @@ export function EscalationDetail({
   // Fetch by id when the live data already resolved the code: a bare code is ambiguous across projects.
   const target = currentId ?? id;
   const esc = loaded && (loaded.id === target || isCodeOf(loaded, id)) ? loaded : null;
-  const lane = esc ? lanes.get(keyOf(esc.project, esc.laneId)) : undefined;
+  const lane = esc ? lanes.get(laneKeyOf(esc)) : undefined;
   // Its lane's group, or for one raised on an epic, the epic's.
   const epic = esc?.epicId ? epics.get(String(esc.epicId)) : undefined;
   const group = lane?.group ? groups.get(keyOf(lane.project, lane.group)) : epic ? groups.get(keyOf(epic.project, epic.group)) : undefined;

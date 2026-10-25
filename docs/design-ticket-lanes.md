@@ -325,7 +325,11 @@ Each PR is shippable on its own, with tests, wiki updates and an adversarial rev
 10. **Close approval** needs a signed-in person, not a personal key, as requirement approval does.
 11. **Every lane is in a group:** new lanes published without one, or moved to none, join the project's "Ungrouped" group.
 12. **A ticketless lane published with a working status** shows `idle`, with a warning.
-13. **Digest items for an epic's own question** name the epic instead of a lane.
+13. **An epic's own question** has no lane for clients: `laneId` is `null` in the API, and digest items name the epic instead.
+14. **Two groups with one ticket at upgrade** (a train and the one that replaced it): the first gets the real epic, the other stands in, since an epic has one group.
+15. **Lanes blocked only by their own earlier questions** (raised before they took their ticket, the epic's now) show `awaiting_agent` after the upgrade, as at the tickets upgrade.
+16. **Naming epics:** an epic named from a lane must be in the lane's group, and an existing epic named with another group is refused. A real epic keeps a ref (it can change, not be cleared).
+17. **Any agent key of the project** may use the epic tools, as with `update_group`; the overseer is whoever does.
 
 ## Risks
 
