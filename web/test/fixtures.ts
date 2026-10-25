@@ -1,4 +1,4 @@
-import type { Escalation, Lane } from '../src/api.ts';
+import type { Escalation, Lane, Ticket } from '../src/api.ts';
 
 export const lane = (over: Partial<Lane> = {}): Lane => ({
   id: 'l1',
@@ -32,6 +32,7 @@ export const escalation = (over: Partial<Escalation> = {}): Escalation => ({
   id: 'e1',
   ref: 'A1',
   ticketId: null,
+  ticketRef: null,
   project: 'p',
   projectKey: 'P',
   laneId: 'l1',
@@ -64,5 +65,29 @@ export const escalation = (over: Partial<Escalation> = {}): Escalation => ({
   decidedAt: null,
   acknowledgedAt: null,
   resolution: null,
+  ...over,
+});
+
+export const ticket = (over: Partial<Ticket> = {}): Ticket => ({
+  id: 1,
+  project: 'p',
+  ref: 'redmine:500',
+  displayRef: '500',
+  code: '500',
+  url: null,
+  group: null,
+  lane: null,
+  lastLane: null,
+  state: 'parked',
+  parkReason: null,
+  waitingOn: null,
+  status: 'active',
+  statusSince: '2026-10-01T00:00:00.000Z',
+  blockedSince: null,
+  blockedTotalMs: 0,
+  openEscalations: 0,
+  createdAt: '2026-10-01T00:00:00.000Z',
+  updatedAt: '2026-10-01T00:00:00.000Z',
+  closedAt: null,
   ...over,
 });

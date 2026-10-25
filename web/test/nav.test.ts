@@ -28,3 +28,10 @@ test("an entry that doesn't say where it came from is just Back", () => {
   assert.equal(labelFor({ inApp: true }, '#/lanes'), 'Back');
   assert.equal(labelFor(null, '#/lanes'), 'Lanes');
 });
+
+test('a ticket opened from a lane goes back to the lane', () => {
+  const fromLane = nextEntry({ hash: '#/lane/p/slot-1', inApp: true, from: '#/lanes' }, false);
+  assert.equal(labelFor(fromLane, '#/lanes'), 'Lane');
+  const fromTicket = nextEntry({ hash: '#/ticket/p/redmine%3A500', inApp: true, from: '#/lane/p/slot-1' }, false);
+  assert.equal(labelFor(fromTicket, '#/lanes'), 'Ticket');
+});

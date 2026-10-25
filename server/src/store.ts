@@ -1367,6 +1367,10 @@ export class Store {
       url: this.resolveTicketUrl(ref) ?? (/^https?:\/\//i.test(ref) ? ref : null),
       group: (r.group_id as string | null) ?? null,
       lane: (r.lane_id as string | null) ?? null,
+      lastLane:
+        ((this.db.prepare("SELECT lane_id FROM lane_events WHERE ticket_id = ? AND kind = 'ticket' ORDER BY id DESC LIMIT 1").get(Number(r.num)) as
+          | Row
+          | undefined)?.lane_id as string | null) ?? null,
       state: r.state as TicketState,
       parkReason: (r.park_reason as string | null) ?? null,
       waitingOn: (r.waiting_on as string | null) ?? null,
@@ -1403,6 +1407,20 @@ export class Store {
       this.db
         .prepare(`SELECT * FROM tickets WHERE ${where.join(' AND ')}${p.sql} ORDER BY updated_at DESC, num DESC LIMIT ?`)
         .all(...params, filter.limit ?? 500) as Row[]
+    ).map((r) => this.ticketFromRow(r));
+  }
+
+  /** The tickets clients keep: held and parked ones, and any an unresolved escalation belongs to. */
+  snapshotTickets(projects?: string[]): Ticket[] {
+    const p = this.inProjects(projects);
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM tickets WHERE (state IN ('in_lane', 'parked')
+             OR num IN (SELECT ticket_id FROM escalations WHERE state IN ('open', 'decided') AND ticket_id IS NOT NULL))${p.sql}
+           ORDER BY num`,
+        )
+        .all(...p.params) as Row[]
     ).map((r) => this.ticketFromRow(r));
   }
 
@@ -1661,6 +1679,13 @@ export class Store {
       id: r.id as string,
       ref: (r.code as string | null) ?? (r.letter_index == null ? String(r.ref) : `${letterOf(Number(r.letter_index))}${Number(r.seq)}`),
       ticketId: r.ticket_id == null ? null : Number(r.ticket_id),
+      ticketRef:
+        r.ticket_id == null
+          ? null
+          : (() => {
+              const t = this.db.prepare('SELECT ref FROM tickets WHERE num = ?').get(Number(r.ticket_id)) as Row | undefined;
+              return t ? this.refs.display(t.ref as string) : null;
+            })(),
       project: r.project_id as string,
       projectKey: this.projectKeyOf(r.project_id as string),
       laneId: r.lane_id as string,
@@ -1738,6 +1763,8 @@ export class Store {
     query?: string;
     groupId?: string;
     states?: ('acknowledged' | 'withdrawn')[];
+    /** Leave out escalations whose ticket no lane holds. */
+    activeTickets?: boolean;
     before?: { at: string; id: string };
     limit?: number;
   }): { items: Escalation[]; next: { at: string; id: string } | null } {
@@ -1748,6 +1775,7 @@ export class Store {
       where.push('lane_id IN (SELECT id FROM lanes WHERE group_id = ?)');
       params.push(filter.groupId);
     }
+    if (filter.activeTickets) where.push('(ticket_id IS NULL OR ticket_id IN (SELECT num FROM tickets WHERE lane_id IS NOT NULL))');
     const text = filter.query?.trim();
     if (text) {
       const like = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
@@ -1756,9 +1784,10 @@ export class Store {
       where.push(
         `(${fields.map((f) => `${f} LIKE ? ESCAPE '\\'`).join(' OR ')}
           OR EXISTS (SELECT 1 FROM messages m WHERE m.escalation_id = escalations.id AND m.body LIKE ? ESCAPE '\\')
-          OR code = ? COLLATE NOCASE${code ? ' OR (letter_index = ? AND seq = ?)' : ''})`,
+          OR code = ? COLLATE NOCASE OR ticket_id IN (SELECT num FROM tickets WHERE ref = ?)${code ? ' OR (letter_index = ? AND seq = ?)' : ''})`,
       );
-      params.push(...fields.map(() => like), like, text.replace(/^#/, ''));
+      // A ticket ref in any form ("967", "#967", "redmine:967", its URL) finds that ticket's escalations.
+      params.push(...fields.map(() => like), like, text.replace(/^#/, ''), this.refs.canonical(text));
       if (code) params.push(indexOfLetter(code[1].toUpperCase()), Number(code[2]));
     }
     if (filter.before) {

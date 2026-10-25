@@ -5,6 +5,8 @@ import { ago, absolute, blockedMs, duration, isStale, needsHuman, STATUS_META } 
 import { hasNewMessage, markMessagesSeen } from './seen.ts';
 import { LinkedText } from './linked-text.tsx';
 import { toast } from './toast.tsx';
+import { withSwitchMarkers } from './switches.ts';
+import { TicketChip } from './ticket-views.tsx';
 
 /** A choice from `allowed`, remembered on this device; `fallback` when nothing (valid) is stored. */
 export function useStored<T extends string>(key: string, allowed: readonly T[], fallback: T): [T, (v: T) => void] {
@@ -76,7 +78,7 @@ export function LayoutToggle({ layout, onChange }: { layout: Layout; onChange: (
  * A part of the lane sheet that folds away under its heading. Open or folded is remembered on
  * this device for every lane, so a part you don't read stays out of the way.
  */
-function SheetSection({
+export function SheetSection({
   title,
   count,
   badge,
@@ -109,8 +111,8 @@ function SheetSection({
   );
 }
 
-type Fold = 'open' | 'folded';
-const FOLD: readonly Fold[] = ['open', 'folded'];
+export type Fold = 'open' | 'folded';
+export const FOLD: readonly Fold[] = ['open', 'folded'];
 /** Unresolved: still open, or answered and not yet picked up by the agent. */
 const ACTIVE_STATES: readonly Escalation['state'][] = ['open', 'decided'];
 type EscFilter = 'active' | 'history' | 'all';
@@ -435,7 +437,19 @@ export function LaneDetail({
               )}
               <dt>Ticket</dt>
               <dd>
-                {data.lane.ticket ? <TicketLink lane={data.lane} /> : <span className="muted">none</span>}
+                {data.lane.ticket ? (
+                  <>
+                    <a href={`#/ticket/${encodeURIComponent(data.lane.project)}/${encodeURIComponent(data.lane.ticket)}`}>{data.lane.ticket}</a>
+                    {data.lane.ticketUrl && (
+                      <>
+                        {' · '}
+                        <TicketLink lane={{ ticket: 'open in tracker', ticketUrl: data.lane.ticketUrl }} />
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <span className="muted">none</span>
+                )}
                 {data.lane.waitingOn && ` · waiting on ${data.lane.waitingOn}`}
               </dd>
               <dt>Agent</dt>
@@ -487,7 +501,9 @@ export function LaneDetail({
                     <li key={e.id} className={`state-${e.state}`}>
                       <a href={`#/esc/${e.id}`} className="esc-row">
                         <span className="state">{e.state}</span> {e.question}
-                      </a>
+                      </a>{' '}
+                      {/* Its ticket: this lane's, or one parked or finished since. */}
+                      <TicketChip esc={e} />
                       {e.decision && (
                         <span className="decision">
                           {' '}
@@ -552,20 +568,31 @@ export function LaneDetail({
               onToggle={() => setEventsFold(eventsFold === 'open' ? 'folded' : 'open')}
             >
               <ol className="timeline">
-                {data.events.map((ev) => (
-                  <li key={ev.id} className={`kind-${ev.kind}`}>
-                    <time title={absolute(ev.at)}>{ago(ev.at, now)}</time>
-                    <span>{ev.message}</span>
-                    {ev.actor && <span className="actor">{ev.actor}</span>}
-                  </li>
-                ))}
+                {withSwitchMarkers(data.events).map((item) =>
+                  item.kind === 'switch' ? (
+                    <li key={item.id} className="switch">
+                      <time title={absolute(item.at)}>{ago(item.at, now)}</time>
+                      <span>{item.text}</span>
+                      {item.actor && <span className="actor">{item.actor}</span>}
+                    </li>
+                  ) : (
+                    <li key={item.event.id} className={`kind-${item.event.kind}`}>
+                      <time title={absolute(item.event.at)}>{ago(item.event.at, now)}</time>
+                      <span>{item.event.message}</span>
+                      {item.event.actor && <span className="actor">{item.event.actor}</span>}
+                    </li>
+                  ),
+                )}
               </ol>
             </SheetSection>
             {canDelete && (
               <button
                 className="ghost danger"
                 onClick={() => {
-                  if (confirm(`Remove "${data.lane.name}" from the dashboard? Its open questions are withdrawn; its history stays available in exports.`)) {
+                  const fate = data.lane.ticket
+                    ? `Its ticket ${data.lane.ticket} is ${data.lane.status === 'completed' ? 'marked done' : 'parked'} and keeps its questions; questions raised while it held no ticket are withdrawn.`
+                    : 'Its open questions are withdrawn.';
+                  if (confirm(`Remove "${data.lane.name}" from the dashboard? ${fate} Its history stays available in exports.`)) {
                     client
                       .deleteLane(data.lane.project, data.lane.id)
                       .then(onClose)

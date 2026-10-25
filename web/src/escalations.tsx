@@ -7,6 +7,7 @@ import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
 import { openItem, stepTo } from './nav.ts';
 import { toast } from './toast.tsx';
+import { TicketChip } from './ticket-views.tsx';
 
 /** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
 export function isCodeOf(e: Escalation, code: string) {
@@ -351,7 +352,9 @@ function EscHead({
         {lane?.name ?? esc.laneId}
       </a>
       {(group || lane?.group) && <span className="tag">{group?.name ?? lane?.group}</span>}
-      {esc.ticket ? <TicketLink lane={esc} /> : lane && <TicketLink lane={lane} />}
+      {/* The ticket it belongs to, and what it's about when that's something else (e.g. a PR). */}
+      <TicketChip esc={esc} />
+      {esc.ticket && esc.ticket !== esc.ticketRef && <TicketLink lane={esc} />}
       <span className="when" title={absolute(esc.createdAt)}>
         {ago(esc.createdAt, now)}
       </span>
@@ -523,6 +526,7 @@ export function EscalationRow({
         <span className="esc-row-question">{esc.question}</span>
         <span className="muted esc-row-where">
           {lane?.name ?? esc.laneId}
+          {esc.ticketRef && ` · ${esc.ticketRef}`}
           {esc.attachments.length > 0 && (
             <>
               {' · '}

@@ -366,6 +366,82 @@ textarea {
   font-size: 0.85rem;
 }
 
+/* The ticket an escalation belongs to; dimmed while no lane holds it (its questions block no lane). */
+.ticket-ref {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  text-decoration: none;
+}
+.ticket-ref.away {
+  color: var(--muted);
+  border-style: dashed;
+}
+.ticket-state {
+  font-family: inherit;
+}
+
+.inbox-filter {
+  display: flex;
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* Parked tickets under a group: folded by default. */
+.parked {
+  margin-top: 8px;
+}
+.parked .section-toggle {
+  font-size: 0.9rem;
+  color: var(--muted);
+  background: none;
+}
+.parked-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.parked-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+}
+.parked-ref {
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  min-width: 4ch;
+}
+.parked-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 0.9rem;
+}
+.parked-main .muted {
+  font-size: 0.8rem;
+}
+
+.sheet-ticket {
+  --kind: var(--accent);
+}
+.sheet-ticket .sheet-head {
+  background: color-mix(in srgb, var(--kind) 9%, var(--bg));
+  border-top: 3px solid var(--kind);
+}
+.ticket-lanes {
+  font-size: 0.9rem;
+}
+
 .links {
   display: flex;
   flex-wrap: wrap;
@@ -1042,6 +1118,12 @@ textarea {
 
 .timeline .kind-escalation span:first-of-type {
   font-weight: 600;
+}
+
+/* A ticket switch: the lane let one ticket go and took the next. */
+.timeline .switch span:first-of-type {
+  font-weight: 600;
+  color: var(--accent);
 }
 
 /* A lane's conversation: the agent's milestones and the owner's notes. */
