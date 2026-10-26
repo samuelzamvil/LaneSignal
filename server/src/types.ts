@@ -438,7 +438,7 @@ export interface Requirement {
   requirement: string;
   /** Why, and where the decision was made. */
   justification: string;
-  /** 1-3 specific kebab-case tags naming a capability. */
+  /** Retired: tags older requirements were recorded with (products replaced them). Empty on new ones. */
   tags: string[];
   status: RequirementStatus;
   /** Set when superseded: the requirement that replaced this one. */

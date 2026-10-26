@@ -234,7 +234,6 @@ export function requirementInputFor(
   body: {
     requirement: string;
     justification: string;
-    tags: string[];
     group?: string | null;
     sourceEscalation?: string | null;
     decidedBy?: string | null;
@@ -249,6 +248,7 @@ export function requirementInputFor(
     throw new ValidationError(`allProjects and scope "${body.scope}" disagree: a requirement for all projects is scope "global"`);
   }
   if (body.scope === 'global') body = { ...body, allProjects: true };
+  else if (body.allProjects && body.scope === undefined) body = { ...body, scope: 'global' };
   const keepScope =
     current !== undefined && body.allProjects === undefined && body.scope === undefined && body.group === undefined && !project;
   // Without a project: the group's, or the cited escalation's.
@@ -271,7 +271,6 @@ export function requirementInputFor(
   return {
     requirement: body.requirement,
     justification: body.justification,
-    tags: body.tags,
     project: scopeProject,
     ...(body.scope !== undefined ? { scope: body.scope, products: body.products } : {}),
     ...(body.scope === undefined && body.products?.length ? { scope: 'products' as const, products: body.products } : {}),
@@ -418,19 +417,27 @@ export const briefEpic = (e: Epic) =>
     updatedAt: e.updatedAt,
   });
 
-/** A requirement as agents read it: the decision and why, without bookkeeping. */
-export const briefRequirement = (r: Requirement) =>
+/**
+ * A requirement as agents read it: the rule, where it applies and its status. Why, and who decided,
+ * only when asked for (`full`): agents read many requirements, and the reasoning is for audits.
+ */
+export const briefRequirement = (r: Requirement, full = false) =>
   compact({
     id: r.id,
-    project: r.project ?? 'all',
-    group: r.group,
     requirement: r.requirement,
-    justification: r.justification,
-    tags: r.tags,
-    status: r.status === 'active' ? undefined : r.status,
+    scope: r.scope,
+    products: r.scope === 'products' ? r.products : undefined,
+    status: r.status,
     supersededBy: r.supersededBy,
-    decidedBy: r.decidedBy,
-    sourceEscalation: r.sourceEscalation,
+    needsRegrouping: r.needsRegrouping || undefined,
+    ...(full
+      ? {
+          project: r.project ?? 'all',
+          justification: r.justification,
+          decidedBy: r.decidedBy,
+          sourceEscalation: r.sourceEscalation,
+        }
+      : {}),
   });
 
 /** Messages as agents read them: what was said, by whom, when, and any files. */

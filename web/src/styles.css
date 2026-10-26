@@ -1673,28 +1673,6 @@ textarea {
   font-size: 1.05rem;
 }
 
-.req-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0;
-}
-
-.chip-tag {
-  min-height: 32px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  font-size: 0.85rem;
-}
-
-.chip-tag.on {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
 .requirements input[type='search'] {
   width: 100%;
 }

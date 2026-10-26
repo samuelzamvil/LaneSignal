@@ -248,19 +248,6 @@ export const waitQuery = z
 
 // ---- requirements ----
 
-/** Specific, kebab-case: "payout-retries", not "backend". */
-export const requirementTag = z
-  .string()
-  .min(2)
-  .max(40)
-  .regex(/^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$/, 'tags are kebab-case words, e.g. "payout-retries"');
-
-/** Lowercased and de-duplicated before the 1-3 limit applies. */
-const requirementTags = z.preprocess(
-  (v) => (Array.isArray(v) ? [...new Set(v.map((t) => (typeof t === 'string' ? t.trim().toLowerCase() : t)))] : v),
-  z.array(requirementTag).min(1).max(3),
-);
-
 /** A product's id within its project: kebab-case, e.g. "billing". */
 export const productId = z
   .string()
@@ -299,8 +286,7 @@ export const JUSTIFICATION_MAX = 800;
 export const requirementInput = z.object({
   requirement: z.string().trim().min(1).max(REQUIREMENT_MAX),
   justification: z.string().trim().min(1).max(JUSTIFICATION_MAX),
-  tags: requirementTags,
-  /** Group (train/epic) id; omit or null for a product-wide requirement. */
+  /** The train/epic it was decided for: lets an agent cite an escalation from that group's lanes. Not its scope. */
   group: groupId.nullable().optional(),
   /** Answered escalation the owner decided this in (id or code like "A12"). */
   sourceEscalation: z.string().min(1).max(100).nullable().optional(),
@@ -308,7 +294,7 @@ export const requirementInput = z.object({
   decidedBy: z.string().trim().min(1).max(100).nullable().optional(),
   /** An owner-wide rule that applies to every project, rather than to the request's project. */
   allProjects: z.boolean().optional(),
-  /** Global, project-wide, or the products in `products`. */
+  /** Global, project-wide, or the products in `products`. Required when recording (`products` alone implies it); a supersede keeps the old one's. */
   scope: z.enum(REQUIREMENT_SCOPES).optional(),
   products: productIds.optional(),
 })
@@ -319,7 +305,6 @@ export const requirementEdit = z
   .object({
     requirement: z.string().trim().min(1).max(REQUIREMENT_MAX).optional(),
     justification: z.string().trim().min(1).max(JUSTIFICATION_MAX).optional(),
-    tags: requirementTags.optional(),
   })
   .strict();
 
@@ -331,11 +316,12 @@ export const AGENT_REQUIREMENT_STATUSES = ['pending', 'active', 'superseded', 'r
 /** POST /api/requirements/:id/reject: why a pending record is turned down (required). */
 export const requirementReject = z.object({ reason: z.string().trim().min(1, 'Say why it is rejected').max(2000) }).strict();
 
-/** GET /api/requirements: ?q=&tag=a,b&group=&status=pending,active,superseded&limit= */
+/** GET /api/requirements: ?q=&group=&scope=&product=&applies_to=&regroup=&status=pending,active,superseded&limit= */
 export const requirementQuery = z
   .object({
     q: z.string().max(500).optional(),
-    tag: z.preprocess(csv, z.array(requirementTag).max(5)).optional(),
+    /** Everything that applies to these products: theirs, plus project-wide and global ones (as find_requirements). */
+    applies_to: z.preprocess(csv, z.array(productId).min(1).max(20)).optional(),
     group: groupId.optional(),
     /** Only global or only project-wide requirements. */
     scope: z.enum(['global', 'project']).optional(),

@@ -648,7 +648,7 @@ test('upgrading to approvals leaves earlier requirements pending; history keeps 
   const file = path.join(dir, 'lanesignal.db');
   try {
     let store = new Store({ path: file, resolveTicketUrl });
-    const input = { requirement: 'Payouts retry 5 times.', justification: 'Incident.', tags: ['payout-retries'], decidedBy: 'Sam', project: 'default' };
+    const input = { requirement: 'Payouts retry 5 times.', justification: 'Incident.', scope: 'project', decidedBy: 'Sam', project: 'default' };
     const old = store.recordRequirement(input, 'alice', true).requirement;
     const current = store.supersedeRequirement(old.id, { ...input, requirement: 'Payouts retry 3 times.' }, 'alice', true).requirement;
     assert.equal(current.status, 'active');
