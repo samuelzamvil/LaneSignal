@@ -37,8 +37,10 @@ test('tools/list leaves out $schema, validation-only limits and the group alias'
   assert.ok('group_id' in lanes.inputSchema.properties && !('group' in lanes.inputSchema.properties));
   const esc = tools.find((t: { name: string }) => t.name === 'create_escalation').inputSchema.properties;
   assert.equal(esc.question.maxLength, 1000, 'limits on text an agent writes stay');
-  assert.equal(esc.context.maxLength, undefined);
+  assert.equal(esc.context.maxLength, undefined, 'a 20,000-character limit nobody reaches is left out');
   assert.deepEqual(esc.context.type, ['string', 'null']);
+  const ack = tools.find((t: { name: string }) => t.name === 'acknowledge_escalation').inputSchema.properties;
+  assert.match(ack.id.description, /967A/, 'ids still say codes work, for clients that drop instructions');
 });
 
 test('the alias and the limits are still enforced', async () => {
@@ -49,10 +51,22 @@ test('the alias and the limits are still enforced', async () => {
   assert.equal(long.isError, true);
 });
 
+test('slimSchema leaves nullable enums alone and keeps the outer description', () => {
+  const out = slimSchema({
+    type: 'object',
+    properties: {
+      e: { anyOf: [{ type: 'string', enum: ['x', 'y'] }, { type: 'null' }] },
+      d: { description: 'outer', anyOf: [{ type: 'string', description: 'inner' }, { type: 'null' }] },
+    },
+  }) as any;
+  assert.ok(out.properties.e.anyOf, 'a nullable enum keeps its anyOf, so null stays allowed');
+  assert.deepEqual(out.properties.d, { description: 'outer', type: ['string', 'null'] });
+});
+
 test('slimSchema keeps a nullable type and nested items', () => {
   const out = slimSchema({
     type: 'object',
-    properties: { a: { anyOf: [{ type: 'string', maxLength: 5000 }, { type: 'null' }] }, b: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 } } },
+    properties: { a: { anyOf: [{ type: 'string', maxLength: 20000 }, { type: 'null' }] }, b: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 } } },
   }) as any;
   assert.deepEqual(out.properties.a, { type: ['string', 'null'] });
   assert.deepEqual(out.properties.b, { type: 'array', items: { type: 'string' } });

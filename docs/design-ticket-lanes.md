@@ -149,7 +149,7 @@ New read tools:
 
 **What the digest returns:**
 
-- **Items, one per thing to handle:** `{code, kind, id, text}`.
+- **Items, one per thing to handle:** `{code, kind, text}` for an escalation, `{kind, id, text}` for a lane, ticket or epic (originally `{code, kind, id, text}`; the escalation's id was dropped to save tokens, since every tool takes its code).
   - `decided` and `reply` **repeat on every wait until handled**: acknowledged, or replied to. A wait killed mid-way or a context compaction can't lose a decision.
   - Everything else is reported once per `since`: `lane_note`, `board_note`, `closed`, `lane_removed`, `ticket_moved`.
 - **The owner's words in full.** That text is the change, and fetching it in a second call would cost more. Agent text and unchanged fields are left out.
@@ -170,7 +170,7 @@ New read tools:
 
 - The sample background loop, checked against the digest.
 - **When nothing is open, wait in the background,** or pass `wait_seconds: 0` for a quick check. A tool-call wait now holds the session for its whole `wait_seconds`, and Remote Control can't reach a session while it's held.
-- **If the counts show something pending and the digest has nothing to act on, call `get_updates`.**
+- **If the counts show something pending and the digest has nothing to act on, call `get_updates`.** (Counts are left out when all are zero.)
 
 **Phone pushes are separate from waits:** each agent post on an epic board still sends a quiet push, as lane milestones do.
 

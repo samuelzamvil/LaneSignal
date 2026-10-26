@@ -134,6 +134,9 @@ const PROJECT = {
 };
 const PROJECT_WRITE = PROJECT;
 
+/** Short, since the instructions say it too; for clients that don't pass instructions on to the model. */
+const ESCALATION_ID = z.string().describe('Code ("967A") or id.');
+
 /**
  * Said once per session (MCP server instructions) rather than in every tool's parameters: agents
  * read every tool definition on connecting, so a repeated description costs tokens each time.
@@ -155,16 +158,20 @@ export function slimSchema(node: unknown): unknown {
   const o = { ...(node as Record<string, unknown>) };
   delete o.$schema;
   delete o.minLength;
-  // Limits on text an agent writes (a question, a requirement) help it; ids' and huge fields' don't.
-  if (typeof o.maxLength === 'number' && (o.maxLength < 200 || o.maxLength > 1000)) delete o.maxLength;
+  // Limits on text an agent writes (a question, a requirement, an activity) help it; ids' and huge fields' don't.
+  if (typeof o.maxLength === 'number' && (o.maxLength < 200 || o.maxLength > 5000)) delete o.maxLength;
   if (typeof o.maxItems === 'number' && o.maxItems >= 10) delete o.maxItems;
   if (Array.isArray(o.anyOf) && o.anyOf.length === 2) {
     const [x, y] = o.anyOf as Record<string, unknown>[];
     const nul = (v: Record<string, unknown>) => v && v.type === 'null' && Object.keys(v).length === 1;
     const one = nul(y) ? x : nul(x) ? y : null;
-    if (one && typeof one.type === 'string') {
-      delete o.anyOf;
-      Object.assign(o, slimSchema(one) as object, { type: [one.type, 'null'] });
+    // Only a plain type: with enum or const, a type array would still refuse null.
+    const plain = one && typeof one.type === 'string' && !['enum', 'const', 'anyOf', 'oneOf', 'allOf'].some((k) => k in one);
+    if (one && plain) {
+      const { anyOf: _anyOf, ...outer } = o;
+      // The outer node's own keys (its description) win over the inner branch's.
+      for (const k of Object.keys(o)) delete o[k];
+      Object.assign(o, slimSchema(one) as object, outer, { type: [one.type, 'null'] });
     }
   }
   if (o.properties && typeof o.properties === 'object') {
@@ -392,7 +399,7 @@ function buildServer(
             'To wait on several escalations, lanes or your whole group at once, use wait_for_decisions.'
           : 'Get one escalation in full.',
       inputSchema: {
-        id: z.string(),
+        id: ESCALATION_ID,
         ...(features.decisions ? { wait_seconds: z.number().int().min(0).max(300).optional() } : {}),
         ...PROJECT,
       },
@@ -851,7 +858,7 @@ function buildServer(
       'update_lane',
       {
         description:
-          `Publish a lane's state when it changes. Creates it on first call (pass your \`group\`); omitted fields ` +
+          `Publish a lane's state when it changes. Creates it on first call (pass your \`group_id\`); omitted fields ` +
           `are unchanged. ${STATUS_HELP} \`completed\` finishes its ticket and empties the lane. To change tickets use fill_lane ` +
           '(a different `ticket` here parks the one it held). PRs go in `links`, never `ticket`.' +
           (features.decisions ? ' `ownerMessages`: the owner\'s notes on the lane.' : ''),
@@ -1090,7 +1097,7 @@ function buildServer(
           description:
             'Record whether you agree or disagree with an open escalation\'s recommendation, with a short reason. ' +
             'One position per agent; calling again replaces yours. Use `agent` to name yourself if you share a token.',
-          inputSchema: { id: z.string(), ...s.position.shape, ...PROJECT },
+          inputSchema: { id: ESCALATION_ID, ...s.position.shape, ...PROJECT },
         },
         async ({ id, agent, project, ...rest }) => {
           try {
@@ -1115,7 +1122,7 @@ function buildServer(
             'keeps its current status (usually awaiting_agent). Repeating it returns the same result. Only the agent that ' +
             'raised it, the overseer of the group its ticket or epic is in, or a person, can acknowledge it.',
           inputSchema: {
-            id: z.string(),
+            id: ESCALATION_ID,
             note: z.string().max(5000).optional(),
             status: z.enum(LANE_STATUSES).optional(),
             activity: z.string().max(2000).optional(),
@@ -1142,7 +1149,7 @@ function buildServer(
             `${AGENT_MESSAGE_MAX} characters, plain and to the point: put anything longer in a file and pass its id in ` +
             '`attachments`. Notifies the owner. Only the agent that raised it can reply, or the overseer of the group its ticket or epic is in.',
           inputSchema: {
-            id: z.string(),
+            id: ESCALATION_ID,
             message: z.string().min(1).max(5000),
             attachments: s.escalationFields.attachments.describe('Ids returned by POST /api/attachments.'),
             ...PROJECT,
@@ -1173,7 +1180,7 @@ function buildServer(
           'Pass `status` and `activity` to publish what the lane does next; a lane this unblocks goes back to active. ' +
           'Only the agent that raised it can dismiss it, or the overseer of the group its ticket or epic is in.',
         inputSchema: {
-          id: z.string(),
+          id: ESCALATION_ID,
           justification: z.string().trim().min(1).max(2000),
           status: z.enum(LANE_STATUSES).optional(),
           activity: z.string().max(2000).optional(),
@@ -1202,7 +1209,7 @@ function buildServer(
             '`note` (older escalations may list `options`). With `change: true`, replace the decision on one that is ' +
             'decided but not yet acknowledged by its agent.',
           inputSchema: {
-            id: z.string(),
+            id: ESCALATION_ID,
             decision: z.string().min(1).max(2000),
             note: z.string().max(5000).optional(),
             change: z.boolean().optional(),
@@ -1224,7 +1231,7 @@ function buildServer(
       'dismiss_escalation',
       {
         description: 'Dismiss an escalation that no longer needs an answer, e.g. its agent\'s session ended.',
-        inputSchema: { id: z.string(), justification: z.string().max(2000).optional(), ...PROJECT },
+        inputSchema: { id: ESCALATION_ID, justification: z.string().max(2000).optional(), ...PROJECT },
       },
       async ({ id, justification, project }) => {
         try {
@@ -1239,10 +1246,11 @@ function buildServer(
   // tools/list as the SDK builds it, then trimmed (slimSchema). The SDK keeps its handlers in a
   // private map; wrapping the one it registered keeps every other part of the listing its own.
   type Handler = (request: unknown, extra: unknown) => Promise<{ tools: { inputSchema?: unknown }[] }>;
-  const handlers = (server.server as unknown as { _requestHandlers: Map<string, Handler> })._requestHandlers;
-  const list = handlers.get('tools/list');
-  if (list) {
-    handlers.set('tools/list', async (request, extra) => {
+  // If a later SDK keeps them elsewhere, the listing is simply left as the SDK builds it.
+  const handlers = (server.server as unknown as { _requestHandlers?: unknown })._requestHandlers;
+  const list = handlers instanceof Map ? (handlers.get('tools/list') as Handler | undefined) : undefined;
+  if (handlers instanceof Map && list) {
+    handlers.set('tools/list', async (request: unknown, extra: unknown) => {
       const result = await list(request, extra);
       return { ...result, tools: result.tools.map((t) => ({ ...t, inputSchema: slimSchema(t.inputSchema) })) };
     });
