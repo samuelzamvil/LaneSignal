@@ -66,6 +66,16 @@ export interface RequirementInput {
   decidedBy?: string | null;
 }
 
+/** Requirements waiting for a scope, with suggestions; see Store.regroupQueue. */
+export interface RegroupQueue {
+  items: { requirement: Requirement; suggested: { scope: RequirementScope; products: string[] } }[];
+  /** How many wait in all; `truncated` when that's more than `items` holds (the newest 500 come first). */
+  total: number;
+  truncated: boolean;
+  /** Product names suggested by the flagged requirements' old tags and trains, not yet products. */
+  candidates: { id: string; name: string; from: 'tag' | 'group'; requirements: number }[];
+}
+
 /** Where a person moves a requirement: global (project null), project-wide, or products of the project. */
 export interface ScopeTarget {
   scope: RequirementScope;
@@ -5152,6 +5162,83 @@ export class Store {
       from: JSON.parse(r.from_value as string) as RequirementChange['from'],
       to: JSON.parse(r.to_value as string) as RequirementChange['to'],
       at: r.at as string,
+    };
+  }
+
+  /**
+   * The regroup queue: requirements in force that still need a scope (a project's, plus global
+   * ones), each with a suggested scope, and product names their old tags and trains suggest that
+   * aren't products yet. Suggestions are worked out afresh each time, so adding a product
+   * improves them; nothing is applied until a person accepts it.
+   */
+  regroupQueue(project: string, includeGlobal: boolean): RegroupQueue {
+    const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const LIMIT = 500;
+    const flagged = this.findRequirements({ projects: [project], needsRegrouping: true, limit: LIMIT }).filter(
+      (r) => r.needsRegrouping && inForce(r) && (r.project === project || (includeGlobal && r.project === null)),
+    );
+    const total = Number(
+      (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM requirements WHERE needs_regrouping = 1 AND status IN ('pending', 'active')
+             AND (project_id = ?${includeGlobal ? ' OR project_id IS NULL' : ''})`,
+          )
+          .get(project) as Row
+      ).n,
+    );
+    const products = this.listProducts([project]);
+    // Trains from before products are often archived by now: their names still count.
+    const groupNames = new Map(
+      (this.db.prepare('SELECT id, name FROM groups WHERE project_id = ?').all(project) as Row[]).map((g) => [g.id as string, g.name as string]),
+    );
+    const keysOf = (r: Requirement) => {
+      const keys = new Set(r.tags.map(slug));
+      if (r.group) {
+        keys.add(slug(localId(r.group)));
+        const name = groupNames.get(r.group);
+        if (name) keys.add(slug(name));
+      }
+      return keys;
+    };
+    const items = flagged.map((r) => {
+      if (r.project === null) return { requirement: r, suggested: { scope: 'global' as const, products: [] } };
+      const keys = [...keysOf(r)];
+      const text = r.requirement.toLowerCase();
+      const matched = products
+        .filter((p) => {
+          const forms = [p.id, slug(p.name)];
+          return (
+            keys.some((k) => forms.some((f) => k === f || k.startsWith(`${f}-`))) ||
+            new RegExp(`(^|[^\\p{L}\\p{N}])${p.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'u').test(text)
+          );
+        })
+        .map((p) => p.id)
+        .sort();
+      return { requirement: r, suggested: matched.length ? { scope: 'products' as const, products: matched } : { scope: 'project' as const, products: [] } };
+    });
+    // Names the flagged requirements' tags and trains suggest, that no product (archived ones included) has yet.
+    const taken = new Set(this.listProducts([project], true).flatMap((p) => [p.id, slug(p.name)]));
+    const candidates = new Map<string, { id: string; name: string; from: 'tag' | 'group'; requirements: number }>();
+    for (const r of flagged) {
+      if (r.project === null) continue;
+      const seen = new Set<string>();
+      const add = (name: string, from: 'tag' | 'group') => {
+        const id = slug(name).slice(0, 40).replace(/-+$/, '');
+        if (id.length < 2 || seen.has(id) || [...taken].some((t) => id === t || id.startsWith(`${t}-`))) return;
+        seen.add(id);
+        const c = candidates.get(id) ?? { id, name, from, requirements: 0 };
+        c.requirements++;
+        candidates.set(id, c);
+      };
+      if (r.group) add(groupNames.get(r.group) ?? localId(r.group), 'group');
+      for (const t of r.tags) add(t, 'tag');
+    }
+    return {
+      items,
+      truncated: total > items.length,
+      total,
+      candidates: [...candidates.values()].sort((a, b) => b.requirements - a.requirements || a.id.localeCompare(b.id)).slice(0, 30),
     };
   }
 

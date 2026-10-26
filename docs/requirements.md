@@ -44,7 +44,12 @@ Every requirement says where it applies, and there's no default:
 
 **Changing the scope.** A person changes a requirement's scope at any time from its card (**Change scope**), or picks one while approving (**Save & approve**). It keeps its id and status, so no re-approval, and the change is logged with who made it and when (shown on the card, `GET /api/requirements/:id/changes`, and `requirement_changes.csv` in the export). Moving a requirement to global keeps its escalation citation, qualified with its project (`LS-A12`).
 
-**Requirements from before products** are flagged **Needs scope** (so is a replacement of one that keeps its scope). They keep counting as project-wide (or global, if they were for all projects) so none drop out of what agents see. Tick **Needs scope only** on the Requirements page to work through them.
+**Requirements from before products** are flagged **Needs scope** (so is a replacement of one that keeps its scope). They keep counting as project-wide (or global, if they were for all projects) so none drop out of what agents see. While any wait, the Requirements page (with a project chosen) says how many, with **Review**, which opens the regroup queue:
+
+1. **Products their old tags and trains suggest**, that aren't products yet, with how many requirements each covers. Tap one to add it as a product (you name it).
+2. **Each requirement with a suggested scope**: the products its old tags or train point at, or a product named in its text, otherwise project-wide. Global ones stay global, and only an instance admin (who may change global requirements) sees them here. **Accept** applies it; **Choose…** opens the scope picker. Suggestions are worked out afresh, so adding a product updates them. Nothing changes until you accept, and each acceptance is logged like any scope change.
+
+**Needs scope only** filters the list to them too. `GET /api/requirements/regroup` serves the queue.
 
 **Archiving** a product hides it from pickers. It's refused while requirements in force are scoped to it: rescope them first. A retired requirement on an archived product can't be restored until the product is unarchived.
 

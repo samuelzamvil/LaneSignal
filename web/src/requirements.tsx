@@ -316,6 +316,138 @@ function ProductsPanel({ client, project, products }: { client: Client; project:
   );
 }
 
+type RegroupQueue = Awaited<ReturnType<Client['regroupQueue']>>;
+
+/**
+ * Requirements from before products (or recorded without a scope) waiting for a person to choose one.
+ * First, products their old tags and trains suggest; then each requirement with a suggested scope to
+ * accept, or another to choose. Nothing changes until a person accepts.
+ */
+function RegroupPanel({
+  client,
+  project,
+  queue,
+  products,
+  projects,
+  canGlobal,
+  onClose,
+  onAccepted,
+}: {
+  client: Client;
+  project: string;
+  queue: RegroupQueue;
+  /** Drops an accepted item at once, without waiting for the live update. */
+  onAccepted: (id: string) => void;
+  products: Products;
+  projects: ProjectAccess[];
+  canGlobal: boolean;
+  onClose: () => void;
+}) {
+  const [choosing, setChoosing] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const act = async (key: string, fn: () => Promise<unknown>) => {
+    setBusy(key);
+    setError(null);
+    try {
+      await fn();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section className="regroup stack" aria-label="Regroup requirements">
+      <div className="pane-head">
+        <h3>
+          Choose a scope <span className="count">{queue.total}</span>
+        </h3>
+        <button className="ghost" onClick={onClose}>
+          Done
+        </button>
+      </div>
+      <p className="hint">
+        These were recorded before products existed (or without a scope). They count as project-wide until you choose.
+        Suggestions come from their old tags and trains; nothing changes until you accept.
+      </p>
+      {queue.candidates.length > 0 && (
+        <div className="regroup-candidates">
+          <p className="small">
+            <strong>Products their tags and trains suggest:</strong>
+          </p>
+          <div className="regroup-chips">
+            {queue.candidates.map((c) => (
+              <button
+                key={c.id}
+                className="ghost small"
+                disabled={busy !== null}
+                title={`From a ${c.from === 'group' ? 'train' : 'tag'} on ${c.requirements} requirement${c.requirements > 1 ? 's' : ''}`}
+                onClick={() => {
+                  const name = prompt('Add product', c.name.replace(/-/g, ' ').replace(/^\w/, (x) => x.toUpperCase()))?.trim();
+                  if (name) void act(`add:${c.id}`, () => client.createProduct(project, { id: c.id, name }));
+                }}
+              >
+                + {c.name} <span className="muted">({c.requirements})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {error && <p className="error">{error}</p>}
+      {queue.items.length === 0 && <p className="empty">Every requirement has a scope.</p>}
+      {queue.truncated && <p className="hint">Showing the newest {queue.items.length}; the rest follow as you go.</p>}
+      {queue.items.map(({ requirement: r, suggested }) => (
+        <article key={r.id} className={`req-card ${r.status}`}>
+          <header className="esc-head">
+            <span className="ref">{r.id}</span>
+            {r.status === 'pending' && <span className="pill tone-info">Pending approval</span>}
+          </header>
+          <h3>
+            <LinkedText text={r.requirement} />
+          </h3>
+          {r.tags.length > 0 && <p className="muted small">Old tags: {r.tags.join(', ')}</p>}
+          <p className="small">
+            Suggested: <strong>{scopeWords(suggested, products, r.project)}</strong>
+          </p>
+          {choosing === r.id ? (
+            <ScopePicker
+              req={{ ...r, scope: suggested.scope, products: suggested.products }}
+              products={products}
+              projects={projects}
+              defaultProject={project}
+              canGlobal={canGlobal}
+              client={client}
+              onDone={() => setChoosing(null)}
+            />
+          ) : (
+            <div className="actions">
+              <button
+                className="primary"
+                disabled={busy !== null}
+                onClick={() =>
+                  void act(r.id, async () => {
+                    await client.setRequirementScope(r.id, {
+                      scope: suggested.scope,
+                      ...(suggested.scope === 'products' ? { products: suggested.products } : {}),
+                    });
+                    onAccepted(r.id);
+                  })
+                }
+              >
+                Accept
+              </button>
+              <button className="ghost" disabled={busy !== null} onClick={() => setChoosing(r.id)}>
+                Choose…
+              </button>
+            </div>
+          )}
+        </article>
+      ))}
+    </section>
+  );
+}
+
 /** One line per requirement in the list layout; tapping it opens the full card in place. */
 function RequirementRow({ req, scopeName, onToggle }: { req: Requirement; scopeName: string; onToggle: () => void }) {
   return (
@@ -597,6 +729,8 @@ export function RequirementsPane({
   /** '', 'global', 'project', or 'product:<id>' (of the project being viewed). */
   const [scopeFilter, setScopeFilter] = useState('');
   const [regroupOnly, setRegroupOnly] = useState(false);
+  const [regrouping, setRegrouping] = useState(false);
+  const [queue, setQueue] = useState<(RegroupQueue & { project: string }) | null>(null);
   const [productList, setProductList] = useState<Product[]>([]);
   const [showOld, setShowOld] = useState(false);
   const [pendingOnly, setPendingOnly] = useState(false);
@@ -628,6 +762,20 @@ export function RequirementsPane({
   // Product filters and management need one project: the one being viewed, or the only one.
   const scopeProject = project || (projects.length === 1 ? projects[0].id : '');
   const projectProducts = productList.filter((p) => p.project === scopeProject);
+  // The regroup queue, for people who rescope: its count heads the page while anything waits.
+  useEffect(() => {
+    if (!canApprove || !scopeProject) return void setQueue(null);
+    let cancelled = false;
+    // Another project's queue never shows under this one, even for a moment.
+    setQueue((q) => (q && q.project === scopeProject ? q : null));
+    client
+      .regroupQueue(scopeProject)
+      .then((q) => !cancelled && setQueue({ ...q, project: scopeProject }))
+      .catch(() => !cancelled && setQueue(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [client, canApprove, scopeProject, version]);
   useEffect(() => {
     if (scopeFilter.startsWith('product:') && !projectProducts.some((p) => `product:${p.id}` === scopeFilter)) setScopeFilter('');
   }, [scopeProject, scopeFilter, productList]);
@@ -685,6 +833,28 @@ export function RequirementsPane({
         globally, project-wide, or to chosen products. An agent's record stays pending until a person approves it.
       </p>
       {canApprove && scopeProject && <ProductsPanel client={client} project={scopeProject} products={projectProducts} />}
+      {queue && queue.items.length > 0 && !regrouping && (
+        <div className="regroup-banner">
+          <span>
+            <strong>{queue.total}</strong> requirement{queue.total > 1 ? 's need' : ' needs'} a scope.
+          </span>
+          <button className="primary" onClick={() => setRegrouping(true)}>
+            Review
+          </button>
+        </div>
+      )}
+      {regrouping && queue && (
+        <RegroupPanel
+          client={client}
+          project={scopeProject}
+          queue={queue}
+          products={products}
+          projects={projects}
+          canGlobal={canGlobal}
+          onClose={() => setRegrouping(false)}
+          onAccepted={(id) => setQueue((q) => q && { ...q, total: q.total - 1, items: q.items.filter((i) => i.requirement.id !== id) })}
+        />
+      )}
       <div className="filters">
         <input type="search" placeholder="Search decisions…" value={query} onChange={(e) => setQuery(e.target.value)} />
         <div className="filter-row">

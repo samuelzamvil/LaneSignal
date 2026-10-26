@@ -267,6 +267,14 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
       request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/approve`, scope ?? {}),
     setRequirementScope: (id: string, scope: ScopeChoice) =>
       request<Requirement>('PUT', `/api/requirements/${encodeURIComponent(id)}/scope`, scope),
+    /** Requirements still to scope in a project, with suggestions (see the regroup queue). */
+    regroupQueue: (project: string) =>
+      request<{
+        items: { requirement: Requirement; suggested: { scope: RequirementScope; products: string[] } }[];
+        total: number;
+        truncated: boolean;
+        candidates: { id: string; name: string; from: 'tag' | 'group'; requirements: number }[];
+      }>('GET', `/api/requirements/regroup?project=${encodeURIComponent(project)}`),
     requirementChanges: (id: string) => request<RequirementChange[]>('GET', `/api/requirements/${encodeURIComponent(id)}/changes`),
     /** Products of a project (or of every project the caller sees), archived ones only when asked for. */
     products: (project?: string, archived = false) => {

@@ -1713,6 +1713,34 @@ textarea {
   padding-left: 18px;
 }
 
+/* The regroup queue: requirements waiting for a scope. */
+.regroup-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--info);
+  background: var(--surface);
+}
+
+.regroup {
+  margin: 0 0 16px;
+}
+
+.regroup .pane-head {
+  justify-content: space-between;
+}
+
+.regroup-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 /* Products, managed by a person on the Requirements page. */
 .products-panel {
   margin: 0 0 12px;
