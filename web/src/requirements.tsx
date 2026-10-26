@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Client, Group, ProjectAccess, Requirement } from './api.ts';
+import type { Client, Group, Product, ProjectAccess, Requirement, RequirementChange, ScopeChoice } from './api.ts';
 import { LayoutToggle, RichText, useLayout } from './components.tsx';
 import { LinkedText } from './linked-text.tsx';
 import { absolute } from './format.ts';
@@ -41,6 +41,256 @@ function StatusBadge({ req, onOpen }: { req: Requirement; onOpen?: (id: string) 
         <span className="pill tone-info">Replacement {ref(req.supersededBy)} pending</span>
       )}
     </>
+  );
+}
+
+/** Products keyed by keyOf(project, id). */
+type Products = Map<string, Product>;
+
+/** Where a requirement applies, as chips: Global, Project-wide, or each product (in its colour, with a lock when locked). */
+function ScopeChips({ req, products, projectName }: { req: Requirement; products: Products; projectName?: string }) {
+  return (
+    <>
+      {req.scope === 'global' && <span className="tag all-projects">Global</span>}
+      {req.scope === 'project' && <span className="tag">{projectName ? `${projectName} · ` : ''}Project-wide</span>}
+      {req.scope === 'products' &&
+        req.products.map((id) => {
+          const p = products.get(keyOf(req.project ?? '', id));
+          return (
+            <span key={id} className="tag product-tag" style={p?.color ? { borderColor: p.color, color: p.color } : undefined}>
+              {projectName ? `${projectName} · ` : ''}
+              {p?.name ?? id}
+              {p?.locked && <span aria-label="locked"> 🔒</span>}
+            </span>
+          );
+        })}
+      {req.needsRegrouping && <span className="pill tone-info">Needs scope</span>}
+    </>
+  );
+}
+
+/** Words for a scope, for a row or a history line. */
+function scopeWords(scope: { scope: Requirement['scope']; products: string[] }, products: Products, project: string | null) {
+  if (scope.scope === 'global') return 'Global';
+  if (scope.scope === 'project') return 'Project-wide';
+  return scope.products.map((id) => products.get(keyOf(project ?? '', id))?.name ?? id).join(', ');
+}
+
+/**
+ * Global, Project-wide, or Products (then which ones). A global requirement moving into a project,
+ * with several to choose from, says which.
+ */
+function ScopePicker({
+  req,
+  products,
+  projects,
+  defaultProject,
+  client,
+  onDone,
+}: {
+  req: Requirement;
+  products: Products;
+  projects: ProjectAccess[];
+  /** The project being viewed, if one. */
+  defaultProject: string;
+  client: Client;
+  onDone: () => void;
+}) {
+  const [scope, setScope] = useState<Requirement['scope']>(req.scope);
+  const [project, setProject] = useState(req.project ?? (defaultProject || (projects.length === 1 ? projects[0].id : '')));
+  const [chosen, setChosen] = useState<string[]>(req.products);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const options = [...products.values()].filter((p) => p.project === project && !p.archived);
+  const choice = (): ScopeChoice => ({
+    scope,
+    ...(scope === 'products' ? { products: chosen } : {}),
+    ...(scope !== 'global' && project !== req.project ? { project } : {}),
+  });
+  const ready = scope === 'global' || (!!project && (scope === 'project' || chosen.length > 0));
+  async function send(approve: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      if (approve) await client.approveRequirement(req.id, choice());
+      else await client.setRequirementScope(req.id, choice());
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="scope-picker stack" onClick={(e) => e.stopPropagation()}>
+      <label>
+        Applies to
+        <select value={scope} onChange={(e) => setScope(e.target.value as Requirement['scope'])}>
+          <option value="global">Global (every project)</option>
+          <option value="project">Project-wide</option>
+          <option value="products">Products…</option>
+        </select>
+      </label>
+      {scope !== 'global' && projects.length > 1 && req.project === null && (
+        <label>
+          Project
+          <select value={project} onChange={(e) => (setProject(e.target.value), setChosen([]))}>
+            <option value="">Choose…</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {scope === 'products' && (
+        <div className="scope-products">
+          {options.length === 0 && <p className="hint">This project has no products yet. Add them under Products above.</p>}
+          {options.map((p) => (
+            <label key={p.id} className="check">
+              <input
+                type="checkbox"
+                checked={chosen.includes(p.id)}
+                onChange={(e) => setChosen(e.target.checked ? [...chosen, p.id] : chosen.filter((x) => x !== p.id))}
+              />
+              <span style={p.color ? { color: p.color } : undefined}>{p.name}</span>
+              {p.locked && <span aria-label="locked"> 🔒</span>}
+            </label>
+          ))}
+        </div>
+      )}
+      {error && <p className="error">{error}</p>}
+      <div className="actions">
+        {req.status === 'pending' && (
+          <button className="primary" disabled={busy || !ready} onClick={() => void send(true)}>
+            Save &amp; approve
+          </button>
+        )}
+        <button className={req.status === 'pending' ? 'ghost' : 'primary'} disabled={busy || !ready} onClick={() => void send(false)}>
+          Save scope
+        </button>
+        <button className="ghost" disabled={busy} onClick={onDone}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Who moved a requirement where, for audits. */
+function ScopeHistory({ req, client, products, version }: { req: Requirement; client: Client; products: Products; version: number }) {
+  const [changes, setChanges] = useState<RequirementChange[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    client
+      .requirementChanges(req.id)
+      .then((c) => !cancelled && setChanges(c))
+      .catch(() => !cancelled && setChanges([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [client, req.id, version]);
+  if (!changes?.length) return null;
+  return (
+    <ul className="scope-history muted small">
+      {changes.map((c) => (
+        <li key={c.id}>
+          Scope changed from {scopeWords(c.from, products, c.from.project)} to {scopeWords(c.to, products, c.to.project)} by {c.actor} ·{' '}
+          {absolute(c.at)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The products requirements are scoped to, for a person to add, rename, recolour, lock and archive.
+ * A locked product refuses agents' changes to its requirements.
+ */
+function ProductsPanel({ client, project, products }: { client: Client; project: string; products: Product[] }) {
+  const [name, setName] = useState('');
+  const [id, setId] = useState('');
+  const [color, setColor] = useState('#3b82f6');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const slug = (text: string) =>
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40);
+  const act = (fn: () => Promise<unknown>) => {
+    setError(null);
+    fn().catch((e: Error) => setError(e.message));
+  };
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await client.createProduct(project, { id: id || slug(name), name, color });
+      setName('');
+      setId('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <details className="products-panel">
+      <summary>
+        Products <span className="count">{products.length}</span>
+      </summary>
+      <p className="hint">
+        Requirements apply globally, project-wide, or to the products you add here. Agents can't add products. Lock one
+        and agents can't add, change or move its requirements; you still can.
+      </p>
+      {products.map((p) => (
+        <div key={p.id} className={`product-row${p.archived ? ' archived' : ''}`}>
+          <input
+            type="color"
+            aria-label={`Colour of ${p.name}`}
+            value={p.color ?? '#888888'}
+            onChange={(e) => act(() => client.updateProduct(project, p.id, { color: e.target.value }))}
+          />
+          <span className="product-name">
+            <strong>{p.name}</strong> <span className="muted small">{p.id}</span>
+            <span className="muted small">
+              {' '}
+              · {p.requirements} in force{p.archived ? ' · archived' : ''}
+            </span>
+          </span>
+          <div className="actions">
+            <button
+              className="ghost"
+              onClick={() => {
+                const next = prompt('Rename product', p.name)?.trim();
+                if (next && next !== p.name) act(() => client.updateProduct(project, p.id, { name: next }));
+              }}
+            >
+              Rename
+            </button>
+            <button className={p.locked ? 'primary' : 'ghost'} onClick={() => act(() => client.updateProduct(project, p.id, { locked: !p.locked }))}>
+              {p.locked ? '🔒 Locked' : 'Lock'}
+            </button>
+            <button className="ghost" onClick={() => act(() => client.updateProduct(project, p.id, { archived: !p.archived }))}>
+              {p.archived ? 'Unarchive' : 'Archive'}
+            </button>
+          </div>
+        </div>
+      ))}
+      <form className="product-add inline-form" onSubmit={add}>
+        <input type="color" aria-label="Colour" value={color} onChange={(e) => setColor(e.target.value)} />
+        <input placeholder="Product name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} required />
+        <input placeholder={slug(name) || 'id'} value={id} maxLength={40} onChange={(e) => setId(e.target.value)} aria-label="Product id" />
+        <button className="primary" disabled={busy || !name.trim()}>
+          Add
+        </button>
+      </form>
+      {error && <p className="error">{error}</p>}
+    </details>
   );
 }
 
@@ -153,13 +403,27 @@ function RequirementCard({
   sourceCode,
   client,
   canEdit,
+  canApprove,
+  products,
+  projects,
+  project,
+  projectName,
+  version,
   onTag,
   onOpen,
   replaces,
 }: {
   req: Requirement;
-  /** Where it applies: a group, a project, or every project. */
-  scopeName: string;
+  /** Its train/epic, if it has one (from before products). */
+  scopeName: string | null;
+  canApprove: boolean;
+  products: Products;
+  projects: ProjectAccess[];
+  /** The project being viewed, or ''. */
+  project: string;
+  /** Its project's name, where projects mix. */
+  projectName?: string;
+  version: number;
   /** The cited escalation's code with its project key, so the link opens the right one. */
   sourceCode: string | null;
   client: Client;
@@ -171,12 +435,14 @@ function RequirementCard({
 }) {
   const [editing, setEditing] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [scoping, setScoping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
     <article className={`req-card ${req.status}`}>
       <header className="esc-head">
         <span className="ref">{req.id}</span>
-        <span className={`tag${req.project === null ? ' all-projects' : ''}`}>{scopeName}</span>
+        <ScopeChips req={req} products={products} projectName={projectName} />
+        {scopeName && <span className="tag">{scopeName}</span>}
         <StatusBadge req={req} onOpen={onOpen} />
         {replaces && (
           <span className="pill tone-info">
@@ -217,12 +483,21 @@ function RequirementCard({
             )}{' '}
             · recorded by {req.recordedBy} · {absolute(req.createdAt)}
           </p>
+          <ScopeHistory req={req} client={client} products={products} version={version} />
           {rejecting && <RejectConfirm req={req} client={client} onDone={() => setRejecting(false)} />}
-          {canEdit && inForce(req) && !rejecting && (
+          {scoping && (
+            <ScopePicker req={req} products={products} projects={projects} defaultProject={project} client={client} onDone={() => setScoping(false)} />
+          )}
+          {canEdit && inForce(req) && !rejecting && !scoping && (
             <div className="actions">
               {req.status === 'pending' && (
                 <button className="primary" onClick={() => client.approveRequirement(req.id).catch((e: Error) => setError(e.message))}>
                   Approve
+                </button>
+              )}
+              {canApprove && (
+                <button className="ghost" onClick={() => setScoping(true)}>
+                  Change scope
                 </button>
               )}
               <button className="ghost" onClick={() => setEditing(true)}>
@@ -270,6 +545,7 @@ export function RequirementsPane({
   project,
   groupLabel,
   canEdit,
+  canApprove,
   version,
 }: {
   client: Client;
@@ -280,7 +556,9 @@ export function RequirementsPane({
   project: string;
   groupLabel: string;
   canEdit: boolean;
-  /** Changes when a requirement changes, to refetch. */
+  /** Signed in (not a personal key): approves, rejects, rescopes, and manages products. */
+  canApprove: boolean;
+  /** Changes when a requirement or product changes, to refetch. */
   version: number;
 }) {
   const [query, setQuery] = useState('');
@@ -295,6 +573,10 @@ export function RequirementsPane({
     if (group && (!chosen || (project && chosen.project !== project))) setGroup('');
   }, [project, group, chosen?.project]);
   const [tags, setTags] = useState<string[]>([]);
+  /** '', 'global', 'project', or 'product:<id>' (of the project being viewed). */
+  const [scopeFilter, setScopeFilter] = useState('');
+  const [regroupOnly, setRegroupOnly] = useState(false);
+  const [productList, setProductList] = useState<Product[]>([]);
   const [showOld, setShowOld] = useState(false);
   const [pendingOnly, setPendingOnly] = useState(false);
   const [layout, setLayout] = useLayout('lanesignal.requirementsLayout');
@@ -310,6 +592,25 @@ export function RequirementsPane({
     return () => clearTimeout(t);
   }, [query]);
 
+  // Archived ones too, so requirements' history still names them; pickers leave them out.
+  useEffect(() => {
+    let cancelled = false;
+    client
+      .products(undefined, true)
+      .then((p) => !cancelled && setProductList(p))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [client, version]);
+  const products: Products = new Map(productList.map((p) => [keyOf(p.project, p.id), p]));
+  // Product filters and management need one project: the one being viewed, or the only one.
+  const scopeProject = project || (projects.length === 1 ? projects[0].id : '');
+  const projectProducts = productList.filter((p) => p.project === scopeProject);
+  useEffect(() => {
+    if (scopeFilter.startsWith('product:') && !projectProducts.some((p) => `product:${p.id}` === scopeFilter)) setScopeFilter('');
+  }, [scopeProject, scopeFilter, productList]);
+
   useEffect(() => {
     let cancelled = false;
     client
@@ -318,6 +619,9 @@ export function RequirementsPane({
         tags,
         project: chosen?.project ?? (project || undefined),
         group: chosen?.id,
+        scope: scopeFilter === 'global' || scopeFilter === 'project' ? scopeFilter : undefined,
+        product: scopeFilter.startsWith('product:') ? scopeFilter.slice('product:'.length) : undefined,
+        regroup: regroupOnly || undefined,
         statuses: pendingOnly ? ['pending'] : showOld ? ['pending', 'active', 'superseded', 'retired', 'rejected'] : ['pending', 'active'],
       })
       // The server pairs a pending change with the requirement it would replace; this filter shows the pending side only.
@@ -331,14 +635,15 @@ export function RequirementsPane({
     return () => {
       cancelled = true;
     };
-  }, [client, debounced, chosen?.project, chosen?.id, project, tags, showOld, pendingOnly, version]);
+  }, [client, debounced, chosen?.project, chosen?.id, project, tags, showOld, pendingOnly, scopeFilter, regroupOnly, version]);
 
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
-  const scopeOf = (r: Requirement) => {
-    if (r.project === null) return 'All projects';
-    const where = multiProject && !project ? `${projectName(r.project)} · ` : '';
-    return r.group ? where + (groups.get(keyOf(r.project, r.group))?.name ?? r.group) : multiProject ? projectName(r.project) : 'Product-wide';
-  };
+  /** Its project's name, shown where projects mix. */
+  const whereOf = (r: Requirement) => (r.project !== null && multiProject && !project ? projectName(r.project) : undefined);
+  /** Its train/epic, kept from before products. */
+  const groupOf = (r: Requirement) => (r.project && r.group ? (groups.get(keyOf(r.project, r.group))?.name ?? r.group) : null);
+  const scopeLine = (r: Requirement) =>
+    [whereOf(r), scopeWords(r, products, r.project), groupOf(r), r.needsRegrouping ? 'needs scope' : null].filter(Boolean).join(' · ');
 
   const open = (id: string) => {
     setQuery(id);
@@ -356,9 +661,10 @@ export function RequirementsPane({
         <LayoutToggle layout={layout} onChange={setLayout} />
       </div>
       <p className="hint">
-        Product decisions made by the owner, recorded by agents with the reasoning behind them. An agent's record stays
-        pending until a person approves it.
+        Rules every agent working on a project or product must follow, recorded with the owner's reasoning. Each applies
+        globally, project-wide, or to chosen products. An agent's record stays pending until a person approves it.
       </p>
+      {canApprove && scopeProject && <ProductsPanel client={client} project={scopeProject} products={projectProducts} />}
       <div className="filters">
         <input type="search" placeholder="Search decisions…" value={query} onChange={(e) => setQuery(e.target.value)} />
         <div className="filter-row">
@@ -372,6 +678,25 @@ export function RequirementsPane({
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Scope
+            <select value={scopeFilter} onChange={(e) => setScopeFilter(e.target.value)}>
+              <option value="">All</option>
+              <option value="global">Global</option>
+              <option value="project">Project-wide</option>
+              {projectProducts
+                .filter((p) => !p.archived)
+                .map((p) => (
+                  <option key={p.id} value={`product:${p.id}`}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={regroupOnly} onChange={(e) => setRegroupOnly(e.target.checked)} />
+            Needs scope only
           </label>
           <label className="check">
             <input
@@ -411,7 +736,7 @@ export function RequirementsPane({
             <RequirementCard
               key={r.id}
               req={r}
-              scopeName={scopeOf(r)}
+              scopeName={groupOf(r)}
               sourceCode={
                 r.sourceEscalation && r.project && !/[·:-]/.test(r.sourceEscalation)
                   ? `${projects.find((p) => p.id === r.project)?.key ?? r.project}-${r.sourceEscalation}`
@@ -419,6 +744,12 @@ export function RequirementsPane({
               }
               client={client}
               canEdit={canEdit}
+              canApprove={canApprove}
+              products={products}
+              projects={projects}
+              project={project}
+              projectName={whereOf(r)}
+              version={version}
               onTag={(t) => setTags(tags.includes(t) ? tags : [...tags, t])}
               onOpen={open}
               replaces={replaces.get(r.id)}
@@ -427,7 +758,7 @@ export function RequirementsPane({
           if (layout === 'cards') return card;
           return (
             <div key={r.id}>
-              <RequirementRow req={r} scopeName={scopeOf(r)} onToggle={() => setExpanded(expanded === r.id ? null : r.id)} />
+              <RequirementRow req={r} scopeName={scopeLine(r)} onToggle={() => setExpanded(expanded === r.id ? null : r.id)} />
               {expanded === r.id && card}
             </div>
           );

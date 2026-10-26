@@ -22,6 +22,7 @@ import {
   localId,
   NotFoundError,
   projectOf,
+  REQUIREMENT_DATASETS,
   ValidationError,
   type ExportDataset,
   type RecordResult,
@@ -35,6 +36,7 @@ import {
   type ProjectMember,
   type PublicConfig,
   type Requirement,
+  type RequirementScope,
   type StreamEvent,
   type TrmnlView,
 } from './types.ts';
@@ -1017,11 +1019,43 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     // Rejected records are for people only: agents (and Claude sessions on a personal key) never get them back.
     const statuses = approvesRequirements(principalOf(res)) ? query.status : query.status?.filter((x) => x !== 'rejected');
     if (statuses && !statuses.length) return void res.json([]);
+    const scope = query.product
+      ? { project: a.pick(query.project), products: [query.product] }
+      : query.scope === 'global'
+        ? { global: true }
+        : query.scope === 'project'
+          ? { projectWide: true, project: query.project ? a.pick(query.project) : undefined }
+          : undefined;
+    const needsRegrouping = query.regroup === undefined ? undefined : query.regroup === 'true';
     res.json(
       store
-        .findRequirements({ query: query.q, tags: query.tag, group, projects, statuses, limit: query.limit })
+        .findRequirements({ query: query.q, tags: query.tag, group, projects, statuses, scope, needsRegrouping, limit: query.limit })
         .map(pub.requirement),
     );
+  });
+
+  // ---- products: what requirements are scoped to. People manage them; everyone reads them. ----
+
+  app.get('/api/products', any, requirementsOnly, (req, res) => {
+    const a = acc(res);
+    res.json(store.listProducts(a.scope(projectQuery(req)), req.query.archived === 'true'));
+  });
+
+  /** Adding, renaming, locking or archiving products takes a signed-in person, like approving requirements. */
+  const requireOwner = (res: Response, what: string) => {
+    if (!approvesRequirements(principalOf(res))) throw new ForbiddenError(`${what} signed in, not with a personal key`);
+  };
+
+  app.post('/api/products', human, requirementsOnly, (req, res) => {
+    requireOwner(res, 'Add products');
+    const body = parse(s.productInput, req.body);
+    res.status(201).json(store.createProduct(acc(res).pick(projectQuery(req)), body, principalOf(res).name));
+  });
+
+  app.patch('/api/products/:id', human, requirementsOnly, (req, res) => {
+    requireOwner(res, 'Change products');
+    const id = parse(s.productId, String(req.params.id));
+    res.json(store.updateProduct(acc(res).pick(projectQuery(req)), id, parse(s.productPatch, req.body)));
   });
 
   app.get('/api/requirements/tags', any, requirementsOnly, (req, res) => {
@@ -1073,11 +1107,39 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json(pub.requirement(store.editRequirement(current.id, parse(s.requirementEdit, req.body))));
   });
 
+  /**
+   * Where a person moves a requirement: global, project-wide or products, in its own project unless
+   * `project` names another. Moving to or from global takes the right to write all-projects requirements.
+   */
+  const scopeTarget = (res: Response, current: Requirement, body: { scope: RequirementScope; products?: string[]; project?: string }) => {
+    const a = acc(res);
+    const project = body.scope === 'global' ? null : body.project ? a.pick(body.project) : (current.project ?? a.pick(undefined));
+    a.requireWritable({ project });
+    return { scope: body.scope, project, products: body.products };
+  };
+
+  app.get('/api/requirements/:id/changes', any, requirementsOnly, (req, res) => {
+    res.json(store.requirementChanges(visibleRequirement(res, String(req.params.id)).id));
+  });
+
+  app.put('/api/requirements/:id/scope', human, requirementsOnly, (req, res) => {
+    requireOwner(res, 'Change where requirements apply');
+    const current = visibleRequirement(res, String(req.params.id));
+    acc(res).requireWritable(current);
+    const target = scopeTarget(res, current, parse(s.requirementScopeInput, req.body));
+    res.json(pub.requirement(store.setRequirementScope(current.id, target, principalOf(res).name)));
+  });
+
   app.post('/api/requirements/:id/approve', human, requirementsOnly, (req, res) => {
     if (!approvesRequirements(principalOf(res))) throw new ForbiddenError('Approve requirements signed in, not with a personal key');
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
-    res.json(pub.requirement(store.approveRequirement(current.id)));
+    const body = parse(s.requirementApprove, req.body ?? {});
+    if (!body.scope && (body.products || body.project)) throw new ValidationError('Say which scope: global, project or products');
+    const rescope = body.scope
+      ? { target: scopeTarget(res, current, { ...body, scope: body.scope }), actor: principalOf(res).name }
+      : undefined;
+    res.json(pub.requirement(store.approveRequirement(current.id, rescope)));
   });
 
   app.post('/api/requirements/:id/restore', human, requirementsOnly, (req, res) => {
@@ -1113,7 +1175,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     };
   };
   const stamp = () => new Date().toISOString().slice(0, 10);
-  const datasets = EXPORT_DATASETS.filter((d) => d !== 'requirements' || config.requirements);
+  const datasets = EXPORT_DATASETS.filter((d) => !REQUIREMENT_DATASETS.includes(d) || config.requirements);
   // Building an export reads everything; one at a time keeps the server responsive.
   let exporting = false;
   const oneAtATime = (_req: Request, res: Response, next: NextFunction) => {

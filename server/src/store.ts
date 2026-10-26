@@ -18,7 +18,10 @@ import {
   type Position,
   type Project,
   type ProjectRole,
+  type Product,
   type Requirement,
+  type RequirementChange,
+  type RequirementScope,
   type RequirementStatus,
   type TrmnlCard,
   type TrmnlSetup,
@@ -58,10 +61,23 @@ export interface RequirementInput {
   project?: string | null;
   /** Qualified group id within that project; null or absent for project-wide. */
   group?: string | null;
+  /**
+   * Global (project null), project-wide, or the products in `products` (ids in the project).
+   * Absent: worked out from `project` as before products existed, and flagged for a person to regroup.
+   */
+  scope?: RequirementScope;
+  products?: string[];
   /** Escalation (id or code) the owner decided this in; its decider becomes `decidedBy`. */
   sourceEscalation?: string | null;
   /** The person who decided, when there's no escalation (e.g. said in Remote Control). */
   decidedBy?: string | null;
+}
+
+/** Where a person moves a requirement: global (project null), project-wide, or products of the project. */
+export interface ScopeTarget {
+  scope: RequirementScope;
+  project: string | null;
+  products?: string[];
 }
 
 export interface RecordResult {
@@ -166,8 +182,11 @@ export interface WaitResult {
 
 export const EXPORT_DATASETS = [
   'escalations', 'positions', 'messages', 'lane_messages', 'lanes', 'groups', 'tickets', 'epics', 'epic_messages', 'events', 'requirements',
+  'products', 'requirement_changes',
 ] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
+/** Datasets that exist only while the requirements register is on. */
+export const REQUIREMENT_DATASETS: readonly ExportDataset[] = ['requirements', 'products', 'requirement_changes'];
 
 /** Fixed column order per dataset, so a CSV's header never depends on whether it has rows. */
 export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
@@ -200,8 +219,10 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
   lane_messages: ['id', 'project', 'lane_id', 'from', 'author', 'body', 'attachments', 'at'],
   requirements: [
     'id', 'project', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'decided_by',
-    'source_escalation', 'recorded_by', 'created_at', 'updated_at', 'rejection_reason',
+    'source_escalation', 'recorded_by', 'created_at', 'updated_at', 'rejection_reason', 'scope', 'products', 'needs_regrouping',
   ],
+  products: ['project', 'id', 'name', 'color', 'locked', 'archived', 'requirements', 'created_by', 'created_at', 'updated_at'],
+  requirement_changes: ['id', 'requirement', 'kind', 'actor', 'from_scope', 'from_project', 'from_products', 'to_scope', 'to_project', 'to_products', 'at'],
 };
 export interface ExportFilter {
   from?: string;
@@ -292,7 +313,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 20;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -604,6 +625,7 @@ export class Store {
       if (version < 19 && !this.hasColumn('requirements', 'rejection_reason')) {
         this.db.exec('ALTER TABLE requirements ADD COLUMN rejection_reason TEXT; ALTER TABLE requirements ADD COLUMN rejected_replacing TEXT');
       }
+      if (version < 20) this.migrateV20();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -823,6 +845,54 @@ export class Store {
     this.db
       .prepare('INSERT INTO projects (id, key, name, created_at) VALUES (?, ?, ?, ?)')
       .run(DEFAULT_PROJECT, 'MAIN', 'Main', at);
+  }
+
+  /**
+   * v20: products within a project, and an explicit scope on every requirement (global, project-wide,
+   * or products). Requirements in force from before are flagged for a person to regroup: they keep
+   * counting as project-wide (or global) meanwhile, so none drop out of what agents see.
+   */
+  private migrateV20() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS products (
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        color TEXT,
+        locked INTEGER NOT NULL DEFAULT 0,
+        archived_at TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS requirement_products (
+        requirement_num INTEGER NOT NULL REFERENCES requirements(num),
+        project_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        PRIMARY KEY (requirement_num, product_id),
+        FOREIGN KEY (project_id, product_id) REFERENCES products(project_id, id)
+      );
+      CREATE INDEX IF NOT EXISTS requirement_products_product ON requirement_products(project_id, product_id);
+      CREATE TABLE IF NOT EXISTS requirement_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        requirement_num INTEGER NOT NULL REFERENCES requirements(num),
+        kind TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        from_value TEXT NOT NULL,
+        to_value TEXT NOT NULL,
+        at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS requirement_changes_requirement ON requirement_changes(requirement_num, id);
+    `);
+    if (!this.hasColumn('requirements', 'scope')) {
+      this.db.exec(`
+        ALTER TABLE requirements ADD COLUMN scope TEXT NOT NULL DEFAULT 'project';
+        ALTER TABLE requirements ADD COLUMN needs_regrouping INTEGER NOT NULL DEFAULT 0;
+        UPDATE requirements SET scope = CASE WHEN project_id IS NULL THEN 'global' ELSE 'project' END;
+        UPDATE requirements SET needs_regrouping = 1 WHERE status IN ('pending', 'active');
+      `);
+    }
   }
 
   private hasColumn(table: string, column: string) {
@@ -3878,6 +3948,71 @@ export class Store {
           created_at: req.createdAt,
           updated_at: req.updatedAt,
           rejection_reason: req.rejectionReason,
+          scope: req.scope,
+          products: req.products.join(' | '),
+          needs_regrouping: req.needsRegrouping,
+        };
+      });
+    }
+
+    if (dataset === 'products') {
+      // Complete (within the projects), archived ones too, like groups.
+      const parts = ['p.rowid > ?'];
+      const params: (string | number)[] = [after];
+      if (filter.projects) {
+        parts.push(filter.projects.length ? `p.project_id IN (${filter.projects.map(() => '?').join(',')})` : '0');
+        params.push(...filter.projects);
+      }
+      const raw = this.db
+        .prepare(`SELECT p.rowid AS _rid, x.* FROM products p JOIN (${Store.PRODUCT_SELECT}) x ON x.project_id = p.project_id AND x.id = p.id
+          WHERE ${parts.join(' AND ')} ORDER BY p.rowid LIMIT ?`)
+        .all(...params, limit) as Row[];
+      return page(raw, (r) => {
+        const p = this.productFromRow(r);
+        return {
+          project: p.project,
+          id: p.id,
+          name: p.name,
+          color: p.color,
+          locked: p.locked,
+          archived: p.archived,
+          requirements: p.requirements,
+          created_by: p.createdBy,
+          created_at: p.createdAt,
+          updated_at: p.updatedAt,
+        };
+      });
+    }
+
+    if (dataset === 'requirement_changes') {
+      // Changes to the requirements the export includes: by the requirement's project now, rejected ones only when asked for.
+      const parts = ['c.id > ?'];
+      const params: (string | number)[] = [after];
+      if (filter.projects) {
+        parts.push(`(r.project_id IS NULL${filter.projects.length ? ` OR r.project_id IN (${filter.projects.map(() => '?').join(',')})` : ''})`);
+        params.push(...filter.projects);
+      }
+      if (filter.from) (parts.push('c.at >= ?'), params.push(filter.from));
+      if (filter.to) (parts.push('c.at < ?'), params.push(filter.to));
+      if (!filter.includeRejected) parts.push("r.status <> 'rejected'");
+      const raw = this.db
+        .prepare(`SELECT c.id AS _rid, c.* FROM requirement_changes c JOIN requirements r ON r.num = c.requirement_num
+          WHERE ${parts.join(' AND ')} ORDER BY c.id LIMIT ?`)
+        .all(...params, limit) as Row[];
+      return page(raw, (r) => {
+        const c = this.requirementChangeFromRow(r);
+        return {
+          id: c.id,
+          requirement: c.requirement,
+          kind: c.kind,
+          actor: c.actor,
+          from_scope: c.from.scope,
+          from_project: c.from.project,
+          from_products: c.from.products.join(' | '),
+          to_scope: c.to.scope,
+          to_project: c.to.project,
+          to_products: c.to.products.join(' | '),
+          at: c.at,
         };
       });
     }
@@ -4334,6 +4469,9 @@ export class Store {
       id: `R${Number(r.num)}`,
       project: (r.project_id as string | null) ?? null,
       group: (r.group_id as string | null) ?? null,
+      scope: r.scope as RequirementScope,
+      products: this.requirementProducts(Number(r.num)),
+      needsRegrouping: !!r.needs_regrouping,
       requirement: r.requirement as string,
       justification: r.justification as string,
       tags: JSON.parse(r.tags as string) as string[],
@@ -4347,6 +4485,12 @@ export class Store {
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
     };
+  }
+
+  private requirementProducts(num: number): string[] {
+    return (
+      this.db.prepare('SELECT product_id FROM requirement_products WHERE requirement_num = ? ORDER BY product_id').all(num) as Row[]
+    ).map((r) => r.product_id as string);
   }
 
   /** "R14", "r14" or "14". */
@@ -4399,6 +4543,13 @@ export class Store {
     /** Projects to search; requirements for all projects always match. Undefined = every project. */
     projects?: string[];
     statuses?: RequirementStatus[];
+    /**
+     * Any of: requirements scoped to one of these products (of `project`), project-wide ones, global
+     * ones. Undefined = every scope.
+     */
+    scope?: { project?: string; products?: string[]; projectWide?: boolean; global?: boolean };
+    /** Only those waiting for a person to choose their scope (true), or only those that aren't (false). */
+    needsRegrouping?: boolean;
     limit?: number;
   } = {}): Requirement[] {
     const where: string[] = [];
@@ -4422,6 +4573,24 @@ export class Store {
       where.push('EXISTS (SELECT 1 FROM json_each(r.tags) WHERE value = ?)');
       params.push(tag.toLowerCase());
     }
+    if (filter.scope) {
+      const any: string[] = [];
+      const { project, products, projectWide, global } = filter.scope;
+      if (products?.length) {
+        if (!project) throw new ValidationError('Say which project the products are in');
+        any.push(
+          `EXISTS (SELECT 1 FROM requirement_products rp WHERE rp.requirement_num = r.num AND rp.project_id = ? AND rp.product_id IN (${products.map(() => '?').join(',')}))`,
+        );
+        params.push(project, ...products);
+      }
+      if (projectWide) {
+        any.push(project ? "(r.scope = 'project' AND r.project_id = ?)" : "r.scope = 'project'");
+        if (project) params.push(project);
+      }
+      if (global) any.push("r.scope = 'global'");
+      where.push(any.length ? `(${any.join(' OR ')})` : '0');
+    }
+    if (filter.needsRegrouping !== undefined) where.push(filter.needsRegrouping ? 'r.needs_regrouping = 1' : 'r.needs_regrouping = 0');
     // An id ("R14") finds that requirement, whatever its status, except a rejected one unless asked for.
     if (filter.query && this.requirementNum(filter.query) !== null && /^r/i.test(filter.query.trim())) {
       const one = this.getRequirement(filter.query);
@@ -4600,6 +4769,62 @@ export class Store {
     ];
   }
 
+  /**
+   * Checks a scope and its products. `byPerson`: a signed-in person, whom locks don't stop. Must
+   * run inside a transaction when its result is written.
+   */
+  private checkScope(
+    target: { scope: RequirementScope; project: string | null; products?: string[] },
+    byPerson: boolean,
+  ): { scope: RequirementScope; project: string | null; products: string[] } {
+    const products = [...new Set((target.products ?? []).map((p) => p.trim().toLowerCase()))];
+    if (target.scope === 'global') {
+      if (target.project !== null) throw new ValidationError('A global requirement applies to every project, not to one');
+      if (products.length) throw new ValidationError('A global requirement names no products');
+      return { scope: 'global', project: null, products: [] };
+    }
+    if (target.project === null) throw new ValidationError(`Say which project a ${target.scope === 'project' ? 'project-wide' : 'product'} requirement is in`);
+    if (target.scope === 'project') {
+      if (products.length) throw new ValidationError('A project-wide requirement names no products; scope it to products instead');
+      return { scope: 'project', project: target.project, products: [] };
+    }
+    if (!products.length) throw new ValidationError('Name at least one product (or scope the requirement project-wide or global)');
+    const known = this.listProducts([target.project]);
+    for (const id of products) {
+      const product = known.find((p) => p.id === id);
+      if (!product) {
+        const names = known.map((p) => p.id);
+        throw new NotFoundError(
+          `Product "${id}" not found in ${target.project}` +
+            (names.length ? ` (products: ${names.join(', ')})` : ' (it has no products yet; a person adds them on the Requirements page)'),
+        );
+      }
+      if (!byPerson && product.locked) {
+        throw new ForbiddenError(`Product "${id}" is locked: only a signed-in person changes its requirements`);
+      }
+    }
+    return { scope: 'products', project: target.project, products: products.sort() };
+  }
+
+  /** Must run inside a transaction. */
+  private setRequirementProducts(num: number, project: string | null, products: string[]) {
+    this.db.prepare('DELETE FROM requirement_products WHERE requirement_num = ?').run(num);
+    for (const id of products) {
+      this.db.prepare('INSERT INTO requirement_products (requirement_num, project_id, product_id) VALUES (?, ?, ?)').run(num, project, id);
+    }
+  }
+
+  /** Throws unless agents may change this requirement: none of its products is locked. */
+  private checkUnlocked(req: Requirement) {
+    if (req.scope !== 'products' || !req.project) return;
+    const locked = this.listProducts([req.project]).filter((p) => p.locked && req.products.includes(p.id));
+    if (locked.length) {
+      throw new ForbiddenError(
+        `${req.id} is in locked product${locked.length > 1 ? 's' : ''} ${locked.map((p) => `"${p.id}"`).join(', ')}: only a signed-in person changes it`,
+      );
+    }
+  }
+
   /** Must run inside a transaction. */
   private insertRequirement(
     input: RequirementInput,
@@ -4615,15 +4840,23 @@ export class Store {
     }
     if (input.project && !this.getProject(input.project)) throw new NotFoundError(`Project "${input.project}" not found`);
     const tags = this.cleanTags(input.tags);
+    // Without a scope (as before products), it's global or project-wide by its project, and a person regroups it.
+    const regroup = input.scope === undefined;
+    const scope = this.checkScope(
+      { scope: input.scope ?? (input.project ? 'project' : 'global'), project: input.project ?? null, products: input.products },
+      approved,
+    );
     const { decidedBy, escalationId } = this.decisionSource(input, actor, actorIsHuman, actorOwner);
     const res = this.db
       .prepare(
-        `INSERT INTO requirements (project_id, group_id, requirement, justification, tags, status, decided_by,
-           source_escalation_id, recorded_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO requirements (project_id, group_id, scope, needs_regrouping, requirement, justification, tags, status, decided_by,
+           source_escalation_id, recorded_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.project ?? null,
         input.group ?? null,
+        scope.scope,
+        regroup ? 1 : 0,
         input.requirement.trim(),
         input.justification.trim(),
         JSON.stringify(tags),
@@ -4635,7 +4868,9 @@ export class Store {
         at,
         at,
       );
-    return Number(res.lastInsertRowid);
+    const num = Number(res.lastInsertRowid);
+    this.setRequirementProducts(num, scope.project, scope.products);
+    return num;
   }
 
   /**
@@ -4693,12 +4928,18 @@ export class Store {
           `${current.id} already has a replacement waiting for approval (${current.supersededBy}); supersede that one to change the proposal`,
         );
       }
+      // A locked product's requirements change only by a person's hand.
+      if (!approved) this.checkUnlocked(current);
       const at = this.now().toISOString();
+      const project = input.project === undefined ? current.project : input.project;
+      // No scope given and the same project: the old one's scope (still to regroup, if it was).
+      const inherit = input.scope === undefined && project === current.project;
       const num = this.insertRequirement(
         {
           ...input,
           group: input.group === undefined ? current.group : input.group,
-          project: input.project === undefined ? current.project : input.project,
+          project,
+          ...(inherit && !current.needsRegrouping ? { scope: current.scope, products: current.products } : {}),
         },
         actor,
         actorIsHuman,
@@ -4760,10 +5001,12 @@ export class Store {
    * A person confirms an agent's record of their decision: pending becomes active. If it
    * replaces another requirement, that one is superseded now.
    */
-  approveRequirement(id: string): Requirement {
+  approveRequirement(id: string, rescope?: { target: ScopeTarget; actor: string }): Requirement {
     const { requirement, replaced } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (current.status !== 'pending') throw new ConflictError(`${current.id} is ${current.status}; only pending requirements can be approved`);
+      // Approving with a different scope chosen: both in one step.
+      if (rescope) this.applyScope(current, rescope.target, rescope.actor);
       const at = this.now().toISOString();
       const num = this.requirementNum(current.id)!;
       this.db.prepare("UPDATE requirements SET status = 'active', updated_at = ? WHERE num = ?").run(at, num);
@@ -4874,6 +5117,172 @@ export class Store {
     if (current.status !== 'pending') throw new ConflictError(`${current.id} is ${current.status}; only pending requirements can be rejected`);
     if (!reason.trim()) throw new ValidationError('Say why the requirement is rejected');
     return this.withdrawRequirement(current, 'rejected', reason.trim());
+  }
+
+  /**
+   * Must run inside a transaction. A person sets a requirement's scope: it keeps its id and status,
+   * the change is logged, and it no longer needs regrouping. Moving it to another project (or to
+   * global) drops its group, which belonged to the old project.
+   */
+  private applyScope(current: Requirement, target: ScopeTarget, actor: string) {
+    if (!inForce(current)) throw new ConflictError(`${current.id} is ${current.status}; only pending or active requirements can be rescoped`);
+    const next = this.checkScope(target, true);
+    if (next.project !== null) {
+      if (!this.getProject(next.project)) throw new NotFoundError(`Project "${next.project}" not found`);
+      const row = this.db.prepare('SELECT source_escalation_id FROM requirements WHERE num = ?').get(this.requirementNum(current.id)!) as Row;
+      const source = row.source_escalation_id ? this.getEscalation(row.source_escalation_id as string) : null;
+      if (source && source.project !== next.project) {
+        throw new ValidationError(`${current.id} cites ${source.projectKey}-${source.ref}, from another project; it can only move to that project or to global`);
+      }
+    }
+    const num = this.requirementNum(current.id)!;
+    const same =
+      next.scope === current.scope && next.project === current.project && next.products.join(',') === current.products.join(',');
+    // Saving the scope it already has changes nothing, unless it confirms one still to regroup.
+    if (same && !current.needsRegrouping) return;
+    const at = this.now().toISOString();
+    const group = next.project === current.project ? current.group : null;
+    this.db
+      .prepare('UPDATE requirements SET project_id = ?, group_id = ?, scope = ?, needs_regrouping = 0, updated_at = ? WHERE num = ?')
+      .run(next.project, group, next.scope, at, num);
+    this.setRequirementProducts(num, next.project, next.products);
+    this.db
+      .prepare('INSERT INTO requirement_changes (requirement_num, kind, actor, from_value, to_value, at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(
+        num,
+        'scope',
+        actor,
+        JSON.stringify({ scope: current.scope, project: current.project, products: current.products }),
+        JSON.stringify(next),
+        at,
+      );
+  }
+
+  /** A person changes where a requirement applies (no re-approval: the same decision, scoped differently). */
+  setRequirementScope(id: string, target: ScopeTarget, actor: string): Requirement {
+    const requirement = this.tx(() => {
+      const current = this.requireRequirement(id);
+      this.applyScope(current, target, actor);
+      return this.requireRequirement(current.id);
+    });
+    this.emit({ type: 'requirement', requirement });
+    return requirement;
+  }
+
+  /** Scope changes on a requirement, oldest first. */
+  requirementChanges(id: string): RequirementChange[] {
+    const req = this.requireRequirement(id);
+    const rows = this.db
+      .prepare('SELECT * FROM requirement_changes WHERE requirement_num = ? ORDER BY id')
+      .all(this.requirementNum(req.id)!) as Row[];
+    return rows.map((r) => this.requirementChangeFromRow(r));
+  }
+
+  private requirementChangeFromRow(r: Row): RequirementChange {
+    return {
+      id: Number(r.id),
+      requirement: `R${Number(r.requirement_num)}`,
+      kind: r.kind as 'scope',
+      actor: r.actor as string,
+      from: JSON.parse(r.from_value as string) as RequirementChange['from'],
+      to: JSON.parse(r.to_value as string) as RequirementChange['to'],
+      at: r.at as string,
+    };
+  }
+
+  // ---- products ----------------------------------------------------------------
+
+  private productFromRow(r: Row): Product {
+    return {
+      project: r.project_id as string,
+      id: r.id as string,
+      name: r.name as string,
+      color: (r.color as string | null) ?? null,
+      locked: !!r.locked,
+      archived: r.archived_at != null,
+      createdBy: r.created_by as string,
+      createdAt: r.created_at as string,
+      updatedAt: r.updated_at as string,
+      requirements: Number(r.n ?? 0),
+    };
+  }
+
+  private static readonly PRODUCT_SELECT = `SELECT p.*, (
+      SELECT COUNT(*) FROM requirement_products rp JOIN requirements r ON r.num = rp.requirement_num
+      WHERE rp.project_id = p.project_id AND rp.product_id = p.id AND r.status IN ('pending', 'active')
+    ) AS n FROM products p`;
+
+  /** Products of these projects (every project when omitted), by name; archived ones only when asked for. */
+  listProducts(projects?: string[], includeArchived = false): Product[] {
+    const where: string[] = [];
+    if (projects) where.push(projects.length ? `p.project_id IN (${projects.map(() => '?').join(',')})` : '0');
+    if (!includeArchived) where.push('p.archived_at IS NULL');
+    const rows = this.db
+      .prepare(`${Store.PRODUCT_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY p.project_id, p.name COLLATE NOCASE, p.id`)
+      .all(...(projects ?? [])) as Row[];
+    return rows.map((r) => this.productFromRow(r));
+  }
+
+  getProduct(project: string, id: string): Product | null {
+    const r = this.db.prepare(`${Store.PRODUCT_SELECT} WHERE p.project_id = ? AND p.id = ?`).get(project, id.trim().toLowerCase()) as Row | undefined;
+    return r ? this.productFromRow(r) : null;
+  }
+
+  private requireProduct(project: string, id: string): Product {
+    const p = this.getProduct(project, id);
+    if (!p) throw new NotFoundError(`Product "${id}" not found`);
+    return p;
+  }
+
+  /** A person adds a product to a project. Agents never create products. */
+  createProduct(project: string, input: { id: string; name: string; color?: string | null }, actor: string): Product {
+    const product = this.tx(() => {
+      if (!this.getProject(project)) throw new NotFoundError(`Project "${project}" not found`);
+      const id = input.id.trim().toLowerCase();
+      if (this.getProduct(project, id)) throw new ConflictError(`Product "${id}" already exists in ${project}`);
+      const at = this.now().toISOString();
+      this.db
+        .prepare('INSERT INTO products (project_id, id, name, color, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(project, id, input.name.trim(), input.color ?? null, actor, at, at);
+      return this.requireProduct(project, id);
+    });
+    this.emit({ type: 'product', product });
+    return product;
+  }
+
+  /**
+   * Renames, recolours, locks or unlocks, archives or unarchives a product. A product with
+   * requirements in force isn't archived: they'd drop out of what agents see. Move them first.
+   */
+  updateProduct(project: string, id: string, patch: { name?: string; color?: string | null; locked?: boolean; archived?: boolean }): Product {
+    const product = this.tx(() => {
+      const current = this.requireProduct(project, id);
+      if (patch.archived && !current.archived && current.requirements > 0) {
+        throw new ConflictError(
+          `Product "${current.id}" has ${current.requirements} requirement${current.requirements > 1 ? 's' : ''} in force; rescope ${current.requirements > 1 ? 'them' : 'it'} before archiving`,
+        );
+      }
+      const at = this.now().toISOString();
+      this.db
+        .prepare('UPDATE products SET name = ?, color = ?, locked = ?, archived_at = ?, updated_at = ? WHERE project_id = ? AND id = ?')
+        .run(
+          patch.name?.trim() ?? current.name,
+          patch.color === undefined ? current.color : patch.color,
+          (patch.locked ?? current.locked) ? 1 : 0,
+          // Archiving again keeps when it was first archived.
+          patch.archived === undefined || patch.archived === current.archived
+            ? ((this.db.prepare('SELECT archived_at FROM products WHERE project_id = ? AND id = ?').get(project, current.id) as Row).archived_at as string | null)
+            : patch.archived
+              ? at
+              : null,
+          at,
+          project,
+          current.id,
+        );
+      return this.requireProduct(project, current.id);
+    });
+    this.emit({ type: 'product', product });
+    return product;
   }
 
   // ---- push tokens -------------------------------------------------------

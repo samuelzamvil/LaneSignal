@@ -11,7 +11,7 @@ import {
   type WaitResult,
   type WaitScope,
 } from './store.ts';
-import type { Epic, Escalation, Group, Lane, Link, Message, Principal, ProjectRole, Requirement, StreamEvent, Ticket } from './types.ts';
+import type { Epic, Escalation, Group, Lane, Link, Message, Principal, ProjectRole, Requirement, RequirementScope, StreamEvent, Ticket } from './types.ts';
 
 /**
  * What a caller may see and do across projects, and the translation between
@@ -239,11 +239,18 @@ export function requirementInputFor(
     sourceEscalation?: string | null;
     decidedBy?: string | null;
     allProjects?: boolean;
+    scope?: RequirementScope;
+    products?: string[];
   },
   project: string | undefined,
   current?: Requirement,
 ): RequirementInput {
-  const keepScope = current !== undefined && body.allProjects === undefined && body.group === undefined && !project;
+  if (body.allProjects !== undefined && body.scope !== undefined && body.allProjects !== (body.scope === 'global')) {
+    throw new ValidationError(`allProjects and scope "${body.scope}" disagree: a requirement for all projects is scope "global"`);
+  }
+  if (body.scope === 'global') body = { ...body, allProjects: true };
+  const keepScope =
+    current !== undefined && body.allProjects === undefined && body.scope === undefined && body.group === undefined && !project;
   // Without a project: the group's, or the cited escalation's.
   const cited = !project && !body.group && body.sourceEscalation && !body.allProjects && !keepScope ? a.escalation(body.sourceEscalation) : null;
   const scopeProject = body.allProjects ? null : keepScope ? current.project : (cited?.project ?? a.pick(project, { group: body.group ?? undefined }));
@@ -260,6 +267,8 @@ export function requirementInputFor(
     justification: body.justification,
     tags: body.tags,
     project: scopeProject,
+    ...(body.scope !== undefined ? { scope: body.scope, products: body.products } : {}),
+    ...(body.scope === undefined && body.products?.length ? { scope: 'products' as const, products: body.products } : {}),
     group: body.group ? qualify(scopeProject ?? a.pick(project, { group: body.group }), body.group) : keepScope ? undefined : body.group,
     sourceEscalation: source ? source.id : body.sourceEscalation,
     decidedBy: body.decidedBy ?? (human && !body.sourceEscalation ? a.principal.name : null),
@@ -316,7 +325,9 @@ export const pub = {
           ? { ...e, requirement: pub.requirement(e.requirement) }
           : null;
       case 'ticket':
-        return projects.includes(e.ticket.project) ? { ...e, ticket: pub.ticket(e.ticket) } : null;      case 'epic':
+        return projects.includes(e.ticket.project) ? { ...e, ticket: pub.ticket(e.ticket) } : null;
+      case 'product':
+        return projects.includes(e.product.project) ? e : null;      case 'epic':
         return projects.includes(e.epic.project) ? { ...e, epic: pub.epic(e.epic) } : null;
     }
   },

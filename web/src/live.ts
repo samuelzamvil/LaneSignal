@@ -127,7 +127,7 @@ export function useLiveData(client: Client): LiveData {
                   ...s,
                   ...applyEvent(s, e),
                   version: s.version + 1,
-                  requirementsVersion: s.requirementsVersion + (e.type === 'requirement' ? 1 : 0),
+                  requirementsVersion: s.requirementsVersion + (e.type === 'requirement' || e.type === 'product' ? 1 : 0),
                   lastEvent: e,
                   syncedAt: Date.now(),
                 }));

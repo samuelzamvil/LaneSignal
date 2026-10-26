@@ -1699,6 +1699,105 @@ textarea {
   width: 100%;
 }
 
+/* A pending card has four actions: they wrap on a phone rather than widen the page. */
+.req-card .actions,
+.scope-picker .actions {
+  flex-wrap: wrap;
+}
+
+/* Where a requirement applies: products in their colours; the picker; who moved it where. */
+.product-tag {
+  font-weight: 600;
+}
+
+.scope-picker {
+  margin: 10px 0;
+  padding: 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.scope-picker label:not(.check) {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.scope-products {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.scope-history {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+/* Products, managed by a person on the Requirements page. */
+.products-panel {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.products-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.product-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.product-row.archived {
+  opacity: 0.6;
+}
+
+.product-row .product-name {
+  flex: 1;
+  min-width: 10rem;
+  overflow-wrap: anywhere;
+}
+
+.product-row .actions,
+.product-add {
+  margin: 0;
+}
+
+.product-add {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.product-add input:not([type='color']) {
+  flex: 1;
+  min-width: 8rem;
+}
+
+.products-panel input[type='color'] {
+  width: 36px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: none;
+  flex: none;
+}
+
 
 /* ---- projects ---- */
 

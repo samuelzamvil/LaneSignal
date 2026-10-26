@@ -18,12 +18,35 @@ Product direction tends to get buried in tickets and agent sessions, and finding
 | `justification` | Why the owner decided it, and where |
 | `tags` | 1–3 specific kebab-case tags naming the capability (`payout-retries`) |
 | `project` | The [project](projects.md) it belongs to, or none (`null`) when it applies to **all projects**: "all our apps store money as integers". Set with `allProjects: true` (`all_projects` in MCP) |
-| `group` | The train/epic it belongs to, or none for **product-wide** (the whole project) |
+| `scope` | Where it applies: `global` (every project), `project` (every product in its project) or `products` (only those in `products`). See [Scope](#scope) |
+| `products` | Product ids in its project, when `scope` is `products` |
+| `needsRegrouping` | Recorded before products existed, or without a scope: it counts as project-wide (or global) until a person chooses its scope |
+| `group` | The train/epic it was recorded for, from before products; kept, but scope is what says where it applies |
 | `decidedBy` | The person who decided, e.g. "Sam (Remote Control, 2026-10-23)". Taken from the escalation when it was answered on the dashboard |
 | `sourceEscalation` | The alert the decision answered (e.g. `A12`; `SH-A12` on an all-projects requirement), if any. It must be in the requirement's project. When the owner answered in the agent's session, the agent cites it together with `decidedBy` |
 | `status` | `pending` (recorded, waiting for a person's approval), `active` (approved), `superseded` (with `supersededBy`), `retired` (an approved one that no longer applies, nothing replaces it) or `rejected` (a pending record a person turned down) |
 | `rejectionReason` | Why a person rejected it; required when rejecting, set only on `rejected` ones |
 | `recordedBy` | The agent key or person that wrote it down |
+
+## Scope
+
+Every requirement says where it applies, and there's no default:
+
+| Scope | Applies to |
+|---|---|
+| **Global** | Every project |
+| **Project-wide** | Every product in one project |
+| **Products** | One or more products of one project |
+
+**Products** are named parts of a project (a project can hold several). Only a signed-in person adds them, on the Requirements page (or `POST /api/products`); agents can't. A requirement scoped to an unknown product is refused, and the error lists the project's products.
+
+**Locks.** A person can lock a product. Agents (and personal keys) then can't record a requirement in it, supersede one of its requirements, or move requirements in or out. People still can. Locks apply only to products.
+
+**Changing the scope.** A person changes a requirement's scope at any time from its card (**Change scope**), or picks one while approving (**Save & approve**). It keeps its id and status, so no re-approval, and the change is logged with who made it and when (shown on the card, `GET /api/requirements/:id/changes`, and `requirement_changes.csv` in the export). Moving a requirement to global keeps its escalation citation, qualified with its project (`LS-A12`).
+
+**Requirements from before products** (and any recorded without a scope) are flagged **Needs scope**. They keep counting as project-wide (or global, if they were for all projects) so none drop out of what agents see. Tick **Needs scope only** on the Requirements page to work through them.
+
+**Archiving** a product hides it from pickers. It's refused while requirements in force are scoped to it: rescope them first.
 
 ### Tags
 
@@ -50,8 +73,8 @@ The service doesn't decide *when* agents record requirements; that's the project
 
 ## In the app
 
-**Requirements** (bottom bar on phones, top bar on desktop) lists pending and active requirements, newest first, with search, a group filter, and tag filters (tap a tag). Pending ones carry a **Pending approval** badge, and one with a replacement waiting shows **Replacement R… pending**; tick **Pending approval only** to work through them (it lists only pending ones, not the approved requirements they would replace). Tick **Superseded, retired & rejected** to see the history; a rejected one shows why. **Cards / List** switches between full cards and one line per requirement (tap a line to open its card); the choice is remembered on the device.
+**Requirements** (bottom bar on phones, top bar on desktop) lists pending and active requirements, newest first, with search, a group filter, a scope filter (Global, Project-wide, or a product), **Needs scope only**, and tag filters (tap a tag). Each card shows its scope: Global, Project-wide, or its products in their colours (🔒 when locked). People who approve requirements also get **Products** at the top, to add, rename, recolour, lock and archive the project's products (with several projects, pick one first). Pending ones carry a **Pending approval** badge, and one with a replacement waiting shows **Replacement R… pending**; tick **Pending approval only** to work through them (it lists only pending ones, not the approved requirements they would replace). Tick **Superseded, retired & rejected** to see the history; a rejected one shows why. **Cards / List** switches between full cards and one line per requirement (tap a line to open its card); the choice is remembered on the device.
 
-People **approve** a pending requirement or **reject** it, saying why (the reason is required and kept with it), **edit wording** (fix phrasing, justification or tags without changing the meaning) and **retire** an approved requirement. Restoring a retired one makes it active again; restoring a rejected one puts it back up for approval, its reason cleared; if it was a replacement, it's the pending replacement again (refused if the requirement it replaced has changed since). Rejecting, and restoring a rejected one, take a signed-in person, like approving; a personal key can't. A requirement with a replacement waiting for approval is neither rejected nor retired until that replacement is approved or rejected, and a requirement whose replacement was approved since can't be restored beside it. A change of decision is a supersede, recorded like any other decision.
+People **approve** a pending requirement (optionally choosing its scope in the same step), **change scope**, or **reject** it, saying why (the reason is required and kept with it), **edit wording** (fix phrasing, justification or tags without changing the meaning) and **retire** an approved requirement. Restoring a retired one makes it active again; restoring a rejected one puts it back up for approval, its reason cleared; if it was a replacement, it's the pending replacement again (refused if the requirement it replaced has changed since). Rejecting, and restoring a rejected one, take a signed-in person, like approving; a personal key can't. A requirement with a replacement waiting for approval is neither rejected nor retired until that replacement is approved or rejected, and a requirement whose replacement was approved since can't be restored beside it. A change of decision is a supersede, recorded like any other decision.
 
-Requirements are part of the [export](export.md) (`requirements.csv`).
+Requirements are part of the [export](export.md) (`requirements.csv`, with `products.csv` and `requirement_changes.csv`).

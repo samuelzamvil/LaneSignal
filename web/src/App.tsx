@@ -912,6 +912,7 @@ function Dashboard({
               project={projectFilter}
               groupLabel={config.groupLabel}
               canEdit={me?.role === 'human'}
+              canApprove={me?.role === 'human' && !me.personalKey}
               version={live.requirementsVersion}
             />
           ) : (
