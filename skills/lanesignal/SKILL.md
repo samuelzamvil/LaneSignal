@@ -1,6 +1,6 @@
 ---
 name: lanesignal
-description: How to report to LaneSignal through its MCP tools (the `lanesignal` server): publishing lane, group and epic state, asking the owner for a decision, acting on their answer, and telling them about milestones (merged, started a ticket). Use whenever you publish to LaneSignal, need the owner's decision, have a product or scope question, or reach a milestone.
+description: How to use LaneSignal through its MCP tools (the `lanesignal` server): publishing lane, group and epic state, asking the owner for a decision, acting on their answer, and writing to them. Use whenever you work with LaneSignal.
 ---
 
 # Using LaneSignal
@@ -13,7 +13,7 @@ Vocabulary: a **group** is your epic or train (one overseer per group). A **lane
 
 - **Your group:** `update_group` with the `group_id` your owner's policy gives you and your Remote Control session in `links`; a group must exist before lanes are published in it.
 - **Your epic:** the ticket the owner gave you goes to `update_epic` (its ref as `epic`, plus `group`), once. Its `status_line` is one line on the epic's card.
-- **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. A worker and a reviewer on one ticket share a lane. `fill_lane` changes tickets, parking (with a reason) the one it held; a parked ticket's questions stay open.
+- **Lanes:** a lane holds one ticket at a time, and a ticket is in one lane at a time. `fill_lane` changes tickets, parking (with a reason) the one it held; a parked ticket's questions stay open.
 - A lane holding no ticket shows `idle`, and one with an open blocking escalation shows `blocked_human`, whatever you publish.
 - **Ticket refs:** in any text, `#1234` links to the default ticket system and `redmine:1234` to that one; in `ticket` fields use `system:id`.
 
@@ -42,12 +42,15 @@ curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api
 
 Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalation or message. Attach an upload once, from the key that uploaded it; unattached uploads are deleted after a day.
 
+`notify_owner`'s first line is what the phone's notification shows.
+
 <!-- usage -->
 ## Usage: publishing and asking
 
 - **Session start:** `update_group` once, before publishing lanes.
+- **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. A worker and a reviewer on one ticket share a lane.
 - **Publish changes, not heartbeats.** Use the epic's `status_line` for what's queued or waiting; never publish placeholder lanes. Keep `activity` to one line, written for a phone.
 - **Parking:** dismiss a parked ticket's questions that no longer matter.
 - **One decision per escalation:** four questions in a plan are four escalations. Questions that steer the whole group (direction, scope, which tickets to file) go on the epic (`epic`, no `lane_id`). Attach a plan or preview instead of pasting it into `context`.
-- **`notify_owner` for milestones only:** a PR merged, a ticket started. Never routine progress, never questions. Write the first line for a lock screen, and put several things in one message.
+- **`notify_owner` for milestones only:** a PR merged, a ticket started. Never routine progress, never questions. Put several things in one message.
 <!-- /usage -->

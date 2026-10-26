@@ -19,8 +19,8 @@ The owner answers on the dashboard with Accept, Reject or Other, quoting codes w
 
 - `decided`, `reply`: as above.
 - `closed`: someone else withdrew it.
-- `lane_removed`: someone took the lane off the dashboard; stop work on it (publishing to it brings it back).
-- `ticket_moved`: another group's lane took one of your tickets; don't fill a lane with it again.
+- `lane_removed`: someone took the lane off the dashboard; publishing to it brings it back.
+- `ticket_moved`: another group's lane took one of your tickets; it's now that lane's.
 - `lane_note`, `board_note`: the owner wrote on a lane or an epic's board.
 - A file the owner attached reads "[attached: plan.md (id …)]": fetch it with `curl -H "Authorization: Bearer $LANESIGNAL_KEY" "$base/api/attachments/<id>"`.
 
@@ -53,7 +53,7 @@ It prints the same JSON as `wait_for_decisions` when something needs you, and gi
 
 ## After a restart
 
-1. `update_group`, as at any session start.
+1. `update_group` (a group must exist before its lanes are published).
 2. `get_updates` with your `group_id` and the saved `.claude/lanesignal-since` as `since`. Handle `decided`, `replies`, `laneMessages` and `boardMessages`, then save its `checkedAt`. Dismiss `open` ones whose answer you can see in this conversation; never raise the rest again.
 3. `list_lanes` with your `group_id`: a lane you ran that's missing was removed; stop work on it.
 4. `list_tickets` with your `group_id`: a ticket still `in_lane` that nobody is working was left by the crash; pick it up or `fill_lane` its lane with what's next.

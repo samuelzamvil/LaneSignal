@@ -10,6 +10,7 @@ Dismiss each escalation as soon as the owner answers it here, publishing the lan
 
 ## After a restart
 
-1. `update_group`, as at any session start.
+1. `update_group` (a group must exist before its lanes are published).
 2. `list_escalations` with your `group_id`: dismiss the ones whose answer you can see in this conversation; never raise the rest again.
 3. `list_lanes` with your `group_id`: a lane you ran that's missing was removed; stop work on it.
+4. `list_tickets` with your `group_id`: a ticket still `in_lane` that nobody is working was left by the crash; pick it up or `fill_lane` its lane with what's next.

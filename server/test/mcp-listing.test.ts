@@ -1,6 +1,7 @@
 // What tools/list and initialize advertise: trimmed for tokens, while every argument is still validated.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
+import { readdirSync, readFileSync } from 'node:fs';
 import { slimSchema } from '../src/mcp.ts';
 import { AGENT, startServer } from './helpers.ts';
 
@@ -92,4 +93,18 @@ test('the skill comes with its usage part, or without it for people who write th
   const template = await fetch(`${srv.base}/api/skill/usage-template`);
   assert.equal(template.status, 200);
   assert.match(await template.text(), /TODO/);
+});
+
+test('every skill part opens and closes its usage block once, on lines of their own', () => {
+  const dir = new URL('../../skills/lanesignal/', import.meta.url);
+  for (const name of readdirSync(dir).filter((f) => f.endsWith('.md') && f !== 'usage-template.md')) {
+    const lines = readFileSync(new URL(name, dir), 'utf8').split('\n');
+    let open = false;
+    for (const line of lines) {
+      assert.ok(!/<!-- \/?usage -->/.test(line) || /^<!-- \/?usage -->$/.test(line), `${name}: a marker shares a line`);
+      if (line === '<!-- usage -->') (assert.ok(!open, `${name}: nested usage block`), (open = true));
+      if (line === '<!-- /usage -->') (assert.ok(open, `${name}: closing marker without an opening`), (open = false));
+    }
+    assert.ok(!open, `${name}: usage block never closed`);
+  }
 });

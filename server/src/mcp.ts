@@ -747,7 +747,7 @@ function buildServer(
               'plus `source_escalation` when it answered an escalation in your session. '
             : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
           'The same requirement from the same escalation returns the first (`duplicate: true`). ' +
-          '`similar` lists ones that read alike: if the owner changed their mind, supersede_requirement the old one. ' +
+          '`similar` lists ones that read alike (supersede_requirement replaces one). ' +
           'A locked product refuses new requirements from agents.' +
           (approvesRequirements(who) ? '' : ' What you record is `pending` until a person approves it, whatever its scope.'),
         inputSchema: { ...requirementFields, ...PROJECT_WRITE },

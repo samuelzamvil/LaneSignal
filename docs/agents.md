@@ -37,9 +37,9 @@ To share the server through the repository's `.mcp.json`, don't add `--scope pro
 
 Any client that supports Streamable HTTP with custom headers works. Point it at `https://<host>/mcp` and send the header `Authorization: Bearer ls_…`.
 
-## 3. Install the skill (how to use LaneSignal)
+## 3. Install the skill
 
-LaneSignal ships a Claude Code skill that teaches agents **how** to use the tools:
+LaneSignal ships a Claude Code skill that shows agents how the tools fit together, and (in its Usage sections) when to use them:
 - publishing state, and structuring an alert (escalation)
 - waiting for and acknowledging decisions, or dismissing an escalation you answered in the session
 - recovering after a restart
@@ -63,7 +63,7 @@ Use `~/.claude/skills/lanesignal/` instead to install it for every project on th
 
 The plugin carries the skill for a server with the default features (answering in LaneSignal and requirements on). If your server turns either off, install the skill from the server instead, as above, since that copy matches its configuration. Update with `/plugin marketplace update lanesignal`.
 
-**Codex** reads skills in the same `SKILL.md` format. Install it from your server into Codex's skills folder: `mkdir -p ~/.codex/skills/lanesignal && curl -fsS https://lanesignal.example.com/api/skill -o ~/.codex/skills/lanesignal/SKILL.md`, and re-run that after upgrading LaneSignal. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, then `decisions.md` (answering on the dashboard, the default) or `alerts.md` (`LANESIGNAL_DECISIONS=false`), then `requirements.md` when requirements are on. The server joins them. Each part ends with its Usage section (left out with `?usage=none`); `usage-template.md` is the template for your own. Re-run the command after upgrading LaneSignal or changing its features.
+**Codex** reads skills in the same `SKILL.md` format. Install it from your server into Codex's skills folder: `mkdir -p ~/.codex/skills/lanesignal && curl -fsS https://lanesignal.example.com/api/skill -o ~/.codex/skills/lanesignal/SKILL.md`, and re-run that after upgrading LaneSignal. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, then `decisions.md` (answering on the dashboard, the default) or `alerts.md` (`LANESIGNAL_DECISIONS=false`), then `requirements.md` when requirements are on. The server joins them. Each part has its Usage section (left out with `?usage=none`); `usage-template.md` is the template for your own. Re-run the command after upgrading LaneSignal or changing its features.
 
 The skill runs long waits in the background over HTTP, and uploads attachments with `curl`. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
 
@@ -76,15 +76,18 @@ LaneSignal is split in two on purpose:
 
 If your agents should work differently, write your own usage instead of forking LaneSignal. A skill is easier to keep than a fork, and you keep getting LaneSignal's updates:
 
-1. Get the template: `curl -fsS https://lanesignal.example.com/api/skill/usage-template -o usage.md` (or [`skills/lanesignal/usage-template.md`](../skills/lanesignal/usage-template.md)). Fill in each TODO; the examples show the default choices.
+1. Get the template: `curl -fsS https://lanesignal.example.com/api/skill/usage-template -o usage.md` (or [`skills/lanesignal/usage-template.md`](../skills/lanesignal/usage-template.md)). Fill in each TODO (each example is the default's choice), and delete its first paragraph and any lines or sections you don't need.
 2. Install the skill without the default usage, plus yours:
 
    ```bash
+   mkdir -p .claude/skills/lanesignal
    curl -fsS "https://lanesignal.example.com/api/skill?usage=none" -o .claude/skills/lanesignal/SKILL.md
    cat usage.md >> .claude/skills/lanesignal/SKILL.md
    ```
 
 3. Re-run step 2 after upgrading LaneSignal; your `usage.md` stays yours.
+
+The plugin always carries the default usage, so install from the server this way instead of the plugin.
 
 ## 4. Set your policy (per project)
 
@@ -153,6 +156,6 @@ Answers can take minutes or a day. An overseer waits on its whole group with one
 - Pass the previous result's `checkedAt` as `since`, so what changed between two calls is still reported.
 - An unknown `group_id` or lane is an error, so a typo doesn't look like "nothing to wait for".
 
-**Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. For waits that may last hours, the [skill](#3-install-the-skill-how-to-use-lanesignal) runs the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
+**Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. For waits that may last hours, the [skill](#3-install-the-skill) runs the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
 
 If the key is revoked while the agent is waiting, the call fails.

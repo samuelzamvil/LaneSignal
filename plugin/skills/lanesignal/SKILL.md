@@ -1,6 +1,6 @@
 ---
 name: lanesignal
-description: How to report to LaneSignal through its MCP tools (the `lanesignal` server): publishing lane, group and epic state, asking the owner for a decision, acting on their answer, and telling them about milestones (merged, started a ticket). Use whenever you publish to LaneSignal, need the owner's decision, have a product or scope question, or reach a milestone.
+description: How to use LaneSignal through its MCP tools (the `lanesignal` server): publishing lane, group and epic state, asking the owner for a decision, acting on their answer, and writing to them. Use whenever you work with LaneSignal.
 ---
 
 # Using LaneSignal
@@ -13,7 +13,7 @@ Vocabulary: a **group** is your epic or train (one overseer per group). A **lane
 
 - **Your group:** `update_group` with the `group_id` your owner's policy gives you and your Remote Control session in `links`; a group must exist before lanes are published in it.
 - **Your epic:** the ticket the owner gave you goes to `update_epic` (its ref as `epic`, plus `group`), once. Its `status_line` is one line on the epic's card.
-- **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. A worker and a reviewer on one ticket share a lane. `fill_lane` changes tickets, parking (with a reason) the one it held; a parked ticket's questions stay open.
+- **Lanes:** a lane holds one ticket at a time, and a ticket is in one lane at a time. `fill_lane` changes tickets, parking (with a reason) the one it held; a parked ticket's questions stay open.
 - A lane holding no ticket shows `idle`, and one with an open blocking escalation shows `blocked_human`, whatever you publish.
 - **Ticket refs:** in any text, `#1234` links to the default ticket system and `redmine:1234` to that one; in `ticket` fields use `system:id`.
 
@@ -42,13 +42,16 @@ curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api
 
 Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalation or message. Attach an upload once, from the key that uploaded it; unattached uploads are deleted after a day.
 
+`notify_owner`'s first line is what the phone's notification shows.
+
 ## Usage: publishing and asking
 
 - **Session start:** `update_group` once, before publishing lanes.
+- **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. A worker and a reviewer on one ticket share a lane.
 - **Publish changes, not heartbeats.** Use the epic's `status_line` for what's queued or waiting; never publish placeholder lanes. Keep `activity` to one line, written for a phone.
 - **Parking:** dismiss a parked ticket's questions that no longer matter.
 - **One decision per escalation:** four questions in a plan are four escalations. Questions that steer the whole group (direction, scope, which tickets to file) go on the epic (`epic`, no `lane_id`). Attach a plan or preview instead of pasting it into `context`.
-- **`notify_owner` for milestones only:** a PR merged, a ticket started. Never routine progress, never questions. Write the first line for a lock screen, and put several things in one message.
+- **`notify_owner` for milestones only:** a PR merged, a ticket started. Never routine progress, never questions. Put several things in one message.
 
 ## When the owner answers
 
@@ -69,8 +72,8 @@ The owner answers on the dashboard with Accept, Reject or Other, quoting codes w
 
 - `decided`, `reply`: as above.
 - `closed`: someone else withdrew it.
-- `lane_removed`: someone took the lane off the dashboard; stop work on it (publishing to it brings it back).
-- `ticket_moved`: another group's lane took one of your tickets; don't fill a lane with it again.
+- `lane_removed`: someone took the lane off the dashboard; publishing to it brings it back.
+- `ticket_moved`: another group's lane took one of your tickets; it's now that lane's.
 - `lane_note`, `board_note`: the owner wrote on a lane or an epic's board.
 - A file the owner attached reads "[attached: plan.md (id …)]": fetch it with `curl -H "Authorization: Bearer $LANESIGNAL_KEY" "$base/api/attachments/<id>"`.
 
@@ -103,14 +106,14 @@ It prints the same JSON as `wait_for_decisions` when something needs you, and gi
 
 ## After a restart
 
-1. `update_group`, as at any session start.
+1. `update_group` (a group must exist before its lanes are published).
 2. `get_updates` with your `group_id` and the saved `.claude/lanesignal-since` as `since`. Handle `decided`, `replies`, `laneMessages` and `boardMessages`, then save its `checkedAt`. Dismiss `open` ones whose answer you can see in this conversation; never raise the rest again.
 3. `list_lanes` with your `group_id`: a lane you ran that's missing was removed; stop work on it.
 4. `list_tickets` with your `group_id`: a ticket still `in_lane` that nobody is working was left by the crash; pick it up or `fill_lane` its lane with what's next.
 
 ## Requirements
 
-The owner's durable product decisions are kept as requirements, scoped to products, the whole project, or every project.
+The owner's durable product decisions are kept as requirements, scoped to products, the whole project, or every project. Only people retire requirements.
 
 ### Usage: requirements
 
@@ -119,5 +122,5 @@ The owner's durable product decisions are kept as requirements, scoped to produc
 If your owner's policy asks you to record decisions (or you're told to):
 
 - **Only what a person decided,** never your own design choices, naming who decided. One decision each, as one normative statement ("Payout jobs retry at most 5 times, then go to the dead-letter queue.").
-- **Search first** (`query`), so it isn't recorded twice. If the owner changed an earlier decision, `supersede_requirement` the old one; if a `similar` one is the same decision, tell the owner (only people retire requirements).
+- **Search first** (`query`), so it isn't recorded twice. If the owner changed an earlier decision, `supersede_requirement` the old one; if a `similar` one is the same decision, tell the owner.
 - **Narrowest true scope:** the products it concerns; `project` only when it holds for every product; `global` only when the owner said it covers all their projects. If no product fits, ask the owner rather than stretching the scope.

@@ -47,8 +47,10 @@ import {
  * `<!-- /usage -->`) kept or left out, and the markers themselves always removed.
  */
 export function skillText(text: string, usage: boolean): string {
-  const out = usage ? text : text.replace(/<!-- usage -->[\s\S]*?<!-- \/usage -->\n?/g, '');
-  return out.replace(/<!-- \/?usage -->\n?/g, '').replace(/\n{3,}/g, '\n\n');
+  // Markers count only on lines of their own, so one quoted in a code block is left alone.
+  const lf = text.replace(/\r\n/g, '\n');
+  const out = usage ? lf : lf.replace(/^<!-- usage -->$[\s\S]*?^<!-- \/usage -->$\n?/gm, '');
+  return out.replace(/^<!-- \/?usage -->$\n?/gm, '').replace(/\n{3,}/g, '\n\n');
 }
 
 export interface AppOptions {

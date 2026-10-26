@@ -42,7 +42,7 @@ Every person can create keys under **Settings → Keys**:
      claude mcp add --transport http lanesignal https://lanesignal.example.com/mcp \
        --header "Authorization: Bearer ls_…"
      ```
-   - the command that installs the [skill](agents.md#3-install-the-skill-how-to-use-lanesignal)
+   - the command that installs the [skill](agents.md#3-install-the-skill)
    - an `env` block for `.claude/settings.local.json` (URL, key, group, and project when the key needs one), for the skill's long waits
    - the starter [policy](agent-instructions.md) for the overseer's `CLAUDE.md`
 

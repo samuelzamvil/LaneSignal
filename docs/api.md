@@ -55,7 +55,7 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | Method and path | Role | Notes |
 |---|---|---|
 | `GET /healthz` | public | `{"ok":true}` when the database answers. Used by the container health check |
-| `GET /api/skill?usage=none` | public | The agent skill (`SKILL.md`) as this server is configured. `usage=none` leaves out its Usage sections (when and why to use the tools), for people who write their own; see [Agents](agents.md#the-skill-is-one-way-to-use-lanesignal) |
+| `GET /api/skill` | public | The agent skill (`SKILL.md`) as this server is configured. `?usage=none` leaves out its Usage sections (when and why to use the tools), for people who write their own; see [Agents](agents.md#the-skill-is-one-way-to-use-lanesignal) |
 | `GET /api/skill/usage-template` | public | The template for writing your own Usage section |
 | `GET /api/setup` | public | `{"needsSetup": bool}` |
 | `POST /api/setup` | public + code | First admin account: `{email, name, password, code}`. The code isn't needed when sending a static human token |
