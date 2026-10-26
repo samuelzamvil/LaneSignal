@@ -1,5 +1,5 @@
 // The starter policy shown when creating an agent key: the same text as the template in
-// docs/agent-instructions.md (a test keeps them in step). The skill covers how; this is when.
+// docs/agent-instructions.md (a test keeps them in step). The tools say how; this, and the skill's Usage sections, say when.
 export const POLICY_TEMPLATE = `## LaneSignal
 
 You oversee group \`<group-id>\` in LaneSignal. Use the \`lanesignal\` skill for how to publish, ask me and act on my answers.

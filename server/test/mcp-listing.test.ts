@@ -1,6 +1,7 @@
 // What tools/list and initialize advertise: trimmed for tokens, while every argument is still validated.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
+import { readdirSync, readFileSync } from 'node:fs';
 import { slimSchema } from '../src/mcp.ts';
 import { AGENT, startServer } from './helpers.ts';
 
@@ -70,4 +71,40 @@ test('slimSchema keeps a nullable type and nested items', () => {
   }) as any;
   assert.deepEqual(out.properties.a, { type: ['string', 'null'] });
   assert.deepEqual(out.properties.b, { type: 'array', items: { type: 'string' } });
+});
+
+test('tool descriptions say how, never when: that is the skill\'s usage part', async () => {
+  const { tools } = await rpc('tools/list');
+  const text = JSON.stringify(tools.map((t: { description: string }) => t.description));
+  for (const when of ['as soon as', 'before escalating', 'routine progress', 'only when', 'Search first', 'never your own']) {
+    assert.ok(!text.includes(when), `a tool description says "${when}"`);
+  }
+});
+
+test('the skill comes with its usage part, or without it for people who write their own', async () => {
+  const full = await (await fetch(`${srv.base}/api/skill`)).text();
+  const bare = await (await fetch(`${srv.base}/api/skill?usage=none`)).text();
+  assert.match(full, /Usage: acting on answers/);
+  assert.match(full, /before escalating a product or scope question/i);
+  assert.ok(!full.includes('<!--'), 'markers are removed');
+  assert.ok(!bare.includes('Usage:'), 'usage=none leaves the usage sections out');
+  assert.match(bare, /wait_for_decisions/, 'how stays');
+  assert.match(bare, /lanesignal-since/, 'the wait loop stays');
+  const template = await fetch(`${srv.base}/api/skill/usage-template`);
+  assert.equal(template.status, 200);
+  assert.match(await template.text(), /TODO/);
+});
+
+test('every skill part opens and closes its usage block once, on lines of their own', () => {
+  const dir = new URL('../../skills/lanesignal/', import.meta.url);
+  for (const name of readdirSync(dir).filter((f) => f.endsWith('.md') && f !== 'usage-template.md')) {
+    const lines = readFileSync(new URL(name, dir), 'utf8').split('\n');
+    let open = false;
+    for (const line of lines) {
+      assert.ok(!/<!-- \/?usage -->/.test(line) || /^<!-- \/?usage -->$/.test(line), `${name}: a marker shares a line`);
+      if (line === '<!-- usage -->') (assert.ok(!open, `${name}: nested usage block`), (open = true));
+      if (line === '<!-- /usage -->') (assert.ok(open, `${name}: closing marker without an opening`), (open = false));
+    }
+    assert.ok(!open, `${name}: usage block never closed`);
+  }
 });
