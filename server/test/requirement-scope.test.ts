@@ -271,6 +271,15 @@ describe('agents (MCP)', () => {
   });
 });
 
+describe('the regroup queue over HTTP', () => {
+  test('people get it, agents do not', async () => {
+    const res = await srv.call('GET', '/api/requirements/regroup', ALICE);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.ok(Array.isArray(res.body.items) && Array.isArray(res.body.candidates));
+    assert.equal((await srv.call('GET', '/api/requirements/regroup', AGENT)).status, 403);
+  });
+});
+
 describe('archiving', () => {
   test('refused while requirements are in force; hidden from the list once archived', async () => {
     await srv.call('POST', '/api/products', ALICE, { id: 'product-old', name: 'Old' });
@@ -347,4 +356,64 @@ test('a supersede into another project must say where it applies there', () => {
   const moved = store.supersedeRequirement(old.requirement.id, { requirement: 'New.', justification: 'J.', project: 'other', scope: 'project', decidedBy: 'Sam' }, 'Sam', true);
   assert.equal(moved.requirement.project, 'other');
   store.close();
+});
+
+test('the regroup queue suggests products from old tags, trains and wording, and product names not yet added', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-'));
+  const file = path.join(dir, 'db.sqlite');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl: () => null });
+    store.upsertGroup('default/alpha-train', { name: 'Alpha train' }, 'bot');
+    store.createProduct('default', { id: 'product-a', name: 'Product A' }, 'Sam');
+    const rec = (text: string) =>
+      store.recordRequirement({ requirement: text, justification: 'J.', scope: 'project', project: 'default', decidedBy: 'Sam' }, 'bot').requirement.id;
+    const byTag = rec('Retries stop after five.');
+    const byGroup = rec('Exports are nightly.');
+    const byText = rec('Product A pages load in under a second.');
+    const none = rec('Every page has a footer.');
+    const scoped = rec('Already scoped.');
+    store.close();
+    // As older requirements were: tags, a train, and no scope chosen yet.
+    const db = new DatabaseSync(file);
+    const num = (id: string) => Number(id.slice(1));
+    db.prepare(`UPDATE requirements SET tags = '["product-a-retries"]', needs_regrouping = 1 WHERE num = ?`).run(num(byTag));
+    db.prepare(`UPDATE requirements SET tags = '["nightly-exports"]', group_id = 'default/alpha-train', needs_regrouping = 1 WHERE num = ?`).run(num(byGroup));
+    db.prepare('UPDATE requirements SET needs_regrouping = 1 WHERE num IN (?, ?)').run(num(byText), num(none));
+    db.close();
+
+    store = new Store({ path: file, resolveTicketUrl: () => null });
+    const queue = store.regroupQueue('default', true);
+    const suggested = new Map(queue.items.map((i) => [i.requirement.id, i.suggested]));
+    assert.ok(!suggested.has(scoped), 'only requirements still to scope');
+    assert.deepEqual(suggested.get(byTag), { scope: 'products', products: ['product-a'] }, 'a tag starting with the product id');
+    assert.deepEqual(suggested.get(byText), { scope: 'products', products: ['product-a'] }, 'the product named in the text');
+    assert.deepEqual(suggested.get(none), { scope: 'project', products: [] });
+    assert.deepEqual(suggested.get(byGroup), { scope: 'project', products: [] }, 'no product for the train yet');
+    const names = queue.candidates.map((c) => c.id);
+    assert.ok(names.includes('alpha-train') && names.includes('nightly-exports'));
+    assert.ok(!names.includes('product-a-retries'), 'a tag that already points at a product suggests no new one');
+    // Once the train is a product, its requirements are suggested for it.
+    store.createProduct('default', { id: 'alpha-train', name: 'Alpha train' }, 'Sam');
+    const again = store.regroupQueue('default', true);
+    assert.deepEqual(again.items.find((i) => i.requirement.id === byGroup)?.suggested, { scope: 'products', products: ['alpha-train'] });
+    assert.ok(!again.candidates.some((c) => c.id === 'alpha-train'));
+    // An archived product's name isn't offered again (adding it would clash).
+    store.createProduct('default', { id: 'nightly-exports', name: 'Nightly exports' }, 'Sam');
+    store.updateProduct('default', 'nightly-exports', { archived: true });
+    assert.ok(!store.regroupQueue('default', true).candidates.some((c) => c.id === 'nightly-exports'));
+    // Global ones only for those who may scope them.
+    const g = store.recordRequirement({ requirement: 'Global one.', justification: 'J.', scope: 'global', project: null, decidedBy: 'Sam' }, 'Sam', true).requirement.id;
+    store.close();
+    const db2 = new DatabaseSync(file);
+    db2.prepare('UPDATE requirements SET needs_regrouping = 1 WHERE num = ?').run(num(g));
+    db2.close();
+    store = new Store({ path: file, resolveTicketUrl: () => null });
+    assert.ok(store.regroupQueue('default', true).items.some((i) => i.requirement.id === g));
+    const memberView = store.regroupQueue('default', false);
+    assert.ok(!memberView.items.some((i) => i.requirement.id === g));
+    assert.equal(memberView.total, memberView.items.length);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

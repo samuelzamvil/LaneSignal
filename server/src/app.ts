@@ -1040,6 +1040,16 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     );
   });
 
+  /**
+   * The regroup queue: a project's requirements still to scope (and global ones), with suggested
+   * scopes and product names their old tags and trains suggest. For people who rescope requirements.
+   */
+  app.get('/api/requirements/regroup', human, requirementsOnly, (req, res) => {
+    // Global ones only for those who may scope them (instance admins); others couldn't accept them.
+    const queue = store.regroupQueue(acc(res).pick(projectQuery(req)), acc(res).global);
+    res.json({ ...queue, items: queue.items.map((i) => ({ ...i, requirement: pub.requirement(i.requirement) })) });
+  });
+
   // ---- products: what requirements are scoped to. People manage them; everyone reads them. ----
 
   app.get('/api/products', any, requirementsOnly, (req, res) => {
