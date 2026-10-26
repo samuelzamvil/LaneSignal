@@ -75,7 +75,7 @@ The skill covers how; **when** is yours to decide. Paste the [policy template](a
 
 Which tools a client sees depends on its credential (agent keys get the agent tools, personal keys and human sessions the human ones) and on the server's [features](configuration.md#features): the waiting and answering tools exist only with `LANESIGNAL_DECISIONS=true`, the requirement tools only with `LANESIGNAL_REQUIREMENTS` on (the default).
 
-Results are compact JSON with empty fields left out. Escalations come back in brief (code, question, state, and the decision or justification once there is one), lanes as where they stand (status, letter, counts), and `update_lane` and `update_group` don't echo what you sent. `get_escalation` has an escalation in full. Tools that take a group accept `group_id` and `group` alike. Unknown groups and lanes are errors, so a typo never looks like an empty result or creates a lane nobody waits on. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
+Results are compact JSON with empty fields left out (a lane's `project`, too, when the key reaches one project). The server's MCP instructions carry the conventions every tool shares (`project`, escalation codes, `group`/`group_id`), once per session, and the advertised schemas leave out limits that are only validation; every argument is still checked in full. Escalations come back in brief (code, question, state, and the decision or justification once there is one), lanes as where they stand (status, letter, counts), and `update_lane` and `update_group` don't echo what you sent. `get_escalation` has an escalation in full. Tools that take a group accept `group_id` and `group` alike. Unknown groups and lanes are errors, so a typo never looks like an empty result or creates a lane nobody waits on. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
 
 Every tool takes an optional `project` (id or key). A key bound to one [project](projects.md) never needs it. A key that reaches several must pass it to write, and its listings cover all its projects.
 
@@ -114,7 +114,7 @@ This section applies with answering on the dashboard on (the default). With `LAN
 Answers can take minutes or a day. An overseer waits on its whole group with one call:
 
 - `wait_for_decisions` with `group_id` returns a **digest** as soon as anything in the group needs the agent. It waits for a change even when nothing is open, so one loop covers the whole session:
-  - `items`, one per thing to handle, `{code, kind, id, text}`: `code` is the escalation's (with its project key when the key reaches several projects), `id` its id or the lane, ticket or epic the item is about, and `text` the owner's words in full (the agent's own text is left out). Kinds:
+  - `items`, one per thing to handle, `{code, kind, text}` for an escalation (`code` with its project key when the key reaches several projects) or `{kind, id, text}` for the lane, ticket or epic an item is about, and `text` the owner's words in full (the agent's own text is left out). Kinds:
     - `decided`: answered; `text` is the answer and any instructions ("Accept: ship it Friday")
     - `reply`: the owner answered Other; `text` is what they wrote since the agent last did
     - `closed`: withdrawn by someone else; `text` says how
@@ -124,7 +124,7 @@ Answers can take minutes or a day. An overseer waits on its whole group with one
     - `board_note`: on a group wait, someone wrote on one of the group's epics' boards (`id` names the epic)
   - Files the owner attached are named in `text` with their id ("[attached: plan.md (id …)]"): fetch one with `GET /api/attachments/:id`.
   - `decided` and `reply` come back on every wait until the agent acknowledges or replies. The others come back once per `since`, and again if the agent repeats a `since`, so a wait that crashed before acting loses nothing. With a `since`, the digest depends on nothing else (whether a note was handed over doesn't matter).
-  - `counts`: `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies).
+  - `counts`: `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (replies); left out when all are zero.
 - `ready: true` means there are items. `ready: false` means the wait ran out with nothing new: call again.
 - A group wait also covers the group's [epics](concepts.md#epics): their questions, and people's notes on their boards.
 - `get_updates` returns the whole picture without waiting: open escalations, decided ones, replies, unread notes (`laneMessages`, and on a group, `boardMessages`). Use it after a restart, or if `counts` show something the digest doesn't.

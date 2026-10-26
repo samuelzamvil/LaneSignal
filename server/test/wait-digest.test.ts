@@ -21,7 +21,7 @@ describe('wait digest', () => {
     const now = await wait('digest-idle');
     assert.equal(now.ready, false);
     assert.deepEqual(now.items, []);
-    assert.deepEqual(now.counts, { open: 0, decidedUnacknowledged: 0, waitingOnYou: 0 });
+    assert.equal(now.counts, undefined, 'all-zero counts are left out');
     assert.ok(now.checkedAt);
     // The full format still returns at once when nothing is open.
     assert.equal((await wait('digest-idle', { format: 'full' })).ready, true);
@@ -54,9 +54,9 @@ describe('wait digest', () => {
     assert.deepEqual(w.counts, { open: 1, decidedUnacknowledged: 1, waitingOnYou: 1 });
     // The owner's words in `text`; nothing of the agent's own question.
     const decided = w.items.find((i: any) => i.kind === 'decided');
-    assert.deepEqual(decided, { code: accepted.ref, kind: 'decided', id: accepted.id, text: 'Accept: Flag name: retry_v2' });
+    assert.deepEqual(decided, { code: accepted.ref, kind: 'decided', text: 'Accept: Flag name: retry_v2' });
     const reply = w.items.find((i: any) => i.kind === 'reply');
-    assert.deepEqual(reply, { code: other.ref, kind: 'reply', id: other.id, text: 'Redis' });
+    assert.deepEqual(reply, { code: other.ref, kind: 'reply', text: 'Redis' });
 
     // Both come back on the next wait, even with a later `since`, until handled.
     assert.deepEqual(kinds(await wait('digest-work', { since: w.checkedAt })).sort(), [['decided', accepted.ref], ['reply', other.ref]].sort());

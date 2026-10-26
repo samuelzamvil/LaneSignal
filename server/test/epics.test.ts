@@ -419,7 +419,7 @@ describe('review fixes', () => {
     await srv.call('POST', `/api/escalations/${q.id}/decide`, ALICE, { decision: 'Other', note: 'Ask product first' });
     const w = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'direct', since: start.checkedAt, wait_seconds: 0 })).value;
     const reply = w.items.find((i: any) => i.kind === 'reply');
-    assert.deepEqual(reply, { code: q.ref, kind: 'reply', id: q.id, text: 'Ask product first' });
+    assert.deepEqual(reply, { code: q.ref, kind: 'reply', text: 'Ask product first' });
     await srv.tool(AGENT, 'acknowledge_escalation', { id: q.ref });
   });
 
