@@ -602,11 +602,13 @@ function buildServer(
           'isn\'t included: get_requirement with include_justification has it. `query` narrows by free text (or finds an id ' +
           'like "R14"). Pending and active ones unless you set `statuses`; `status: "pending"` means the owner hasn\'t ' +
           'approved the record yet: follow it, but it may still be corrected. A requirement in force with `supersededBy` ' +
-          'has a replacement waiting for approval: both come back, the current one then the pending change. ' +
+          'has a replacement waiting for approval: both come back, the current one then the pending change, even when ' +
+          'the partner is scoped to another product (each says its scope). Up to `limit` (default and most 200); ' +
+          '`truncated: true` means there are more: narrow with `query`. ' +
           '`needsRegrouping: true` marks an older one whose scope the owner hasn\'t set yet (it counts as project-wide).',
         inputSchema: {
           products: z.array(s.productId).min(1).max(20).optional(),
-          project_only: z.literal(true).optional(),
+          project_only: z.boolean().optional(),
           query: z.string().max(500).optional(),
           statuses: z.array(z.enum(s.AGENT_REQUIREMENT_STATUSES)).optional(),
           limit: z.number().int().min(1).max(200).optional(),
@@ -616,6 +618,11 @@ function buildServer(
       },
       async ({ products, project_only, query, statuses, limit, project }) => {
         try {
+          // A key that sees every project but has none yet still reads the global ones.
+          if (project_only && !project && !a.projects.length && a.global) {
+            const found = store.findRequirements({ query, projects: [], statuses, scope: { global: true }, limit: limit ?? 200 });
+            return json(compact({ scope: { global: true }, requirements: found.map((x) => briefRequirement(pub.requirement(x))), truncated: found.length >= (limit ?? 200) || undefined }));
+          }
           const pr = a.pick(project);
           const known = () => store.listProducts([pr]).map((p) => p.id);
           if (products && project_only) throw new ValidationError('Give either products or project_only, not both');
@@ -634,9 +641,11 @@ function buildServer(
             projects: [pr],
             statuses,
             scope: { project: pr, products, projectWide: true, global: true },
-            limit: limit ?? 100,
+            limit: limit ?? 200,
           });
-          return json({ scope, requirements: found.map((x) => briefRequirement(pub.requirement(x))) });
+          return json(
+            compact({ scope, requirements: found.map((x) => briefRequirement(pub.requirement(x))), truncated: found.length >= (limit ?? 200) || undefined }),
+          );
         } catch (err) {
           return fail(err);
         }

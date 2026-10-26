@@ -1020,6 +1020,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     // Rejected records are for people only: agents (and Claude sessions on a personal key) never get them back.
     const statuses = approvesRequirements(principalOf(res)) ? query.status : query.status?.filter((x) => x !== 'rejected');
     if (statuses && !statuses.length) return void res.json([]);
+    if (query.applies_to && (query.product || query.scope)) throw new ValidationError('applies_to already covers project-wide and global ones: leave out product and scope');
     const appliesTo = query.applies_to ? a.pick(query.project) : undefined;
     if (appliesTo) store.requireProducts(appliesTo, query.applies_to!);
     const scope = appliesTo

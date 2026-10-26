@@ -259,10 +259,15 @@ describe('agents (MCP)', () => {
     await srv.call('PATCH', '/api/products/product-b', ALICE, { locked: false });
   });
 
+  test('project_only: false is just leaving it out', async () => {
+    const res = await tool('find_requirements', { products: ['product-a'], project_only: false });
+    assert.equal(res.isError, false, res.text);
+  });
+
   test('the REST search can ask for everything that applies to some products', async () => {
     const texts = (await srv.call('GET', '/api/requirements?applies_to=product-b', AGENT)).body.map((r: { requirement: string }) => r.requirement);
     assert.ok(texts.includes('Product B exports CSV.') && texts.includes('Every release has a changelog entry.') && texts.includes('Timestamps are UTC.'));
-    assert.ok(!texts.includes('Product C only rule.'));
+    assert.ok(!texts.includes('Product C only rule.'));    assert.equal((await srv.call('GET', '/api/requirements?applies_to=product-b&scope=global', AGENT)).status, 400);
   });
 });
 
@@ -329,4 +334,17 @@ test('upgrading flags requirements in force for regrouping, keeping them project
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a supersede into another project must say where it applies there', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
+  store.createProject({ id: 'other', key: 'OT', name: 'Other' }, null);
+  const old = store.recordRequirement({ requirement: 'Old.', justification: 'J.', scope: 'project', project: 'default', decidedBy: 'Sam' }, 'Sam', true);
+  assert.throws(
+    () => store.supersedeRequirement(old.requirement.id, { requirement: 'New.', justification: 'J.', project: 'other', decidedBy: 'Sam' }, 'Sam', true),
+    /say where it applies/,
+  );
+  const moved = store.supersedeRequirement(old.requirement.id, { requirement: 'New.', justification: 'J.', project: 'other', scope: 'project', decidedBy: 'Sam' }, 'Sam', true);
+  assert.equal(moved.requirement.project, 'other');
+  store.close();
 });

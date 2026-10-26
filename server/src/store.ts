@@ -4825,6 +4825,12 @@ export class Store {
     actorOwner: string | null = null,
     approved = actorIsHuman,
   ): RecordResult {
+    // Where it applies is always chosen: a requirement nobody scoped ends up everywhere.
+    if (input.scope === undefined) {
+      throw new ValidationError(
+        'Say where it applies: scope "products" with the products it concerns, "project" for every product in the project, or "global" for every project',
+      );
+    }
     // A retry (the same requirement from the same escalation) returns the first instead of a copy.
     // A second decision from the same answer is stored; `similar` shows the first.
     if (input.sourceEscalation) {
@@ -4835,12 +4841,6 @@ export class Store {
           .all(input.sourceEscalation, input.project ?? null) as Row[]
       ).find((row) => norm(row.requirement as string) === norm(input.requirement));
       if (same) return { requirement: this.requireRequirement(String(same.num)), similar: [], duplicate: true };
-    }
-    // Where it applies is always chosen: a requirement nobody scoped ends up everywhere.
-    if (input.scope === undefined) {
-      throw new ValidationError(
-        'Say where it applies: scope "products" with the products it concerns, "project" for every product in the project, or "global" for every project',
-      );
     }
     const requirement = this.tx(() => {
       const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString(), actorOwner, approved);
@@ -4881,6 +4881,10 @@ export class Store {
       const project = input.project === undefined ? current.project : input.project;
       // No scope given and the same project: the old one's scope (still to regroup, if it was).
       const inherit = input.scope === undefined && project === current.project;
+      // Into another project, the old scope means nothing there: say where it applies.
+      if (input.scope === undefined && !inherit) {
+        throw new ValidationError('Moving it to another project: say where it applies there (scope)');
+      }
       const num = this.insertRequirement(
         {
           ...input,
