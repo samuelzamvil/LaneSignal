@@ -253,8 +253,7 @@ function buildServer(
     {
       description:
         'List tickets: by default the ones lanes hold and the parked ones (set aside to pick up again, with why), ' +
-        'optionally for one group. A ticket\'s state here only says whether a lane holds it, not its status in its tracker. ' +
-        'After a restart, look for tickets still `in_lane` that nobody is working.',
+        'optionally for one group. A ticket\'s state here only says whether a lane holds it, not its status in its tracker.',
       inputSchema: {
         group_id: GROUP_FILTER,
         group: GROUP_ALIAS,
@@ -440,7 +439,7 @@ function buildServer(
       {
         description:
           'Wait for what needs you in your group, some lanes or escalations; it waits even when nothing is open. Returns ' +
-          '`items`: `{code, kind, text}` for an escalation, `{kind, id, text}` for a lane, ticket or epic (the owner\'s words, or what happened). Kinds: `decided` (acknowledge, then act), `reply` (the owner answered Other), ' +
+          '`items`: `{code, kind, text}` for an escalation, `{kind, id, text}` for a lane, ticket or epic (the owner\'s words, or what happened). Kinds: `decided` (answered), `reply` (the owner answered Other), ' +
           '`closed`, `lane_removed`, `lane_note`, `board_note`, `ticket_moved`. `decided` and `reply` repeat until handled; ' +
           'the rest come once per `since`. `counts` (left out when all zero): `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
           'it timed out: call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
@@ -479,7 +478,7 @@ function buildServer(
       {
         description:
           'Everything in scope that involves you, without waiting: `decided`, `replies`, `open`, unread `laneMessages` and ' +
-          '`boardMessages`, and with `since`, what was withdrawn or removed since. For restarts, or when you lost track.',
+          '`boardMessages`, and with `since`, what was withdrawn or removed since.',
         inputSchema: waitInput,
         annotations: { readOnlyHint: true },
       },
@@ -564,8 +563,8 @@ function buildServer(
 
     const REQ_ID_HELP = 'Requirement id, e.g. "R14".';
     const SCOPE_HELP =
-      'Where it applies: "products" (with `products`), "project" (every product in the project) or "global" (every project; ' +
-      'only when the owner said so). list_products shows the products.';
+      'Where it applies: "products" (with `products`), "project" (every product in the project) or "global" (every ' +
+      'project). list_products shows the products.';
     const requirementFields = {
       requirement: s.requirementInput.shape.requirement.describe('One normative statement, e.g. "Payouts retry at most 5 times."'),
       justification: s.requirementInput.shape.justification.describe('Why the owner decided it, and where.'),
@@ -643,11 +642,10 @@ function buildServer(
         description:
           'Everything that applies to your work, in one call: the requirements of the `products` you name, plus the ' +
           'project-wide and global ones. Work not tied to a product: `project_only: true` (project-wide and global only). ' +
-          'One of the two is required; list_products shows the products. Follow what comes back and cite ids ("per R14"); ' +
-          'check here before escalating a product or scope question. The response names the scope it used. Justification ' +
+          'One of the two is required; list_products shows the products. The response names the scope it used. Justification ' +
           'isn\'t included: get_requirement with include_justification has it. `query` narrows by free text (or finds an id ' +
           'like "R14"). Pending and active ones unless you set `statuses`; `status: "pending"` means the owner hasn\'t ' +
-          'approved the record yet: follow it, but it may still be corrected. A requirement in force with `supersededBy` ' +
+          'approved the record yet, so it may still be corrected. A requirement in force with `supersededBy` ' +
           'has a replacement waiting for approval: both come back, the current one then the pending change, even when ' +
           'the partner is scoped to another product (each says its scope). Up to `limit` (default and most 200); ' +
           '`truncated: true` means there are more: narrow with `query`. ' +
@@ -742,14 +740,13 @@ function buildServer(
       'record_requirement',
       {
         description:
-          'Record a product decision the owner made (never your own design choice), one per requirement, scoped to where ' +
-          'it applies: the products it concerns, the whole project, or (only when the owner said so) every project. ' +
+          'Record one product decision, scoped to where it applies: the products it concerns, the whole project, or every ' +
+          'project. ' +
           (features.decisions
             ? 'Cite `source_escalation` alone if it was answered on the dashboard; otherwise say who decided (`decided_by`), ' +
               'plus `source_escalation` when it answered an escalation in your session. '
             : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
-          'Search first so you don\'t ' +
-          'record it twice; the same requirement from the same escalation returns the first (`duplicate: true`). ' +
+          'The same requirement from the same escalation returns the first (`duplicate: true`). ' +
           '`similar` lists ones that read alike: if the owner changed their mind, supersede_requirement the old one. ' +
           'A locked product refuses new requirements from agents.' +
           (approvesRequirements(who) ? '' : ' What you record is `pending` until a person approves it, whatever its scope.'),
@@ -858,7 +855,7 @@ function buildServer(
       'update_lane',
       {
         description:
-          `Publish a lane's state when it changes. Creates it on first call (pass your \`group_id\`); omitted fields ` +
+          `Publish a lane's state. Creates it on first call (pass your \`group_id\`); omitted fields ` +
           `are unchanged. ${STATUS_HELP} \`completed\` finishes its ticket and empties the lane. To change tickets use fill_lane ` +
           '(a different `ticket` here parks the one it held). PRs go in `links`, never `ticket`.' +
           (features.decisions ? ' `ownerMessages`: the owner\'s notes on the lane.' : ''),
@@ -1018,9 +1015,8 @@ function buildServer(
       'notify_owner',
       {
         description:
-          'Write to the owner in the lane\'s conversation, with a quiet phone notification that opens the lane: a ' +
-          'milestone ("Merged PR #311", "Starting gh:42"). One per lane per minute. Not for routine progress, and not ' +
-          'for questions (create_escalation).' +
+          'Write to the owner in the lane\'s conversation, with a quiet phone notification that opens the lane, e.g. ' +
+          '"Merged PR #311". One per lane per minute. It asks nothing: questions are escalations.' +
           (features.decisions ? ' May return `ownerMessages`, as update_lane does.' : ''),
         inputSchema: {
           lane_id: s.laneId,
@@ -1045,7 +1041,7 @@ function buildServer(
       'create_escalation',
       {
         description:
-          'Ask the owner, one decision per call: notifies their phone and blocks the lane holding its ticket ' +
+          'Ask the owner for a decision (each escalation gets one answer): notifies their phone and blocks the lane holding its ticket ' +
           '(`blocking: false` for an FYI). Raised on a lane (published first), it\'s the lane\'s ticket\'s, or its ' +
           'group\'s epic\'s if it holds none; `epic` with no `lane_id` raises it on the epic (blocks no lane). ' +
           'Returns its code (`ref`, e.g. "967A"). The same open question again returns the first (`duplicate: true`); ' +
@@ -1113,11 +1109,9 @@ function buildServer(
         'acknowledge_escalation',
         {
           description:
-            'Call as soon as an escalation is decided, before acting: it closes the escalation and returns the final ' +
-            '`decision` and `decisionNote` to act on. On one the owner answered Other, it takes their latest messages as ' +
-            'the decision (`Other`). To act on them, acknowledge instead of replying; reply only to ask or object. If you did ' +
-            'reply and their instructions still stand, acknowledging takes them. ' +
-            'A human may correct a mis-tap until you acknowledge. ' +
+            'Closes a decided escalation and returns the final `decision` and `decisionNote`; until then the owner can still ' +
+            'change it (a mis-tap). On one the owner answered Other, it takes their latest messages as the decision ' +
+            '(`Other`), also after a reply of yours if their instructions still stand. ' +
             'Pass `status` and `activity` to publish what the lane does next in the same call; otherwise the lane ' +
             'keeps its current status (usually awaiting_agent). Repeating it returns the same result. Only the agent that ' +
             'raised it, the overseer of the group its ticket or epic is in, or a person, can acknowledge it.',
@@ -1144,8 +1138,8 @@ function buildServer(
         'reply_to_escalation',
         {
           description:
-            `Write in an open escalation's conversation: a short reply after the owner answered Other (a question back, ` +
-            `or what you'll do), or a short update while they decide, only when something changed. At most ` +
+            `Write in an open escalation's conversation: a reply after the owner answered Other, or an update while they ` +
+            `decide. At most ` +
             `${AGENT_MESSAGE_MAX} characters, plain and to the point: put anything longer in a file and pass its id in ` +
             '`attachments`. Notifies the owner. Only the agent that raised it can reply, or the overseer of the group its ticket or epic is in.',
           inputSchema: {

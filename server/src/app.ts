@@ -42,6 +42,15 @@ import {
   type TrmnlView,
 } from './types.ts';
 
+/**
+ * The skill's text as agents get it: its usage blocks (between `<!-- usage -->` and
+ * `<!-- /usage -->`) kept or left out, and the markers themselves always removed.
+ */
+export function skillText(text: string, usage: boolean): string {
+  const out = usage ? text : text.replace(/<!-- usage -->[\s\S]*?<!-- \/usage -->\n?/g, '');
+  return out.replace(/<!-- \/?usage -->\n?/g, '').replace(/\n{3,}/g, '\n\n');
+}
+
 export interface AppOptions {
   config: Config;
   store: Store;
@@ -203,9 +212,11 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   /**
    * The skill, as this server is configured: the core, then how answers arrive (decisions.md when
    * people answer in LaneSignal, alerts.md when they answer in the agent's session), then the
-   * requirements section when that's on. The parts sit next to SKILL.md.
+   * requirements section when that's on. The parts sit next to SKILL.md. Their usage blocks (when
+   * and why, as the default skill uses LaneSignal) are left out with `?usage=none`, for people who
+   * write their own from usage-template.md.
    */
-  app.get('/api/skill', (_req, res) => {
+  app.get('/api/skill', (req, res) => {
     if (!skillFile || !existsSync(skillFile)) {
       res.status(404).json({ error: 'skill not bundled with this server' });
       return;
@@ -214,11 +225,23 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       const file = path.join(path.dirname(skillFile), name);
       return existsSync(file) ? `\n${readFileSync(file, 'utf8')}` : '';
     };
-    const text =
+    const text = skillText(
       readFileSync(skillFile, 'utf8') +
-      part(config.decisions ? 'decisions.md' : 'alerts.md') +
-      (config.requirements ? part('requirements.md') : '');
+        part(config.decisions ? 'decisions.md' : 'alerts.md') +
+        (config.requirements ? part('requirements.md') : ''),
+      req.query.usage !== 'none',
+    );
     res.set({ 'cache-control': 'no-cache', 'content-type': 'text/markdown; charset=utf-8' }).send(text);
+  });
+
+  /** The template for writing your own usage section (see /api/skill?usage=none). */
+  app.get('/api/skill/usage-template', (_req, res) => {
+    const file = skillFile && path.join(path.dirname(skillFile), 'usage-template.md');
+    if (!file || !existsSync(file)) {
+      res.status(404).json({ error: 'skill not bundled with this server' });
+      return;
+    }
+    res.set({ 'cache-control': 'no-cache', 'content-type': 'text/markdown; charset=utf-8' }).send(readFileSync(file, 'utf8'));
   });
 
   app.get('/healthz', (_req, res) => {

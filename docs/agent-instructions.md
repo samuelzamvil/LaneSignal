@@ -1,6 +1,6 @@
 # Agent policy template
 
-Agents learn **how** to use LaneSignal from the [skill](agents.md#3-install-the-skill-how-to-use-lanesignal): the tools, how to structure an escalation, waiting for the answer, recovery. **When** to use it is your call as the project owner. Paste this into the overseer's `CLAUDE.md` and edit it to taste.
+Agents learn **how** LaneSignal works from its tools and the [skill](agents.md#3-install-the-skill-how-to-use-lanesignal), and **when** to use it from the skill's Usage sections, which you can [replace with your own](agents.md#the-skill-is-one-way-to-use-lanesignal). This template is for what's specific to one overseer: paste it into its `CLAUDE.md` and edit it to taste. Where it differs from the skill's usage, it wins.
 
 One overseer session runs several lanes for one epic or train, and that epic/train is its *group*. Replace `<group-id>` with a stable id such as `payments-epic`. If the server hosts several [projects](projects.md), either give the overseer a key bound to its project, or keep the project line below and set `<project-id>`. On a server with `LANESIGNAL_DECISIONS=false` (alerts only), Settings shows a version that says to dismiss the alert once you've answered in the session.
 

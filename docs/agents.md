@@ -63,13 +63,32 @@ Use `~/.claude/skills/lanesignal/` instead to install it for every project on th
 
 The plugin carries the skill for a server with the default features (answering in LaneSignal and requirements on). If your server turns either off, install the skill from the server instead, as above, since that copy matches its configuration. Update with `/plugin marketplace update lanesignal`.
 
-**Codex** reads skills in the same `SKILL.md` format. Install it from your server into Codex's skills folder: `mkdir -p ~/.codex/skills/lanesignal && curl -fsS https://lanesignal.example.com/api/skill -o ~/.codex/skills/lanesignal/SKILL.md`, and re-run that after upgrading LaneSignal. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, then `decisions.md` (answering on the dashboard, the default) or `alerts.md` (`LANESIGNAL_DECISIONS=false`), then `requirements.md` when requirements are on. The server joins them. Re-run the command after upgrading LaneSignal or changing its features.
+**Codex** reads skills in the same `SKILL.md` format. Install it from your server into Codex's skills folder: `mkdir -p ~/.codex/skills/lanesignal && curl -fsS https://lanesignal.example.com/api/skill -o ~/.codex/skills/lanesignal/SKILL.md`, and re-run that after upgrading LaneSignal. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, then `decisions.md` (answering on the dashboard, the default) or `alerts.md` (`LANESIGNAL_DECISIONS=false`), then `requirements.md` when requirements are on. The server joins them. Each part ends with its Usage section (left out with `?usage=none`); `usage-template.md` is the template for your own. Re-run the command after upgrading LaneSignal or changing its features.
 
 The skill runs long waits in the background over HTTP, and uploads attachments with `curl`. It needs `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
 
-## 4. Set your policy (when to use it)
+### The skill is one way to use LaneSignal
 
-The skill covers how; **when** is yours to decide. Paste the [policy template](agent-instructions.md) into the overseer's `CLAUDE.md` and edit it: its group, what deserves an escalation, and whether to record requirements.
+LaneSignal is split in two on purpose:
+
+- **The tools say how.** Every agent reads the tool definitions and the server's MCP instructions when it connects. They say what each tool does and takes, and what happens when you call it, never when to call it.
+- **The skill says when and why**, in its **Usage** sections: when to publish, what deserves an escalation, when to acknowledge, when to check requirements. The default skill's usage is written for the way LaneSignal's author runs it: one owner, a few overseers, a phone in hand. It's a starting point, not a rule.
+
+If your agents should work differently, write your own usage instead of forking LaneSignal. A skill is easier to keep than a fork, and you keep getting LaneSignal's updates:
+
+1. Get the template: `curl -fsS https://lanesignal.example.com/api/skill/usage-template -o usage.md` (or [`skills/lanesignal/usage-template.md`](../skills/lanesignal/usage-template.md)). Fill in each TODO; the examples show the default choices.
+2. Install the skill without the default usage, plus yours:
+
+   ```bash
+   curl -fsS "https://lanesignal.example.com/api/skill?usage=none" -o .claude/skills/lanesignal/SKILL.md
+   cat usage.md >> .claude/skills/lanesignal/SKILL.md
+   ```
+
+3. Re-run step 2 after upgrading LaneSignal; your `usage.md` stays yours.
+
+## 4. Set your policy (per project)
+
+Whichever usage you install, each overseer's `CLAUDE.md` says what's specific to it. Paste the [policy template](agent-instructions.md) there and edit it: its group, what deserves an escalation in this project, and whether to record requirements. The policy overrides the skill's usage where they differ.
 
 ## Tools
 

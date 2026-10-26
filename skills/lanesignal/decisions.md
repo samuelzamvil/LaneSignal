@@ -1,27 +1,32 @@
 ## When the owner answers
 
-The owner answers on the dashboard with Accept, Reject or Other, quoting codes when they write ("967A: drop it").
+The owner answers on the dashboard with Accept, Reject or Other, quoting codes when they write ("967A: drop it"). A `decided` escalation, or a `reply` (Other), closes with `acknowledge_escalation`, which returns the final `decision` and `decisionNote`. One answered in this session instead closes with `dismiss_escalation`, saying what was decided and where. The owner's notes also come back as `ownerMessages` from `update_lane`, `notify_owner`, `update_epic` and `notify_epic`.
 
-1. **Wait** on your whole group (below), and keep working on lanes that aren't blocked.
-2. **`decided`**, or **`reply`** you'll act on: `acknowledge_escalation`, then act on the `decision` and `decisionNote` it returns. Every reply pages the owner, so reply only to ask back or object.
-3. **Answered here instead:** `dismiss_escalation`, saying what was decided and where. Dismiss moot ones the same way, saying why.
-4. **Another lane's open question** that affects your work: `add_position`.
-5. **The owner's notes** come back as `ownerMessages` from `update_lane`, `notify_owner`, `update_epic` and `notify_epic`: act on them like instructions.
+<!-- usage -->
+### Usage: acting on answers
+
+1. **Keep a wait running** on your whole group (below), even when nothing is open: the owner's notes arrive through it. Keep working on lanes that aren't blocked meanwhile.
+2. **Acknowledge as soon as an escalation is decided, before acting,** then act on what it returns, publishing the lane's next `status` and `activity` in the same call.
+3. **On Other, acknowledge to act on what they wrote.** Every reply pages the owner: reply only to ask back or object, and send an update while they decide only when something changed.
+4. **Dismiss** moot escalations too, saying why.
+5. **Another lane's open question** that affects your work: `add_position`.
+6. **The owner's notes** (`ownerMessages`, `lane_note`, `board_note`) are instructions: act on them, answering with `notify_owner` or `notify_epic` if useful.
+<!-- /usage -->
 
 ## Waiting for answers
 
-`wait_for_decisions` with your `group_id` returns as soon as anything needs you. What to do with each kind of item:
+`wait_for_decisions` with your `group_id` returns as soon as anything needs you. What each kind of item means:
 
 - `decided`, `reply`: as above.
 - `closed`: someone else withdrew it.
-- `lane_removed`: stop work on that lane and don't publish to it (publishing brings it back).
+- `lane_removed`: someone took the lane off the dashboard; stop work on it (publishing to it brings it back).
 - `ticket_moved`: another group's lane took one of your tickets; don't fill a lane with it again.
-- `lane_note`, `board_note`: the owner's notes; act on them like instructions, answering with `notify_owner` or `notify_epic` if useful.
+- `lane_note`, `board_note`: the owner wrote on a lane or an epic's board.
 - A file the owner attached reads "[attached: plan.md (id …)]": fetch it with `curl -H "Authorization: Bearer $LANESIGNAL_KEY" "$base/api/attachments/<id>"`.
 
 **Keeping your place:** once you've handled a result's items, save its `checkedAt` to `.claude/lanesignal-since` (overwrite it), so a restart starts there; save only after handling. If `counts` show something you can't find (e.g. after a compaction), `get_updates` returns everything in scope. A failed call is safe to repeat.
 
-**Keep a wait running even when nothing is open:** the owner's notes arrive through it. **Don't hold your session** with it, though: a waiting call keeps your session busy, and the owner can't reach you through Remote Control. If your client cuts calls off early (some stop at 60 seconds), wait less and call again. For long waits in Claude Code, run the HTTP wait as a background shell command; Claude Code tells you when it exits. It needs `LANESIGNAL_URL` (a trailing `/mcp` is fine), `LANESIGNAL_KEY` and `LANESIGNAL_GROUP`, plus `LANESIGNAL_PROJECT` if your key reaches several projects; `LANESIGNAL_SINCE` overrides the saved place:
+**Don't hold your session** with a wait: a waiting call keeps your session busy, and the owner can't reach you through Remote Control. If your client cuts calls off early (some stop at 60 seconds), wait less and call again. For long waits in Claude Code, run the HTTP wait as a background shell command; Claude Code tells you when it exits. It needs `LANESIGNAL_URL` (a trailing `/mcp` is fine), `LANESIGNAL_KEY` and `LANESIGNAL_GROUP`, plus `LANESIGNAL_PROJECT` if your key reaches several projects; `LANESIGNAL_SINCE` overrides the saved place:
 
 ```bash
 : "${LANESIGNAL_URL:?set LANESIGNAL_URL}" "${LANESIGNAL_KEY:?set LANESIGNAL_KEY}" "${LANESIGNAL_GROUP:?set LANESIGNAL_GROUP}"

@@ -21,7 +21,7 @@ LaneSignal is a self-hosted dashboard for autonomous coding-agent **lanes** and 
 | [Projects](projects.md) | Several independent apps on one server: members, admins, per-project notifications |
 | [Requirements](requirements.md) | The owner's product decisions: recorded by agents, searchable, never lost |
 | [Connecting agents (MCP)](agents.md) | Wiring Claude Code to LaneSignal, plus the MCP tool list |
-| [Agent policy template](agent-instructions.md) | When agents use LaneSignal: paste into an overseer's `CLAUDE.md` (the [skill](agents.md#3-install-the-skill-how-to-use-lanesignal) covers how) |
+| [Agent policy template](agent-instructions.md) | What's specific to one overseer: paste into its `CLAUDE.md`. The tools say how LaneSignal works; the [skill's usage](agents.md#the-skill-is-one-way-to-use-lanesignal) says when, and you can write your own |
 | [HTTP API](api.md) | REST and SSE endpoints for scripts and non-MCP agents |
 | [Android app and push notifications](android.md) | Installing the APK, FCM, ntfy |
 | [TRMNL screen](trmnl.md) | A project's latest notification and pending escalations on a TRMNL e-ink display |

@@ -5,21 +5,21 @@ description: How to report to LaneSignal through its MCP tools (the `lanesignal`
 
 # Using LaneSignal
 
-LaneSignal is the owner's dashboard for agent work: you publish what your lanes are doing and raise an *escalation* when you need the owner (how they answer is below). The tool descriptions say what each tool does and takes; this skill covers how they fit together. **When** to use them (what deserves an escalation, which lanes to run, whether to record requirements) is the owner's policy, usually in `CLAUDE.md`; follow it where it says more.
+LaneSignal is the owner's dashboard for agent work: you publish what your lanes are doing and raise an *escalation* when you need the owner (how they answer is below). The tool descriptions say what each tool does and takes; this skill covers how they fit together. The **Usage** sections say when and why to use them on this server; the owner's policy (usually in `CLAUDE.md`) overrides them.
 
 Vocabulary: a **group** is your epic or train (one overseer per group). A **lane** is a slot work goes through, one ticket at a time. A **ticket** is what a lane works on; it owns its escalations and moves between lanes (*parked* when set aside). An **epic** is a long-lived ticket the group steers by, with its own questions and board; until you add one, the group stands in as its epic. An **escalation** is a question for the owner, or something they must know.
 
 ## Publishing state
 
-- **Session start:** `update_group` once, with the `group_id` your owner's policy gives you and your Remote Control session in `links`, before publishing lanes.
-- **Your epic:** the ticket the owner gave you goes to `update_epic` (its ref as `epic`, plus `group`) once. Use the epic's `status_line` for what's queued or waiting; never publish placeholder lanes.
-- **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. A worker and a reviewer on one ticket share a lane. Change tickets with `fill_lane`, parking (with a reason) what's blocked; its questions stay open, so dismiss ones that no longer matter.
-- **Publish changes, not heartbeats.** A lane holding no ticket shows `idle`, and one with an open blocking escalation shows `blocked_human`, whatever you publish.
-- **Write for a phone:** one-line `activity`. In any text, `#1234` links to the default ticket system and `redmine:1234` to that one; in `ticket` fields use `system:id`.
+- **Your group:** `update_group` with the `group_id` your owner's policy gives you and your Remote Control session in `links`; a group must exist before lanes are published in it.
+- **Your epic:** the ticket the owner gave you goes to `update_epic` (its ref as `epic`, plus `group`), once. Its `status_line` is one line on the epic's card.
+- **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. A worker and a reviewer on one ticket share a lane. `fill_lane` changes tickets, parking (with a reason) the one it held; a parked ticket's questions stay open.
+- A lane holding no ticket shows `idle`, and one with an open blocking escalation shows `blocked_human`, whatever you publish.
+- **Ticket refs:** in any text, `#1234` links to the default ticket system and `redmine:1234` to that one; in `ticket` fields use `system:id`.
 
 ## Raising an escalation
 
-One decision per `create_escalation`: four questions in a plan are four escalations. Write it so the owner can answer from a notification:
+The owner reads it from a phone notification and the dashboard:
 
 | Field | What to put in it |
 |---|---|
@@ -31,11 +31,9 @@ One decision per `create_escalation`: four questions in a plan are four escalati
 | `attachments` | A plan or notes (`.md`, `.txt`) or a screenshot (PNG, JPEG, WebP, GIF) the owner should see |
 | `ticket` | What it's about (e.g. the PR), if not the lane's ticket |
 
-Questions that steer the whole group (direction, scope, which tickets to file) go on the epic (`epic`, no `lane_id`).
-
 ### Attachments
 
-Attach a plan or preview instead of pasting it into `context`. Upload over HTTP (needs `LANESIGNAL_URL` and `LANESIGNAL_KEY`), then pass the returned ids:
+Upload over HTTP (needs `LANESIGNAL_URL` and `LANESIGNAL_KEY`), then pass the returned ids:
 
 ```bash
 base=${LANESIGNAL_URL%/}; base=${base%/mcp}
@@ -44,34 +42,41 @@ curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api
 
 Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalation or message. Attach an upload once, from the key that uploaded it; unattached uploads are deleted after a day.
 
-## Milestones
+## Usage: publishing and asking
 
-`notify_owner` is for milestones unless your owner's policy names others. Write the first line for a lock screen, and put several things in one message.
+- **Session start:** `update_group` once, before publishing lanes.
+- **Publish changes, not heartbeats.** Use the epic's `status_line` for what's queued or waiting; never publish placeholder lanes. Keep `activity` to one line, written for a phone.
+- **Parking:** dismiss a parked ticket's questions that no longer matter.
+- **One decision per escalation:** four questions in a plan are four escalations. Questions that steer the whole group (direction, scope, which tickets to file) go on the epic (`epic`, no `lane_id`). Attach a plan or preview instead of pasting it into `context`.
+- **`notify_owner` for milestones only:** a PR merged, a ticket started. Never routine progress, never questions. Write the first line for a lock screen, and put several things in one message.
 
 ## When the owner answers
 
-The owner answers on the dashboard with Accept, Reject or Other, quoting codes when they write ("967A: drop it").
+The owner answers on the dashboard with Accept, Reject or Other, quoting codes when they write ("967A: drop it"). A `decided` escalation, or a `reply` (Other), closes with `acknowledge_escalation`, which returns the final `decision` and `decisionNote`. One answered in this session instead closes with `dismiss_escalation`, saying what was decided and where. The owner's notes also come back as `ownerMessages` from `update_lane`, `notify_owner`, `update_epic` and `notify_epic`.
 
-1. **Wait** on your whole group (below), and keep working on lanes that aren't blocked.
-2. **`decided`**, or **`reply`** you'll act on: `acknowledge_escalation`, then act on the `decision` and `decisionNote` it returns. Every reply pages the owner, so reply only to ask back or object.
-3. **Answered here instead:** `dismiss_escalation`, saying what was decided and where. Dismiss moot ones the same way, saying why.
-4. **Another lane's open question** that affects your work: `add_position`.
-5. **The owner's notes** come back as `ownerMessages` from `update_lane`, `notify_owner`, `update_epic` and `notify_epic`: act on them like instructions.
+### Usage: acting on answers
+
+1. **Keep a wait running** on your whole group (below), even when nothing is open: the owner's notes arrive through it. Keep working on lanes that aren't blocked meanwhile.
+2. **Acknowledge as soon as an escalation is decided, before acting,** then act on what it returns, publishing the lane's next `status` and `activity` in the same call.
+3. **On Other, acknowledge to act on what they wrote.** Every reply pages the owner: reply only to ask back or object, and send an update while they decide only when something changed.
+4. **Dismiss** moot escalations too, saying why.
+5. **Another lane's open question** that affects your work: `add_position`.
+6. **The owner's notes** (`ownerMessages`, `lane_note`, `board_note`) are instructions: act on them, answering with `notify_owner` or `notify_epic` if useful.
 
 ## Waiting for answers
 
-`wait_for_decisions` with your `group_id` returns as soon as anything needs you. What to do with each kind of item:
+`wait_for_decisions` with your `group_id` returns as soon as anything needs you. What each kind of item means:
 
 - `decided`, `reply`: as above.
 - `closed`: someone else withdrew it.
-- `lane_removed`: stop work on that lane and don't publish to it (publishing brings it back).
+- `lane_removed`: someone took the lane off the dashboard; stop work on it (publishing to it brings it back).
 - `ticket_moved`: another group's lane took one of your tickets; don't fill a lane with it again.
-- `lane_note`, `board_note`: the owner's notes; act on them like instructions, answering with `notify_owner` or `notify_epic` if useful.
+- `lane_note`, `board_note`: the owner wrote on a lane or an epic's board.
 - A file the owner attached reads "[attached: plan.md (id …)]": fetch it with `curl -H "Authorization: Bearer $LANESIGNAL_KEY" "$base/api/attachments/<id>"`.
 
 **Keeping your place:** once you've handled a result's items, save its `checkedAt` to `.claude/lanesignal-since` (overwrite it), so a restart starts there; save only after handling. If `counts` show something you can't find (e.g. after a compaction), `get_updates` returns everything in scope. A failed call is safe to repeat.
 
-**Keep a wait running even when nothing is open:** the owner's notes arrive through it. **Don't hold your session** with it, though: a waiting call keeps your session busy, and the owner can't reach you through Remote Control. If your client cuts calls off early (some stop at 60 seconds), wait less and call again. For long waits in Claude Code, run the HTTP wait as a background shell command; Claude Code tells you when it exits. It needs `LANESIGNAL_URL` (a trailing `/mcp` is fine), `LANESIGNAL_KEY` and `LANESIGNAL_GROUP`, plus `LANESIGNAL_PROJECT` if your key reaches several projects; `LANESIGNAL_SINCE` overrides the saved place:
+**Don't hold your session** with a wait: a waiting call keeps your session busy, and the owner can't reach you through Remote Control. If your client cuts calls off early (some stop at 60 seconds), wait less and call again. For long waits in Claude Code, run the HTTP wait as a background shell command; Claude Code tells you when it exits. It needs `LANESIGNAL_URL` (a trailing `/mcp` is fine), `LANESIGNAL_KEY` and `LANESIGNAL_GROUP`, plus `LANESIGNAL_PROJECT` if your key reaches several projects; `LANESIGNAL_SINCE` overrides the saved place:
 
 ```bash
 : "${LANESIGNAL_URL:?set LANESIGNAL_URL}" "${LANESIGNAL_KEY:?set LANESIGNAL_KEY}" "${LANESIGNAL_GROUP:?set LANESIGNAL_GROUP}"
@@ -105,8 +110,14 @@ It prints the same JSON as `wait_for_decisions` when something needs you, and gi
 
 ## Requirements
 
-The owner's durable product decisions are kept as requirements, scoped to products, the whole project, or every project. If your owner's policy asks you to record them (or you're told to):
+The owner's durable product decisions are kept as requirements, scoped to products, the whole project, or every project.
 
-- **One decision each,** as one normative statement ("Payout jobs retry at most 5 times, then go to the dead-letter queue."), naming the person who decided.
-- **Narrowest true scope.** If no product fits, ask the owner rather than stretching the scope.
-- **A `similar` one that's the same decision:** tell the owner; only people retire requirements.
+### Usage: requirements
+
+- **Before escalating a product or scope question,** `find_requirements` with the products your work touches. If a requirement answers it, follow it and cite its id ("per R14") instead of asking again; a `pending` one too.
+
+If your owner's policy asks you to record decisions (or you're told to):
+
+- **Only what a person decided,** never your own design choices, naming who decided. One decision each, as one normative statement ("Payout jobs retry at most 5 times, then go to the dead-letter queue.").
+- **Search first** (`query`), so it isn't recorded twice. If the owner changed an earlier decision, `supersede_requirement` the old one; if a `similar` one is the same decision, tell the owner (only people retire requirements).
+- **Narrowest true scope:** the products it concerns; `project` only when it holds for every product; `global` only when the owner said it covers all their projects. If no product fits, ask the owner rather than stretching the scope.

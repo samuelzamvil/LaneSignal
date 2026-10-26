@@ -4,7 +4,10 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const part = (name) => readFileSync(new URL(`../skills/lanesignal/${name}`, import.meta.url), 'utf8');
-const text = part('SKILL.md') + `\n${part('decisions.md')}` + `\n${part('requirements.md')}`;
+// As the server's skillText: usage blocks kept, their markers removed.
+const text = (part('SKILL.md') + `\n${part('decisions.md')}` + `\n${part('requirements.md')}`)
+  .replace(/<!-- \/?usage -->\n?/g, '')
+  .replace(/\n{3,}/g, '\n\n');
 const out = new URL('../plugin/skills/lanesignal/SKILL.md', import.meta.url);
 if (process.argv.includes('--check')) {
   if (readFileSync(out, 'utf8') !== text) {
