@@ -144,7 +144,7 @@ describe('several projects', () => {
     assert.deepEqual((await srv.call('GET', '/api/projects', key)).body.map((p: any) => p.id), ['shop']);
     assert.equal((await srv.call('PUT', '/api/lanes/cart?project=default', key, { status: 'active' })).status, 404);
     const tools = await srv.tool(key, 'list_lanes', {});
-    assert.ok(tools.value.every((l: any) => l.project === 'shop'));
+    assert.ok(tools.value.length > 0 && tools.value.every((l: any) => l.project === undefined), 'one project: lanes leave it out');
   });
 
   test('requirements: ids are global; all-projects ones are seen everywhere, project ones only there', async () => {
