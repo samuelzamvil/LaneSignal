@@ -75,7 +75,7 @@ const fail = (err: unknown) => {
 };
 
 const STATUS_HELP =
-  'active = working; pending_ci = waiting on CI; awaiting_agent = waiting on another agent; ' +
+  'active = working; pending_ci = waiting on CI (PR and run in `links`); awaiting_agent = waiting on another agent (name it in `activity`); ' +
   'blocked_human = waiting on the owner; idle = nothing to do; completed = done.';
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
@@ -143,7 +143,7 @@ const ESCALATION_ID = z.string().describe('Code ("967A") or id.');
  */
 const INSTRUCTIONS =
   'LaneSignal conventions for every tool: `project` (id or key) is needed only when your key reaches several ' +
-  'projects. Wherever a tool takes an escalation id, its code works too ("967A"; "LS-967A" names the project). ' +
+  'projects. Wherever a tool takes an escalation id, its code works too ("967A"; "LS-967A" names the project, since bare codes repeat across projects). ' +
   '`group` and `group_id` are the same. Unknown groups and lanes are errors, never empty results.';
 
 /**
@@ -947,7 +947,7 @@ function buildServer(
       {
         description:
           'Set an epic\'s `status_line` (one line on its card, e.g. "3 of 5 lanes busy; next up #966"), name, ref or ' +
-          'links. A ref no epic has yet, with `group`, adds that epic to the group. Returns `ownerMessages` from its board.',
+          'links. A ref no epic has yet, with `group`, adds that epic to the group (the group\'s earlier epic questions and board move to it). Returns `ownerMessages` from its board.',
         inputSchema: {
           epic: EPIC,
           group: s.groupId.optional().describe('To add a new epic: the group it belongs to.'),
@@ -1049,7 +1049,7 @@ function buildServer(
           '(`blocking: false` for an FYI). Raised on a lane (published first), it\'s the lane\'s ticket\'s, or its ' +
           'group\'s epic\'s if it holds none; `epic` with no `lane_id` raises it on the epic (blocks no lane). ' +
           'Returns its code (`ref`, e.g. "967A"). The same open question again returns the first (`duplicate: true`); ' +
-          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`).',
+          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give (attachments are added).',
         inputSchema: {
           lane_id: s.laneId.optional().describe('The lane it\'s raised in; leave out to raise it on `epic`.'),
           epic: s.epicName.optional().describe('The epic it\'s for: its ref, or the group\'s id.'),
