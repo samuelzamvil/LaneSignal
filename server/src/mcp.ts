@@ -1049,7 +1049,7 @@ function buildServer(
           '(`blocking: false` for an FYI). Raised on a lane (published first), it\'s the lane\'s ticket\'s, or its ' +
           'group\'s epic\'s if it holds none; `epic` with no `lane_id` raises it on the epic (blocks no lane). ' +
           'Returns its code (`ref`, e.g. "967A"). The same open question again returns the first (`duplicate: true`); ' +
-          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`).',
+          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give.',
         inputSchema: {
           lane_id: s.laneId.optional().describe('The lane it\'s raised in; leave out to raise it on `epic`.'),
           epic: s.epicName.optional().describe('The epic it\'s for: its ref, or the group\'s id.'),
