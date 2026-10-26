@@ -1,15 +1,7 @@
-## Requirements: rules every agent on a project follows
+## Requirements
 
-LaneSignal keeps the owner's durable product decisions as **requirements**, outside the repository. Each one is a short rule scoped to where it applies: chosen **products** of a project, the whole **project**, or (rarely) **global**, every project.
+The owner's durable product decisions are kept as requirements, scoped to products, the whole project, or every project. If your owner's policy asks you to record them (or you're told to):
 
-**Finding what applies:** `find_requirements` with the products your work touches (`products: ["…"]`; `list_products` shows them) returns those products' requirements plus the project-wide and global ones in one call, and names the scope it used. Check it before escalating a product or scope question. For work not tied to a product, pass `project_only: true`. Follow what comes back and cite ids ("per R14") instead of asking again. Justification isn't included; `get_requirement` with `include_justification: true` has it when you need the reasoning.
-
-If your owner's policy asks you to keep product decisions (or you're told to record one):
-
-- **Owner decisions only.** Record only what a person decided, never your own design choices. Every requirement names who decided: `decided_by` (e.g. `"Sam (Remote Control, 2026-10-23)"`), plus `source_escalation: "A12"` when it came from an escalation. (Where the owner answers in LaneSignal itself, the escalation alone names the decider.)
-- **Short and single:** one decision per requirement, written as one normative statement ("Payout jobs retry at most 5 times, then go to the dead-letter queue."): at most 300 characters, with the reasoning in `justification` (at most 800).
-- **Scope is required:** `scope: "products"` with the `products` it concerns (several if it spans them), `"project"` only when it truly holds for every product in the project, `"global"` only when the owner said it covers all their projects. Recording without a scope is refused. Only the owner adds products: if none fits, ask rather than stretching the scope.
-- **Locked products:** a locked product refuses new requirements and changes to its requirements from agents. Tell the owner instead.
-- **Search first:** `find_requirements` with `query` set to the decision's key words (and the products concerned, or `project_only`) before recording, so it isn't recorded twice; `similar` in the reply also catches look-alikes elsewhere in the project. Recording the same requirement from the same `source_escalation` again returns the existing one (`duplicate: true`).
-- **Pending until approved:** what you record is `pending` until the owner approves it in LaneSignal, whatever its scope. Pending requirements still come back from `find_requirements` (marked `status: "pending"`); follow them like active ones. When you supersede, the old requirement stays in force (its `supersededBy` names yours) until the owner approves the replacement. Searches return such a pair together, the current requirement then the pending change: follow the current one, but know it may be about to change.
-- **Check the reply:** `similar` lists pending or active requirements that read alike. If a similar one is the same decision, tell the owner (only people retire requirements). If the owner changed an earlier decision, use `supersede_requirement` on the old one instead of recording a new one (it keeps the old one's scope unless you give another).
+- **One decision each,** as one normative statement ("Payout jobs retry at most 5 times, then go to the dead-letter queue."), naming the person who decided.
+- **Narrowest true scope.** If no product fits, ask the owner rather than stretching the scope.
+- **A `similar` one that's the same decision:** tell the owner; only people retire requirements.
