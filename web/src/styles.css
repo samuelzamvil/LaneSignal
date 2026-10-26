@@ -504,6 +504,8 @@ textarea {
   align-items: center;
   gap: 8px;
   margin-top: 6px;
+  /* A long ticket ref wraps instead of widening the card. */
+  overflow-wrap: anywhere;
 }
 
 .esc-count {
@@ -636,10 +638,14 @@ textarea {
   display: flex;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
 }
 
+/* A select is as wide as its longest option (a long group name): it shrinks to the row instead. */
 .filter-row select {
   width: auto;
+  min-width: 0;
+  max-width: 100%;
   min-height: 36px;
   padding: 4px 8px;
 }
@@ -960,6 +966,7 @@ textarea {
   position: sticky;
   top: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: calc(8px + var(--safe-top)) 16px 8px 8px;
@@ -973,8 +980,9 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+/* The title keeps room for a code; when the back button and pill leave less, the pill wraps below. */
 .sheet-title {
-  flex: 1;
+  flex: 1 1 10em;
   min-width: 0;
 }
 
@@ -1100,9 +1108,14 @@ textarea {
   border-bottom: 1px solid var(--border);
 }
 
+/* In lane, ticket and epic sheets a row reads as one sentence; the li carries the border. */
+.esc-history .esc-row {
+  display: inline;
+  padding: 0;
+  border-bottom: none;
+}
+
 .esc-history .state {
-  flex: none;
-  overflow-wrap: normal;
   font-size: 0.75rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -1749,14 +1762,17 @@ textarea {
 
 .toast {
   position: fixed;
-  left: 50%;
+  /* Centred by margins, not left: 50%, which caps a shrink-to-fit box at half the screen. */
+  left: 0;
+  right: 0;
   bottom: calc(76px + var(--safe-bottom));
-  transform: translateX(-50%);
   z-index: 40;
   display: flex;
   gap: 16px;
   align-items: center;
+  width: max-content;
   max-width: min(92vw, 480px);
+  margin: 0 auto;
   padding: 12px 16px;
   border-radius: var(--radius);
   background: var(--text);
@@ -1767,7 +1783,7 @@ textarea {
 
 .toast span {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .toast a {
@@ -2113,7 +2129,10 @@ a.button.primary {
 
 .last-message {
   margin: 6px 0;
-  padding: 8px 10px;
+  /* Vertical space as a transparent border, not padding: the clamp clips at the padding edge,
+     so padding would show a sliver of a fourth line. */
+  padding: 0 10px;
+  border-block: 8px solid transparent;
   border-radius: 10px;
   background: var(--surface-2);
   font-size: 0.9rem;
@@ -2254,6 +2273,11 @@ a.button.primary {
 .esc-row .ref,
 .history-row .ref {
   min-width: 3em;
+  /* A long code (BILLINGPLATFORM-12345A) is cut short so the question keeps the row. */
+  max-width: 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 700;
   color: var(--muted);
 }
@@ -2277,6 +2301,8 @@ a.button.primary {
 
 .esc-row-where,
 .history-where {
+  /* Holds its screen-reader labels, which would otherwise sit past the row's end and widen the page. */
+  position: relative;
   font-size: 0.8rem;
   overflow: hidden;
   text-overflow: ellipsis;
