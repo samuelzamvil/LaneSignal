@@ -432,6 +432,8 @@ export interface Requirement {
   products: string[];
   /** Recorded before products existed (or without a scope): waiting for a person to choose one. Counts as project-wide meanwhile. */
   needsRegrouping: boolean;
+  /** How many times a person changed its scope (`GET /api/requirements/:id/changes` lists them). */
+  scopeChanges: number;
   /** One normative statement, e.g. "Payout jobs retry at most 5 times." */
   requirement: string;
   /** Why, and where the decision was made. */
@@ -515,6 +517,7 @@ export type StreamEvent =
   | { type: 'ticket'; ticket: Ticket }
   /** An epic changed: details, close request, its questions' counts, or its board (`messaged`). */
   | { type: 'epic'; epic: Epic; messaged?: 'owner' | 'agent' }
-  | { type: 'requirement'; requirement: Requirement }
+  /** `previousProject`: set when a person moved it out of that project (null: out of global), so those who saw it there learn it's gone. */
+  | { type: 'requirement'; requirement: Requirement; previousProject?: string | null }
   /** A product was added, renamed, recoloured, locked or unlocked, or archived. */
   | { type: 'product'; product: Product };

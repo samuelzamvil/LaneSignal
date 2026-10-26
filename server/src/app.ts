@@ -36,6 +36,7 @@ import {
   type ProjectMember,
   type PublicConfig,
   type Requirement,
+  type RequirementChange,
   type RequirementScope,
   type StreamEvent,
   type TrmnlView,
@@ -1104,7 +1105,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.patch('/api/requirements/:id', human, requirementsOnly, (req, res) => {
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
-    res.json(pub.requirement(store.editRequirement(current.id, parse(s.requirementEdit, req.body))));
+    res.json(pub.requirement(store.editRequirement(current.id, parse(s.requirementEdit, req.body), approvesRequirements(principalOf(res)))));
   });
 
   /**
@@ -1119,7 +1120,10 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   };
 
   app.get('/api/requirements/:id/changes', any, requirementsOnly, (req, res) => {
-    res.json(store.requirementChanges(visibleRequirement(res, String(req.params.id)).id));
+    // A side in a project the caller can't see names no project or products.
+    const sees = acc(res).projects;
+    const side = (x: RequirementChange['from']) => (x.project === null || sees.includes(x.project) ? x : { scope: x.scope, project: '(another project)', products: [] });
+    res.json(store.requirementChanges(visibleRequirement(res, String(req.params.id)).id).map((c) => ({ ...c, from: side(c.from), to: side(c.to) })));
   });
 
   app.put('/api/requirements/:id/scope', human, requirementsOnly, (req, res) => {
@@ -1145,7 +1149,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.post('/api/requirements/:id/restore', human, requirementsOnly, (req, res) => {
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
-    res.json(pub.requirement(store.restoreRequirement(current.id)));
+    res.json(pub.requirement(store.restoreRequirement(current.id, approvesRequirements(principalOf(res)))));
   });
 
   app.post('/api/requirements/:id/reject', human, requirementsOnly, (req, res) => {
@@ -1158,7 +1162,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.post('/api/requirements/:id/retire', human, requirementsOnly, (req, res) => {
     const current = visibleRequirement(res, String(req.params.id));
     acc(res).requireWritable(current);
-    res.json(pub.requirement(store.retireRequirement(current.id)));
+    res.json(pub.requirement(store.retireRequirement(current.id, approvesRequirements(principalOf(res)))));
   });
 
   // ---- export (CSV / JSON / zip for analysis) ----
@@ -1251,6 +1255,11 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       // Rejected requirements are for people only: others just learn it's gone.
       if (visible?.type === 'requirement' && visible.requirement.status === 'rejected' && !seesRejected) {
         res.write(`event: requirement_removed\ndata: ${JSON.stringify({ type: 'requirement_removed', id: visible.requirement.id })}\n\n`);
+        return;
+      }
+      // Moved out of a project the caller sees (or out of global) into one it doesn't: it's gone from here.
+      if (!visible && e.type === 'requirement' && e.previousProject !== undefined && (e.previousProject === null || projects.includes(e.previousProject))) {
+        res.write(`event: requirement_removed\ndata: ${JSON.stringify({ type: 'requirement_removed', id: e.requirement.id })}\n\n`);
         return;
       }
       if (visible) res.write(`event: ${visible.type}\ndata: ${JSON.stringify(visible)}\n\n`);

@@ -253,7 +253,13 @@ export function requirementInputFor(
     current !== undefined && body.allProjects === undefined && body.scope === undefined && body.group === undefined && !project;
   // Without a project: the group's, or the cited escalation's.
   const cited = !project && !body.group && body.sourceEscalation && !body.allProjects && !keepScope ? a.escalation(body.sourceEscalation) : null;
-  const scopeProject = body.allProjects ? null : keepScope ? current.project : (cited?.project ?? a.pick(project, { group: body.group ?? undefined }));
+  // A supersede naming a scope but no project stays in the old one's project.
+  const sameProject = current !== undefined && current.project !== null && !project && !body.group && !body.allProjects;
+  const scopeProject = body.allProjects
+    ? null
+    : keepScope || sameProject
+      ? current!.project
+      : (cited?.project ?? a.pick(project, { group: body.group ?? undefined }));
   if (current) a.requireWritable(current);
   a.requireWritable({ project: scopeProject });
   const human = a.principal.role === 'human';
@@ -322,7 +328,7 @@ export const pub = {
         return projects.includes(e.project) ? { ...e, id: localId(e.id) } : null;
       case 'requirement':
         return e.requirement.project === null || projects.includes(e.requirement.project)
-          ? { ...e, requirement: pub.requirement(e.requirement) }
+          ? { type: 'requirement', requirement: pub.requirement(e.requirement) }
           : null;
       case 'ticket':
         return projects.includes(e.ticket.project) ? { ...e, ticket: pub.ticket(e.ticket) } : null;

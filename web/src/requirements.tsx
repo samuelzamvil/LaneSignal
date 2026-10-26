@@ -85,6 +85,7 @@ function ScopePicker({
   products,
   projects,
   defaultProject,
+  canGlobal,
   client,
   onDone,
 }: {
@@ -93,6 +94,7 @@ function ScopePicker({
   projects: ProjectAccess[];
   /** The project being viewed, if one. */
   defaultProject: string;
+  canGlobal: boolean;
   client: Client;
   onDone: () => void;
 }) {
@@ -126,7 +128,7 @@ function ScopePicker({
       <label>
         Applies to
         <select value={scope} onChange={(e) => setScope(e.target.value as Requirement['scope'])}>
-          <option value="global">Global (every project)</option>
+          {(canGlobal || req.scope === 'global') && <option value="global">Global (every project)</option>}
           <option value="project">Project-wide</option>
           <option value="products">Products…</option>
         </select>
@@ -178,10 +180,12 @@ function ScopePicker({
   );
 }
 
-/** Who moved a requirement where, for audits. */
-function ScopeHistory({ req, client, products, version }: { req: Requirement; client: Client; products: Products; version: number }) {
+/** Who moved a requirement where, for audits: fetched only when opened. */
+function ScopeHistory({ req, client, products }: { req: Requirement; client: Client; products: Products }) {
+  const [open, setOpen] = useState(false);
   const [changes, setChanges] = useState<RequirementChange[] | null>(null);
   useEffect(() => {
+    if (!open) return;
     let cancelled = false;
     client
       .requirementChanges(req.id)
@@ -190,8 +194,15 @@ function ScopeHistory({ req, client, products, version }: { req: Requirement; cl
     return () => {
       cancelled = true;
     };
-  }, [client, req.id, version]);
-  if (!changes?.length) return null;
+  }, [client, req.id, open, req.scopeChanges]);
+  if (!req.scopeChanges) return null;
+  if (!open || !changes) {
+    return (
+      <button className="link small" onClick={() => setOpen(true)}>
+        Scope history ({req.scopeChanges})
+      </button>
+    );
+  }
   return (
     <ul className="scope-history muted small">
       {changes.map((c) => (
@@ -202,6 +213,18 @@ function ScopeHistory({ req, client, products, version }: { req: Requirement; cl
       ))}
     </ul>
   );
+}
+
+/** A colour picker that saves once the choice settles, not on every step of a drag. */
+function ColorInput({ label, value, onCommit }: { label: string; value: string; onCommit: (color: string) => void }) {
+  const [color, setColor] = useState(value);
+  useEffect(() => setColor(value), [value]);
+  useEffect(() => {
+    if (color.toLowerCase() === value.toLowerCase()) return;
+    const t = setTimeout(() => onCommit(color), 600);
+    return () => clearTimeout(t);
+  }, [color]);
+  return <input type="color" aria-label={label} value={color} onChange={(e) => setColor(e.target.value)} />;
 }
 
 /**
@@ -241,7 +264,7 @@ function ProductsPanel({ client, project, products }: { client: Client; project:
   return (
     <details className="products-panel">
       <summary>
-        Products <span className="count">{products.length}</span>
+        Products <span className="count">{products.filter((p) => !p.archived).length}</span>
       </summary>
       <p className="hint">
         Requirements apply globally, project-wide, or to the products you add here. Agents can't add products. Lock one
@@ -249,11 +272,10 @@ function ProductsPanel({ client, project, products }: { client: Client; project:
       </p>
       {products.map((p) => (
         <div key={p.id} className={`product-row${p.archived ? ' archived' : ''}`}>
-          <input
-            type="color"
-            aria-label={`Colour of ${p.name}`}
+          <ColorInput
+            label={`Colour of ${p.name}`}
             value={p.color ?? '#888888'}
-            onChange={(e) => act(() => client.updateProduct(project, p.id, { color: e.target.value }))}
+            onCommit={(color) => act(() => client.updateProduct(project, p.id, { color }))}
           />
           <span className="product-name">
             <strong>{p.name}</strong> <span className="muted small">{p.id}</span>
@@ -408,7 +430,7 @@ function RequirementCard({
   projects,
   project,
   projectName,
-  version,
+  canGlobal,
   onTag,
   onOpen,
   replaces,
@@ -423,7 +445,8 @@ function RequirementCard({
   project: string;
   /** Its project's name, where projects mix. */
   projectName?: string;
-  version: number;
+  /** May write global requirements (an instance admin). */
+  canGlobal: boolean;
   /** The cited escalation's code with its project key, so the link opens the right one. */
   sourceCode: string | null;
   client: Client;
@@ -483,10 +506,18 @@ function RequirementCard({
             )}{' '}
             · recorded by {req.recordedBy} · {absolute(req.createdAt)}
           </p>
-          <ScopeHistory req={req} client={client} products={products} version={version} />
+          <ScopeHistory req={req} client={client} products={products} />
           {rejecting && <RejectConfirm req={req} client={client} onDone={() => setRejecting(false)} />}
           {scoping && (
-            <ScopePicker req={req} products={products} projects={projects} defaultProject={project} client={client} onDone={() => setScoping(false)} />
+            <ScopePicker
+              req={req}
+              products={products}
+              projects={projects}
+              defaultProject={project}
+              canGlobal={canGlobal}
+              client={client}
+              onDone={() => setScoping(false)}
+            />
           )}
           {canEdit && inForce(req) && !rejecting && !scoping && (
             <div className="actions">
@@ -546,6 +577,7 @@ export function RequirementsPane({
   groupLabel,
   canEdit,
   canApprove,
+  canGlobal,
   version,
 }: {
   client: Client;
@@ -558,6 +590,8 @@ export function RequirementsPane({
   canEdit: boolean;
   /** Signed in (not a personal key): approves, rejects, rescopes, and manages products. */
   canApprove: boolean;
+  /** May write global requirements (an instance admin). */
+  canGlobal: boolean;
   /** Changes when a requirement or product changes, to refetch. */
   version: number;
 }) {
@@ -749,7 +783,7 @@ export function RequirementsPane({
               projects={projects}
               project={project}
               projectName={whereOf(r)}
-              version={version}
+              canGlobal={canGlobal}
               onTag={(t) => setTags(tags.includes(t) ? tags : [...tags, t])}
               onOpen={open}
               replaces={replaces.get(r.id)}

@@ -164,6 +164,28 @@ describe('locks', () => {
     assert.equal((await record({ requirement: 'Product A caches for 1 minute.', scope: 'products', products: ['product-a'] })).status, 201);
   });
 
+  test('a personal key cannot edit, retire or restore a locked product\'s requirement', async () => {
+    await srv.call('POST', '/api/admin/people', ALICE, { email: 'lee@example.com', name: 'Lee', password: 'correct horse battery' });
+    const signIn = await fetch(`${srv.base}/api/auth/sign-in/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: srv.base },
+      body: JSON.stringify({ email: 'lee@example.com', password: 'correct horse battery' }),
+    });
+    const personal = (await srv.call('POST', '/api/auth/api-key/create', signIn.headers.get('set-auth-token')!, { name: 'lee-claude', metadata: { role: 'human' } })).body.key;
+    await srv.call('POST', '/api/products', ALICE, { id: 'product-l', name: 'Product L' });
+    const id = (await srv.call('POST', '/api/requirements', ALICE, { ...base, requirement: 'Product L has no plugins.', scope: 'products', products: ['product-l'] })).body.requirement.id;
+    await srv.call('PATCH', '/api/products/product-l', ALICE, { locked: true });
+    assert.equal((await srv.call('PATCH', `/api/requirements/${id}`, personal, { requirement: 'Product L has plugins.' })).status, 403);
+    assert.equal((await srv.call('POST', `/api/requirements/${id}/retire`, personal)).status, 403);
+    assert.equal((await srv.call('POST', `/api/requirements/${id}/retire`, ALICE)).status, 200);
+    assert.equal((await srv.call('POST', `/api/requirements/${id}/restore`, personal)).status, 403);
+    // Archived meanwhile: restoring would put it back on a product nobody can pick.
+    await srv.call('PATCH', '/api/products/product-l', ALICE, { locked: false, archived: true });
+    assert.equal((await srv.call('POST', `/api/requirements/${id}/restore`, ALICE)).status, 409);
+    await srv.call('PATCH', '/api/products/product-l', ALICE, { archived: false });
+    assert.equal((await srv.call('POST', `/api/requirements/${id}/restore`, ALICE)).status, 200);
+  });
+
   test('a supersede without a scope keeps the old one\'s', async () => {
     const id = (await record({ requirement: 'Product B pages are paginated by 50.', scope: 'products', products: ['product-b'] })).body.requirement.id;
     const res = await srv.call('POST', `/api/requirements/${id}/supersede`, AGENT, { ...base, decidedBy: 'Sam', requirement: 'Product B pages are paginated by 25.' });

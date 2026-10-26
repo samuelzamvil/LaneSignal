@@ -40,13 +40,13 @@ Every requirement says where it applies, and there's no default:
 
 **Products** are named parts of a project (a project can hold several). Only a signed-in person adds them, on the Requirements page (or `POST /api/products`); agents can't. A requirement scoped to an unknown product is refused, and the error lists the project's products.
 
-**Locks.** A person can lock a product. Agents (and personal keys) then can't record a requirement in it, supersede one of its requirements, or move requirements in or out. People still can. Locks apply only to products.
+**Locks.** A person can lock a product. Agents and personal keys then can't record a requirement in it, or supersede, edit, retire or restore one of its requirements. Only signed-in people move requirements between scopes anyway. People still can do all of it. Locks apply only to products.
 
 **Changing the scope.** A person changes a requirement's scope at any time from its card (**Change scope**), or picks one while approving (**Save & approve**). It keeps its id and status, so no re-approval, and the change is logged with who made it and when (shown on the card, `GET /api/requirements/:id/changes`, and `requirement_changes.csv` in the export). Moving a requirement to global keeps its escalation citation, qualified with its project (`LS-A12`).
 
 **Requirements from before products** (and any recorded without a scope) are flagged **Needs scope**. They keep counting as project-wide (or global, if they were for all projects) so none drop out of what agents see. Tick **Needs scope only** on the Requirements page to work through them.
 
-**Archiving** a product hides it from pickers. It's refused while requirements in force are scoped to it: rescope them first.
+**Archiving** a product hides it from pickers. It's refused while requirements in force are scoped to it: rescope them first. A retired requirement on an archived product can't be restored until the product is unarchived.
 
 ### Tags
 

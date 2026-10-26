@@ -4001,6 +4001,9 @@ export class Store {
         .all(...params, limit) as Row[];
       return page(raw, (r) => {
         const c = this.requirementChangeFromRow(r);
+        // A side in a project outside the export names no project or products.
+        const hidden = (x: RequirementChange['from']) => !!filter.projects && x.project !== null && !filter.projects.includes(x.project);
+        for (const side of [c.from, c.to]) if (hidden(side)) Object.assign(side, { project: '(another project)', products: [] });
         return {
           id: c.id,
           requirement: c.requirement,
@@ -4472,6 +4475,9 @@ export class Store {
       scope: r.scope as RequirementScope,
       products: this.requirementProducts(Number(r.num)),
       needsRegrouping: !!r.needs_regrouping,
+      scopeChanges: Number(
+        (this.db.prepare('SELECT COUNT(*) AS n FROM requirement_changes WHERE requirement_num = ?').get(Number(r.num)) as Row).n,
+      ),
       requirement: r.requirement as string,
       justification: r.justification as string,
       tags: JSON.parse(r.tags as string) as string[],
@@ -4970,10 +4976,11 @@ export class Store {
   }
 
   /** Corrections that keep the meaning (wording, tags). Changing the decision is a supersede. */
-  editRequirement(id: string, patch: { requirement?: string; justification?: string; tags?: string[] }): Requirement {
+  editRequirement(id: string, patch: { requirement?: string; justification?: string; tags?: string[] }, byPerson = true): Requirement {
     const requirement = this.tx(() => {
       const current = this.requireRequirement(id);
       if (!inForce(current)) throw new ConflictError(`${current.id} is ${current.status}; only pending or active requirements can be edited`);
+      if (!byPerson) this.checkUnlocked(current);
       const tags = patch.tags ? this.cleanTags(patch.tags) : current.tags;
       this.db
         .prepare('UPDATE requirements SET requirement = ?, justification = ?, tags = ?, updated_at = ? WHERE num = ?')
@@ -5002,7 +5009,7 @@ export class Store {
    * replaces another requirement, that one is superseded now.
    */
   approveRequirement(id: string, rescope?: { target: ScopeTarget; actor: string }): Requirement {
-    const { requirement, replaced } = this.tx(() => {
+    const { requirement, replaced, before } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (current.status !== 'pending') throw new ConflictError(`${current.id} is ${current.status}; only pending requirements can be approved`);
       // Approving with a different scope chosen: both in one step.
@@ -5014,10 +5021,14 @@ export class Store {
       for (const old of replaced) {
         this.db.prepare("UPDATE requirements SET status = 'superseded', updated_at = ? WHERE num = ?").run(at, old);
       }
-      return { requirement: this.requireRequirement(current.id), replaced: replaced.map((n) => this.requireRequirement(String(n))) };
+      return {
+        requirement: this.requireRequirement(current.id),
+        replaced: replaced.map((n) => this.requireRequirement(String(n))),
+        before: current.project,
+      };
     });
     for (const old of replaced) this.emit({ type: 'requirement', requirement: old });
-    this.emit({ type: 'requirement', requirement });
+    this.emit({ type: 'requirement', requirement, ...(before !== requirement.project ? { previousProject: before } : {}) });
     return requirement;
   }
 
@@ -5026,11 +5037,21 @@ export class Store {
    * again; a rejected one goes back to waiting for approval, its reason cleared, and is again the
    * pending replacement of what it was to replace (409 if that has changed since).
    */
-  restoreRequirement(id: string): Requirement {
+  restoreRequirement(id: string, byPerson = true): Requirement {
     const { requirement, relinked } = this.tx(() => {
       const current = this.requireRequirement(id);
       if (current.status !== 'retired' && current.status !== 'rejected') {
         throw new ConflictError(`${current.id} is ${current.status}; only retired or rejected requirements can be restored`);
+      }
+      if (!byPerson) this.checkUnlocked(current);
+      // Back in force on a product nobody can pick any more: unarchive it or rescope first.
+      if (current.scope === 'products' && current.project) {
+        const archived = this.listProducts([current.project], true).filter((p) => p.archived && current.products.includes(p.id));
+        if (archived.length) {
+          throw new ConflictError(
+            `${current.id} is scoped to archived product${archived.length > 1 ? 's' : ''} ${archived.map((p) => `"${p.id}"`).join(', ')}; unarchive ${archived.length > 1 ? 'them' : 'it'} first`,
+          );
+        }
       }
       const num = this.requirementNum(current.id)!;
       const at = this.now().toISOString();
@@ -5104,8 +5125,9 @@ export class Store {
   }
 
   /** Withdraws an active requirement with no replacement: the decision no longer applies. A pending one is rejected instead. */
-  retireRequirement(id: string): Requirement {
+  retireRequirement(id: string, byPerson = true): Requirement {
     const current = this.requireRequirement(id);
+    if (!byPerson) this.checkUnlocked(current);
     if (current.status === 'pending') throw new ConflictError(`${current.id} is pending; reject it with a reason instead of retiring it`);
     if (current.status !== 'active') throw new ConflictError(`${current.id} is already ${current.status}`);
     return this.withdrawRequirement(current, 'retired', null);
@@ -5160,12 +5182,12 @@ export class Store {
 
   /** A person changes where a requirement applies (no re-approval: the same decision, scoped differently). */
   setRequirementScope(id: string, target: ScopeTarget, actor: string): Requirement {
-    const requirement = this.tx(() => {
+    const { requirement, before } = this.tx(() => {
       const current = this.requireRequirement(id);
       this.applyScope(current, target, actor);
-      return this.requireRequirement(current.id);
+      return { requirement: this.requireRequirement(current.id), before: current.project };
     });
-    this.emit({ type: 'requirement', requirement });
+    this.emit({ type: 'requirement', requirement, ...(before !== requirement.project ? { previousProject: before } : {}) });
     return requirement;
   }
 
