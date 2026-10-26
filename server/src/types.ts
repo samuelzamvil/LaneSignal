@@ -381,6 +381,41 @@ export interface Principal {
 export type RequirementStatus = 'pending' | 'active' | 'superseded' | 'retired' | 'rejected';
 
 /**
+ * Where a requirement applies: every project (`global`), every product in its project (`project`),
+ * or only the products it names (`products`). Always chosen, never a default.
+ */
+export type RequirementScope = 'global' | 'project' | 'products';
+
+/** A product within a project, which requirements can be scoped to. Only people create products. */
+export interface Product {
+  project: string;
+  /** Kebab-case, unique within the project, e.g. "billing". */
+  id: string;
+  name: string;
+  /** A CSS hex colour, e.g. "#3b82f6", or null for the default. */
+  color: string | null;
+  /** Locked: agents can't add requirements to it, change its requirements, or move requirements in or out. */
+  locked: boolean;
+  archived: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Pending and active requirements scoped to it. */
+  requirements: number;
+}
+
+/** A change to a requirement's scope, kept for audits. */
+export interface RequirementChange {
+  id: number;
+  requirement: string;
+  kind: 'scope';
+  actor: string;
+  from: { scope: RequirementScope; project: string | null; products: string[] };
+  to: { scope: RequirementScope; project: string | null; products: string[] };
+  at: string;
+}
+
+/**
  * A product decision made by the owner, kept so it can be found later without
  * digging through tickets. Agents record them; the decision is always a human's.
  */
@@ -391,6 +426,14 @@ export interface Requirement {
   project: string | null;
   /** Group (train/epic) within the project it belongs to; null for project-wide requirements. */
   group: string | null;
+  /** Global, project-wide, or the products in `products`. */
+  scope: RequirementScope;
+  /** Product ids in its project, when `scope` is "products"; empty otherwise. */
+  products: string[];
+  /** Recorded before products existed (or without a scope): waiting for a person to choose one. Counts as project-wide meanwhile. */
+  needsRegrouping: boolean;
+  /** How many times a person changed its scope (`GET /api/requirements/:id/changes` lists them). */
+  scopeChanges: number;
   /** One normative statement, e.g. "Payout jobs retry at most 5 times." */
   requirement: string;
   /** Why, and where the decision was made. */
@@ -474,4 +517,7 @@ export type StreamEvent =
   | { type: 'ticket'; ticket: Ticket }
   /** An epic changed: details, close request, its questions' counts, or its board (`messaged`). */
   | { type: 'epic'; epic: Epic; messaged?: 'owner' | 'agent' }
-  | { type: 'requirement'; requirement: Requirement };
+  /** `previousProject`: set when a person moved it out of that project (null: out of global), so those who saw it there learn it's gone. */
+  | { type: 'requirement'; requirement: Requirement; previousProject?: string | null }
+  /** A product was added, renamed, recoloured, locked or unlocked, or archived. */
+  | { type: 'product'; product: Product };

@@ -14,7 +14,10 @@ import type {
   ProjectMember,
   ProjectRole,
   PublicConfig,
+  Product,
   Requirement,
+  RequirementChange,
+  RequirementScope,
   RequirementStatus,
   StreamEvent,
   Ticket,
@@ -36,7 +39,10 @@ export type {
   ProjectMember,
   ProjectRole,
   PublicConfig,
+  Product,
   Requirement,
+  RequirementChange,
+  RequirementScope,
   RequirementStatus,
   StreamEvent,
   Ticket,
@@ -44,6 +50,13 @@ export type {
   TrmnlView,
 };
 export type { LaneStatus, Link, Position } from '../../server/src/types.ts';
+
+/** Where a person puts a requirement: global, project-wide or products (of `project`, when moving it into one). */
+export interface ScopeChoice {
+  scope: RequirementScope;
+  products?: string[];
+  project?: string;
+}
 
 export const isNative = Capacitor.isNativePlatform();
 
@@ -224,12 +237,27 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
       if (f.before) (qs.set('before_at', f.before.at), qs.set('before_id', f.before.id));
       return request<{ items: Escalation[]; next: { at: string; id: string } | null }>('GET', `/api/history?${qs}`);
     },
-    requirements: (f: { q?: string; tags?: string[]; group?: string; project?: string; statuses?: RequirementStatus[] }) => {
+    requirements: (f: {
+      q?: string;
+      tags?: string[];
+      group?: string;
+      project?: string;
+      statuses?: RequirementStatus[];
+      /** Only global or only project-wide ones. */
+      scope?: 'global' | 'project';
+      /** Only those scoped to this product (of `project`). */
+      product?: string;
+      /** Only those waiting for a person to choose their scope. */
+      regroup?: boolean;
+    }) => {
       const p = new URLSearchParams();
       if (f.project) p.set('project', f.project);
       if (f.q) p.set('q', f.q);
       if (f.tags?.length) p.set('tag', f.tags.join(','));
       if (f.group) p.set('group', f.group);
+      if (f.scope) p.set('scope', f.scope);
+      if (f.product) p.set('product', f.product);
+      if (f.regroup) p.set('regroup', 'true');
       if (f.statuses?.length) p.set('status', f.statuses.join(','));
       p.set('limit', '200');
       return request<Requirement[]>('GET', `/api/requirements?${p}`);
@@ -237,7 +265,23 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
     requirementTags: () => request<{ tag: string; count: number }[]>('GET', '/api/requirements/tags'),
     editRequirement: (id: string, patch: { requirement?: string; justification?: string; tags?: string[] }) =>
       request<Requirement>('PATCH', `/api/requirements/${encodeURIComponent(id)}`, patch),
-    approveRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/approve`, {}),
+    /** Approves a pending requirement, optionally setting its scope in the same step. */
+    approveRequirement: (id: string, scope?: ScopeChoice) =>
+      request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/approve`, scope ?? {}),
+    setRequirementScope: (id: string, scope: ScopeChoice) =>
+      request<Requirement>('PUT', `/api/requirements/${encodeURIComponent(id)}/scope`, scope),
+    requirementChanges: (id: string) => request<RequirementChange[]>('GET', `/api/requirements/${encodeURIComponent(id)}/changes`),
+    /** Products of a project (or of every project the caller sees), archived ones only when asked for. */
+    products: (project?: string, archived = false) => {
+      const p = new URLSearchParams();
+      if (project) p.set('project', project);
+      if (archived) p.set('archived', 'true');
+      return request<Product[]>('GET', `/api/products?${p}`);
+    },
+    createProduct: (project: string, input: { id: string; name: string; color?: string | null }) =>
+      request<Product>('POST', `/api/products?project=${encodeURIComponent(project)}`, input),
+    updateProduct: (project: string, id: string, patch: { name?: string; color?: string | null; locked?: boolean; archived?: boolean }) =>
+      request<Product>('PATCH', `/api/products/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`, patch),
     rejectRequirement: (id: string, reason: string) =>
       request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/reject`, { reason }),
     retireRequirement: (id: string) => request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/retire`, {}),

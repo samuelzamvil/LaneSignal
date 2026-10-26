@@ -35,6 +35,7 @@ import {
   ConflictError,
   EXPORT_COLUMNS,
   EXPORT_DATASETS,
+  REQUIREMENT_DATASETS,
   localId,
   NotFoundError,
   ValidationError,
@@ -460,13 +461,13 @@ function buildServer(
           'Export LaneSignal data for analysis, including closed escalations and archived lanes. Datasets: ' +
           'escalations (one row each), positions, messages (escalation conversations), lane_messages (lane conversations), ' +
           'lanes, groups, tickets, epics, epic_messages (epic boards), events (status changes and escalation history)' +
-          (features.requirements ? ', requirements. ' : '. ') +
+          (features.requirements ? ', requirements, products, requirement_changes (scope changes). ' : '. ') +
           '`from`/`to` (YYYY-MM-DD or ISO) filter ' +
           'escalations, positions, messages, lane_messages, epic_messages, events and requirements by creation time. Results come in pages (default 100 rows, and cut short to stay under ' +
           'about 60 KB); the first line says which rows you got and the offset for the next page. For everything at ' +
           'once as files, the HTTP API serves a zip at GET /api/export.',
         inputSchema: {
-          dataset: z.enum(EXPORT_DATASETS.filter((d) => d !== 'requirements' || features.requirements) as [ExportDataset, ...ExportDataset[]]),
+          dataset: z.enum(EXPORT_DATASETS.filter((d) => !REQUIREMENT_DATASETS.includes(d) || features.requirements) as [ExportDataset, ...ExportDataset[]]),
           format: z.enum(['csv', 'json']).optional(),
           from: z.string().optional(),
           to: z.string().optional(),

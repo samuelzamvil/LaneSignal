@@ -127,7 +127,9 @@ export function useLiveData(client: Client): LiveData {
                   ...s,
                   ...applyEvent(s, e),
                   version: s.version + 1,
-                  requirementsVersion: s.requirementsVersion + (e.type === 'requirement' ? 1 : 0),
+                  // requirement_removed: one this caller may no longer see (rejected, or moved to another project).
+                  requirementsVersion:
+                    s.requirementsVersion + (['requirement', 'product', 'requirement_removed'].includes(e.type as string) ? 1 : 0),
                   lastEvent: e,
                   syncedAt: Date.now(),
                 }));
