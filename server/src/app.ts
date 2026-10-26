@@ -6,12 +6,13 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { z, ZodError, type ZodType } from 'zod';
 import { accessFor, approvesRequirements, briefMessages, briefWait, digestWait, escalationTarget, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { oversizedImage, readUpload, sniff } from './attachments.ts';
-import { CLIENT_IP_HEADER, type Accounts } from './accounts.ts';
-import { createAuth, principalOf, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
+import { CLIENT_IP_HEADER, FAILOVER_KEY_HEADER, type Accounts } from './accounts.ts';
+import { createAuth, principalOf, SESSION_HEADER, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
 import { createAccessVerifier } from './cloudflare-access.ts';
 import type { Config } from './config.ts';
 import { log } from './log.ts';
 import { mcpHandler } from './mcp.ts';
+import { OIDC_CALLBACK_PATH, OIDC_START_PATH, OIDC_STATE_COOKIE, OidcError } from './oidc.ts';
 import { buildPayload, checkWebhookUrl, maskWebhookUrl, pluginZip, type TrmnlPusher } from './trmnl.ts';
 import * as s from './schemas.ts';
 import { datasetCsvAsync, datasetRowsAsync, exportZip } from './export.ts';
@@ -75,6 +76,35 @@ export const OAUTH_CALLBACK_PATH = '/oauth/callback';
 
 const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
+/** Headers for the small HTML pages the server answers sign-in redirects with. */
+const PAGE_HEADERS = {
+  'cache-control': 'no-store',
+  'referrer-policy': 'no-referrer',
+  'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
+};
+
+/** A small page: a message, optionally with a link it also follows straight away. */
+function messagePage(text: string, link?: { href: string; label: string }) {
+  const href = link && escapeHtml(link.href);
+  return (
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">` +
+    (href ? `<meta http-equiv="refresh" content="0;url=${href}">` : '') +
+    `<title>LaneSignal</title><body style="font-family:sans-serif;text-align:center;padding:3em 1em">` +
+    `<p>${escapeHtml(text)}</p>` +
+    (href ? `<p><a href="${href}">${escapeHtml(link!.label)}</a></p>` : '') +
+    `</body>`
+  );
+}
+
+/** One cookie's value from a request. */
+function cookie(req: Request, name: string): string | undefined {
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return undefined;
+}
+
 const parse = <T>(schema: ZodType<T>, value: unknown): T => schema.parse(value);
 
 // Express 5 forwards rejected promises to the error handler, but keep handlers sync where possible.
@@ -97,6 +127,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     },
   };
   const auth = createAuth(config.tokens, accounts, access);
+  const oidc = accounts.oidc;
   if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy);
   app.disable('x-powered-by');
 
@@ -122,7 +153,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     if (origin && (config.corsOrigins.includes('*') || config.corsOrigins.includes(origin))) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
-      res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type, mcp-protocol-version');
+      res.setHeader('Access-Control-Allow-Headers', `authorization, content-type, mcp-protocol-version, ${SESSION_HEADER}, ${FAILOVER_KEY_HEADER}`);
       res.setHeader('Access-Control-Expose-Headers', 'set-auth-token');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Max-Age', '600');
@@ -146,7 +177,15 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       // Someone signed in through Cloudflare Access has no session of their own: use the one kept for them,
       // so agent keys and people management work the same.
       const viaAccess = await auth.accessPrincipal(req);
+      const bearer = auth.bearerOf(req);
+      // An OIDC session the provider no longer allows mustn't reach agent keys and the like either.
+      if (bearer && !(await accounts.oidcAllows(bearer))) {
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+      }
       if (viaAccess?.userId) req.headers.authorization = `Bearer ${await accounts.accessSessionToken(viaAccess.userId)}`;
+      // The app's session travels in its own header beside the Managed OAuth token; Better Auth reads Authorization.
+      else if (bearer) req.headers.authorization = `Bearer ${bearer}`;
       void authHandler(req, res);
     }),
   );
@@ -162,19 +201,10 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       for (const k of ['code', 'state', 'error', 'error_description']) {
         if (typeof req.query[k] === 'string') forward.set(k, req.query[k] as string);
       }
-      const target = escapeHtml(`lanesignal://oauth/callback?${forward}`);
       res
-        .set({
-          'cache-control': 'no-store',
-          'referrer-policy': 'no-referrer',
-          'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
-        })
+        .set(PAGE_HEADERS)
         .type('html')
-        .send(
-          `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="refresh" content="0;url=${target}">` +
-            `<title>LaneSignal</title><body style="font-family:sans-serif;text-align:center;padding:3em 1em">` +
-            `<p>Signed in. Returning to LaneSignal…</p><p><a href="${target}">Open LaneSignal</a></p></body>`,
-        );
+        .send(messagePage('Signed in. Returning to LaneSignal…', { href: `lanesignal://oauth/callback?${forward}`, label: 'Open LaneSignal' }));
     });
   }
 
@@ -192,10 +222,92 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   app.use(express.json({ limit: '256kb' }));
 
+  /** Redeems the code a finished OIDC sign-in handed out, with the verifier of the challenge it started with. */
+  if (oidc) {
+    app.post('/api/oidc/redeem', (req, res) => {
+      const body = parse(s.oidcRedeem, req.body);
+      const token = oidc.redeem(body.code, body.verifier);
+      if (!token) {
+        res.status(400).json({ error: 'That sign-in expired or was already used. Sign in again.' });
+        return;
+      }
+      res.set('cache-control', 'no-store').json({ token });
+    });
+  }
+
   // First-run: with no accounts yet, anyone who can reach the server creates the admin account.
+  // Also says how people sign in: with the OIDC provider, and whether passwords need the failover key.
   app.get('/api/setup', (_req, res) => {
-    res.json({ needsSetup: accounts.needsSetup() });
+    res.json({
+      needsSetup: accounts.needsSetup(),
+      ...(oidc
+        ? { oidc: { label: oidc.label, origin: new URL(config.publicUrl!).origin }, passwordFailover: !!config.passwordFailoverKey }
+        : {}),
+    });
   });
+
+  if (oidc) {
+    const oidcFailed = (res: Response, err: unknown, status = 400) => {
+      if (!(err instanceof OidcError)) log.error('oidc sign-in failed', { error: String(err) });
+      const text = err instanceof OidcError ? err.message : 'Sign-in failed. Try again.';
+      // The app's Custom Tab goes back to the app, which shows the message (or carries on with Access alone).
+      const back =
+        err instanceof OidcError && err.app
+          ? { href: `lanesignal://oidc/callback?${new URLSearchParams({ error: text })}`, label: 'Back to LaneSignal' }
+          : undefined;
+      res.status(status).set(PAGE_HEADERS).type('html').send(messagePage(text, back ?? { href: '/', label: 'Back to LaneSignal' }));
+    };
+    // Cookies only ever go to these two paths, and only to tie the provider's answer to the browser that asked.
+    const stateCookie = (value: string, maxAge: number) =>
+      `${OIDC_STATE_COOKIE}=${value}; Path=/api/oidc; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
+
+    /** Starts sign-in with the provider. `challenge` is the client's PKCE challenge for redeeming the result. */
+    app.get(
+      OIDC_START_PATH,
+      h(async (req, res) => {
+        const challenge = typeof req.query.challenge === 'string' ? req.query.challenge : '';
+        if (!/^[A-Za-z0-9_-]{43}$/.test(challenge)) return oidcFailed(res, new OidcError('Start signing in from LaneSignal.'));
+        try {
+          const { url, state } = await oidc.start({ clientChallenge: challenge, app: req.query.app === '1', client: req.ip ?? 'unknown' });
+          res.set('cache-control', 'no-store').setHeader('set-cookie', stateCookie(state, 600));
+          res.redirect(302, url);
+        } catch (err) {
+          oidcFailed(res, err, 502);
+        }
+      }),
+    );
+
+    /** The provider's redirect: signs the person in and hands the client a one-time code for the session. */
+    app.get(
+      OIDC_CALLBACK_PATH,
+      h(async (req, res) => {
+        const q = (k: string) => (typeof req.query[k] === 'string' ? (req.query[k] as string) : undefined);
+        res.setHeader('set-cookie', stateCookie('', 0));
+        try {
+          const done = await oidc.finish({ state: q('state'), code: q('code'), error: q('error'), cookieState: cookie(req, OIDC_STATE_COOKIE) });
+          const token = await accounts.oidcSession(done.identity, done.refreshToken);
+          if (!token || token === 'other-subject') {
+            const err = new OidcError(
+              token
+                ? `${done.identity.email} first signed in to LaneSignal as someone else at the sign-in provider, so this sign-in is refused. Ask an admin.`
+                : `You signed in as ${done.identity.email}, which has no active LaneSignal account. Ask an admin to add you.`,
+            );
+            err.app = done.app;
+            throw err;
+          }
+          const code = oidc.handoff(token, done.clientChallenge);
+          res.set(PAGE_HEADERS);
+          if (done.app) {
+            res.type('html').send(messagePage('Signed in. Returning to LaneSignal…', { href: `lanesignal://oidc/callback?code=${code}`, label: 'Open LaneSignal' }));
+          } else {
+            res.redirect(302, `/#oidc=${code}`);
+          }
+        } catch (err) {
+          oidcFailed(res, err, err instanceof OidcError ? 403 : 500);
+        }
+      }),
+    );
+  }
 
   app.post(
     '/api/setup',

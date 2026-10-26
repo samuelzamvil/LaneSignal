@@ -152,7 +152,11 @@ export const laneRoute = (project: string, id: string) => `#/lane/${encodeURICom
 // ---- root ----
 
 export default function App() {
-  const [conn, setConn] = useState<Connection | null>(() => loadConnection());
+  // Back from an OIDC sign-in, or opened at the failover page: the sign-in screen, whatever this browser was
+  // signed in as before (it also takes the failover key out of the address bar).
+  const [conn, setConn] = useState<Connection | null>(() =>
+    location.hash.startsWith('#oidc=') || new URLSearchParams(location.search).has('failover') ? null : loadConnection(),
+  );
   if (!conn) return <Login onConnected={(c) => (saveConnection(c), setConn(c))} />;
   return (
     <Dashboard
@@ -168,7 +172,7 @@ export default function App() {
         // End the server-side session too (static access tokens have none).
         if (conn.kind === 'session') await client.signOut().catch(() => {});
         // Cloudflare Access: revoke the app's refresh token, or end the browser's Access session.
-        if (conn.kind === 'cloudflare' && conn.access) await accessSignOut(conn.access).catch(() => {});
+        if (conn.access) await accessSignOut(conn.access).catch(() => {});
         saveConnection(null);
         if (conn.kind === 'cloudflare' && !conn.access) {
           location.href = '/cdn-cgi/access/logout';

@@ -67,6 +67,17 @@ export interface Config {
    * LaneSignal account with their email, from the signed `Cf-Access-Jwt-Assertion` header. Null when off.
    */
   cloudflareAccess: CloudflareAccessConfig | null;
+  /**
+   * Sign-in with an OpenID Connect provider (LANESIGNAL_OIDC_*, off by default), e.g. a Cloudflare Access for SaaS
+   * application: LaneSignal runs the sign-in itself and keeps a session of its own, so it works without Cloudflare
+   * in the path (on the LAN). Null when off.
+   */
+  oidc: OidcConfig | null;
+  /**
+   * With OIDC on, moves password sign-in to a separate page (`/?failover=<key>`) for admins only, and refuses it
+   * without the key. Null: password sign-in works as usual next to OIDC.
+   */
+  passwordFailoverKey: string | null;
   /** SHA-256 fingerprints of the Android app's signing certificates, for /.well-known/assetlinks.json (App Links). */
   androidCertFingerprints: string[];
 }
@@ -78,6 +89,24 @@ export interface CloudflareAccessConfig {
   audiences: string[];
   /** Create an account (not an admin) for an email Access lets through that has none yet. */
   createAccounts: boolean;
+}
+
+export interface OidcConfig {
+  /** The provider's issuer URL; its discovery document is at <issuer>/.well-known/openid-configuration. */
+  issuer: string;
+  clientId: string;
+  clientSecret: string;
+  /** What the sign-in button names ("Sign in with <label>"). */
+  label: string;
+  scopes: string[];
+  /** Create an account (not an admin) for a verified email the provider signs in that has none yet. */
+  createAccounts: boolean;
+  /** Refuse an ID token that doesn't say its email is verified (`email_verified: true`); off, only `false` is refused. */
+  requireVerifiedEmail: boolean;
+  /** How often a session from this sign-in is re-checked with the provider (refresh token), in minutes. */
+  recheckMinutes: number;
+  /** Where the provider sends people back: <LANESIGNAL_PUBLIC_URL>/api/oidc/callback. */
+  redirectUri: string;
 }
 
 /** Optional JSON file (usually on the /config volume). Env vars win over it. */
@@ -179,6 +208,56 @@ function parseCloudflareAccess(env: NodeJS.ProcessEnv): CloudflareAccessConfig |
   };
 }
 
+/** LANESIGNAL_OIDC_* (on when the issuer is set); a half-configured provider stops startup. */
+function parseOidc(env: NodeJS.ProcessEnv, publicUrl: string | null): OidcConfig | null {
+  const raw = env.LANESIGNAL_OIDC_ISSUER?.trim();
+  if (!raw) {
+    if (env.LANESIGNAL_PASSWORD_FAILOVER_KEY?.trim()) {
+      throw new Error('LANESIGNAL_PASSWORD_FAILOVER_KEY needs LANESIGNAL_OIDC_ISSUER: without a provider, nobody could sign in');
+    }
+    return null;
+  }
+  let issuer: string;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.search || url.hash) throw new Error();
+    issuer = url.toString().replace(/\/+$/, '');
+  } catch {
+    throw new Error(`LANESIGNAL_OIDC_ISSUER must be an https URL, got "${raw}"`);
+  }
+  const clientId = env.LANESIGNAL_OIDC_CLIENT_ID?.trim();
+  const clientSecret = env.LANESIGNAL_OIDC_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) throw new Error('LANESIGNAL_OIDC_ISSUER needs LANESIGNAL_OIDC_CLIENT_ID and LANESIGNAL_OIDC_CLIENT_SECRET');
+  let base: URL;
+  try {
+    base = new URL(publicUrl ?? '');
+    if (base.protocol !== 'https:') throw new Error();
+  } catch {
+    throw new Error('LANESIGNAL_OIDC_ISSUER needs LANESIGNAL_PUBLIC_URL (https): the provider sends people back to <public URL>/api/oidc/callback');
+  }
+  const scopes = (env.LANESIGNAL_OIDC_SCOPES?.trim() || 'openid email profile').split(/[\s,]+/).filter(Boolean);
+  if (!scopes.includes('openid')) scopes.unshift('openid');
+  return {
+    issuer,
+    clientId,
+    clientSecret,
+    label: env.LANESIGNAL_OIDC_LABEL?.trim() || 'Cloudflare',
+    scopes,
+    createAccounts: bool('LANESIGNAL_OIDC_CREATE_ACCOUNTS', env.LANESIGNAL_OIDC_CREATE_ACCOUNTS, false),
+    requireVerifiedEmail: bool('LANESIGNAL_OIDC_REQUIRE_VERIFIED_EMAIL', env.LANESIGNAL_OIDC_REQUIRE_VERIFIED_EMAIL, true),
+    recheckMinutes: int('LANESIGNAL_OIDC_RECHECK_MINUTES', env.LANESIGNAL_OIDC_RECHECK_MINUTES, 15, 1, 1440),
+    redirectUri: `${base.origin}/api/oidc/callback`,
+  };
+}
+
+function parseFailoverKey(v: string | undefined): string | null {
+  const key = v?.trim();
+  if (!key) return null;
+  if (key.length < 16) throw new Error('LANESIGNAL_PASSWORD_FAILOVER_KEY must be at least 16 characters');
+  if (!/^[A-Za-z0-9._~-]+$/.test(key)) throw new Error('LANESIGNAL_PASSWORD_FAILOVER_KEY may only use letters, digits and . _ ~ - (it goes in a URL)');
+  return key;
+}
+
 /** "AA:BB:…" SHA-256 certificate fingerprints (colons optional); anything else stops startup. */
 function parseFingerprints(v: string | undefined): string[] {
   return (list(v) ?? []).map((f) => {
@@ -254,12 +333,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
   );
 
+  const publicUrl = env.LANESIGNAL_PUBLIC_URL ?? file.publicUrl ?? null;
   return {
     name: env.LANESIGNAL_NAME ?? file.name ?? 'LaneSignal',
     host: env.HOST ?? '0.0.0.0',
     port: int('PORT', env.PORT, 8080, 1, 65535),
     dataDir,
-    publicUrl: env.LANESIGNAL_PUBLIC_URL ?? file.publicUrl ?? null,
+    publicUrl,
     trustProxy: parseTrustProxy(env.LANESIGNAL_TRUST_PROXY),
     corsOrigins: list(env.LANESIGNAL_CORS_ORIGINS) ?? file.corsOrigins ?? DEFAULT_CORS,
     tokens,
@@ -286,6 +366,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),
     trmnlHosts: [...TRMNL_HOSTS, ...(list(env.LANESIGNAL_TRMNL_HOSTS) ?? []).map((h) => h.toLowerCase())],
     cloudflareAccess: parseCloudflareAccess(env),
+    oidc: parseOidc(env, publicUrl),
+    passwordFailoverKey: parseFailoverKey(env.LANESIGNAL_PASSWORD_FAILOVER_KEY),
     androidCertFingerprints: parseFingerprints(env.LANESIGNAL_ANDROID_CERT_SHA256),
   };
 }
