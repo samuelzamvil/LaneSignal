@@ -980,9 +980,9 @@ textarea {
   overflow-wrap: anywhere;
 }
 
-/* The title keeps room for a code; when the back button and pill leave less, the pill wraps below. */
+/* When the back button, title and pill don't fit on one line, the pill wraps below the title. */
 .sheet-title {
-  flex: 1 1 10em;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -2273,11 +2273,10 @@ a.button.primary {
 .esc-row .ref,
 .history-row .ref {
   min-width: 3em;
-  /* A long code (BILLINGPLATFORM-12345A) is cut short so the question keeps the row. */
+  /* A long code (BILLINGPLATFORM-12345A) wraps within its column so the question keeps the row;
+     cutting it short would hide the letter that tells a ticket's questions apart. */
   max-width: 30%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   font-weight: 700;
   color: var(--muted);
 }
