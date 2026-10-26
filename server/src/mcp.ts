@@ -433,9 +433,9 @@ function buildServer(
       {
         description:
           'Wait for what needs you in your group, some lanes or escalations; it waits even when nothing is open. Returns ' +
-          '`items` `{code, kind, id, text}` (the owner\'s words, or what happened). Kinds: `decided` (acknowledge, then act), `reply` (the owner answered Other), ' +
+          '`items`: `{code, kind, text}` for an escalation, `{kind, id, text}` for a lane, ticket or epic (the owner\'s words, or what happened). Kinds: `decided` (acknowledge, then act), `reply` (the owner answered Other), ' +
           '`closed`, `lane_removed`, `lane_note`, `board_note`, `ticket_moved`. `decided` and `reply` repeat until handled; ' +
-          'the rest come once per `since`. `counts`: `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
+          'the rest come once per `since`. `counts` (left out when all zero): `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
           'it timed out: call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
           '0 for a quick check). `format: "full"`: the older shape.',
         inputSchema: {
