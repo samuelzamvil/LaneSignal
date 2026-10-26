@@ -30,6 +30,10 @@ Every request carries one bearer credential, which gets one of two roles:
 
 With `LANESIGNAL_CLOUDFLARE_ACCESS=true`, a request without a LaneSignal credential is signed in as the account whose email Cloudflare Access vouches for. Its `Cf-Access-Jwt-Assertion` is checked against your team's signing keys, issuer and AUD tag, and must not have expired. Changes signed in that way must come from LaneSignal's own origin or the app, because Access's cookie, unlike a bearer token, travels with cross-site requests. See [Sign in with Cloudflare Access](cloudflare-access.md#security).
 
+## OIDC sign-in
+
+With `LANESIGNAL_OIDC_ISSUER` set, LaneSignal is a confidential OIDC client. It uses the authorization code flow with PKCE, a nonce, and a state cookie scoped to `/api/oidc`. It checks the ID token's RS256 signature against the provider's published keys, and its issuer, audience, expiry and nonce. It refuses an email the provider marks unverified. The browser or app gets the session by redeeming a single-use code that expires in 2 minutes, with the PKCE verifier of the challenge it started with. Sessions are re-checked with the provider's refresh token (every 15 minutes by default), and a refusal ends them. With `LANESIGNAL_PASSWORD_FAILOVER_KEY`, the server refuses password sign-in without the key, and for anyone but admins. See [Sign in with Cloudflare](oidc.md).
+
 ## Agent keys
 
 - Stored hashed and shown once.

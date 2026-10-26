@@ -156,6 +156,22 @@ textarea {
   font-weight: 500;
 }
 
+/* Between the provider's sign-in button and the password form. */
+.login .or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.login .or::before,
+.login .or::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
 /* ---- shell ---- */
 
 .topbar {
