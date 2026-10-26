@@ -75,6 +75,10 @@ When Access stops letting someone in (their refresh fails, or they're removed fr
 
 In the app, a server behind Access only offers Access sign-in: create the first admin account (with the setup code) in the browser.
 
+## On your LAN
+
+Access only signs people in when their requests go through Cloudflare. If the same hostname resolves straight to the server on your LAN, Cloudflare isn't in the path there, and you'd land on the password screen. To sign in with Cloudflare there too, add [sign-in with Cloudflare (OIDC)](oidc.md). It gives a LaneSignal session that works both ways, and the app keeps using Access's token through the tunnel.
+
 ## Optional: App Link
 
 Without an App Link, the tab lands on `https://<server>/oauth/callback`, which forwards it to `lanesignal://oauth/callback` (if Chrome holds the redirect back, tap **Open LaneSignal** there). With one, Android opens the callback in the app directly. The callback host has to be built into the APK:

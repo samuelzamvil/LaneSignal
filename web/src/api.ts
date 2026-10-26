@@ -63,11 +63,18 @@ export const isNative = Capacitor.isNativePlatform();
 export interface Connection {
   /** Empty string = same origin (browser served by the LaneSignal server). */
   server: string;
-  /** An account session token, or a static access token from the server config; empty when signed in through Cloudflare Access. */
+  /**
+   * An account session token (from a password or OIDC sign-in), or a static access token from the server config;
+   * empty when signed in through Cloudflare Access alone.
+   */
   token: string;
-  /** "cloudflare": signed in through Cloudflare Access (its cookie in the browser, Managed OAuth tokens in the app). */
+  /** "cloudflare": signed in through Cloudflare Access alone (its cookie in the browser, Managed OAuth tokens in the app). */
   kind?: 'session' | 'token' | 'cloudflare';
-  /** The app's Managed OAuth client for this server; absent in the browser, where Access's cookie does the work. */
+  /**
+   * The app's Managed OAuth client for this server, behind Cloudflare Access; absent in the browser, where Access's
+   * cookie does the work. With a session as well (an OIDC sign-in), its token gets requests past Access through the
+   * tunnel while the session, sent beside it, signs in (also on the LAN, where Access isn't in the path).
+   */
   access?: AccessClient;
 }
 
@@ -136,8 +143,18 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
    */
   async function send(url: string, init: RequestInit = {}): Promise<Response> {
     const withAuth = async (force: boolean): Promise<RequestInit> => {
-      const token = bearer ? await bearer.token(force) : conn.token;
-      return { ...init, headers: { ...(init.headers as Record<string, string>), ...(token ? { authorization: `Bearer ${token}` } : {}) } };
+      const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
+      let edge: string | null = null;
+      try {
+        edge = bearer ? await bearer.token(force) : null;
+      } catch (err) {
+        // Cloudflare unreachable (no internet on the LAN): the session alone still works where Access isn't in the way.
+        if (!conn.token || (err instanceof Error && err.name === 'SignedOut')) throw err;
+      }
+      if (edge && conn.token) headers['x-lanesignal-session'] = conn.token;
+      const token = edge ?? conn.token;
+      if (token) headers.authorization = `Bearer ${token}`;
+      return { ...init, headers };
     };
     if (!bearer) return fetch(url, await withAuth(false));
     let res: Response;
@@ -432,12 +449,32 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
 
 export type Client = ReturnType<typeof createClient>;
 
-/** Unauthenticated calls used before there is a session. */
+/** How a server signs people in (GET /api/setup). */
+export interface SignInOptions {
+  needsSetup: boolean;
+  /** Sign-in with the server's OIDC provider (e.g. Cloudflare), when configured. */
+  oidc?: { label: string; origin: string };
+  /** Password sign-in only on the failover page, with the key (LANESIGNAL_PASSWORD_FAILOVER_KEY). */
+  passwordFailover?: boolean;
+}
+
+/** Unauthenticated calls used before there is a session. `edge` is a Cloudflare Access token, in the app behind Access. */
 export const publicApi = {
-  async setupStatus(server: string): Promise<{ needsSetup: boolean }> {
-    const res = await fetch(`${server}/api/setup`);
+  async setupStatus(server: string, edge?: string): Promise<SignInOptions> {
+    const res = await fetch(`${server}/api/setup`, { headers: edge ? { authorization: `Bearer ${edge}` } : {} });
     if (!res.ok) throw new ApiError(res.status, `Server answered ${res.status}`);
-    return (await res.json()) as { needsSetup: boolean };
+    return (await res.json()) as SignInOptions;
+  },
+
+  /** Redeems a finished OIDC sign-in's one-time code for the session token. */
+  async redeemOidc(server: string, code: string, verifier: string, edge?: string): Promise<string> {
+    const res = await fetch(`${server}/api/oidc/redeem`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(edge ? { authorization: `Bearer ${edge}` } : {}) },
+      body: JSON.stringify({ code, verifier }),
+    });
+    if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+    return ((await res.json()) as { token: string }).token;
   },
 
   async setup(server: string, input: { email: string; name: string; password: string; code: string }) {
@@ -449,11 +486,11 @@ export const publicApi = {
     if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
   },
 
-  /** Email + password sign-in; returns the bearer session token. */
-  async signIn(server: string, email: string, password: string): Promise<string> {
+  /** Email + password sign-in (with the failover key, when the server asks for one); returns the bearer session token. */
+  async signIn(server: string, email: string, password: string, failoverKey?: string): Promise<string> {
     const res = await fetch(`${server}/api/auth/sign-in/email`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(failoverKey ? { 'x-lanesignal-failover-key': failoverKey } : {}) },
       body: JSON.stringify({ email, password }),
     });
     if (!res.ok) throw new ApiError(res.status, await errorMessage(res));

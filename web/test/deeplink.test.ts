@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { routeFromAppLink } from '../src/deeplink.ts';
+import { oidcCode, routeFromAppLink } from '../src/deeplink.ts';
 
 test('app links open the screen they name', () => {
   assert.equal(routeFromAppLink('lanesignal://esc/abc-123'), '#/esc/abc-123');
@@ -19,4 +19,12 @@ test('crafted links only ever reach the home screen', () => {
 
 test('the Cloudflare Access sign-in callback is left to the sign-in screen', () => {
   assert.equal(routeFromAppLink('lanesignal://oauth/callback?code=x&state=y'), null);
+  assert.equal(routeFromAppLink('lanesignal://oidc/callback?code=x'), null);
+});
+
+test('the code an OIDC sign-in comes back with', () => {
+  assert.equal(oidcCode('https://lanesignal.example.com/#oidc=abc_DEF-1'), 'abc_DEF-1');
+  assert.equal(oidcCode('lanesignal://oidc/callback?code=abc_DEF-1'), 'abc_DEF-1');
+  assert.equal(oidcCode('lanesignal://oauth/callback?code=x&state=y'), null);
+  assert.equal(oidcCode('https://lanesignal.example.com/#/lane/x/y'), null);
 });

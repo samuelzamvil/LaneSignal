@@ -178,6 +178,9 @@ export const personInput = z.object({
 
 export const passwordReset = z.object({ email: z.email(), password });
 
+/** A finished OIDC sign-in's one-time code, with the PKCE verifier of the challenge the client started it with. */
+export const oidcRedeem = z.object({ code: z.string().min(1).max(200), verifier: z.string().min(43).max(128) });
+
 /**
  * A date (2026-10-01, taken as 00:00 UTC) or an ISO timestamp with a zone
  * (Z or ±hh:mm), so nothing depends on the server's local time zone.

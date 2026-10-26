@@ -21,6 +21,12 @@ export interface AccessAuth {
   trustedOrigins: (req: Request) => string[];
 }
 
+/**
+ * Header for a LaneSignal session next to Access's Managed OAuth token, which takes `Authorization` in the app:
+ * through the tunnel Cloudflare needs that token, on the LAN LaneSignal needs the session.
+ */
+export const SESSION_HEADER = 'x-lanesignal-session';
+
 /** Managed OAuth access tokens: Cloudflare resolves them at its edge, they mean nothing to LaneSignal. */
 const isAccessOAuthToken = (token: string) => token.startsWith('oauth:');
 
@@ -71,7 +77,10 @@ export function createAuth(
 
   function tokenFrom(req: Request): string | undefined {
     const header = req.headers.authorization;
-    if (header?.startsWith('Bearer ')) return header.slice(7).trim();
+    const bearer = header?.startsWith('Bearer ') ? header.slice(7).trim() : undefined;
+    const session = req.headers[SESSION_HEADER];
+    if (typeof session === 'string' && session.trim() && (!bearer || isAccessOAuthToken(bearer))) return session.trim();
+    if (bearer) return bearer;
     // EventSource can't send headers; allow the token as a query parameter for /api/events only.
     if (req.originalUrl.split('?')[0] === '/api/events' && typeof req.query.access_token === 'string') return req.query.access_token;
     return undefined;
@@ -149,7 +158,13 @@ export function createAuth(
     };
   }
 
-  return { identify, require, accessPrincipal };
+  /** The LaneSignal credential a request carries (its bearer, or the session header beside a Managed OAuth token). */
+  function bearerOf(req: Request): string | undefined {
+    const token = tokenFrom(req);
+    return token && !isAccessOAuthToken(token) ? token : undefined;
+  }
+
+  return { identify, require, accessPrincipal, bearerOf };
 }
 
 export const principalOf = (res: Response) => res.locals.principal as Principal;
