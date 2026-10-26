@@ -239,7 +239,6 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
     },
     requirements: (f: {
       q?: string;
-      tags?: string[];
       group?: string;
       project?: string;
       statuses?: RequirementStatus[];
@@ -253,7 +252,6 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
       const p = new URLSearchParams();
       if (f.project) p.set('project', f.project);
       if (f.q) p.set('q', f.q);
-      if (f.tags?.length) p.set('tag', f.tags.join(','));
       if (f.group) p.set('group', f.group);
       if (f.scope) p.set('scope', f.scope);
       if (f.product) p.set('product', f.product);
@@ -262,8 +260,7 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
       p.set('limit', '200');
       return request<Requirement[]>('GET', `/api/requirements?${p}`);
     },
-    requirementTags: () => request<{ tag: string; count: number }[]>('GET', '/api/requirements/tags'),
-    editRequirement: (id: string, patch: { requirement?: string; justification?: string; tags?: string[] }) =>
+    editRequirement: (id: string, patch: { requirement?: string; justification?: string }) =>
       request<Requirement>('PATCH', `/api/requirements/${encodeURIComponent(id)}`, patch),
     /** Approves a pending requirement, optionally setting its scope in the same step. */
     approveRequirement: (id: string, scope?: ScopeChoice) =>

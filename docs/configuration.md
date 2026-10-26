@@ -35,7 +35,6 @@ Set these in the stack's environment (Compose / `.env`); there's no switch in th
 | `LANESIGNAL_SESSION_DAYS` | | `90` | Days a sign-in lasts without being used. Each use, at most daily, extends it |
 | `LANESIGNAL_SKILL_FILE` | | bundled | Path of the agent skill served at `/api/skill` |
 | `LANESIGNAL_TRMNL_DIR` | | bundled | Folder with the TRMNL plugin files (`integrations/trmnl`) served as `/api/projects/:id/trmnl/plugin.zip` |
-| `LANESIGNAL_BROAD_TAGS` | | built-in list | Comma-separated requirement tags rejected as too broad (replaces the built-in `backend, frontend, ui, ux, api, misc, …`). Empty allows any |
 | `LANESIGNAL_HUMAN_TOKENS` | `tokens[]` | | Optional static human tokens, `name:token,…` (16+ chars each), for break-glass and scripts. `LANESIGNAL_OVERSEER_TOKENS` is the old name and still works |
 | `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | Optional static agent tokens. Prefer [agent keys](accounts.md#agent-keys) |
 

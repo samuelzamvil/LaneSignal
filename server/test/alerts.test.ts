@@ -78,17 +78,19 @@ describe('alerts', () => {
     const res = await srv.tool(AGENT, 'record_requirement', {
       requirement: 'Payouts retry at most 5 times.',
       justification: 'Sam, in the overseer session.',
-      tags: ['payout-retries'],
+      scope: 'project',
       source_escalation: a.ref,
       decided_by: 'Sam (in session)',
     });
     assert.equal(res.isError, false, res.text);
-    assert.equal(res.value.requirement.sourceEscalation, a.ref);
-    assert.equal(res.value.requirement.decidedBy, 'Sam (in session)');
+    // Who decided and where come with the justification, on request.
+    const full = (await srv.tool(AGENT, 'get_requirement', { id: res.value.requirement.id, include_justification: true })).value;
+    assert.equal(full.sourceEscalation, a.ref);
+    assert.equal(full.decidedBy, 'Sam (in session)');
     const without = await srv.tool(AGENT, 'record_requirement', {
       requirement: 'Payouts alert on-call.',
       justification: 'x',
-      tags: ['payout-alerts'],
+      scope: 'project',
       source_escalation: a.ref,
     });
     assert.match(without.text, /say who decided with decided_by/);
@@ -98,7 +100,7 @@ describe('alerts', () => {
     const res = await srv.tool(AGENT, 'record_requirement', {
       requirement: 'x'.repeat(301),
       justification: 'y',
-      tags: ['long-text'],
+      scope: 'project',
       decided_by: 'Sam',
     });
     assert.equal(res.isError, true);

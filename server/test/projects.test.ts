@@ -151,7 +151,6 @@ describe('several projects', () => {
     const everywhere = await srv.call('POST', '/api/requirements?project=default', ALICE, {
       requirement: 'All apps store money as integers in minor units.',
       justification: 'Rounding drift.',
-      tags: ['money-amounts'],
       allProjects: true,
     });
     assert.equal(everywhere.status, 201, JSON.stringify(everywhere.body));
@@ -159,15 +158,15 @@ describe('several projects', () => {
     const mainOnly = await srv.call('POST', '/api/requirements?project=default', ALICE, {
       requirement: 'The main app supports SSO.',
       justification: 'Customers asked.',
-      tags: ['sso-login'],
+      scope: 'project',
     });
     assert.equal(mainOnly.body.requirement.project, 'default');
     const quinnSees = (await srv.call('GET', '/api/requirements', people.Quinn.token)).body.map((r: any) => r.id);
     assert.ok(quinnSees.includes(everywhere.body.requirement.id));
     assert.ok(!quinnSees.includes(mainOnly.body.requirement.id));
     assert.equal((await srv.call('GET', `/api/requirements/${mainOnly.body.requirement.id}`, people.Quinn.token)).status, 404);
-    const viaMcp = await srv.tool(AGENT, 'find_requirements', { query: 'money', project: 'shop' });
-    assert.deepEqual(viaMcp.value.map((r: any) => r.id), [everywhere.body.requirement.id]);
+    const viaMcp = await srv.tool(AGENT, 'find_requirements', { project_only: true, query: 'money', project: 'shop' });
+    assert.deepEqual(viaMcp.value.requirements.map((r: any) => r.id), [everywhere.body.requirement.id]);
   });
 
   test('the event stream only carries the caller’s projects, and ends when memberships change', { timeout: 5000 }, async () => {
@@ -236,12 +235,12 @@ describe('review findings', () => {
     const shopKey = (
       await srv.call('POST', '/api/auth/api-key/create', people.Rae.token, { name: 'shop-only', metadata: { role: 'agent', project: 'shop' } })
     ).body.key;
-    const body = { requirement: 'Invoices are exported nightly.', justification: 'x', tags: ['invoice-export'], decidedBy: 'Sam' };
-    assert.equal((await srv.call('POST', '/api/requirements', shopKey, { ...body, allProjects: true })).status, 403);
-    assert.equal((await srv.call('POST', '/api/requirements', people.Rae.token, { ...body, allProjects: true })).status, 403);
+    const body = { requirement: 'Invoices are exported nightly.', justification: 'x', scope: 'project', decidedBy: 'Sam' };
+    assert.equal((await srv.call('POST', '/api/requirements', shopKey, { ...body, scope: 'global' })).status, 403);
+    assert.equal((await srv.call('POST', '/api/requirements', people.Rae.token, { ...body, scope: 'global' })).status, 403);
     const secret = await srv.call('POST', '/api/requirements?project=default', ALICE, { ...body, requirement: 'Main: invoices are exported nightly.' });
     assert.equal(secret.status, 201);
-    const global = await srv.call('POST', '/api/requirements', ALICE, { ...body, allProjects: true });
+    const global = await srv.call('POST', '/api/requirements', ALICE, { ...body, scope: 'global' });
     assert.equal(global.status, 201);
     assert.equal((await srv.call('POST', `/api/requirements/${global.body.requirement.id}/supersede`, shopKey, body)).status, 403);
     assert.equal((await srv.call('POST', `/api/requirements/${global.body.requirement.id}/retire`, people.Rae.token)).status, 403);
@@ -256,7 +255,7 @@ describe('review findings', () => {
     const res = await srv.call('POST', '/api/requirements?project=default', ALICE, {
       requirement: 'Guest checkout is allowed.',
       justification: 'x',
-      tags: ['guest-checkout'],
+      scope: 'project',
       sourceEscalation: 'SH-500A',
     });
     assert.equal(res.status, 400);

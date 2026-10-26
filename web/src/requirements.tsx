@@ -377,11 +377,10 @@ function RejectConfirm({ req, client, onDone }: { req: Requirement; client: Clie
   );
 }
 
-/** Wording, justification and tags; a change of meaning is a supersede, which agents record. */
+/** Wording and justification; a change of meaning is a supersede, which agents record. */
 function EditForm({ req, client, onDone }: { req: Requirement; client: Client; onDone: () => void }) {
   const [text, setText] = useState(req.requirement);
   const [why, setWhy] = useState(req.justification);
-  const [tags, setTags] = useState(req.tags.join(', '));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   async function save(e: React.FormEvent) {
@@ -391,7 +390,6 @@ function EditForm({ req, client, onDone }: { req: Requirement; client: Client; o
       await client.editRequirement(req.id, {
         requirement: text,
         justification: why,
-        tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
       });
       onDone();
     } catch (err) {
@@ -404,7 +402,6 @@ function EditForm({ req, client, onDone }: { req: Requirement; client: Client; o
     <form className="stack" onSubmit={save} onClick={(e) => e.stopPropagation()}>
       <textarea value={text} rows={3} onChange={(e) => setText(e.target.value)} aria-label="Requirement" required />
       <textarea value={why} rows={3} onChange={(e) => setWhy(e.target.value)} aria-label="Justification" required />
-      <input value={tags} onChange={(e) => setTags(e.target.value)} aria-label="Tags, comma separated" />
       <p className="hint">Fix wording here. If the decision itself changed, the owner's new decision supersedes this one.</p>
       {error && <p className="error">{error}</p>}
       <div className="actions">
@@ -431,7 +428,6 @@ function RequirementCard({
   project,
   projectName,
   canGlobal,
-  onTag,
   onOpen,
   replaces,
 }: {
@@ -451,7 +447,6 @@ function RequirementCard({
   sourceCode: string | null;
   client: Client;
   canEdit: boolean;
-  onTag: (tag: string) => void;
   onOpen: (id: string) => void;
   /** The requirement in force that this pending change would replace, if any. */
   replaces?: string;
@@ -489,13 +484,6 @@ function RequirementCard({
               Rejected: <LinkedText text={req.rejectionReason} />
             </p>
           )}
-          <div className="req-tags">
-            {req.tags.map((t) => (
-              <button key={t} className="chip-tag" onClick={() => onTag(t)}>
-                {t}
-              </button>
-            ))}
-          </div>
           <p className="muted small">
             Decided by {req.decidedBy}
             {req.sourceEscalation && (
@@ -568,7 +556,7 @@ function RequirementCard({
 
 const LIMIT = 200;
 
-/** The owner's product decisions: search, filter by train/epic and tag. */
+/** The owner's product decisions: search, filter by scope and train/epic. */
 export function RequirementsPane({
   client,
   groups,
@@ -606,7 +594,6 @@ export function RequirementsPane({
   useEffect(() => {
     if (group && (!chosen || (project && chosen.project !== project))) setGroup('');
   }, [project, group, chosen?.project]);
-  const [tags, setTags] = useState<string[]>([]);
   /** '', 'global', 'project', or 'product:<id>' (of the project being viewed). */
   const [scopeFilter, setScopeFilter] = useState('');
   const [regroupOnly, setRegroupOnly] = useState(false);
@@ -650,7 +637,6 @@ export function RequirementsPane({
     client
       .requirements({
         q: debounced || undefined,
-        tags,
         project: chosen?.project ?? (project || undefined),
         group: chosen?.id,
         scope: scopeFilter === 'global' || scopeFilter === 'project' ? scopeFilter : undefined,
@@ -669,7 +655,7 @@ export function RequirementsPane({
     return () => {
       cancelled = true;
     };
-  }, [client, debounced, chosen?.project, chosen?.id, project, tags, showOld, pendingOnly, scopeFilter, regroupOnly, version]);
+  }, [client, debounced, chosen?.project, chosen?.id, project, showOld, pendingOnly, scopeFilter, regroupOnly, version]);
 
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
   /** Its project's name, shown where projects mix. */
@@ -749,15 +735,6 @@ export function RequirementsPane({
             Pending approval only
           </label>
         </div>
-        {tags.length > 0 && (
-          <div className="req-tags">
-            {tags.map((t) => (
-              <button key={t} className="chip-tag on" onClick={() => setTags(tags.filter((x) => x !== t))} aria-label={`Remove tag ${t}`}>
-                {t} ✕
-              </button>
-            ))}
-          </div>
-        )}
       </div>
       {error && <p className="error">{error}</p>}
       {items && items.length === 0 && <p className="empty">No requirements match.</p>}
@@ -784,7 +761,6 @@ export function RequirementsPane({
               project={project}
               projectName={whereOf(r)}
               canGlobal={canGlobal}
-              onTag={(t) => setTags(tags.includes(t) ? tags : [...tags, t])}
               onOpen={open}
               replaces={replaces.get(r.id)}
             />

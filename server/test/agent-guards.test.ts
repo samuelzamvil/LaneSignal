@@ -36,7 +36,9 @@ describe('typos are errors, not new things nobody waits on', () => {
     const lanes = await srv.tool(AGENT, 'list_lanes', { group: 'Payments train' });
     assert.equal(lanes.isError, true);
     assert.match(lanes.text, /Group "Payments train" not found/);
-    assert.equal((await srv.tool(AGENT, 'find_requirements', { group_id: 'paymetns' })).isError, true);
+    const unknown = await srv.tool(AGENT, 'find_requirements', { products: ['paymetns'] });
+    assert.equal(unknown.isError, true);
+    assert.match(unknown.text, /Product "paymetns" not found/);
     assert.equal((await srv.call('GET', '/api/requirements?group=paymetns', AGENT)).status, 404);
   });
 
@@ -100,28 +102,18 @@ describe('retries and duplicates', () => {
   test('a retried requirement returns the first; a second decision from the same answer is kept', async () => {
     const e = await ask('pay-1', 'How many retries?');
     await decide(e.id, '5, and alert on dead letters');
-    const body = { requirement: 'Payouts retry 5 times.', justification: 'Owner said so.', tags: ['payout-retries'], source_escalation: e.ref };
+    const body = { requirement: 'Payouts retry 5 times.', justification: 'Owner said so.', scope: 'project', source_escalation: e.ref };
     const first = (await srv.tool(AGENT, 'record_requirement', body)).value;
     const retry = (await srv.tool(AGENT, 'record_requirement', { ...body, requirement: '  payouts retry 5 times. ' })).value;
     assert.equal(retry.duplicate, true);
     assert.equal(retry.requirement.id, first.requirement.id);
-    const other = (await srv.tool(AGENT, 'record_requirement', { ...body, requirement: 'Dead letters alert on-call.', tags: ['dead-letters'] })).value;
+    const other = (await srv.tool(AGENT, 'record_requirement', { ...body, requirement: 'Dead letters alert on-call.', scope: 'project' })).value;
     assert.notEqual(other.requirement.id, first.requirement.id);
     assert.equal(other.duplicate, undefined);
   });
 
-  test('a tag that differs from an existing one by a plural is flagged', async () => {
-    const res = await srv.tool(AGENT, 'record_requirement', {
-      requirement: 'Failed payouts alert on-call.',
-      justification: 'Owner, in standup.',
-      tags: ['payout-retry'],
-      decided_by: 'Sam',
-    });
-    assert.ok(res.value.warnings.some((w: string) => /close to the existing tag "payout-retries"/.test(w)), res.text);
-  });
-
   test('a retired requirement can be restored', async () => {
-    const r = (await srv.call('GET', '/api/requirements?tag=payout-retries', ALICE)).body[0];
+    const r = (await srv.call('GET', '/api/requirements?q=payouts%20retry', ALICE)).body[0];
     // Only an active requirement is retired; a pending one is rejected instead.
     if (r.status === 'pending') await srv.call('POST', `/api/requirements/${r.id}/approve`, ALICE);
     assert.equal((await srv.call('POST', `/api/requirements/${r.id}/retire`, ALICE)).body.status, 'retired');

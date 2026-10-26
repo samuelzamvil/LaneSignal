@@ -60,7 +60,7 @@ When creating an agent key with access to several projects, choose **All my proj
 - **`project` field:** lanes, groups, escalations and requirements carry a `project` field. Escalations also carry `projectKey`.
 - **Escalation codes:** a code names one escalation across projects with its key: `SH-A1`, `SH·A1` or `SH:A1`. A bare `A1` works with `project`, or when only one of your projects has an `A1`; otherwise the error lists the keyed codes to choose from.
 - **`list_projects`** (MCP) and `GET /api/projects` list the projects a credential reaches.
-- **All-projects requirements:** record a requirement for every project with `all_projects: true` (MCP) or `allProjects: true` (HTTP). Only credentials that see every project write these: instance admins, static tokens, and keys owned by an account admin that aren't bound to one project. The same goes for superseding, editing or retiring one. `find_requirements` in a project returns that project's requirements plus the all-projects ones.
+- **All-projects requirements:** record a requirement for every project with `scope: "global"` (MCP and HTTP; `allProjects: true` also works over HTTP). Only credentials that see every project write these: instance admins, static tokens, and keys owned by an account admin that aren't bound to one project. The same goes for superseding, editing or retiring one. `find_requirements` in a project returns what applies there plus the global ones.
 - **Citations:** a project's requirement can only cite that project's escalations.
 
 ## Notifications

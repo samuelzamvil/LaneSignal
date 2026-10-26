@@ -32,5 +32,5 @@ Don't escalate routine progress or choices you can reverse cheaply; escalations 
 
 **Requirements** (optional: keep, change or drop this part):
 - Before escalating a product question to me, search the requirements and follow any that answer it.
-- When I decide something that sets product direction, record it as a short requirement, naming me as the decider and citing the escalation.
+- When I decide something that sets product direction, record it as a short requirement scoped to the products it concerns, naming me as the decider and citing the escalation.
 - Never record your own design choices as requirements.

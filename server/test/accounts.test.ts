@@ -217,7 +217,7 @@ describe('accounts', () => {
     // It can't manage accounts the way the owner's session can.
     assert.equal((await call('POST', '/api/admin/people', key, { email: 'z@example.com', name: 'Z', password: 'temporary password' })).status, 403);
     // Claude in the owner's session writes requirements down; the owner approves them signed in.
-    const body = { requirement: 'Personal keys record pending.', justification: 'Approval.', tags: ['key-approval'] };
+    const body = { requirement: 'Personal keys record pending.', justification: 'Approval.', scope: 'project' };
     const viaKey = await call('POST', '/api/requirements', key, body);
     assert.equal(viaKey.body.requirement.status, 'pending');
     assert.equal(viaKey.body.requirement.decidedBy, 'Ada');
