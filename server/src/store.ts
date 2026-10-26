@@ -40,14 +40,8 @@ const MAX_POSITIONS = 20;
 export class ConflictError extends Error {}
 /** The caller may see the thing but not do this to it; a 403. */
 export class ForbiddenError extends Error {}
-/** Input that's well-formed but not acceptable (e.g. an overbroad tag); a 400. */
+/** Input that's well-formed but not acceptable (e.g. a requirement without a scope); a 400. */
 export class ValidationError extends Error {}
-
-/** Tags too broad to help anyone find a requirement; overridable with LANESIGNAL_BROAD_TAGS. */
-export const DEFAULT_BROAD_TAGS = [
-  'backend', 'frontend', 'ui', 'ux', 'api', 'misc', 'general', 'other', 'product', 'feature', 'features',
-  'requirement', 'requirements', 'decision', 'decisions', 'important', 'todo', 'bug', 'bugs', 'code', 'app',
-];
 
 /** Requirements that still apply: approved, or recorded and waiting for approval. */
 const IN_FORCE: RequirementStatus[] = ['pending', 'active'];
@@ -56,7 +50,6 @@ const inForce = (r: Requirement) => IN_FORCE.includes(r.status);
 export interface RequirementInput {
   requirement: string;
   justification: string;
-  tags: string[];
   /** Project it applies to; null for every project (an owner-wide rule). */
   project?: string | null;
   /** Qualified group id within that project; null or absent for project-wide. */
@@ -84,8 +77,6 @@ export interface RecordResult {
   requirement: Requirement;
   /** Pending or active requirements that read alike: check these aren't the same decision. */
   similar: Requirement[];
-  /** Advice, e.g. a tag already on most requirements. */
-  warnings: string[];
   /** True when an active requirement already cites the same escalation: that one is returned, nothing new is stored. */
   duplicate?: boolean;
 }
@@ -307,8 +298,6 @@ export interface StoreOptions {
   now?: () => Date;
   /** How long a lane keeps showing "agent waiting" after a wait ends (default 30s). */
   waitGraceMs?: number;
-  /** Tags rejected as too broad (lowercase). */
-  broadTags?: string[];
   /** Most files on one escalation (default 5). */
   attachmentsPerItem?: number;
 }
@@ -351,7 +340,6 @@ export class Store {
   private db: DatabaseSync;
   private resolveTicketUrl: (ticket: string) => string | null;
   private refs: TicketRefs;
-  private broadTags: Set<string>;
   private retention: number;
   private now: () => Date;
   /** No timestamp written from now on is earlier than this (ms): the latest `checkedAt` handed out. */
@@ -374,7 +362,6 @@ export class Store {
     };
     this.waitGraceMs = opts.waitGraceMs ?? WAIT_GRACE_MS;
     this.attachmentsPerItem = opts.attachmentsPerItem ?? 5;
-    this.broadTags = new Set((opts.broadTags ?? DEFAULT_BROAD_TAGS).map((t) => t.toLowerCase()));
     this.events.setMaxListeners(0);
     this.migrate();
     this.recanonicalizeTickets();
@@ -4537,13 +4524,11 @@ export class Store {
   }
 
   /**
-   * Search: `query` is free text (ranked full-text match); `tags` must all be
-   * present; `group` limits to that group plus product-wide ones (unless
+   * Search: `query` is free text (ranked full-text match); `group` limits to that group plus product-wide ones (unless
    * `includeProductWide` is false). In force (pending or active) unless `statuses` says otherwise.
    */
   findRequirements(filter: {
     query?: string;
-    tags?: string[];
     group?: string;
     includeProductWide?: boolean;
     /** Projects to search; requirements for all projects always match. Undefined = every project. */
@@ -4574,10 +4559,6 @@ export class Store {
     if (filter.group !== undefined) {
       where.push(filter.includeProductWide === false ? 'r.group_id = ?' : '(r.group_id = ? OR r.group_id IS NULL)');
       params.push(filter.group);
-    }
-    for (const tag of filter.tags ?? []) {
-      where.push('EXISTS (SELECT 1 FROM json_each(r.tags) WHERE value = ?)');
-      params.push(tag.toLowerCase());
     }
     if (filter.scope) {
       const any: string[] = [];
@@ -4664,32 +4645,6 @@ export class Store {
       : { sql: ' AND r.project_id IS NULL', params: [] };
   }
 
-  /** Tags in use on requirements in force (of these projects plus all-project ones), most used first. */
-  requirementTags(group?: string, projects?: string[]): { tag: string; count: number }[] {
-    const p = this.inRequirementScope(projects);
-    const rows = this.db
-      .prepare(
-        `SELECT j.value AS tag, COUNT(*) AS n FROM requirements r, json_each(r.tags) j
-         WHERE r.status IN ('pending', 'active') ${group !== undefined ? 'AND (r.group_id = ? OR r.group_id IS NULL)' : ''}${p.sql}
-         GROUP BY j.value ORDER BY n DESC, j.value`,
-      )
-      .all(...(group !== undefined ? [group] : []), ...p.params) as Row[];
-    return rows.map((r) => ({ tag: r.tag as string, count: Number(r.n) }));
-  }
-
-  /** Lowercases, de-duplicates and checks tags; throws on overbroad ones. */
-  private cleanTags(tags: string[]): string[] {
-    const clean = [...new Set(tags.map((t) => t.trim().toLowerCase()))];
-    const broad = clean.filter((t) => this.broadTags.has(t));
-    if (broad.length) {
-      throw new ValidationError(
-        `Tag${broad.length > 1 ? 's' : ''} ${broad.map((t) => `"${t}"`).join(', ')} too broad to help anyone find this. ` +
-          'Name the capability instead, e.g. "payout-retries" or "sso-login".',
-      );
-    }
-    return clean;
-  }
-
   /**
    * Must run inside a transaction. Works out who decided, from the escalation or the given
    * name. An agent can only cite an escalation it raised itself, or one from a lane in the
@@ -4750,31 +4705,6 @@ export class Store {
     return rows.map((r) => this.requirementFromRow(r));
   }
 
-  /** Counted over what the requirement's project sees: its own requirements and the all-projects ones. */
-  private tagWarnings(tags: string[], project: string | null): string[] {
-    const projects = project ? [project] : [];
-    const p = this.inRequirementScope(projects);
-    const total = Number(
-      (this.db.prepare(`SELECT COUNT(*) AS n FROM requirements r WHERE r.status IN ('pending', 'active')${p.sql}`).get(...p.params) as Row).n,
-    );
-    const counts = new Map(this.requirementTags(undefined, projects).map((t) => [t.tag, t.count]));
-    // "payout-retry" next to an existing "payout-retries" splits searches in two.
-    const forms = (t: string) =>
-      new Set([t + 's', t + 'es', t.replace(/y$/, 'ies'), t.replace(/ies$/, 'y'), t.replace(/es$/, ''), t.replace(/s$/, '')]);
-    const near = tags.flatMap((t) => {
-      // Short words ("bu"/"bus", "new"/"news") differ by more than a plural.
-      const other = [...counts.keys()].find((c) => c !== t && !tags.includes(c) && Math.min(c.length, t.length) >= 5 && forms(t).has(c));
-      return other ? [`Tag "${t}" is close to the existing tag "${other}"; use that one if it means the same.`] : [];
-    });
-    if (total < 10) return near;
-    return [
-      ...near,
-      ...tags
-        .filter((t) => (counts.get(t) ?? 0) / total > 0.4)
-        .map((t) => `Tag "${t}" is on ${counts.get(t)} of ${total} active requirements; a narrower tag would find this faster.`),
-    ];
-  }
-
   /**
    * Checks a scope and its products. `byPerson`: a signed-in person, whom locks don't stop. Must
    * run inside a transaction when its result is written.
@@ -4812,6 +4742,11 @@ export class Store {
     return { scope: 'products', project: target.project, products: products.sort() };
   }
 
+  /** Throws unless these are products of the project (not archived); the error lists the ones it has. */
+  requireProducts(project: string, ids: string[]) {
+    this.checkScope({ scope: 'products', project, products: ids }, true);
+  }
+
   /** Must run inside a transaction. */
   private setRequirementProducts(num: number, project: string | null, products: string[]) {
     this.db.prepare('DELETE FROM requirement_products WHERE requirement_num = ?').run(num);
@@ -4845,7 +4780,6 @@ export class Store {
       throw new ValidationError('A requirement for a group applies to that group\'s project, not to all projects');
     }
     if (input.project && !this.getProject(input.project)) throw new NotFoundError(`Project "${input.project}" not found`);
-    const tags = this.cleanTags(input.tags);
     // Without a scope (as before products), it's global or project-wide by its project, and a person regroups it.
     const regroup = input.scope === undefined;
     const scope = this.checkScope(
@@ -4865,7 +4799,8 @@ export class Store {
         regroup ? 1 : 0,
         input.requirement.trim(),
         input.justification.trim(),
-        JSON.stringify(tags),
+        // Tags are retired (products replaced them); older requirements keep theirs.
+        '[]',
         // A person recording it is the approval; an agent's record waits for one.
         approved ? 'active' : 'pending',
         decidedBy,
@@ -4899,14 +4834,20 @@ export class Store {
           .prepare("SELECT num, requirement FROM requirements WHERE source_escalation_id = ? AND status IN ('pending', 'active') AND project_id IS ?")
           .all(input.sourceEscalation, input.project ?? null) as Row[]
       ).find((row) => norm(row.requirement as string) === norm(input.requirement));
-      if (same) return { requirement: this.requireRequirement(String(same.num)), similar: [], warnings: [], duplicate: true };
+      if (same) return { requirement: this.requireRequirement(String(same.num)), similar: [], duplicate: true };
+    }
+    // Where it applies is always chosen: a requirement nobody scoped ends up everywhere.
+    if (input.scope === undefined) {
+      throw new ValidationError(
+        'Say where it applies: scope "products" with the products it concerns, "project" for every product in the project, or "global" for every project',
+      );
     }
     const requirement = this.tx(() => {
       const num = this.insertRequirement(input, actor, actorIsHuman, this.now().toISOString(), actorOwner, approved);
       return this.requireRequirement(String(num));
     });
     this.emit({ type: 'requirement', requirement });
-    return { requirement, similar: this.similarTo(requirement), warnings: this.tagWarnings(requirement.tags, requirement.project) };
+    return { requirement, similar: this.similarTo(requirement) };
   }
 
   /**
@@ -4972,22 +4913,20 @@ export class Store {
     for (const e of earlier) this.emit({ type: 'requirement', requirement: e });
     this.emit({ type: 'requirement', requirement: old });
     this.emit({ type: 'requirement', requirement });
-    return { requirement, similar: this.similarTo(requirement).filter((r) => r.id !== old.id), warnings: this.tagWarnings(requirement.tags, requirement.project) };
+    return { requirement, similar: this.similarTo(requirement).filter((r) => r.id !== old.id) };
   }
 
-  /** Corrections that keep the meaning (wording, tags). Changing the decision is a supersede. */
-  editRequirement(id: string, patch: { requirement?: string; justification?: string; tags?: string[] }, byPerson = true): Requirement {
+  /** Corrections that keep the meaning (wording). Changing the decision is a supersede. */
+  editRequirement(id: string, patch: { requirement?: string; justification?: string }, byPerson = true): Requirement {
     const requirement = this.tx(() => {
       const current = this.requireRequirement(id);
       if (!inForce(current)) throw new ConflictError(`${current.id} is ${current.status}; only pending or active requirements can be edited`);
       if (!byPerson) this.checkUnlocked(current);
-      const tags = patch.tags ? this.cleanTags(patch.tags) : current.tags;
       this.db
-        .prepare('UPDATE requirements SET requirement = ?, justification = ?, tags = ?, updated_at = ? WHERE num = ?')
+        .prepare('UPDATE requirements SET requirement = ?, justification = ?, updated_at = ? WHERE num = ?')
         .run(
           patch.requirement?.trim() ?? current.requirement,
           patch.justification?.trim() ?? current.justification,
-          JSON.stringify(tags),
           this.now().toISOString(),
           this.requirementNum(current.id)!,
         );

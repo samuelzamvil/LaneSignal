@@ -15,7 +15,7 @@ before(async () => {
 });
 after(() => srv.close());
 
-const base = { justification: 'Agreed in review.', tags: ['scope-test'] };
+const base = { justification: 'Agreed in review.' };
 const record = (args: Record<string, unknown>) =>
   srv.call('POST', '/api/requirements', AGENT, { ...base, decidedBy: 'Sam', ...args });
 const get = async (id: string) => (await srv.call('GET', `/api/requirements/${id}`, ALICE)).body;
@@ -74,12 +74,11 @@ describe('recording with a scope', () => {
     assert.equal((await record({ requirement: 'X.', scope: 'products', allProjects: true, products: ['product-a'] })).status, 400);
   });
 
-  test('without a scope (as before products) it is flagged for a person to regroup', async () => {
-    const res = await record({ requirement: 'Legacy-style record.' });
-    assert.equal(res.body.requirement.scope, 'project');
-    assert.equal(res.body.requirement.needsRegrouping, true);
-    const flagged = (await srv.call('GET', '/api/requirements?regroup=true', ALICE)).body;
-    assert.ok(flagged.some((r: { id: string }) => r.id === res.body.requirement.id));
+  test('without a scope it is refused, from agents and people alike', async () => {
+    const res = await record({ requirement: 'Unscoped record.' });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /Say where it applies/);
+    assert.equal((await srv.call('POST', '/api/requirements', ALICE, { ...base, requirement: 'Unscoped record.' })).status, 400);
   });
 });
 
@@ -128,14 +127,14 @@ describe('a person changes the scope', () => {
     assert.equal((await srv.call('GET', `/api/requirements/${id}/changes`, ALICE)).body.length, 1);
   });
 
-  test('rescoping clears the regroup flag; moving to global keeps the citation, qualified', async () => {
+  test('moving to global keeps the citation, qualified', async () => {
     await srv.publish('scope-lane');
     const e = (await srv.tool(AGENT, 'create_escalation', { lane_id: 'scope-lane', question: 'Logs in UTC?' })).value;
     await srv.call('POST', `/api/escalations/${e.ref}/decide`, ALICE, { decision: 'yes' });
     const id = (
-      await srv.call('POST', '/api/requirements', AGENT, { ...base, requirement: 'Logs are in UTC.', sourceEscalation: e.ref })
+      await srv.call('POST', '/api/requirements', AGENT, { ...base, requirement: 'Logs are in UTC.', scope: 'project', sourceEscalation: e.ref })
     ).body.requirement.id;
-    assert.equal((await get(id)).needsRegrouping, true);
+    assert.equal((await get(id)).scope, 'project');
     const moved = await srv.call('PUT', `/api/requirements/${id}/scope`, ALICE, { scope: 'global' });
     assert.equal(moved.status, 200, JSON.stringify(moved.body));
     assert.equal(moved.body.project, null);
@@ -194,6 +193,79 @@ describe('locks', () => {
   });
 });
 
+describe('agents (MCP)', () => {
+  const tool = (name: string, args: Record<string, unknown>) => srv.tool(AGENT, name, args);
+
+  test('find_requirements returns the products asked for, plus project-wide and global, once each, without justification', async () => {
+    await srv.call('POST', '/api/products', ALICE, { id: 'product-c', name: 'Product C' });
+    const only = (await srv.call('POST', '/api/requirements', ALICE, { ...base, requirement: 'Product C only rule.', scope: 'products', products: ['product-c'] })).body.requirement.id;
+    const res = await tool('find_requirements', { products: ['product-a', 'product-b'] });
+    assert.equal(res.isError, false, res.text);
+    assert.deepEqual(res.value.scope, { project: 'default', products: ['product-a', 'product-b'] });
+    const list = res.value.requirements;
+    const texts = list.map((r: { requirement: string }) => r.requirement);
+    assert.ok(texts.includes('Product A and B share one login.'), 'in both products');
+    assert.ok(texts.includes('Product B exports CSV.'));
+    assert.ok(texts.includes('Every release has a changelog entry.'), 'project-wide');
+    assert.ok(texts.includes('Timestamps are UTC.'), 'global');
+    assert.ok(!list.some((r: { id: string }) => r.id === only), 'not another product\'s');
+    assert.equal(new Set(list.map((r: { id: string }) => r.id)).size, list.length, 'each once');
+    assert.ok(list.every((r: Record<string, unknown>) => r.justification === undefined && r.decidedBy === undefined));
+    const shared = list.find((r: { requirement: string }) => r.requirement === 'Product A and B share one login.');
+    assert.deepEqual([shared.scope, shared.products], ['products', ['product-a', 'product-b']]);
+
+    const projectOnly = (await tool('find_requirements', { project_only: true })).value.requirements.map((r: { requirement: string }) => r.requirement);
+    assert.ok(projectOnly.includes('Every release has a changelog entry.') && projectOnly.includes('Timestamps are UTC.'));
+    assert.ok(!projectOnly.includes('Product B exports CSV.'));
+  });
+
+  test('find_requirements refuses a call that says neither, or names an unknown product', async () => {
+    const neither = await tool('find_requirements', { query: 'login' });
+    assert.equal(neither.isError, true);
+    assert.match(neither.text, /product-a/);
+    assert.equal((await tool('find_requirements', { products: ['product-a'], project_only: true })).isError, true);
+    assert.match((await tool('find_requirements', { products: ['nope'] })).text, /Product "nope" not found/);
+  });
+
+  test('every agent record is pending, whatever its scope', async () => {
+    for (const scope of [{ scope: 'products', products: ['product-a'] }, { scope: 'project' }]) {
+      const res = await tool('record_requirement', { requirement: `Pending check ${scope.scope}.`, justification: 'J.', decided_by: 'Sam', ...scope });
+      assert.equal(res.isError, false, res.text);
+      assert.equal(res.value.requirement.status, 'pending', scope.scope);
+    }
+    // A static agent token sees every project, so it may propose a global rule; it still waits for approval.
+    const global = await tool('record_requirement', { requirement: 'Pending check global.', justification: 'J.', decided_by: 'Sam', scope: 'global' });
+    assert.equal(global.isError, false, global.text);
+    assert.equal(global.value.requirement.status, 'pending');
+  });
+
+  test('record_requirement requires a scope; a locked product refuses it', async () => {
+    const unscoped = await tool('record_requirement', { requirement: 'No scope.', justification: 'J.', decided_by: 'Sam' });
+    assert.equal(unscoped.isError, true);
+    await srv.call('PATCH', '/api/products/product-c', ALICE, { locked: true });
+    const locked = await tool('record_requirement', { requirement: 'C rule.', justification: 'J.', decided_by: 'Sam', scope: 'products', products: ['product-c'] });
+    assert.match(locked.text, /locked/);
+    await srv.call('PATCH', '/api/products/product-c', ALICE, { locked: false });
+  });
+
+  test('get_requirement adds the justification only when asked; list_products shows locks', async () => {
+    const id = (await tool('find_requirements', { project_only: true, query: 'changelog' })).value.requirements[0].id;
+    assert.equal((await tool('get_requirement', { id })).value.justification, undefined);
+    assert.equal((await tool('get_requirement', { id, include_justification: true })).value.justification, 'Agreed in review.');
+    await srv.call('PATCH', '/api/products/product-b', ALICE, { locked: true });
+    const products = (await tool('list_products', {})).value;
+    assert.deepEqual(products.find((p: { id: string }) => p.id === 'product-b')?.locked, true);
+    assert.equal(products.find((p: { id: string }) => p.id === 'product-a')?.locked, undefined);
+    await srv.call('PATCH', '/api/products/product-b', ALICE, { locked: false });
+  });
+
+  test('the REST search can ask for everything that applies to some products', async () => {
+    const texts = (await srv.call('GET', '/api/requirements?applies_to=product-b', AGENT)).body.map((r: { requirement: string }) => r.requirement);
+    assert.ok(texts.includes('Product B exports CSV.') && texts.includes('Every release has a changelog entry.') && texts.includes('Timestamps are UTC.'));
+    assert.ok(!texts.includes('Product C only rule.'));
+  });
+});
+
 describe('archiving', () => {
   test('refused while requirements are in force; hidden from the list once archived', async () => {
     await srv.call('POST', '/api/products', ALICE, { id: 'product-old', name: 'Old' });
@@ -226,9 +298,9 @@ test('upgrading flags requirements in force for regrouping, keeping them project
   const file = path.join(dir, 'db.sqlite');
   try {
     let store = new Store({ path: file, resolveTicketUrl: () => null });
-    const wide = store.recordRequirement({ requirement: 'One.', justification: 'J.', tags: ['one-rule'], project: 'default', decidedBy: 'Sam' }, 'bot');
-    const all = store.recordRequirement({ requirement: 'Two.', justification: 'J.', tags: ['two-rule'], project: null, decidedBy: 'Sam' }, 'bot');
-    const gone = store.recordRequirement({ requirement: 'Three.', justification: 'J.', tags: ['three-rule'], project: 'default', decidedBy: 'Sam' }, 'bot');
+    const wide = store.recordRequirement({ requirement: 'One.', justification: 'J.', scope: 'project', project: 'default', decidedBy: 'Sam' }, 'bot');
+    const all = store.recordRequirement({ requirement: 'Two.', justification: 'J.', scope: 'global', project: null, decidedBy: 'Sam' }, 'bot');
+    const gone = store.recordRequirement({ requirement: 'Three.', justification: 'J.', scope: 'project', project: 'default', decidedBy: 'Sam' }, 'bot');
     store.rejectRequirement(gone.requirement.id, 'No.');
     store.close();
 
@@ -250,6 +322,9 @@ test('upgrading flags requirements in force for regrouping, keeping them project
     assert.deepEqual([one.scope, one.needsRegrouping], ['project', true]);
     assert.deepEqual([two.scope, two.needsRegrouping], ['global', true]);
     assert.deepEqual([three.scope, three.needsRegrouping], ['project', false], 'rejected ones are not put up for regrouping');
+    // A person choosing its scope clears the flag, even when it stays project-wide.
+    assert.equal(store.setRequirementScope(one.id, { scope: 'project', project: 'default' }, 'Sam').needsRegrouping, false);
+    assert.equal(store.requirementChanges(one.id).length, 1);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

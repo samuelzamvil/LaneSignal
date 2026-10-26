@@ -1020,7 +1020,11 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     // Rejected records are for people only: agents (and Claude sessions on a personal key) never get them back.
     const statuses = approvesRequirements(principalOf(res)) ? query.status : query.status?.filter((x) => x !== 'rejected');
     if (statuses && !statuses.length) return void res.json([]);
-    const scope = query.product
+    const appliesTo = query.applies_to ? a.pick(query.project) : undefined;
+    if (appliesTo) store.requireProducts(appliesTo, query.applies_to!);
+    const scope = appliesTo
+      ? { project: appliesTo, products: query.applies_to, projectWide: true, global: true }
+      : query.product
       ? { project: a.pick(query.project), products: [query.product] }
       : query.scope === 'global'
         ? { global: true }
@@ -1030,7 +1034,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const needsRegrouping = query.regroup === undefined ? undefined : query.regroup === 'true';
     res.json(
       store
-        .findRequirements({ query: query.q, tags: query.tag, group, projects, statuses, scope, needsRegrouping, limit: query.limit })
+        .findRequirements({ query: query.q, group, projects, statuses, scope, needsRegrouping, limit: query.limit })
         .map(pub.requirement),
     );
   });
@@ -1057,14 +1061,6 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     requireOwner(res, 'Change products');
     const id = parse(s.productId, String(req.params.id));
     res.json(store.updateProduct(acc(res).pick(projectQuery(req)), id, parse(s.productPatch, req.body)));
-  });
-
-  app.get('/api/requirements/tags', any, requirementsOnly, (req, res) => {
-    const a = acc(res);
-    const raw = typeof req.query.group === 'string' ? parse(s.groupId, req.query.group) : undefined;
-    const group = raw ? q(a.pick(projectQuery(req), { group: raw }), raw) : undefined;
-    if (group && !store.groupExists(group)) throw new NotFoundError(`Group "${raw}" not found`);
-    res.json(store.requirementTags(group, a.scope(projectQuery(req))));
   });
 
   /** A requirement the caller may see: one for all projects, or one of the caller's projects. Agents and personal keys don't see rejected ones. */

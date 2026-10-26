@@ -517,13 +517,15 @@ function buildServer(
     // ---- requirements: the owner's product decisions, for every role ----
 
     const REQ_ID_HELP = 'Requirement id, e.g. "R14".';
+    const SCOPE_HELP =
+      'Where it applies: "products" (with `products`), "project" (every product in the project) or "global" (every project; ' +
+      'only when the owner said so). list_products shows the products.';
     const requirementFields = {
       requirement: s.requirementInput.shape.requirement.describe('One normative statement, e.g. "Payouts retry at most 5 times."'),
       justification: s.requirementInput.shape.justification.describe('Why the owner decided it, and where.'),
-      tags: s.requirementInput.shape.tags.describe('1-3 specific kebab-case tags, e.g. "payout-retries"; reuse existing ones.'),
-      group_id: s.groupId.nullable().optional().describe('Your train/epic; omit for the whole project.'),
-      group: s.groupId.nullable().optional(),
-      all_projects: z.boolean().optional().describe('Only when the owner said it covers all their projects.'),
+      scope: z.enum(s.REQUIREMENT_SCOPES).describe(SCOPE_HELP),
+      products: z.array(s.productId).min(1).max(20).optional().describe('Product ids it concerns, with scope "products".'),
+      group_id: s.groupId.nullable().optional().describe('Your train/epic, to cite an escalation from its lanes. Not where it applies.'),
       source_escalation: z.string().optional().describe('The escalation code it answered, e.g. "967A".'),
       decided_by: z
         .string()
@@ -535,14 +537,13 @@ function buildServer(
             : 'Who decided, e.g. "Sam (Remote Control, 2026-10-23)". Required.',
         ),
     };
-    /** The same fields without descriptions, for supersede (described once, on record). */
+    /** The same fields without descriptions, for supersede (described once, on record); scope is optional there. */
     const supersedeFields = {
       requirement: s.requirementInput.shape.requirement,
       justification: s.requirementInput.shape.justification,
-      tags: s.requirementInput.shape.tags,
+      scope: z.enum(s.REQUIREMENT_SCOPES).optional(),
+      products: z.array(s.productId).min(1).max(20).optional(),
       group_id: s.groupId.nullable().optional(),
-      group: s.groupId.nullable().optional(),
-      all_projects: z.boolean().optional(),
       source_escalation: z.string().optional(),
       decided_by: z.string().max(100).optional(),
     };
@@ -550,12 +551,11 @@ function buildServer(
       args: {
         requirement: string;
         justification: string;
-        tags: string[];
+        scope?: (typeof s.REQUIREMENT_SCOPES)[number];
+        products?: string[];
         group_id?: string | null;
-        group?: string | null;
         source_escalation?: string;
         decided_by?: string;
-        all_projects?: boolean;
         project?: string;
       },
       current?: Requirement,
@@ -565,11 +565,11 @@ function buildServer(
         s.requirementInput.parse({
           requirement: args.requirement,
           justification: args.justification,
-          tags: args.tags,
-          group: args.group_id !== undefined ? args.group_id : args.group,
+          scope: args.scope,
+          products: args.products,
+          group: args.group_id,
           sourceEscalation: args.source_escalation,
           decidedBy: args.decided_by,
-          allProjects: args.all_projects,
         }),
         args.project,
         current,
@@ -589,39 +589,54 @@ function buildServer(
         duplicate: r.duplicate,
         // Enough to tell whether one is the same decision; get_requirement has the rest.
         similar: r.similar.some(a.sees) ? r.similar.filter(a.sees).map((x) => ({ id: x.id, requirement: x.requirement })) : undefined,
-        warnings: r.warnings.length ? r.warnings : undefined,
       });
 
     server.registerTool(
       'find_requirements',
       {
         description:
-          'Search the owner\'s past decisions. Check before escalating a product or scope question; if one answers it, ' +
-          'follow it and cite its id. `query` is free text; `tags` must all match; `group_id` adds the train/epic\'s ' +
-          'requirements to the project-wide ones. Returns pending and active ones unless you set `statuses`. ' +
-          '`status: "pending"` means the owner hasn\'t approved the record yet: follow it, but it may still be corrected. ' +
-          'A requirement in force with `supersededBy` has a replacement waiting for approval: both always come back, ' +
-          'the current one then the pending change, whichever of them matched.',
+          'Everything that applies to your work, in one call: the requirements of the `products` you name, plus the ' +
+          'project-wide and global ones. Work not tied to a product: `project_only: true` (project-wide and global only). ' +
+          'One of the two is required; list_products shows the products. Follow what comes back and cite ids ("per R14"); ' +
+          'check here before escalating a product or scope question. The response names the scope it used. Justification ' +
+          'isn\'t included: get_requirement with include_justification has it. `query` narrows by free text (or finds an id ' +
+          'like "R14"). Pending and active ones unless you set `statuses`; `status: "pending"` means the owner hasn\'t ' +
+          'approved the record yet: follow it, but it may still be corrected. A requirement in force with `supersededBy` ' +
+          'has a replacement waiting for approval: both come back, the current one then the pending change. ' +
+          '`needsRegrouping: true` marks an older one whose scope the owner hasn\'t set yet (it counts as project-wide).',
         inputSchema: {
+          products: z.array(s.productId).min(1).max(20).optional(),
+          project_only: z.literal(true).optional(),
           query: z.string().max(500).optional(),
-          tags: z.array(s.requirementTag).max(5).optional(),
-          group_id: s.groupId.optional(),
-          group: GROUP_ALIAS,
           statuses: z.array(z.enum(s.AGENT_REQUIREMENT_STATUSES)).optional(),
-          limit: z.number().int().min(1).max(100).optional(),
+          limit: z.number().int().min(1).max(200).optional(),
           ...PROJECT,
         },
         annotations: { readOnlyHint: true },
       },
-      async ({ query, tags, group_id: gid, group: alias, statuses, limit, project }) => {
+      async ({ products, project_only, query, statuses, limit, project }) => {
         try {
-          const group_id = checkGroup(gid ?? alias, project);
-          const group = group_id ? q(a.pick(project, { group: group_id }), group_id) : undefined;
-          return listJson(
-            store
-              .findRequirements({ query, tags, group, projects: a.scope(project), statuses, limit: limit ?? 20 })
-              .map((x) => briefRequirement(pub.requirement(x))),
-          );
+          const pr = a.pick(project);
+          const known = () => store.listProducts([pr]).map((p) => p.id);
+          if (products && project_only) throw new ValidationError('Give either products or project_only, not both');
+          if (!products && !project_only) {
+            const names = known();
+            throw new ValidationError(
+              'Say what you work on: `products` (' +
+                (names.length ? names.join(', ') : 'this project has no products yet') +
+                '), or `project_only: true` for work not tied to a product.',
+            );
+          }
+          if (products) store.requireProducts(pr, products);
+          const scope = products ? { project: pr, products: [...new Set(products)].sort() } : { project: pr, projectOnly: true as const };
+          const found = store.findRequirements({
+            query,
+            projects: [pr],
+            statuses,
+            scope: { project: pr, products, projectWide: true, global: true },
+            limit: limit ?? 100,
+          });
+          return json({ scope, requirements: found.map((x) => briefRequirement(pub.requirement(x))) });
         } catch (err) {
           return fail(err);
         }
@@ -631,13 +646,15 @@ function buildServer(
     server.registerTool(
       'get_requirement',
       {
-        description: 'Read one requirement, including what superseded it if it is no longer active.',
-        inputSchema: { id: z.string().describe(REQ_ID_HELP) },
+        description:
+          'Read one requirement, including what superseded it if it is no longer active. `include_justification: true` adds ' +
+          'why the owner decided it, who decided and where.',
+        inputSchema: { id: z.string().describe(REQ_ID_HELP), include_justification: z.boolean().optional() },
         annotations: { readOnlyHint: true },
       },
-      async ({ id }) => {
+      async ({ id, include_justification }) => {
         try {
-          return json(briefRequirement(pub.requirement(visibleRequirement(id))));
+          return json(briefRequirement(pub.requirement(visibleRequirement(id)), !!include_justification));
         } catch (err) {
           return fail(err);
         }
@@ -645,17 +662,20 @@ function buildServer(
     );
 
     server.registerTool(
-      'list_requirement_tags',
+      'list_products',
       {
-        description: 'Tags in use on pending and active requirements, with counts, so you reuse them instead of inventing near-synonyms.',
-        inputSchema: { group_id: s.groupId.optional(), group: GROUP_ALIAS, ...PROJECT },
+        description:
+          'The products requirements are scoped to, with whether each is locked (a locked product refuses agents\' changes ' +
+          'to its requirements) and how many requirements it has. Only the owner adds products.',
+        inputSchema: { ...PROJECT },
         annotations: { readOnlyHint: true },
       },
-      async ({ group_id: gid, group: alias, project }) => {
+      async ({ project }) => {
         try {
-          const group_id = checkGroup(gid ?? alias, project);
           return listJson(
-            store.requirementTags(group_id ? q(a.pick(project, { group: group_id }), group_id) : undefined, a.scope(project)),
+            store
+              .listProducts(a.scope(project))
+              .map((p) => compact({ id: p.id, name: p.name, project: p.project, locked: p.locked || undefined, requirements: p.requirements })),
           );
         } catch (err) {
           return fail(err);
@@ -667,15 +687,17 @@ function buildServer(
       'record_requirement',
       {
         description:
-          'Record a product decision the owner made (never your own design choice), one per requirement. ' +
+          'Record a product decision the owner made (never your own design choice), one per requirement, scoped to where ' +
+          'it applies: the products it concerns, the whole project, or (only when the owner said so) every project. ' +
           (features.decisions
             ? 'Cite `source_escalation` alone if it was answered on the dashboard; otherwise say who decided (`decided_by`), ' +
               'plus `source_escalation` when it answered an escalation in your session. '
             : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
           'Search first so you don\'t ' +
           'record it twice; the same requirement from the same escalation returns the first (`duplicate: true`). ' +
-          '`similar` lists ones that read alike: if the owner changed their mind, supersede_requirement the old one.' +
-          (approvesRequirements(who) ? '' : ' What you record is `pending` until a person approves it.'),
+          '`similar` lists ones that read alike: if the owner changed their mind, supersede_requirement the old one. ' +
+          'A locked product refuses new requirements from agents.' +
+          (approvesRequirements(who) ? '' : ' What you record is `pending` until a person approves it, whatever its scope.'),
         inputSchema: { ...requirementFields, ...PROJECT_WRITE },
       },
       async (args) => {
@@ -694,7 +716,7 @@ function buildServer(
       {
         description:
           'The owner changed a decision: record the new one and mark the old one superseded (kept for history). ' +
-          'Fields as in record_requirement; scope defaults to the old one\'s.' +
+          'Fields as in record_requirement; scope defaults to the old one\'s. Refused for a requirement in a locked product.' +
           (approvesRequirements(who)
             ? ''
             : ' The new one is `pending`; the old one stays in force, its `supersededBy` naming the replacement, until a person approves it.'),
