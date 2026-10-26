@@ -261,6 +261,37 @@ const requirementTags = z.preprocess(
   z.array(requirementTag).min(1).max(3),
 );
 
+/** A product's id within its project: kebab-case, e.g. "billing". */
+export const productId = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(2)
+  .max(40)
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'product ids are lowercase kebab-case words, e.g. "billing"');
+
+export const REQUIREMENT_SCOPES = ['global', 'project', 'products'] as const;
+const productIds = z.array(productId).min(1).max(20);
+const productColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'colours are hex, e.g. "#3b82f6"').nullable();
+
+/** POST /api/products: a person adds a product to a project. */
+export const productInput = z.object({ id: productId, name: z.string().trim().min(1).max(60), color: productColor.optional() }).strict();
+/** PATCH /api/products/:id */
+export const productPatch = z
+  .object({ name: z.string().trim().min(1).max(60).optional(), color: productColor.optional(), locked: z.boolean().optional(), archived: z.boolean().optional() })
+  .strict();
+
+/**
+ * Where a requirement applies. `project`: the project for a project-wide or product scope when it
+ * isn't the request's (moving a global requirement into a project).
+ */
+export const requirementScopeInput = z
+  .object({ scope: z.enum(REQUIREMENT_SCOPES), products: productIds.optional(), project: z.string().max(40).optional() })
+  .strict();
+
+/** POST /api/requirements/:id/approve: optionally with the scope the person chose. */
+export const requirementApprove = requirementScopeInput.partial().strict();
+
 /** Requirements are read by agents again and again: short ones keep that cheap. */
 export const REQUIREMENT_MAX = 300;
 export const JUSTIFICATION_MAX = 800;
@@ -277,6 +308,9 @@ export const requirementInput = z.object({
   decidedBy: z.string().trim().min(1).max(100).nullable().optional(),
   /** An owner-wide rule that applies to every project, rather than to the request's project. */
   allProjects: z.boolean().optional(),
+  /** Global, project-wide, or the products in `products`. */
+  scope: z.enum(REQUIREMENT_SCOPES).optional(),
+  products: productIds.optional(),
 })
   // Unknown fields (e.g. group_id instead of group) are errors, not silently ignored.
   .strict();
@@ -303,6 +337,12 @@ export const requirementQuery = z
     q: z.string().max(500).optional(),
     tag: z.preprocess(csv, z.array(requirementTag).max(5)).optional(),
     group: groupId.optional(),
+    /** Only global or only project-wide requirements. */
+    scope: z.enum(['global', 'project']).optional(),
+    /** Only requirements scoped to this product (of `project`, or the caller's only project). */
+    product: productId.optional(),
+    /** Only those waiting for a person to choose their scope ("true"), or only those that aren't ("false"). */
+    regroup: z.enum(['true', 'false']).optional(),
     status: z.preprocess(csv, z.array(z.enum(REQUIREMENT_STATUSES)).min(1)).optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
     project: z.string().max(40).optional(),

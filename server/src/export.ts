@@ -96,6 +96,10 @@ export async function exportZip(
         'epic_messages.csv  the message boards on epics (the overseer\'s posts and people\'s notes)',
         'events.csv         lane history: status changes, escalation steps, recent activity text, conversation messages',
         ...(datasets.includes('requirements') ? ['requirements.csv   the owner\'s product decisions, including superseded, retired and rejected ones'] : []),
+        ...(datasets.includes('products') ? ['products.csv       the products requirements are scoped to, archived ones too'] : []),
+        ...(datasets.includes('requirement_changes')
+          ? ['requirement_changes.csv  changes to where requirements apply (who moved them, from what scope to what)']
+          : []),
         '',
         'Timestamps are UTC ISO 8601. Column reference: docs/export.md in the LaneSignal repository.',
         '',

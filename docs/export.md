@@ -137,7 +137,15 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 
 ### `requirements.csv` (the owner's product decisions)
 
-`id` (`R14`), `group_id` (empty for product-wide), `requirement`, `justification`, `tags`, `status` (`pending`, `active`, `superseded`, `retired`, `rejected`), `superseded_by`, `decided_by`, `source_escalation`, `recorded_by`, `created_at`, `updated_at`, `rejection_reason`. Every requirement is included, whatever its status (rejected ones only in exports made by a signed-in person); `from`/`to` filter by creation time. See [Requirements](requirements.md).
+`id` (`R14`), `group_id` (empty for product-wide), `requirement`, `justification`, `tags`, `status` (`pending`, `active`, `superseded`, `retired`, `rejected`), `superseded_by`, `decided_by`, `source_escalation`, `recorded_by`, `created_at`, `updated_at`, `rejection_reason`, `scope` (`global`, `project` or `products`), `products` (ids, ` | `-separated), `needs_regrouping`. Every requirement is included, whatever its status (rejected ones only in exports made by a signed-in person); `from`/`to` filter by creation time. See [Requirements](requirements.md).
+
+### `products.csv` (what requirements are scoped to)
+
+`project`, `id`, `name`, `color`, `locked`, `archived`, `requirements` (how many in force), `created_by`, `created_at`, `updated_at`. Complete, archived products too.
+
+### `requirement_changes.csv` (scope changes, for audits)
+
+`id`, `requirement`, `kind` (`scope`), `actor`, `from_scope`, `from_project`, `from_products`, `to_scope`, `to_project`, `to_products`, `at`. Changes to the requirements the export includes; `from`/`to` filter by `at`.
 
 ### `messages.csv` (conversations)
 

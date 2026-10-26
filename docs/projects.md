@@ -6,7 +6,7 @@ One LaneSignal server can run several independent **projects**, such as one per 
 - lane letters and escalation codes: the shop's first question is **A1**, and so is the main app's
 - members, and its own push-notification setting for each of them
 
-Requirements are global: ids (`R14`) are unique across the server. Each requirement either belongs to one project or applies to **all projects** ("all our apps store money as integers").
+Requirements are global: ids (`R14`) are unique across the server. Each requirement is **global** (every project: "all our apps store money as integers"), **project-wide** (every product in one project), or scoped to chosen **products** of one project. See [Requirements](requirements.md#scope).
 
 A server starts with one project, **Main** (id `default`, key `MAIN`). Data from before projects existed lives there. While there's only one project, nothing changes: nobody has to name it, and the web app shows no project switcher (Settings lists the one project).
 
