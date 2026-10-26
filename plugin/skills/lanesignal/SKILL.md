@@ -123,7 +123,7 @@ The owner answers on the LaneSignal dashboard or phone app with one of three but
 
 Answers can take minutes or a day.
 
-- **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns a digest as soon as anything needs you, even when nothing is open: `items`, one per thing to handle, `{code, kind, id, text}`. `code` is the escalation's; `id` is its id, or the lane, ticket or epic the item is about; `text` is the owner's words (a file they attached reads "[attached: plan.md (id …)]": fetch it with `curl -H "Authorization: Bearer $LANESIGNAL_KEY" "$base/api/attachments/<id>"`). Kinds:
+- **Waiting on your group:** call `wait_for_decisions` with your `group_id`. It returns a digest as soon as anything needs you, even when nothing is open: `items`, one per thing to handle: `{code, kind, text}` for an escalation (act on it by `code`), or `{kind, id, text}` where `id` is the lane, ticket or epic the item is about; `text` is the owner's words (a file they attached reads "[attached: plan.md (id …)]": fetch it with `curl -H "Authorization: Bearer $LANESIGNAL_KEY" "$base/api/attachments/<id>"`). Kinds:
   - `decided`: answered. Acknowledge and act on each one (above).
   - `reply`: the owner answered Other; `text` is what they wrote since you last did. Acknowledge and act, or reply (above).
   - `closed`: withdrawn by someone else (a person dismissed it).
@@ -132,7 +132,7 @@ Answers can take minutes or a day.
   - `lane_note`: the owner's notes on a lane in scope, outside any escalation. Act on them like the owner's instructions; answer with `notify_owner` if useful. They also come back as `ownerMessages` from your next `update_lane` or `notify_owner` on that lane.
   - `board_note`: the owner wrote on one of your group's epics' boards (`id` names the epic). Act on it like a `lane_note`; answer with `notify_epic` if useful.
 - **What repeats:** `decided` and `reply` come back on every wait until you acknowledge or reply. The rest come back once per `since`.
-- **`counts`** says how many are `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou`. If they show something you can't find in `items` (e.g. after a compaction), call `get_updates`: it returns everything in scope.
+- **`counts`** says how many are `open` (waiting on the owner), `decidedUnacknowledged` and `waitingOnYou` (left out when all are zero). If they show something you can't find in `items` (e.g. after a compaction), call `get_updates`: it returns everything in scope.
 - **`ready: false`:** the wait ran out with nothing new. Call again. With nothing open, the wait keeps waiting for the owner's notes, so keep it running in the background (below).
 - **Pass `checkedAt` back:** pass the last result's `checkedAt` as `since` on your next wait, so nothing in between is missed. Once you've handled a result's items, also save its `checkedAt` to the file `.claude/lanesignal-since` (overwrite it), so a restart starts from there. Save it only after handling: if you crash first, the older `since` brings the same items back. The loop below saves it itself while there's nothing to handle.
 - **Don't hold your session:** a `wait_for_decisions` call holds your session for its whole `wait_seconds`, and the owner can't reach you through Remote Control meanwhile. When nothing is open, or the wait may be long, use the background loop below; for a quick check, pass `wait_seconds: 0`.

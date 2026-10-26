@@ -370,10 +370,11 @@ export function compact<T extends Record<string, unknown>>(o: T): Partial<T> {
 }
 
 /** A lane as an agent needs it back after publishing: where it stands, not everything echoed. */
-export const briefLane = (l: Lane, decisions: boolean) =>
+export const briefLane = (l: Lane, decisions: boolean, oneProject = false) =>
   compact({
     id: l.id,
-    project: l.project,
+    // Only where projects mix: with one, every lane would repeat it.
+    project: oneProject ? undefined : l.project,
     letter: l.letter,
     group: l.group,
     status: l.status,
@@ -466,24 +467,26 @@ const ownerWords = (messages: { body: string; attachments: { id: string; name: s
 export const digestWait = (w: WaitResult, keyed = false) => {
   const code = (e: { ref: string; projectKey: string }) => (keyed ? `${e.projectKey}-${e.ref}` : e.ref);
   const items = [
+    // An escalation's code is enough to act on it (every tool takes codes), so its id isn't repeated.
     ...w.decided.map((e) => ({
       code: code(e),
       kind: 'decided',
-      id: e.id,
       text: e.decisionNote ? `${e.decision}: ${e.decisionNote}` : (e.decision ?? ''),
     })),
-    ...w.replies.map((r) => ({ code: code(r), kind: 'reply', id: r.id, text: ownerWords(r.messages) })),
-    ...w.closed.map((e) => ({ code: code(e), kind: 'closed', id: e.id, text: e.resolution ?? e.state })),
+    ...w.replies.map((r) => ({ code: code(r), kind: 'reply', text: ownerWords(r.messages) })),
+    ...w.closed.map((e) => ({ code: code(e), kind: 'closed', text: e.resolution ?? e.state })),
     ...w.removedLanes.map((l) => ({ kind: 'lane_removed', id: l.laneId, text: l.removedBy ? `Removed by ${l.removedBy}` : 'Removed' })),
     ...w.laneMessages.map((l) => ({ kind: 'lane_note', id: l.laneId, text: ownerWords(l.messages) })),
     ...w.movedTickets.map((m) => ({ kind: 'ticket_moved', id: m.ticket, text: `Taken into lane ${m.laneId}${m.by ? ` by ${m.by}` : ''}` })),
     ...w.boardMessages.map((b) => ({ kind: 'board_note', id: b.epic, text: ownerWords(b.messages) })),
   ];
+  const counts = { open: w.open.length, decidedUnacknowledged: w.decided.length, waitingOnYou: w.replies.length };
   return {
     // From the items themselves: `pub.wait` may have dropped some the caller no longer sees.
     ready: items.length > 0,
     items,
-    counts: { open: w.open.length, decidedUnacknowledged: w.decided.length, waitingOnYou: w.replies.length },
+    // Left out when all zero: an idle wait returning on its timeout is the call agents repeat most.
+    counts: counts.open || counts.decidedUnacknowledged || counts.waitingOnYou ? counts : undefined,
     checkedAt: w.checkedAt,
   };
 };
