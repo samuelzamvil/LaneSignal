@@ -101,6 +101,8 @@ export interface OidcConfig {
   scopes: string[];
   /** Create an account (not an admin) for a verified email the provider signs in that has none yet. */
   createAccounts: boolean;
+  /** Refuse an ID token that doesn't say its email is verified (`email_verified: true`); off, only `false` is refused. */
+  requireVerifiedEmail: boolean;
   /** How often a session from this sign-in is re-checked with the provider (refresh token), in minutes. */
   recheckMinutes: number;
   /** Where the provider sends people back: <LANESIGNAL_PUBLIC_URL>/api/oidc/callback. */
@@ -242,6 +244,7 @@ function parseOidc(env: NodeJS.ProcessEnv, publicUrl: string | null): OidcConfig
     label: env.LANESIGNAL_OIDC_LABEL?.trim() || 'Cloudflare',
     scopes,
     createAccounts: bool('LANESIGNAL_OIDC_CREATE_ACCOUNTS', env.LANESIGNAL_OIDC_CREATE_ACCOUNTS, false),
+    requireVerifiedEmail: bool('LANESIGNAL_OIDC_REQUIRE_VERIFIED_EMAIL', env.LANESIGNAL_OIDC_REQUIRE_VERIFIED_EMAIL, true),
     recheckMinutes: int('LANESIGNAL_OIDC_RECHECK_MINUTES', env.LANESIGNAL_OIDC_RECHECK_MINUTES, 15, 1, 1440),
     redirectUri: `${base.origin}/api/oidc/callback`,
   };

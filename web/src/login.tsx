@@ -3,10 +3,13 @@ import { useEffect, useState } from 'react';
 import { accessGuards, accessTokens, finishAccessSignIn, startAccessSignIn } from './access-session.ts';
 import { createClient, isNative, normalizeServer, publicApi, type Connection, type SignInOptions } from './api.ts';
 import type { AccessClient } from './cloudflare.ts';
-import { oidcCode } from './deeplink.ts';
+import { oidcCode, oidcError } from './deeplink.ts';
 import { clearPending, readPending, startOidcSignIn } from './oidc-session.ts';
 
 type Mode = 'signin' | 'setup' | 'token' | 'access' | 'failover';
+
+/** OIDC returns already handled (in this run of the app): the link that started the app is handed out again. */
+const handledReturns = new Set<string>();
 
 /** The failover key from a `?failover=<key>` link, taken out of the address bar once read. */
 function failoverKeyFromUrl(): string {
@@ -40,6 +43,7 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
   const [token, setToken] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const base = normalizeServer(server);
 
@@ -57,21 +61,39 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
     onConnected(c);
   }
 
-  /** Redeems the code an OIDC sign-in came back with, if it's the one started here. */
+  /** Signed in with Cloudflare Access in the app: connect with Access alone (as before OIDC sign-in existed). */
+  async function connectAccess(access: AccessClient) {
+    const c: Connection = { server: new URL(access.redirectUri).origin, token: '', kind: 'cloudflare', access };
+    const me = await createClient(c, accessTokens(access)).me();
+    if (me.role !== 'human') throw new Error('Cloudflare Access signed you in as an agent. Sign in with your account instead.');
+    onConnected(c);
+  }
+
+  /** Finishes an OIDC sign-in from its return (redeeming its code), if `url` is one. */
   function finishOidc(url: string) {
     const code = oidcCode(url);
-    if (!code) return false;
+    const failed = oidcError(url);
+    if (!code && failed === null) return false;
+    if (handledReturns.has(url)) return true;
+    handledReturns.add(url);
     const pending = readPending();
     clearPending();
     if (!pending) {
-      setError('That sign-in expired. Try again.');
+      setError(failed ?? 'That sign-in expired. Try again.');
       return true;
     }
     setBusy(true);
     (async () => {
-      const edge = pending.access ? await accessTokens(pending.access).token() : undefined;
-      const session = await publicApi.redeemOidc(pending.server, code, pending.verifier, edge);
-      await connectOidc(pending.server, session, pending.access);
+      try {
+        if (!code) throw new Error(failed!);
+        const edge = pending.access ? await accessTokens(pending.access).token() : undefined;
+        const session = await publicApi.redeemOidc(pending.server, code, pending.verifier, edge);
+        await connectOidc(pending.server, session, pending.access);
+      } catch (err) {
+        // Behind Access the app is signed in already: carry on with Access alone (it works through the tunnel).
+        if (pending.access) await connectAccess(pending.access);
+        else throw err;
+      }
     })()
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setBusy(false));
@@ -119,10 +141,7 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
             await startOidcSignIn(server, access);
             return;
           }
-          const c: Connection = { server, token: '', kind: 'cloudflare', access };
-          const me = await createClient(c, accessTokens(access)).me();
-          if (me.role !== 'human') throw new Error('Cloudflare Access signed you in as an agent. Sign in with your account instead.');
-          onConnected(c);
+          await connectAccess(access);
         })
         .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
         .finally(() => setBusy(false));
@@ -195,7 +214,15 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
         onConnected(c);
         return;
       }
-      if (mode === 'setup') await publicApi.setup(base, { name: name.trim(), email: email.trim(), password, code: code.trim() });
+      if (mode === 'setup') {
+        await publicApi.setup(base, { name: name.trim(), email: email.trim(), password, code: code.trim() });
+        // Passwords need the failover key here, which isn't on this page.
+        if (options?.passwordFailover) {
+          setMode('signin');
+          setNotice(`Admin account created. Sign in with ${options.oidc?.label ?? 'the provider'}, or with your password on the failover page.`);
+          return;
+        }
+      }
       const key = mode === 'failover' ? failoverKey.trim() : undefined;
       const session = await publicApi.signIn(base, email.trim(), password, key);
       onConnected({ server: base, token: session, kind: 'session' });
@@ -206,8 +233,10 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
     }
   }
 
-  // In the browser, only for the server it's on: the provider sends people back to the server's own page.
-  const oidc = (mode === 'signin' || mode === 'token') && (isNative || !server) ? options?.oidc : undefined;
+  // In the browser, only at the server's public address: the provider sends people back to that page.
+  const offered = (mode === 'signin' || mode === 'token') && (isNative || !server) ? options?.oidc : undefined;
+  const elsewhere = !isNative && offered && offered.origin !== location.origin ? offered : undefined;
+  const oidc = elsewhere ? undefined : offered;
   /** Passwords (and static tokens) on the main page, unless they moved to the failover page. */
   const passwords = mode !== 'signin' && mode !== 'token' ? true : !options?.passwordFailover;
 
@@ -237,6 +266,12 @@ export function Login({ onConnected }: { onConnected: (c: Connection) => void })
               required={isNative}
             />
           </label>
+        )}
+        {notice && <p className="hint">{notice}</p>}
+        {elsewhere && (
+          <p className="hint">
+            To sign in with {elsewhere.label}, open LaneSignal at <a href={elsewhere.origin}>{elsewhere.origin}</a>.
+          </p>
         )}
         {oidc && (
           <>

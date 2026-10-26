@@ -453,7 +453,7 @@ export type Client = ReturnType<typeof createClient>;
 export interface SignInOptions {
   needsSetup: boolean;
   /** Sign-in with the server's OIDC provider (e.g. Cloudflare), when configured. */
-  oidc?: { label: string };
+  oidc?: { label: string; origin: string };
   /** Password sign-in only on the failover page, with the key (LANESIGNAL_PASSWORD_FAILOVER_KEY). */
   passwordFailover?: boolean;
 }

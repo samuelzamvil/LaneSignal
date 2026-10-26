@@ -122,7 +122,7 @@ async function start(env: Record<string, string>) {
   async function signIn(claims: Record<string, unknown>, opts: { app?: boolean; key?: typeof signing.privateKey; nonce?: string } = {}) {
     const b = await begin(opts);
     const code = b64url(randomBytes(8));
-    provider.codes.set(code, { claims, key: opts.key, nonce: opts.nonce ?? b.nonce });
+    provider.codes.set(code, { claims: { email_verified: true, ...claims }, key: opts.key, nonce: opts.nonce ?? b.nonce });
     const res = await call('GET', `/api/oidc/callback?code=${code}&state=${b.state}`, { cookie: b.cookie });
     return { res, verifier: b.verifier };
   }
@@ -162,7 +162,7 @@ describe('sign-in with an OIDC provider', () => {
 
   test('the login page learns about the provider', async () => {
     const res = await srv.call('GET', '/api/setup');
-    assert.deepEqual(res.body, { needsSetup: false, oidc: { label: 'Cloudflare' }, passwordFailover: false });
+    assert.deepEqual(res.body, { needsSetup: false, oidc: { label: 'Cloudflare', origin: PUBLIC }, passwordFailover: false });
   });
 
   test('start sends the browser to the provider with PKCE, a nonce and a state cookie', async () => {
@@ -213,7 +213,7 @@ describe('sign-in with an OIDC provider', () => {
   test('the callback must come back to the browser that started it, once', async () => {
     const b = await srv.begin();
     const code = 'c-cookie';
-    provider.codes.set(code, { claims: { email: 'ada@example.com' }, nonce: b.nonce });
+    provider.codes.set(code, { claims: { email: 'ada@example.com', email_verified: true }, nonce: b.nonce });
     const wrong = await srv.call('GET', `/api/oidc/callback?code=${code}&state=${b.state}`, { cookie: 'ls_oidc_state=someone-elses' });
     assert.equal(wrong.status, 403);
     assert.match(wrong.body, /another browser/);
@@ -237,9 +237,13 @@ describe('sign-in with an OIDC provider', () => {
       assert.equal(res.status, 403, JSON.stringify(claims));
       assert.match(res.body, /didn&#39;t check out/);
     }
-    const unverified = await srv.signIn({ email: 'ada@example.com', email_verified: false });
-    assert.equal(unverified.res.status, 403);
-    assert.match(unverified.res.body, /hasn&#39;t verified/);
+    for (const email_verified of [false, undefined, 'true']) {
+      const unverified = await srv.signIn({ email: 'ada@example.com', email_verified });
+      assert.equal(unverified.res.status, 403);
+      assert.match(unverified.res.body, /didn&#39;t say it verified ada@example\.com/);
+    }
+    const noSubject = await srv.signIn({ email: 'ada@example.com', sub: undefined });
+    assert.match(noSubject.res.body, /no subject/);
     const noEmail = await srv.signIn({});
     assert.match(noEmail.res.body, /no email/);
   });
@@ -248,6 +252,21 @@ describe('sign-in with an OIDC provider', () => {
     const { res } = await srv.signIn({ email: 'eve@example.com' });
     assert.equal(res.status, 403);
     assert.match(res.body, /eve@example\.com, which has no active LaneSignal account/);
+  });
+
+  test('an account stays with the person at the provider it first signed in as', async () => {
+    await srv.addPerson('grace@example.com', 'Grace');
+    assert.equal((await srv.signIn({ email: 'grace@example.com', sub: 'grace-1' })).res.status, 302);
+    assert.equal((await srv.signIn({ email: 'grace@example.com', sub: 'grace-1' })).res.status, 302);
+    const other = await srv.signIn({ email: 'grace@example.com', sub: 'someone-else' });
+    assert.equal(other.res.status, 403);
+    assert.match(other.res.body, /first signed in to LaneSignal as someone else/);
+  });
+
+  test("the app's errors go back to the app", async () => {
+    const { res } = await srv.signIn({ email: 'eve@example.com' }, { app: true });
+    assert.equal(res.status, 403);
+    assert.match(res.body, /lanesignal:\/\/oidc\/callback\?error=You\+signed\+in\+as\+eve/);
   });
 
   test('a provider error is shown', async () => {
@@ -298,15 +317,17 @@ describe('re-checking OIDC sessions with the provider', () => {
     await Promise.all([srv.call('GET', '/api/me', srv.bearer(token)), srv.call('GET', '/api/me', srv.bearer(token))]);
     assert.deepEqual(provider.refreshes, ['r1']);
 
-    // An unreachable provider decides nothing.
+    // An unreachable provider, or one that refuses LaneSignal itself (a rotated secret), decides nothing.
     mock.timers.tick(6 * 60_000);
     provider.refreshAnswer = () => ({ status: 503, body: {} });
     assert.equal((await srv.call('GET', '/api/me', srv.bearer(token))).status, 200);
-    assert.deepEqual(provider.refreshes, ['r1', 'r2']);
+    provider.refreshAnswer = () => ({ status: 401, body: { error: 'invalid_client' } });
+    assert.equal((await srv.call('GET', '/api/me', srv.bearer(token))).status, 200);
+    assert.deepEqual(provider.refreshes, ['r1', 'r2', 'r2']);
 
-    // A refusal ends the session.
+    // A refusal ends the session, for Better Auth's routes too.
     provider.refreshAnswer = () => ({ status: 400, body: { error: 'invalid_grant' } });
-    assert.equal((await srv.call('GET', '/api/me', srv.bearer(token))).status, 401);
+    assert.equal((await srv.call('POST', '/api/auth/api-key/create', srv.bearer(token), { name: 'k' })).status, 401);
     assert.equal((await srv.call('GET', '/api/me', srv.bearer(token))).status, 401);
     mock.timers.reset();
   });
@@ -319,6 +340,19 @@ describe('re-checking OIDC sessions with the provider', () => {
     assert.equal((await srv.call('GET', '/api/me', srv.bearer(token))).status, 200);
     assert.deepEqual(provider.refreshes, []);
     mock.timers.reset();
+  });
+});
+
+describe('sign-ins in progress', () => {
+  test('one client can only have so many going', async () => {
+    const srv = await start(OIDC);
+    try {
+      const statuses = [];
+      for (let i = 0; i < 21; i++) statuses.push((await srv.call('GET', `/api/oidc/start?challenge=${s256(String(i))}`)).status);
+      assert.deepEqual(statuses, [...Array(20).fill(302), 502]);
+    } finally {
+      srv.close();
+    }
   });
 });
 
@@ -399,6 +433,17 @@ describe('OIDC config', () => {
     assert.throws(() => loadConfig({ ...base, LANESIGNAL_PASSWORD_FAILOVER_KEY: FAILOVER }), /needs LANESIGNAL_OIDC_ISSUER/);
     assert.throws(() => loadConfig({ ...base, ...OIDC, LANESIGNAL_PASSWORD_FAILOVER_KEY: 'short' }), /at least 16/);
     assert.throws(() => loadConfig({ ...base, ...OIDC, LANESIGNAL_PASSWORD_FAILOVER_KEY: 'has spaces in it 0123' }), /letters, digits/);
+  });
+
+  test('emails without email_verified can be allowed', async () => {
+    const srv = await start({ ...OIDC, LANESIGNAL_OIDC_REQUIRE_VERIFIED_EMAIL: 'false' });
+    try {
+      await srv.addPerson('ada@example.com', 'Ada');
+      assert.equal((await srv.signIn({ email: 'ada@example.com', email_verified: undefined })).res.status, 302);
+      assert.equal((await srv.signIn({ email: 'ada@example.com', email_verified: false })).res.status, 403);
+    } finally {
+      srv.close();
+    }
   });
 
   test('reads the options', () => {

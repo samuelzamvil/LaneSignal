@@ -152,8 +152,11 @@ export const laneRoute = (project: string, id: string) => `#/lane/${encodeURICom
 // ---- root ----
 
 export default function App() {
-  // Back from an OIDC sign-in: the sign-in screen finishes it, whatever this browser was signed in as before.
-  const [conn, setConn] = useState<Connection | null>(() => (location.hash.startsWith('#oidc=') ? null : loadConnection()));
+  // Back from an OIDC sign-in, or opened at the failover page: the sign-in screen, whatever this browser was
+  // signed in as before (it also takes the failover key out of the address bar).
+  const [conn, setConn] = useState<Connection | null>(() =>
+    location.hash.startsWith('#oidc=') || new URLSearchParams(location.search).has('failover') ? null : loadConnection(),
+  );
   if (!conn) return <Login onConnected={(c) => (saveConnection(c), setConn(c))} />;
   return (
     <Dashboard

@@ -178,6 +178,11 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       // so agent keys and people management work the same.
       const viaAccess = await auth.accessPrincipal(req);
       const bearer = auth.bearerOf(req);
+      // An OIDC session the provider no longer allows mustn't reach agent keys and the like either.
+      if (bearer && !(await accounts.oidcAllows(bearer))) {
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+      }
       if (viaAccess?.userId) req.headers.authorization = `Bearer ${await accounts.accessSessionToken(viaAccess.userId)}`;
       // The app's session travels in its own header beside the Managed OAuth token; Better Auth reads Authorization.
       else if (bearer) req.headers.authorization = `Bearer ${bearer}`;
@@ -235,7 +240,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.get('/api/setup', (_req, res) => {
     res.json({
       needsSetup: accounts.needsSetup(),
-      ...(oidc ? { oidc: { label: oidc.label }, passwordFailover: !!config.passwordFailoverKey } : {}),
+      ...(oidc
+        ? { oidc: { label: oidc.label, origin: new URL(config.publicUrl!).origin }, passwordFailover: !!config.passwordFailoverKey }
+        : {}),
     });
   });
 
@@ -243,7 +250,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     const oidcFailed = (res: Response, err: unknown, status = 400) => {
       if (!(err instanceof OidcError)) log.error('oidc sign-in failed', { error: String(err) });
       const text = err instanceof OidcError ? err.message : 'Sign-in failed. Try again.';
-      res.status(status).set(PAGE_HEADERS).type('html').send(messagePage(text, { href: '/', label: 'Back to LaneSignal' }));
+      // The app's Custom Tab goes back to the app, which shows the message (or carries on with Access alone).
+      const back =
+        err instanceof OidcError && err.app
+          ? { href: `lanesignal://oidc/callback?${new URLSearchParams({ error: text })}`, label: 'Back to LaneSignal' }
+          : undefined;
+      res.status(status).set(PAGE_HEADERS).type('html').send(messagePage(text, back ?? { href: '/', label: 'Back to LaneSignal' }));
     };
     // Cookies only ever go to these two paths, and only to tie the provider's answer to the browser that asked.
     const stateCookie = (value: string, maxAge: number) =>
@@ -256,7 +268,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         const challenge = typeof req.query.challenge === 'string' ? req.query.challenge : '';
         if (!/^[A-Za-z0-9_-]{43}$/.test(challenge)) return oidcFailed(res, new OidcError('Start signing in from LaneSignal.'));
         try {
-          const { url, state } = await oidc.start({ clientChallenge: challenge, app: req.query.app === '1' });
+          const { url, state } = await oidc.start({ clientChallenge: challenge, app: req.query.app === '1', client: req.ip ?? 'unknown' });
           res.set('cache-control', 'no-store').setHeader('set-cookie', stateCookie(state, 600));
           res.redirect(302, url);
         } catch (err) {
@@ -274,8 +286,14 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         try {
           const done = await oidc.finish({ state: q('state'), code: q('code'), error: q('error'), cookieState: cookie(req, OIDC_STATE_COOKIE) });
           const token = await accounts.oidcSession(done.identity, done.refreshToken);
-          if (!token) {
-            throw new OidcError(`You signed in as ${done.identity.email}, which has no active LaneSignal account. Ask an admin to add you.`);
+          if (!token || token === 'other-subject') {
+            const err = new OidcError(
+              token
+                ? `${done.identity.email} first signed in to LaneSignal as someone else at the sign-in provider, so this sign-in is refused. Ask an admin.`
+                : `You signed in as ${done.identity.email}, which has no active LaneSignal account. Ask an admin to add you.`,
+            );
+            err.app = done.app;
+            throw err;
           }
           const code = oidc.handoff(token, done.clientChallenge);
           res.set(PAGE_HEADERS);

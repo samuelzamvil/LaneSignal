@@ -63,6 +63,7 @@ Only read when `LANESIGNAL_OIDC_ISSUER` is set. See [Sign in with Cloudflare](oi
 | `LANESIGNAL_OIDC_LABEL` | `Cloudflare` | The button reads "Sign in with <label>" |
 | `LANESIGNAL_OIDC_SCOPES` | `openid email profile` | Space- or comma-separated |
 | `LANESIGNAL_OIDC_CREATE_ACCOUNTS` | `false` | `true` gives every verified email the provider signs in an account (not an admin) |
+| `LANESIGNAL_OIDC_REQUIRE_VERIFIED_EMAIL` | `true` | `false` accepts ID tokens without `email_verified` (still refusing `false`) |
 | `LANESIGNAL_OIDC_RECHECK_MINUTES` | `15` | How often a session is re-checked with the provider (refresh token); a refusal ends it |
 | `LANESIGNAL_PASSWORD_FAILOVER_KEY` | | Optional, 16+ characters. Hides passwords from the login page; admins sign in with a password only at `/?failover=<key>` (or with the key in the app), and the server refuses password sign-in without it. See [failover](oidc.md#password-failover) |
 

@@ -13,8 +13,10 @@ export const OIDC_STATE_COOKIE = 'ls_oidc_state';
 const PENDING_MAX_MS = 10 * 60_000;
 /** The code a finished sign-in hands the client to redeem for its session. */
 const HANDOFF_MAX_MS = 2 * 60_000;
-/** At most this many sign-ins in progress at once (a flood of starts can't grow memory without bound). */
+/** At most this many sign-ins in progress at once (a flood of starts can't grow memory without bound)... */
 const MAX_PENDING = 1000;
+/** ...and from one client address, so one client can't use them all up for everyone. */
+const MAX_PENDING_PER_CLIENT = 20;
 /** A failed discovery is retried after this. */
 const DISCOVERY_RETRY_MS = 60_000;
 
@@ -39,10 +41,15 @@ interface Pending {
   /** The client's own PKCE challenge: only it can redeem the handoff code (any app can open lanesignal:// links). */
   clientChallenge: string;
   app: boolean;
+  /** Who started it (their address), for the per-client cap. */
+  client: string;
   at: number;
 }
 
-export class OidcError extends Error {}
+/** A sign-in failure whose message is safe to show; `app` when the app's Custom Tab started it. */
+export class OidcError extends Error {
+  app = false;
+}
 
 const random = (bytes = 32) => randomBytes(bytes).toString('base64url');
 export const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
@@ -127,16 +134,70 @@ export function createOidc(config: OidcConfig, fetchImpl: typeof fetch = fetch) 
     for (const [k, h] of handoffs) if (now - h.at > HANDOFF_MAX_MS) handoffs.delete(k);
   };
 
+  async function finishPending(p: Pending, input: { state: string; code?: string; error?: string; cookieState?: string }) {
+    if (!input.cookieState || !sameString(input.cookieState, input.state)) {
+      throw new OidcError('That sign-in was started in another browser. Start again here.');
+    }
+    if (input.error) throw new OidcError(`The sign-in provider refused: ${input.error}`);
+    if (!input.code) throw new OidcError('The sign-in provider sent no code. Start again.');
+    const d = await discover();
+    const { status, json } = await tokenRequest({
+      grant_type: 'authorization_code',
+      code: input.code,
+      redirect_uri: config.redirectUri,
+      code_verifier: p.verifier,
+    });
+    const idToken = str(json.id_token);
+    if (status !== 200 || !idToken) {
+      log.warn('oidc: code exchange failed', { status, error: str(json.error), description: str(json.error_description) });
+      throw new OidcError('The sign-in provider refused the sign-in code. Start again.');
+    }
+    const claims = await jwks.verify(idToken);
+    const aud = claims && (Array.isArray(claims.aud) ? claims.aud : [claims.aud]);
+    const ok =
+      claims &&
+      claims.iss === d.issuer &&
+      aud!.includes(config.clientId) &&
+      (aud!.length === 1 || claims.azp === config.clientId) &&
+      typeof claims.nonce === 'string' &&
+      sameString(claims.nonce, p.nonce);
+    if (!ok) {
+      log.warn('oidc: ID token refused (signature, issuer, audience, expiry or nonce)');
+      throw new OidcError("The sign-in provider's answer didn't check out. Start again.");
+    }
+    const email = str(claims.email)?.toLowerCase();
+    if (!email || !email.includes('@')) throw new OidcError('The sign-in provider sent no email address. Add the "email" scope.');
+    if (claims.email_verified === false || (config.requireVerifiedEmail && claims.email_verified !== true)) {
+      throw new OidcError(
+        `The sign-in provider didn't say it verified ${email}. If it never does, an admin can set LANESIGNAL_OIDC_REQUIRE_VERIFIED_EMAIL=false.`,
+      );
+    }
+    const sub = str(claims.sub);
+    if (!sub) throw new OidcError("The sign-in provider's answer named nobody (no subject).");
+    const identity: OidcIdentity = { email, name: str(claims.name), sub };
+    return { identity, refreshToken: str(json.refresh_token), app: p.app, clientChallenge: p.clientChallenge };
+  }
+
   return {
     label: config.label,
 
     /** The provider's sign-in URL, and the state the browser must keep (in a cookie) to finish it. */
-    async start(input: { clientChallenge: string; app: boolean }): Promise<{ url: string; state: string }> {
+    async start(input: { clientChallenge: string; app: boolean; client: string }): Promise<{ url: string; state: string }> {
       prune();
-      if (pending.size >= MAX_PENDING) throw new OidcError('Too many sign-ins in progress. Try again in a few minutes.');
+      const mine = [...pending.values()].filter((p) => p.client === input.client).length;
+      if (pending.size >= MAX_PENDING || mine >= MAX_PENDING_PER_CLIENT) {
+        throw new OidcError('Too many sign-ins in progress. Try again in a few minutes.');
+      }
       const d = await discover();
       const state = random();
-      const p: Pending = { nonce: random(), verifier: random(), clientChallenge: input.clientChallenge, app: input.app, at: Date.now() };
+      const p: Pending = {
+        nonce: random(),
+        verifier: random(),
+        clientChallenge: input.clientChallenge,
+        app: input.app,
+        client: input.client,
+        at: Date.now(),
+      };
       pending.set(state, p);
       const url = new URL(d.authorization_endpoint);
       url.search = new URLSearchParams({
@@ -161,41 +222,12 @@ export function createOidc(config: OidcConfig, fetchImpl: typeof fetch = fetch) 
       const p = input.state ? pending.get(input.state) : undefined;
       if (!input.state || !p) throw new OidcError('That sign-in expired or was already used. Start again.');
       pending.delete(input.state);
-      if (!input.cookieState || !sameString(input.cookieState, input.state)) {
-        throw new OidcError('That sign-in was started in another browser. Start again here.');
+      try {
+        return await finishPending(p, input as typeof input & { state: string });
+      } catch (err) {
+        if (err instanceof OidcError) err.app = p.app;
+        throw err;
       }
-      if (input.error) throw new OidcError(`The sign-in provider refused: ${input.error}`);
-      if (!input.code) throw new OidcError('The sign-in provider sent no code. Start again.');
-      const d = await discover();
-      const { status, json } = await tokenRequest({
-        grant_type: 'authorization_code',
-        code: input.code,
-        redirect_uri: config.redirectUri,
-        code_verifier: p.verifier,
-      });
-      const idToken = str(json.id_token);
-      if (status !== 200 || !idToken) {
-        log.warn('oidc: code exchange failed', { status, error: str(json.error), description: str(json.error_description) });
-        throw new OidcError('The sign-in provider refused the sign-in code. Start again.');
-      }
-      const claims = await jwks.verify(idToken);
-      const aud = claims && (Array.isArray(claims.aud) ? claims.aud : [claims.aud]);
-      const ok =
-        claims &&
-        claims.iss === d.issuer &&
-        aud!.includes(config.clientId) &&
-        (aud!.length === 1 || claims.azp === config.clientId) &&
-        typeof claims.nonce === 'string' &&
-        sameString(claims.nonce, p.nonce);
-      if (!ok) {
-        log.warn('oidc: ID token refused (signature, issuer, audience, expiry or nonce)');
-        throw new OidcError("The sign-in provider's answer didn't check out. Start again.");
-      }
-      const email = str(claims.email)?.toLowerCase();
-      if (!email || !email.includes('@')) throw new OidcError('The sign-in provider sent no email address. Add the "email" scope.');
-      if (claims.email_verified === false) throw new OidcError(`The sign-in provider hasn't verified ${email}.`);
-      const identity: OidcIdentity = { email, name: str(claims.name), sub: str(claims.sub) ?? '' };
-      return { identity, refreshToken: str(json.refresh_token), app: p.app, clientChallenge: p.clientChallenge };
     },
 
     /**
@@ -206,8 +238,9 @@ export function createOidc(config: OidcConfig, fetchImpl: typeof fetch = fetch) 
       try {
         const { status, json } = await tokenRequest({ grant_type: 'refresh_token', refresh_token: refreshToken });
         if (status === 200) return { ok: true, refreshToken: str(json.refresh_token) ?? refreshToken };
-        // 400/401 with an OAuth error is the provider's answer; anything else (a 5xx, a proxy page) isn't.
-        const refused = (status === 400 || status === 401) && typeof json.error === 'string';
+        // Only invalid_grant says the person (or their refresh token) is out. Anything else (a rotated client secret,
+        // a config change, a 5xx, a proxy page) is the server's or the provider's problem: keep the session.
+        const refused = json.error === 'invalid_grant';
         log.warn('oidc: re-check failed', { status, error: str(json.error), refused });
         return { ok: false, refused };
       } catch (err) {

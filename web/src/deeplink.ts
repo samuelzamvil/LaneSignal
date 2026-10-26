@@ -21,6 +21,12 @@ export function routeFromAppLink(url: string): string | null {
   return known && decodable ? `#/${path}` : '#/';
 }
 
+/** The message an OIDC sign-in the app started failed with (lanesignal://oidc/callback?error=...). */
+export function oidcError(url: string): string | null {
+  const app = /^lanesignal:\/\/oidc\/callback\?(.*)$/i.exec(url.trim());
+  return app ? new URLSearchParams(app[1]).get('error') : null;
+}
+
 /** The handoff code in a finished sign-in's return: `#oidc=<code>` in the browser, lanesignal://oidc/callback?code= in the app. */
 export function oidcCode(url: string): string | null {
   const web = /#oidc=([\w-]+)$/.exec(url);

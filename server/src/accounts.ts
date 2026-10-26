@@ -194,6 +194,13 @@ export async function createAccounts(config: Config, dbPath: string, opts: { oid
     checkedAt INTEGER NOT NULL
   )`);
   db.exec('DELETE FROM oidc_session WHERE sessionId NOT IN (SELECT id FROM session)');
+  // The provider's subject each account first signed in as: a later sign-in with the same email but another
+  // subject (a reused or reassigned address at the provider) is refused.
+  db.exec(`CREATE TABLE IF NOT EXISTS oidc_identity (
+    userId TEXT PRIMARY KEY,
+    issuer TEXT NOT NULL,
+    sub TEXT NOT NULL
+  )`);
 
   /** A key only works while its owner exists and isn't (currently) banned. */
   const ownerActive = (userId: string) => {
@@ -427,16 +434,38 @@ export async function createAccounts(config: Config, dbPath: string, opts: { oid
       return user ? { ...principalOfUser(user), cloudflareAccess: true } : null;
     },
 
+    /**
+     * Whether a bearer token may still be used as far as the OIDC provider is concerned (see `oidcStillAllowed`):
+     * for Better Auth's own routes, which don't go through `identify`. True for anything but an OIDC session.
+     */
+    async oidcAllows(token: string): Promise<boolean> {
+      if (!oidc || token.startsWith(KEY_PREFIX)) return true;
+      try {
+        const session = await auth.api.getSession({ headers: new Headers({ authorization: `Bearer ${token}` }) });
+        return !session || (await oidcStillAllowed(session.session.id, session.session.token));
+      } catch {
+        return true;
+      }
+    },
+
     /** Sign-in with the OIDC provider (LANESIGNAL_OIDC_*): its client, or null when that's off. */
     oidc,
 
     /**
      * A session for someone the OIDC provider signed in: a signed bearer token, or null when their email has no
-     * active account (and LANESIGNAL_OIDC_CREATE_ACCOUNTS is off). The refresh token re-checks it later.
+     * active account (and LANESIGNAL_OIDC_CREATE_ACCOUNTS is off), or 'other-subject' when the account first signed in
+     * as another person at the provider. The refresh token re-checks it later.
      */
-    async oidcSession(identity: OidcIdentity, refreshToken: string | null): Promise<string | null> {
+    async oidcSession(identity: OidcIdentity, refreshToken: string | null): Promise<string | 'other-subject' | null> {
       const user = await userForVerifiedEmail(identity.email, identity.name, !!config.oidc?.createAccounts, 'OIDC');
       if (!user) return null;
+      const issuer = config.oidc!.issuer;
+      const known = db.prepare('SELECT issuer, sub FROM oidc_identity WHERE userId = ?').get(user.id) as { issuer: string; sub: string } | undefined;
+      if (known && known.issuer === issuer && known.sub !== identity.sub) {
+        log.warn('oidc: sign-in refused, the provider names another person for this email than before', { email: user.email });
+        return 'other-subject';
+      }
+      db.prepare('INSERT OR REPLACE INTO oidc_identity (userId, issuer, sub) VALUES (?, ?, ?)').run(user.id, issuer, identity.sub);
       const c = await auth.$context;
       const session = await c.internalAdapter.createSession(user.id, false, { userAgent: OIDC_SESSION_AGENT });
       db.prepare('INSERT OR REPLACE INTO oidc_session (sessionId, refreshToken, checkedAt) VALUES (?, ?, ?)').run(
