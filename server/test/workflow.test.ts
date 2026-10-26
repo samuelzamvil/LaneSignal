@@ -310,7 +310,7 @@ describe('agent skill', () => {
     const toolNames = tools.map((t) => t.name);
     const params = new Set(tools.flatMap((t) => Object.keys(t.inputSchema.properties ?? {})));
     const named = [...new Set(text.match(/`([a-z]+_[a-z_]+)`/g)?.map((m) => m.slice(1, -1)) ?? [])].filter(
-      (n) => /^(update|remove|create|add|wait|get|acknowledge|dismiss|find|record|supersede|list)_/.test(n) && !params.has(n),
+      (n) => /^(update|remove|create|add|wait|get|acknowledge|dismiss|find|record|supersede|list|fill|notify|reply|request)_/.test(n) && !params.has(n),
     );
     assert.ok(named.length > 5);
     for (const name of named) assert.ok(toolNames.includes(name), `skill names unknown tool ${name}`);

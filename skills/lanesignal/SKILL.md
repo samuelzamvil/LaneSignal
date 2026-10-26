@@ -5,7 +5,7 @@ description: How to report to LaneSignal through its MCP tools (the `lanesignal`
 
 # Using LaneSignal
 
-LaneSignal is the owner's dashboard for agent work: you publish what your lanes are doing and raise an *escalation* when you need the owner, who answers from their phone. The tool descriptions say what each tool does and takes; this skill covers how they fit together. **When** to use them (what deserves an escalation, which lanes to run, whether to record requirements) is the owner's policy, usually in `CLAUDE.md`; follow it where it says more.
+LaneSignal is the owner's dashboard for agent work: you publish what your lanes are doing and raise an *escalation* when you need the owner (how they answer is below). The tool descriptions say what each tool does and takes; this skill covers how they fit together. **When** to use them (what deserves an escalation, which lanes to run, whether to record requirements) is the owner's policy, usually in `CLAUDE.md`; follow it where it says more.
 
 Vocabulary: a **group** is your epic or train (one overseer per group). A **lane** is a slot work goes through, one ticket at a time. A **ticket** is what a lane works on; it owns its escalations and moves between lanes (*parked* when set aside). An **epic** is a long-lived ticket the group steers by, with its own questions and board; until you add one, the group stands in as its epic. An **escalation** is a question for the owner, or something they must know.
 
@@ -15,7 +15,7 @@ Vocabulary: a **group** is your epic or train (one overseer per group). A **lane
 - **Your epic:** the ticket the owner gave you goes to `update_epic` (its ref as `epic`, plus `group`) once. Use the epic's `status_line` for what's queued or waiting; never publish placeholder lanes.
 - **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. A worker and a reviewer on one ticket share a lane. Change tickets with `fill_lane`, parking (with a reason) what's blocked; its questions stay open, so dismiss ones that no longer matter.
 - **Publish changes, not heartbeats.** A lane holding no ticket shows `idle`, and one with an open blocking escalation shows `blocked_human`, whatever you publish.
-- **Write for a phone:** one-line `activity`. In any text, `#1234` links to the default ticket system and `redmine:1234` to that one; in `ticket` fields use `system:id`. PRs and CI runs go in `links`.
+- **Write for a phone:** one-line `activity`. In any text, `#1234` links to the default ticket system and `redmine:1234` to that one; in `ticket` fields use `system:id`.
 
 ## Raising an escalation
 
@@ -31,7 +31,7 @@ One decision per `create_escalation`: four questions in a plan are four escalati
 | `attachments` | A plan or notes (`.md`, `.txt`) or a screenshot (PNG, JPEG, WebP, GIF) the owner should see |
 | `ticket` | What it's about (e.g. the PR), if not the lane's ticket |
 
-Questions that steer the whole group (direction, scope, which tickets to file) go on the epic (`epic`, no `lane_id`). The owner answers by code ("967A: drop it"); use the codes too.
+Questions that steer the whole group (direction, scope, which tickets to file) go on the epic (`epic`, no `lane_id`).
 
 ### Attachments
 
@@ -44,8 +44,6 @@ curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api
 
 Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalation or message. Attach an upload once, from the key that uploaded it; unattached uploads are deleted after a day.
 
-## Milestones and boards
+## Milestones
 
-- `notify_owner`: milestones only (a PR merged, a ticket started) unless your owner's policy names others. First line written for a lock screen; put several things in one message.
-- `notify_epic`: the longer conversation about direction and what comes next.
-- The owner's notes come back as `ownerMessages` from `update_lane`, `notify_owner`, `update_epic` and `notify_epic`: act on them like instructions.
+`notify_owner` is for milestones unless your owner's policy names others. Write the first line for a lock screen, and put several things in one message.
