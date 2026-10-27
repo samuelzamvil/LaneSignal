@@ -36,8 +36,8 @@ export function cleanName(name: string) {
 /** Most pixels an image may have: bigger ones could exhaust a phone's memory when shown. */
 const MAX_PIXELS = 50_000_000;
 
-/** Why the image is too big to show safely, or null. Reads the size from the header where it's simple to. */
-export function oversizedImage(data: Uint8Array, type: AttachmentType): string | null {
+/** An image's width and height from its header, where that's simple to read (not JPEG); otherwise null. */
+export function imageSize(data: Uint8Array, type: AttachmentType): [number, number] | null {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   let size: [number, number] | null = null;
   if (type === 'image/png' && data.length >= 24) size = [view.getUint32(16), view.getUint32(20)];
@@ -47,6 +47,12 @@ export function oversizedImage(data: Uint8Array, type: AttachmentType): string |
     const u24 = (at: number) => data[at] | (data[at + 1] << 8) | (data[at + 2] << 16);
     size = [u24(24) + 1, u24(27) + 1];
   }
+  return size;
+}
+
+/** Why the image is too big to show safely, or null. */
+export function oversizedImage(data: Uint8Array, type: AttachmentType): string | null {
+  const size = imageSize(data, type);
   if (size && size[0] * size[1] > MAX_PIXELS) {
     return `The image is ${size[0]}×${size[1]}: at most ${MAX_PIXELS / 1_000_000} megapixels, so phones can show it`;
   }

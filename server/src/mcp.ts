@@ -27,7 +27,7 @@ import {
   waitScopeFor,
   type Access,
 } from './access.ts';
-import { checkAttachment, cleanName } from './attachments.ts';
+import { checkAttachment, cleanName, imageSize } from './attachments.ts';
 import { principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import { log } from './log.ts';
 import * as s from './schemas.ts';
@@ -202,6 +202,13 @@ export interface Limits {
 }
 
 const mb = (bytes: number) => Math.floor(bytes / 1024 / 1024);
+
+/**
+ * The largest image a model accepts in an image block (Claude's: 5 MB of base64, 8000 px a side).
+ * LaneSignal keeps bigger ones for the app; get_attachment describes those instead of failing the model's next turn.
+ */
+const MODEL_IMAGE_BYTES = (5 * 1024 * 1024 * 3) / 4;
+const MODEL_IMAGE_SIDE = 8000;
 
 /** Builds an MCP server whose tools act as the authenticated principal, within the projects it may see. */
 function buildServer(
@@ -438,7 +445,8 @@ function buildServer(
     {
       description:
         'Read a file attached to an escalation or message (ids are in their `attachments`, or "[attached: … (id …)]" in a note): ' +
-        'name, type and size, plus `content` with the text of a Markdown or text file; an image comes back as an image to look at.',
+        'name, type and size, plus `content` with the text of a Markdown or text file; an image comes back as an image to look at ' +
+        '(unless it is too large for a model, which `note` says).',
       inputSchema: { id: z.string().max(64), ...PROJECT },
       annotations: { readOnlyHint: true },
     },
@@ -448,6 +456,10 @@ function buildServer(
         const data = Buffer.from(file.data);
         const meta = { id: file.id, name: file.name, type: file.type, size: file.size };
         if (file.type.startsWith('text/')) return json({ ...meta, content: data.toString('utf8') });
+        const size = imageSize(data, file.type);
+        if (data.length > MODEL_IMAGE_BYTES || (size && Math.max(...size) > MODEL_IMAGE_SIDE)) {
+          return json({ ...meta, note: 'Too large to show a model (over 3.75 MB or 8000 px a side): ask for a smaller one' });
+        }
         return { content: [...json(meta).content, { type: 'image' as const, data: data.toString('base64'), mimeType: file.type }] };
       } catch (err) {
         return fail(err);

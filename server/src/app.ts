@@ -222,7 +222,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   // /mcp parses its own body, after authenticating: upload_attachment carries a whole file in base64.
   const jsonBody = express.json({ limit: '256kb' });
-  app.use((req, res, next) => (req.path === '/mcp' ? next() : jsonBody(req, res, next)));
+  app.use((req, res, next) => (req.path.toLowerCase().replace(/\/$/, '') === '/mcp' ? next() : jsonBody(req, res, next)));
 
   /** Redeems the code a finished OIDC sign-in handed out, with the verifier of the challenge it started with. */
   if (oidc) {
@@ -1418,7 +1418,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   // ---- MCP ----
 
-  const mcpBody = express.json({ limit: Math.ceil(config.attachmentMaxBytes / 3) * 4 + 256 * 1024 });
+  // Twice the file: base64 is a third larger, and text JSON-escaped (\u…) by some clients can double.
+  const mcpBody = express.json({ limit: config.attachmentMaxBytes * 2 + 256 * 1024 });
   app.post(
     '/mcp',
     any,

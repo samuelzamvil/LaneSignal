@@ -192,6 +192,28 @@ describe('attachments over MCP', () => {
     assert.match(named.text, /text\/plain, not text\/markdown/);
     const huge = await srv.tool(AGENT, 'upload_attachment', { name: 'big.txt', type: 'text/plain', content: 'x'.repeat(1024 * 1024 + 1) });
     assert.match(huge.text, /limited to 1 MB/);
+     const notBase64 = await srv.tool(AGENT, 'upload_attachment', { name: 'a.png', type: 'image/png', content: 'data:image/png;base64,iVBORw0KGgo=' });
+    assert.match(notBase64.text, /must be base64/);
+  });
+
+  test('get_attachment: an image too large for a model is described, not sent', async () => {
+    // A 9000×10 PNG header: fine for the app, wider than a model takes.
+    const wide = Uint8Array.from([...PNG.slice(0, 8), 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0x23, 0x28, 0, 0, 0, 10]);
+    const up = await srv.tool(AGENT, 'upload_attachment', { name: 'wide.png', type: 'image/png', content: Buffer.from(wide).toString('base64') });
+    assert.equal(up.isError, false, up.text);
+    const got = await srv.tool(AGENT, 'get_attachment', { id: up.value.id });
+    assert.equal(got.content.length, 1);
+    assert.match(got.value.note, /Too large to show a model/);
+  });
+
+  test('a large upload works on /mcp/ too, not only /mcp', async () => {
+    const content = Buffer.from(new Uint8Array(300 * 1024).fill(0x41)).toString('base64');
+    const res = await fetch(`${srv.base}/mcp/`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AGENT}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'upload_attachment', arguments: { name: 'a.txt', type: 'text/plain', content } } }),
+    });
+    assert.equal(res.status, 200);
   });
 
   test("get_attachment: an unknown id, or someone else's upload, is an error", async () => {
@@ -200,5 +222,14 @@ describe('attachments over MCP', () => {
     assert.match(unknown.text, /Attachment .* not found/);
     const mine = (await srv.tool(AGENT, 'upload_attachment', { name: 'mine.md', type: 'text/markdown', content: '# mine' })).value.id;
     assert.match((await srv.tool(REVIEWER, 'get_attachment', { id: mine })).text, /not found/);
+  });
+
+  // Last: it adds a second project, which the tests above don't expect.
+  test('get_attachment: a project narrows what it finds, as get_escalation does', async () => {
+    const up = await srv.tool(AGENT, 'upload_attachment', { name: 'scoped.md', type: 'text/markdown', content: '# scoped' });
+    assert.equal((await ask('Scoped?', { attachments: [up.value.id] })).isError, false);
+    assert.equal((await srv.call('POST', '/api/projects', ALICE, { id: 'shop', key: 'SH', name: 'Shop' })).status, 201);
+    assert.match((await srv.tool(ALICE, 'get_attachment', { id: up.value.id, project: 'shop' })).text, /Attachment .* not found/);
+    assert.equal((await srv.tool(ALICE, 'get_attachment', { id: up.value.id, project: 'default' })).value.content, '# scoped');
   });
 });
