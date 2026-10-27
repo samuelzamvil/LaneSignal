@@ -21,11 +21,13 @@ import {
   ownerOf,
   pub,
   q,
+  readableAttachment,
   requireRaiser,
   requirementInputFor,
   waitScopeFor,
   type Access,
 } from './access.ts';
+import { checkAttachment, cleanName } from './attachments.ts';
 import { principalOf, stillValidOf, watchRevocationOf } from './auth.ts';
 import { log } from './log.ts';
 import * as s from './schemas.ts';
@@ -43,7 +45,7 @@ import {
   type RecordResult,
   type Store,
 } from './store.ts';
-import { LANE_STATUSES, TICKET_STATES, type Requirement, type Ticket } from './types.ts';
+import { ATTACHMENT_TYPES, LANE_STATUSES, TICKET_STATES, type Requirement, type Ticket } from './types.ts';
 
 // Compact JSON: agents pay for every character.
 const json = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] });
@@ -144,7 +146,8 @@ const ESCALATION_ID = z.string().describe('Code ("967A") or id.');
 const INSTRUCTIONS =
   'LaneSignal conventions for every tool: `project` (id or key) is needed only when your key reaches several ' +
   'projects. Wherever a tool takes an escalation id, its code works too ("967A"; "LS-967A" names the project, since bare codes repeat across projects). ' +
-  '`group` and `group_id` are the same. Unknown groups and lanes are errors, never empty results.';
+  '`group` and `group_id` are the same. Unknown groups, lanes and attachments are errors, never empty results. ' +
+  'Files go through upload_attachment (its id goes in a tool\'s `attachments`) and get_attachment.';
 
 /**
  * Trims what tools/list advertises, without changing what the tools accept: the JSON Schema
@@ -192,10 +195,19 @@ export interface Features {
   requirements: boolean;
 }
 
+/** Limits set in the server's environment. */
+export interface Limits {
+  /** Largest attachment, in bytes (LANESIGNAL_ATTACHMENT_MAX_MB). */
+  attachmentMaxBytes: number;
+}
+
+const mb = (bytes: number) => Math.floor(bytes / 1024 / 1024);
+
 /** Builds an MCP server whose tools act as the authenticated principal, within the projects it may see. */
 function buildServer(
   store: Store,
   features: Features,
+  limits: Limits,
   a: Access,
   stillValid: () => Promise<boolean>,
   watchRevocation: (onInvalid: () => void) => () => void,
@@ -415,6 +427,64 @@ function buildServer(
           return fail(new NotFoundError(`Escalation "${id}" not found`));
         }
         return json(pub.escalation({ ...value, messages: store.messagesOf(value.id) }));
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_attachment',
+    {
+      description:
+        'Read a file attached to an escalation or message (ids are in their `attachments`, or "[attached: … (id …)]" in a note): ' +
+        'name, type, size and `content`, the text of Markdown and text files or the bytes of an image in base64.',
+      inputSchema: { id: z.string().max(64), ...PROJECT },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ id, project }) => {
+      try {
+        const file = readableAttachment(store, a, id, project);
+        const data = Buffer.from(file.data);
+        const content = file.type.startsWith('text/') ? data.toString('utf8') : data.toString('base64');
+        return json({ id: file.id, name: file.name, type: file.type, size: file.size, content });
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'upload_attachment',
+    {
+      description:
+        'Upload a file to attach: pass the returned `id` in `attachments` of create_escalation, reply_to_escalation, notify_owner ' +
+        `or notify_epic, from this same key, within a day (unattached uploads are deleted). At most ${mb(limits.attachmentMaxBytes)} MB. ` +
+        '`content` is the text for text/markdown (name it .md) and text/plain (.txt), base64 for images; ' +
+        'the type is checked against the content.',
+      inputSchema: {
+        name: z.string().min(1).max(200),
+        type: z.enum(ATTACHMENT_TYPES),
+        content: z.string().min(1),
+        ...PROJECT,
+      },
+    },
+    async ({ name, type, content, project }) => {
+      try {
+        a.scope(project);
+        const owner = ownerOf(who);
+        store.checkUploadRoom(owner);
+        let data: Uint8Array;
+        if (type.startsWith('text/')) data = Buffer.from(content, 'utf8');
+        else {
+          const b64 = content.replace(/\s+/g, '');
+          if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 === 1) throw new ValidationError('content: an image must be base64');
+          data = Buffer.from(b64, 'base64');
+        }
+        const file = { name: cleanName(name), data };
+        const found = checkAttachment(file.data, file.name, limits.attachmentMaxBytes);
+        if (found !== type) throw new ValidationError(`The content is ${found}, not ${type}`);
+        return json(store.addAttachment({ ...file, type }, owner, who.name));
       } catch (err) {
         return fail(err);
       }
@@ -1253,9 +1323,9 @@ function buildServer(
 }
 
 /** Stateless Streamable HTTP endpoint: a fresh server + transport per request. */
-export function mcpHandler(store: Store, features: Features) {
+export function mcpHandler(store: Store, features: Features, limits: Limits) {
   return async (req: Request, res: Response) => {
-    const server = buildServer(store, features, accessFor(store, principalOf(res)), stillValidOf(res), watchRevocationOf(res));
+    const server = buildServer(store, features, limits, accessFor(store, principalOf(res)), stillValidOf(res), watchRevocationOf(res));
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       void transport.close();

@@ -53,13 +53,30 @@ export function oversizedImage(data: Uint8Array, type: AttachmentType): string |
   return null;
 }
 
+const mb = (bytes: number) => Math.floor(bytes / 1024 / 1024);
+
+/**
+ * The type of a file to attach, checked the same way for every upload (POST /api/attachments and
+ * the upload_attachment tool): at most `maxBytes`, not empty, a type the app renders safely, and
+ * an image small enough for a phone. Throws a ValidationError saying what's wrong.
+ */
+export function checkAttachment(data: Uint8Array, name: string, maxBytes: number): AttachmentType {
+  if (data.length > maxBytes) throw new ValidationError(`Attachments are limited to ${mb(maxBytes)} MB`);
+  if (!data.length) throw new ValidationError('The file is empty');
+  const type = sniff(data, name);
+  if (!type) throw new ValidationError('Attach Markdown (.md) or text (.txt) files, or PNG, JPEG, WebP or GIF images');
+  const tooBig = oversizedImage(data, type);
+  if (tooBig) throw new ValidationError(tooBig);
+  return type;
+}
+
 /** Reads the request body, refusing it once it passes `max` bytes. */
 async function readBody(req: Request, max: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req as AsyncIterable<Buffer>) {
     size += chunk.length;
-    if (size > max) throw new ValidationError(`Attachments are limited to ${Math.floor(max / 1024 / 1024)} MB`);
+    if (size > max) throw new ValidationError(`Attachments are limited to ${mb(max)} MB`);
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
@@ -77,7 +94,7 @@ export async function readUpload(req: Request, maxBytes: number): Promise<{ name
   // Room for the form's own headers around the file.
   const limit = maxBytes + 16 * 1024;
   if (Number(req.headers['content-length'] ?? 0) > limit) {
-    throw new ValidationError(`Attachments are limited to ${Math.floor(maxBytes / 1024 / 1024)} MB`);
+    throw new ValidationError(`Attachments are limited to ${mb(maxBytes)} MB`);
   }
   const body = await readBody(req, limit);
   const delimiter = Buffer.from(`--${boundary[1] ?? boundary[2]}`);
@@ -92,7 +109,7 @@ export async function readUpload(req: Request, maxBytes: number): Promise<{ name
     const disposition = /content-disposition:[^\r\n]*/i.exec(head)?.[0] ?? '';
     if (/\bname="file"/i.test(disposition)) {
       const data = body.subarray(headEnd + 4, next);
-      if (data.length > maxBytes) throw new ValidationError(`Attachments are limited to ${Math.floor(maxBytes / 1024 / 1024)} MB`);
+      if (data.length > maxBytes) throw new ValidationError(`Attachments are limited to ${mb(maxBytes)} MB`);
       if (!data.length) throw new ValidationError('The file is empty');
       // curl escapes quotes in file names as \".
       const name = /filename="((?:[^"\\]|\\.)*)"/i.exec(disposition)?.[1]?.replace(/\\(.)/g, '$1') ?? 'attachment';

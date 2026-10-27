@@ -151,3 +151,53 @@ describe('attachments', () => {
     assert.match(res.body.error, /multipart\/form-data/);
   });
 });
+
+describe('attachments over MCP', () => {
+  const PLAN = '# Plan\n\n1. Drop the column ✓\n';
+
+  test('upload_attachment: a text file round trips and attaches like an HTTP upload', async () => {
+    const up = await srv.tool(AGENT, 'upload_attachment', { name: 'plan.md', type: 'text/markdown', content: PLAN });
+    assert.equal(up.isError, false, up.text);
+    assert.deepEqual(Object.keys(up.value).sort(), ['id', 'name', 'size', 'type']);
+    assert.deepEqual({ name: up.value.name, type: up.value.type, size: up.value.size }, { name: 'plan.md', type: 'text/markdown', size: Buffer.byteLength(PLAN) });
+    const e = await ask('Approve the MCP plan?', { attachments: [up.value.id] });
+    assert.equal(e.isError, false, e.text);
+    const got = await srv.tool(ALICE, 'get_attachment', { id: up.value.id });
+    assert.deepEqual(got.value, { ...up.value, content: PLAN });
+    // The HTTP endpoint serves the same file.
+    const file = await fetch(`${srv.base}/api/attachments/${up.value.id}`, { headers: { authorization: `Bearer ${ALICE}` } });
+    assert.equal(await file.text(), PLAN);
+  });
+
+  test('upload_attachment: an image round trips in base64, past the JSON body limit of other routes', async () => {
+    const big = new Uint8Array(400 * 1024);
+    big.set(PNG);
+    const content = Buffer.from(big).toString('base64');
+    const up = await srv.tool(AGENT, 'upload_attachment', { name: 'preview.png', type: 'image/png', content });
+    assert.equal(up.isError, false, up.text);
+    assert.equal(up.value.size, big.length);
+    const got = await srv.tool(AGENT, 'get_attachment', { id: up.value.id });
+    assert.equal(got.value.type, 'image/png');
+    assert.equal(got.value.content, content);
+  });
+
+  test('upload_attachment: wrong types are refused', async () => {
+    const svg = await srv.tool(AGENT, 'upload_attachment', { name: 'ui.svg', type: 'image/svg+xml', content: '<svg/>' });
+    assert.equal(svg.isError, true);
+    const fake = await srv.tool(AGENT, 'upload_attachment', { name: 'fake.png', type: 'image/png', content: Buffer.from('not a png').toString('base64') });
+    assert.equal(fake.isError, true);
+    assert.match(fake.text, /Attach Markdown/);
+    const named = await srv.tool(AGENT, 'upload_attachment', { name: 'notes.txt', type: 'text/markdown', content: '# notes' });
+    assert.match(named.text, /text\/plain, not text\/markdown/);
+    const huge = await srv.tool(AGENT, 'upload_attachment', { name: 'big.txt', type: 'text/plain', content: 'x'.repeat(1024 * 1024 + 1) });
+    assert.match(huge.text, /limited to 1 MB/);
+  });
+
+  test("get_attachment: an unknown id, or someone else's upload, is an error", async () => {
+    const unknown = await srv.tool(AGENT, 'get_attachment', { id: '00000000-0000-0000-0000-000000000000' });
+    assert.equal(unknown.isError, true);
+    assert.match(unknown.text, /Attachment .* not found/);
+    const mine = (await srv.tool(AGENT, 'upload_attachment', { name: 'mine.md', type: 'text/markdown', content: '# mine' })).value.id;
+    assert.match((await srv.tool(REVIEWER, 'get_attachment', { id: mine })).text, /not found/);
+  });
+});
