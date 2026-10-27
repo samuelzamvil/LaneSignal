@@ -15,20 +15,35 @@ concurrency: wiki
 
 jobs:
   publish:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/checkout@v7
+      - id: wiki
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          if git ls-remote "https://x-access-token:$TOKEN@github.com/$GITHUB_REPOSITORY.wiki.git" >/dev/null 2>&1; then
+            echo exists=true >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::The wiki doesn't exist yet: create any page in the Wiki tab, then re-run this workflow."
+          fi
+      - if: steps.wiki.outputs.exists
+        uses: actions/checkout@v7
+      - if: steps.wiki.outputs.exists
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}.wiki
           path: wiki
-      - uses: actions/setup-node@v7
+      - if: steps.wiki.outputs.exists
+        uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: |
+      - if: steps.wiki.outputs.exists
+        run: |
           find wiki -maxdepth 1 -name '*.md' -delete
           node scripts/docs-to-wiki.mjs docs wiki "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
-      - working-directory: wiki
+      - if: steps.wiki.outputs.exists
+        working-directory: wiki
         run: |
           git add -A
           git diff --cached --quiet && exit 0
