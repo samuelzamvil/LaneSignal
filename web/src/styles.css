@@ -400,6 +400,10 @@ textarea {
   font-family: inherit;
 }
 
+.inbox-lane-filters {
+  margin-bottom: 8px;
+}
+
 .inbox-filter {
   display: flex;
   margin: 0 0 8px;
@@ -1211,6 +1215,11 @@ textarea {
 
 @media (min-width: 1024px) {
   .tabbar {
+    display: none;
+  }
+
+  /* The Lanes pane (and its filters) sits beside the inbox. */
+  .inbox-lane-filters {
     display: none;
   }
 
