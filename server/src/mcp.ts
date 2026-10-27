@@ -146,8 +146,7 @@ const ESCALATION_ID = z.string().describe('Code ("967A") or id.');
 const INSTRUCTIONS =
   'LaneSignal conventions for every tool: `project` (id or key) is needed only when your key reaches several ' +
   'projects. Wherever a tool takes an escalation id, its code works too ("967A"; "LS-967A" names the project, since bare codes repeat across projects). ' +
-  '`group` and `group_id` are the same. Unknown groups, lanes and attachments are errors, never empty results. ' +
-  'Files go through upload_attachment (its id goes in a tool\'s `attachments`) and get_attachment.';
+  '`group` and `group_id` are the same. Unknown groups, lanes and attachments are errors, never empty results.';
 
 /**
  * Trims what tools/list advertises, without changing what the tools accept: the JSON Schema
@@ -444,9 +443,7 @@ function buildServer(
     'get_attachment',
     {
       description:
-        'Read a file attached to an escalation or message (ids are in their `attachments`, or "[attached: … (id …)]" in a note): ' +
-        'name, type and size, plus `content` with the text of a Markdown or text file; an image comes back as an image to look at ' +
-        '(unless it is too large for a model, which `note` says).',
+        'Read an attached file by id: a text file\'s `content`, or an image to look at.',
       inputSchema: { id: z.string().max(64), ...PROJECT },
       annotations: { readOnlyHint: true },
     },
@@ -467,42 +464,42 @@ function buildServer(
     },
   );
 
-  server.registerTool(
-    'upload_attachment',
-    {
-      description:
-        'Upload a file to attach: pass the returned `id` in `attachments` of create_escalation, reply_to_escalation, notify_owner ' +
-        `or notify_epic, from this same key, within a day (unattached uploads are deleted). At most ${mb(limits.attachmentMaxBytes)} MB. ` +
-        '`content` is the text for text/markdown (name it .md) and text/plain (.txt), base64 for images; ' +
-        'the type is checked against the content.',
-      inputSchema: {
-        name: z.string().min(1).max(200),
-        type: z.enum(ATTACHMENT_TYPES),
-        content: z.string().min(1),
-        ...PROJECT,
+  if (who.role === 'agent') {
+    server.registerTool(
+      'upload_attachment',
+      {
+        description:
+          `Upload a file (at most ${mb(limits.attachmentMaxBytes)} MB); pass its id in \`attachments\` within a day. ` +
+          '`content`: the text for text/markdown (a .md name) or text/plain (.txt), base64 for images.',
+        inputSchema: {
+          name: z.string().min(1).max(200),
+          type: z.enum(ATTACHMENT_TYPES),
+          content: z.string().min(1),
+          ...PROJECT,
+        },
       },
-    },
-    async ({ name, type, content, project }) => {
-      try {
-        a.scope(project);
-        const owner = ownerOf(who);
-        store.checkUploadRoom(owner);
-        let data: Uint8Array;
-        if (type.startsWith('text/')) data = Buffer.from(content, 'utf8');
-        else {
-          const b64 = content.replace(/\s+/g, '');
-          if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 === 1) throw new ValidationError('content: an image must be base64');
-          data = Buffer.from(b64, 'base64');
+      async ({ name, type, content, project }) => {
+        try {
+          a.scope(project);
+          const owner = ownerOf(who);
+          store.checkUploadRoom(owner);
+          let data: Uint8Array;
+          if (type.startsWith('text/')) data = Buffer.from(content, 'utf8');
+          else {
+            const b64 = content.replace(/\s+/g, '');
+            if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 === 1) throw new ValidationError('content: an image must be base64');
+            data = Buffer.from(b64, 'base64');
+          }
+          const file = { name: cleanName(name), data };
+          const found = checkAttachment(file.data, file.name, limits.attachmentMaxBytes);
+          if (found !== type) throw new ValidationError(`The content is ${found}, not ${type}`);
+          return json(store.addAttachment({ ...file, type }, owner, who.name));
+        } catch (err) {
+          return fail(err);
         }
-        const file = { name: cleanName(name), data };
-        const found = checkAttachment(file.data, file.name, limits.attachmentMaxBytes);
-        if (found !== type) throw new ValidationError(`The content is ${found}, not ${type}`);
-        return json(store.addAttachment({ ...file, type }, owner, who.name));
-      } catch (err) {
-        return fail(err);
-      }
-    },
-  );
+      },
+    );
+  }
 
   if (features.decisions) {
     const waitInput = {
@@ -1058,7 +1055,7 @@ function buildServer(
         inputSchema: {
           epic: EPIC,
           message: s.notice.shape.message,
-          attachments: s.notice.shape.attachments.describe('Ids from POST /api/attachments.'),
+          attachments: s.notice.shape.attachments.describe('Ids from upload_attachment.'),
           ...PROJECT_WRITE,
         },
       },
@@ -1104,7 +1101,7 @@ function buildServer(
         inputSchema: {
           lane_id: s.laneId,
           message: s.notice.shape.message,
-          attachments: s.notice.shape.attachments.describe('Screenshots or detail: ids from POST /api/attachments.'),
+          attachments: s.notice.shape.attachments.describe('Screenshots or detail: ids from upload_attachment.'),
           ...PROJECT_WRITE,
         },
       },
@@ -1146,7 +1143,7 @@ function buildServer(
                 allow_reject: s.escalationFields.allowReject.describe('false when Reject makes no sense (default true).'),
               }
             : {}),
-          attachments: s.escalationFields.attachments.describe('Ids returned by POST /api/attachments (curl -F file=@plan.md).'),
+          attachments: s.escalationFields.attachments.describe('Ids from upload_attachment.'),
           links: s.escalationFields.links,
           blocking: s.escalationFields.blocking,
           ...PROJECT_WRITE,
@@ -1228,7 +1225,7 @@ function buildServer(
           inputSchema: {
             id: ESCALATION_ID,
             message: z.string().min(1).max(5000),
-            attachments: s.escalationFields.attachments.describe('Ids returned by POST /api/attachments.'),
+            attachments: s.escalationFields.attachments.describe('Ids from upload_attachment.'),
             ...PROJECT,
           },
         },

@@ -1998,7 +1998,7 @@ export class Store {
     if (body.length > max) {
       throw new ValidationError(
         message.from === 'agent'
-          ? `Keep messages under ${max} characters: attach a file (POST /api/attachments) for anything longer`
+          ? `Keep messages under ${max} characters: attach a file (upload_attachment) for anything longer`
           : `Messages are limited to ${max} characters`,
       );
     }
@@ -2707,7 +2707,7 @@ export class Store {
     if (body.length > max) {
       throw new ValidationError(
         message.from === 'agent'
-          ? `Keep messages under ${max} characters: attach a file (POST /api/attachments) for anything longer`
+          ? `Keep messages under ${max} characters: attach a file (upload_attachment) for anything longer`
           : `Messages are limited to ${max} characters`,
       );
     }
@@ -2822,7 +2822,7 @@ export class Store {
     for (const id of new Set(ids)) {
       const r = this.db.prepare('SELECT owner, escalation_id, lane_message_id, epic_message_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
       if (!r || r.owner !== owner) {
-        throw new NotFoundError(`Attachment ${id} not found: upload it first (POST /api/attachments), with the same key`);
+        throw new NotFoundError(`Attachment ${id} not found: upload it first (upload_attachment), with the same key`);
       }
       // Already here (a retry sending the same ids): nothing to add.
       if (r.escalation_id === escalationId && messageId === null) continue;
@@ -2842,7 +2842,7 @@ export class Store {
     for (const id of new Set(ids)) {
       const r = this.db.prepare('SELECT owner, escalation_id, lane_message_id, epic_message_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
       if (!r || r.owner !== owner) {
-        throw new NotFoundError(`Attachment ${id} not found: upload it first (POST /api/attachments), with the same key`);
+        throw new NotFoundError(`Attachment ${id} not found: upload it first (upload_attachment), with the same key`);
       }
       if (r.escalation_id || r.lane_message_id != null || r.epic_message_id != null) throw new ConflictError(`Attachment ${id} is already attached; upload it again`);
       if (have >= this.attachmentsPerItem) throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per message`);
@@ -3211,7 +3211,7 @@ export class Store {
     if (body.length > max) {
       throw new ValidationError(
         message.from === 'agent'
-          ? `Keep messages under ${max} characters: attach a file (POST /api/attachments) for anything longer`
+          ? `Keep messages under ${max} characters: attach a file (upload_attachment) for anything longer`
           : `Messages are limited to ${max} characters`,
       );
     }

@@ -33,8 +33,6 @@ The owner reads it from a phone notification and the dashboard:
 
 ### Attachments
 
-Upload each file with `upload_attachment`, then pass its id in `attachments`; `get_attachment` reads one by id.
-
 Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalation or message. Attach an upload once, from the key that uploaded it; unattached uploads are deleted after a day.
 
 `notify_owner`'s first line is what the phone's notification shows.
