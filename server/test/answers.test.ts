@@ -177,8 +177,9 @@ describe('attachments over MCP', () => {
     assert.equal(up.isError, false, up.text);
     assert.equal(up.value.size, big.length);
     const got = await srv.tool(AGENT, 'get_attachment', { id: up.value.id });
-    assert.equal(got.value.type, 'image/png');
-    assert.equal(got.value.content, content);
+    // The metadata as text, and the image itself as an image block the model can look at.
+    assert.deepEqual(got.value, up.value);
+    assert.deepEqual(got.content[1], { type: 'image', data: content, mimeType: 'image/png' });
   });
 
   test('upload_attachment: wrong types are refused', async () => {

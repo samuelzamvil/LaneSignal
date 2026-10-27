@@ -438,7 +438,7 @@ function buildServer(
     {
       description:
         'Read a file attached to an escalation or message (ids are in their `attachments`, or "[attached: … (id …)]" in a note): ' +
-        'name, type, size and `content`, the text of Markdown and text files or the bytes of an image in base64.',
+        'name, type and size, plus `content` with the text of a Markdown or text file; an image comes back as an image to look at.',
       inputSchema: { id: z.string().max(64), ...PROJECT },
       annotations: { readOnlyHint: true },
     },
@@ -446,8 +446,9 @@ function buildServer(
       try {
         const file = readableAttachment(store, a, id, project);
         const data = Buffer.from(file.data);
-        const content = file.type.startsWith('text/') ? data.toString('utf8') : data.toString('base64');
-        return json({ id: file.id, name: file.name, type: file.type, size: file.size, content });
+        const meta = { id: file.id, name: file.name, type: file.type, size: file.size };
+        if (file.type.startsWith('text/')) return json({ ...meta, content: data.toString('utf8') });
+        return { content: [...json(meta).content, { type: 'image' as const, data: data.toString('base64'), mimeType: file.type }] };
       } catch (err) {
         return fail(err);
       }
