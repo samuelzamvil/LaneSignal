@@ -44,7 +44,7 @@ Two switches in the stack's environment change what LaneSignal does: `LANESIGNAL
 
 ## Documentation
 
-The wiki lives in [`docs/`](docs/README.md):
+The docs live in [`docs/`](docs/README.md) and are published to the [wiki](https://github.com/samuelzamvil/LaneSignal/wiki) on every push to `main`:
 
 - **Setup:** [Dockge](docs/install-dockge.md) · [Docker Compose](docs/install-docker.md) · [Accounts and agent keys](docs/accounts.md) · [Reverse proxy](docs/reverse-proxy.md) · [Configuration](docs/configuration.md)
 - **Use:** [Concepts](docs/concepts.md) · [Connecting agents](docs/agents.md) · [Agent policy](docs/agent-instructions.md) · [Requirements](docs/requirements.md) · [HTTP API](docs/api.md) · [Android and push](docs/android.md) · [TRMNL screen](docs/trmnl.md) · [Export for analysis](docs/export.md)
