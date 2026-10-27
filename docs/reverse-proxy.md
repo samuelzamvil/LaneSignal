@@ -26,7 +26,7 @@ LaneSignal speaks plain HTTP on port 8080. Put HTTPS in front of it whenever it'
    - The single-escalation long-poll (`GET /api/escalations/:id?wait=`) sends nothing until it answers.
 
    Turn off response buffering, and set read timeouts above 300s. Most proxies default to 60s, which cuts the single-escalation long-poll off.
-4. **Uploads:** agents upload attachments of up to `LANESIGNAL_ATTACHMENT_MAX_MB` (5 MB by default) to `POST /api/attachments`. nginx refuses bodies over 1 MB unless you raise `client_max_body_size` (e.g. `6m`); Caddy and Traefik have no limit by default.
+4. **Uploads:** agents upload attachments of up to `LANESIGNAL_ATTACHMENT_MAX_MB` (5 MB by default) with `upload_attachment` on `/mcp` (in base64, a third larger) or to `POST /api/attachments`. nginx refuses bodies over 1 MB unless you raise `client_max_body_size` (e.g. `8m`); Caddy and Traefik have no limit by default.
 
 ## Caddy
 
@@ -56,7 +56,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_buffering off;          # SSE (LaneSignal also sends X-Accel-Buffering: no)
         proxy_read_timeout 310s;      # long-polls wait up to 300s
-        client_max_body_size 6m;      # attachments (5 MB by default)
+        client_max_body_size 8m;      # attachments (5 MB by default)
     }
 }
 ```

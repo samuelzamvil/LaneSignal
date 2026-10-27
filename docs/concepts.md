@@ -155,7 +155,7 @@ Each lane has a conversation of its own, outside any escalation, in the lane's s
 
 ### Attachments
 
-Agents attach files they want you to read or see, such as a plan or a UI preview: Markdown and text files, and PNG, JPEG, WebP or GIF images. They upload each to `POST /api/attachments` and list the ids when raising the escalation, writing in its conversation, or sending a milestone on a lane (`notify_owner`).
+Agents attach files they want you to read or see, such as a plan or a UI preview: Markdown and text files, and PNG, JPEG, WebP or GIF images. They upload each with the `upload_attachment` tool (or `POST /api/attachments`) and list the ids when raising the escalation, writing in its conversation, or sending a milestone on a lane (`notify_owner`).
 
 - The app renders Markdown itself (headings, lists, tables, code); HTML in a file is shown as text, and links only open web and mail addresses. Images get a thumbnail, and a full view you can pinch, drag and double-tap to zoom.
 - The server recognises the type from the content, so a script renamed `plan.png` is refused. SVG, HTML and other types are refused.

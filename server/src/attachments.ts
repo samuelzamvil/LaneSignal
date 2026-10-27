@@ -36,8 +36,8 @@ export function cleanName(name: string) {
 /** Most pixels an image may have: bigger ones could exhaust a phone's memory when shown. */
 const MAX_PIXELS = 50_000_000;
 
-/** Why the image is too big to show safely, or null. Reads the size from the header where it's simple to. */
-export function oversizedImage(data: Uint8Array, type: AttachmentType): string | null {
+/** An image's width and height from its header, where that's simple to read (not JPEG); otherwise null. */
+export function imageSize(data: Uint8Array, type: AttachmentType): [number, number] | null {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   let size: [number, number] | null = null;
   if (type === 'image/png' && data.length >= 24) size = [view.getUint32(16), view.getUint32(20)];
@@ -47,10 +47,33 @@ export function oversizedImage(data: Uint8Array, type: AttachmentType): string |
     const u24 = (at: number) => data[at] | (data[at + 1] << 8) | (data[at + 2] << 16);
     size = [u24(24) + 1, u24(27) + 1];
   }
+  return size;
+}
+
+/** Why the image is too big to show safely, or null. */
+export function oversizedImage(data: Uint8Array, type: AttachmentType): string | null {
+  const size = imageSize(data, type);
   if (size && size[0] * size[1] > MAX_PIXELS) {
     return `The image is ${size[0]}×${size[1]}: at most ${MAX_PIXELS / 1_000_000} megapixels, so phones can show it`;
   }
   return null;
+}
+
+const mb = (bytes: number) => Math.floor(bytes / 1024 / 1024);
+
+/**
+ * The type of a file to attach, checked the same way for every upload (POST /api/attachments and
+ * the upload_attachment tool): at most `maxBytes`, not empty, a type the app renders safely, and
+ * an image small enough for a phone. Throws a ValidationError saying what's wrong.
+ */
+export function checkAttachment(data: Uint8Array, name: string, maxBytes: number): AttachmentType {
+  if (data.length > maxBytes) throw new ValidationError(`Attachments are limited to ${mb(maxBytes)} MB`);
+  if (!data.length) throw new ValidationError('The file is empty');
+  const type = sniff(data, name);
+  if (!type) throw new ValidationError('Attach Markdown (.md) or text (.txt) files, or PNG, JPEG, WebP or GIF images');
+  const tooBig = oversizedImage(data, type);
+  if (tooBig) throw new ValidationError(tooBig);
+  return type;
 }
 
 /** Reads the request body, refusing it once it passes `max` bytes. */
@@ -59,7 +82,7 @@ async function readBody(req: Request, max: number): Promise<Buffer> {
   let size = 0;
   for await (const chunk of req as AsyncIterable<Buffer>) {
     size += chunk.length;
-    if (size > max) throw new ValidationError(`Attachments are limited to ${Math.floor(max / 1024 / 1024)} MB`);
+    if (size > max) throw new ValidationError(`Attachments are limited to ${mb(max)} MB`);
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
@@ -77,7 +100,7 @@ export async function readUpload(req: Request, maxBytes: number): Promise<{ name
   // Room for the form's own headers around the file.
   const limit = maxBytes + 16 * 1024;
   if (Number(req.headers['content-length'] ?? 0) > limit) {
-    throw new ValidationError(`Attachments are limited to ${Math.floor(maxBytes / 1024 / 1024)} MB`);
+    throw new ValidationError(`Attachments are limited to ${mb(maxBytes)} MB`);
   }
   const body = await readBody(req, limit);
   const delimiter = Buffer.from(`--${boundary[1] ?? boundary[2]}`);
@@ -92,7 +115,7 @@ export async function readUpload(req: Request, maxBytes: number): Promise<{ name
     const disposition = /content-disposition:[^\r\n]*/i.exec(head)?.[0] ?? '';
     if (/\bname="file"/i.test(disposition)) {
       const data = body.subarray(headEnd + 4, next);
-      if (data.length > maxBytes) throw new ValidationError(`Attachments are limited to ${Math.floor(maxBytes / 1024 / 1024)} MB`);
+      if (data.length > maxBytes) throw new ValidationError(`Attachments are limited to ${mb(maxBytes)} MB`);
       if (!data.length) throw new ValidationError('The file is empty');
       // curl escapes quotes in file names as \".
       const name = /filename="((?:[^"\\]|\\.)*)"/i.exec(disposition)?.[1]?.replace(/\\(.)/g, '$1') ?? 'attachment';

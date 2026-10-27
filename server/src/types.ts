@@ -287,7 +287,8 @@ export interface AttachmentMeta {
   size: number;
 }
 
-export type AttachmentType = 'text/markdown' | 'text/plain' | 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+export const ATTACHMENT_TYPES = ['text/markdown', 'text/plain', 'image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
+export type AttachmentType = (typeof ATTACHMENT_TYPES)[number];
 
 export interface LaneEvent {
   id: number;

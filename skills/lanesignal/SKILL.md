@@ -33,13 +33,6 @@ The owner reads it from a phone notification and the dashboard:
 
 ### Attachments
 
-Upload over HTTP (needs `LANESIGNAL_URL` and `LANESIGNAL_KEY`), then pass the returned ids:
-
-```bash
-base=${LANESIGNAL_URL%/}; base=${base%/mcp}
-curl -fsS -H "Authorization: Bearer $LANESIGNAL_KEY" -F file=@plan.md "$base/api/attachments"
-```
-
 Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalation or message. Attach an upload once, from the key that uploaded it; unattached uploads are deleted after a day.
 
 `notify_owner`'s first line is what the phone's notification shows.

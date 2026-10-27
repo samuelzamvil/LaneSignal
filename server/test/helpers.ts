@@ -101,7 +101,7 @@ export async function startServer(env: Record<string, string> = {}, opts: { trmn
     } catch {
       value = null;
     }
-    return { isError: !!msg.result.isError, text: first, value, content: msg.result.content as { text: string }[] };
+    return { isError: !!msg.result.isError, text: first, value, content: msg.result.content as { type: string; text?: string; data?: string; mimeType?: string }[] };
   }
 
   return {
