@@ -11,4 +11,4 @@
 
 - `server/`: Node 24 (22.13+ works) + Express 5 + `node:sqlite`, Better Auth accounts, MCP at `POST /mcp`. Tests: `npm test` from the repo root.
 - `web/`: React + Vite, shared with the Capacitor Android app (`web/capacitor.config.ts`).
-- `docs/`: the wiki. Update it alongside behaviour changes.
+- `docs/`: the wiki source, published to the GitHub wiki by `.github/workflows/wiki.yml` on push to `main`. Update it alongside behaviour changes; never edit the wiki directly.
