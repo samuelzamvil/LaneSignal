@@ -4,8 +4,8 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
-import { accessFor, approvesRequirements, briefMessages, briefWait, digestWait, escalationTarget, ownerOf, pub, q, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
-import { oversizedImage, readUpload, sniff } from './attachments.ts';
+import { accessFor, approvesRequirements, briefMessages, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { checkAttachment, readUpload } from './attachments.ts';
 import { CLIENT_IP_HEADER, FAILOVER_KEY_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, SESSION_HEADER, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
 import { createAccessVerifier } from './cloudflare-access.ts';
@@ -220,7 +220,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     });
   }
 
-  app.use(express.json({ limit: '256kb' }));
+  // /mcp parses its own body, after authenticating: upload_attachment carries a whole file in base64.
+  const jsonBody = express.json({ limit: '256kb' });
+  app.use((req, res, next) => (req.path.toLowerCase().replace(/\/$/, '') === '/mcp' ? next() : jsonBody(req, res, next)));
 
   /** Redeems the code a finished OIDC sign-in handed out, with the verifier of the challenge it started with. */
   if (oidc) {
@@ -854,12 +856,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         req.resume();
         throw err;
       }
-      const type = sniff(file.data, file.name);
-      if (!type) {
-        throw new ValidationError('Attach Markdown (.md) or text (.txt) files, or PNG, JPEG, WebP or GIF images');
-      }
-      const tooBig = oversizedImage(file.data, type);
-      if (tooBig) throw new ValidationError(tooBig);
+      const type = checkAttachment(file.data, file.name, config.attachmentMaxBytes);
       res.status(201).json(store.addAttachment({ ...file, type }, ownerOf(p), p.name));
     }),
   );
@@ -869,16 +866,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
    * attached). Served so a browser can't run it: its own type, no sniffing, a sandbox.
    */
   app.get('/api/attachments/:id', any, (req, res) => {
-    const file = store.getAttachment(String(req.params.id));
-    const notFound = () => new NotFoundError(`Attachment ${req.params.id} not found`);
-    if (!file) throw notFound();
-    if (file.escalationId) acc(res).escalation(file.escalationId);
-    else if (file.laneId) {
-      if (!acc(res).projects.includes(projectOf(file.laneId))) throw notFound();
-    } else if (file.epicId !== null) {
-      const epic = store.getEpic(file.epicId);
-      if (!epic || !acc(res).projects.includes(epic.project)) throw notFound();
-    } else if (file.owner !== ownerOf(principalOf(res))) throw notFound();
+    const file = readableAttachment(store, acc(res), String(req.params.id));
     res.set({
       'content-type': file.type.startsWith('text/') ? `${file.type}; charset=utf-8` : file.type,
       'x-content-type-options': 'nosniff',
@@ -1430,7 +1418,14 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   // ---- MCP ----
 
-  app.post('/mcp', any, mcpHandler(store, { decisions: config.decisions, requirements: config.requirements }));
+  // Twice the file: base64 is a third larger, and text JSON-escaped (\u…) by some clients can double.
+  const mcpBody = express.json({ limit: config.attachmentMaxBytes * 2 + 256 * 1024 });
+  app.post(
+    '/mcp',
+    any,
+    mcpBody,
+    mcpHandler(store, { decisions: config.decisions, requirements: config.requirements }, { attachmentMaxBytes: config.attachmentMaxBytes }),
+  );
   app.all('/mcp', (_req, res) => {
     res.status(405).set('allow', 'POST').json({ error: 'Stateless MCP endpoint: use POST' });
   });

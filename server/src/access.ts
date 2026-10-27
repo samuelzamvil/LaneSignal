@@ -518,6 +518,32 @@ export const approvesRequirements = (p: Principal) => p.role === 'human' && !p.p
 export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);
 
 /**
+ * An attachment the caller may read: one on an escalation, lane message or epic message in a
+ * project they see (within `project` when given), or their own upload before it's attached.
+ * Anything else is "not found", so ids don't leak what exists.
+ */
+export function readableAttachment(store: Store, a: Access, id: string, project?: string | null) {
+  const notFound = new NotFoundError(`Attachment ${id} not found`);
+  const file = store.getAttachment(id);
+  if (!file) throw notFound;
+  const projects = a.scope(project);
+  if (file.escalationId) {
+    try {
+      a.escalation(file.escalationId, project);
+    } catch (err) {
+      if (err instanceof NotFoundError) throw notFound;
+      throw err;
+    }
+  } else if (file.laneId) {
+    if (!projects.includes(projectOf(file.laneId))) throw notFound;
+  } else if (file.epicId !== null) {
+    const epic = store.getEpic(file.epicId);
+    if (!epic || !projects.includes(epic.project)) throw notFound;
+  } else if (file.owner !== ownerOf(a.principal)) throw notFound;
+  return file;
+}
+
+/**
  * Only the agent that raised an escalation acknowledges or dismisses it (or a person, on its behalf):
  * codes repeat across groups, and another overseer closing it by mistake would swallow the decision.
  */
