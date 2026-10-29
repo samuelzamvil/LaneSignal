@@ -9,6 +9,7 @@ import {
   type Connection,
   type Epic,
   type Escalation,
+  type Lane,
   type LaneStatus,
   type Principal,
   type PublicConfig,
@@ -354,7 +355,7 @@ function Dashboard({
   const decided = escalations.filter((e) => e.state === 'decided');
   // "Active tickets only" hides questions whose ticket no lane holds; counts and badges still count them.
   const [ticketFilter, setTicketFilter] = useStored<'all' | 'active'>('lanesignal.inbox.tickets', ['all', 'active'], 'all');
-  const shown = (list: Escalation[]) => (ticketFilter === 'active' ? list.filter((e) => onActiveTicket(e, live.tickets)) : list);
+  const onTicket = (list: Escalation[]) => (ticketFilter === 'active' ? list.filter((e) => onActiveTicket(e, live.tickets)) : list);
   const parkedQuestions = escalations.filter((e) => !onActiveTicket(e, live.tickets)).length;
   // Old lane links carry no project: the one lane with that id, or the current/only project.
   const routeLaneProject = route.laneId
@@ -485,12 +486,28 @@ function Dashboard({
   // Only filters the user can currently see (and so undo) take effect.
   const activeGroups = filters.groups.filter((g) => groupIds.includes(g));
   const activeStatuses = filters.statuses.filter((s) => statusOptions.includes(s));
-  const visible = lanes.filter(
-    (l) =>
-      (filters.showCompleted || l.status !== 'completed' || needsHuman(l)) &&
-      (!activeGroups.length || (l.group !== null && activeGroups.includes(laneGroupKey(l)!))) &&
-      (!activeStatuses.length || activeStatuses.includes(l.status)),
-  );
+  const laneFiltered = activeGroups.length > 0 || activeStatuses.length > 0;
+  const laneMatches = (l: Lane) =>
+    (!activeGroups.length || (l.group !== null && activeGroups.includes(laneGroupKey(l)!))) &&
+    (!activeStatuses.length || activeStatuses.includes(l.status));
+  const visible = lanes.filter((l) => (filters.showCompleted || l.status !== 'completed' || needsHuman(l)) && laneMatches(l));
+  // Needs you follows the Lanes filters: a question shows if its lane does. One raised on an epic
+  // shows while no status filter is on and a group filter (if any) picks the epic's group, like its card.
+  // One whose lane and epic are both gone has nothing to filter on, so it always shows.
+  const escMatches = (e: Escalation) => {
+    if (!laneFiltered) return true;
+    const lane = hasLane(e.laneId) ? laneOf(e) : undefined;
+    if (lane) return laneMatches(lane);
+    const epic = e.epicId ? live.epics.get(String(e.epicId)) : undefined;
+    if (!epic) return true;
+    return !activeStatuses.length && (!activeGroups.length || activeGroups.includes(keyOf(epic.project, epic.group)));
+  };
+  // Counts and badges still count what the filters hide.
+  const shown = (list: Escalation[]) => onTicket(list).filter(escMatches);
+  const blockedShown = blockedLanes.filter(laneMatches);
+  const clearLaneFilters = () => setFilters({ groups: [], statuses: [] });
+  // What's waiting on you that only the lane filters hide (the ticket filter has its own note).
+  const hiddenByLanes = onTicket(open).length - shown(open).length + blockedLanes.length - blockedShown.length;
   // Parked tickets, under their group (left out while a status filter picks lanes by status).
   const parkedAll = [...live.tickets.values()]
     .filter((t) => t.state === 'parked' && inScope(t.project) && !activeStatuses.length)
@@ -540,6 +557,27 @@ function Dashboard({
       />
     );
 
+  const laneChips = (
+    <>
+    {(groupIds.length > 1 || activeGroups.length > 0) && (
+      <Chips
+        label={label}
+        options={groupIds}
+        selected={new Set(filters.groups)}
+        onToggle={(g) => setFilters({ groups: toggle(filters.groups, g) })}
+        render={groupName}
+      />
+    )}
+    <Chips
+      label="Status"
+      options={statusOptions}
+      selected={new Set(filters.statuses)}
+      onToggle={(s) => setFilters({ statuses: toggle(filters.statuses, s) })}
+      render={(s) => STATUS_META[s].label}
+    />
+    </>
+  );
+
   const inbox = (
     <section className={`pane inbox layout-${inboxLayout}`} aria-label="Needs you">
       <div className="pane-head">
@@ -558,6 +596,17 @@ function Dashboard({
           Active tickets only{parkedQuestions > 0 && ` (${parkedQuestions} on tickets no lane holds)`}
         </label>
       )}
+      {/* On phones the Lanes pane isn't beside this one, so its filters show here too. */}
+      <div className="filters inbox-lane-filters">
+        {laneChips}
+        {laneFiltered && (
+          <div className="filter-row">
+            <button className="link" onClick={clearLaneFilters}>
+              Clear filters
+            </button>
+          </div>
+        )}
+      </div>
       {open.length === 0 && blockedLanes.length === 0 && (
         isLive && live.projects.length === 0 ? (
           <p className="empty">You're not in any project yet. Ask a project admin to add you.</p>
@@ -569,16 +618,24 @@ function Dashboard({
           <p className="empty">Nothing needs you. 🎉</p>
         )
       )}
-      {ticketFilter === 'active' && open.length > 0 && shown(open).length === 0 && (
+      {ticketFilter === 'active' && open.length > 0 && onTicket(open).length === 0 && (
         <p className="empty">Nothing on tickets in a lane. {open.length} hidden: their tickets are parked or over.</p>
+      )}
+      {hiddenByLanes > 0 && (
+        <p className="empty">
+          {hiddenByLanes} waiting on you hidden by the Lanes filters.{' '}
+          <button className="link" onClick={clearLaneFilters}>
+            Show all
+          </button>
+        </p>
       )}
       {shown(open).map((e) => (
         escItem(e, seqOf(e))
       ))}
-      {blockedLanes.length > 0 && (
+      {blockedShown.length > 0 && (
         <>
           <h3 className="subhead">Blocked lanes without an escalation</h3>
-          {blockedLanes.map((l) => (
+          {blockedShown.map((l) => (
             <LaneCard
               key={keyOf(l.project, l.id)}
               lane={l}
@@ -630,22 +687,7 @@ function Dashboard({
         <LayoutToggle layout={laneLayout} onChange={setLaneLayout} />
       </div>
       <div className="filters">
-        {(groupIds.length > 1 || activeGroups.length > 0) && (
-          <Chips
-            label={label}
-            options={groupIds}
-            selected={new Set(filters.groups)}
-            onToggle={(g) => setFilters({ groups: toggle(filters.groups, g) })}
-            render={groupName}
-          />
-        )}
-        <Chips
-          label="Status"
-          options={statusOptions}
-          selected={new Set(filters.statuses)}
-          onToggle={(s) => setFilters({ statuses: toggle(filters.statuses, s) })}
-          render={(s) => STATUS_META[s].label}
-        />
+        {laneChips}
         <div className="filter-row">
           <label>
             Arrange by
@@ -664,7 +706,7 @@ function Dashboard({
             Completed ({completedCount})
           </label>
           {(activeGroups.length > 0 || activeStatuses.length > 0) && (
-            <button className="link" onClick={() => setFilters({ groups: [], statuses: [] })}>
+            <button className="link" onClick={clearLaneFilters}>
               Clear
             </button>
           )}
