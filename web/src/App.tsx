@@ -493,18 +493,21 @@ function Dashboard({
   const visible = lanes.filter((l) => (filters.showCompleted || l.status !== 'completed' || needsHuman(l)) && laneMatches(l));
   // Needs you follows the Lanes filters: a question shows if its lane does. One raised on an epic
   // shows while no status filter is on and a group filter (if any) picks the epic's group, like its card.
+  // One whose lane and epic are both gone has nothing to filter on, so it always shows.
   const escMatches = (e: Escalation) => {
     if (!laneFiltered) return true;
     const lane = hasLane(e.laneId) ? laneOf(e) : undefined;
     if (lane) return laneMatches(lane);
-    const g = groupOfEsc(e);
-    return !activeStatuses.length && (!activeGroups.length || (!!g && activeGroups.includes(keyOf(g.project, g.id))));
+    const epic = e.epicId ? live.epics.get(String(e.epicId)) : undefined;
+    if (!epic) return true;
+    return !activeStatuses.length && (!activeGroups.length || activeGroups.includes(keyOf(epic.project, epic.group)));
   };
   // Counts and badges still count what the filters hide.
   const shown = (list: Escalation[]) => onTicket(list).filter(escMatches);
   const blockedShown = blockedLanes.filter(laneMatches);
   const clearLaneFilters = () => setFilters({ groups: [], statuses: [] });
-  const hiddenOpen = open.length - shown(open).length;
+  // What's waiting on you that only the lane filters hide (the ticket filter has its own note).
+  const hiddenByLanes = onTicket(open).length - shown(open).length + blockedLanes.length - blockedShown.length;
   // Parked tickets, under their group (left out while a status filter picks lanes by status).
   const parkedAll = [...live.tickets.values()]
     .filter((t) => t.state === 'parked' && inScope(t.project) && !activeStatuses.length)
@@ -604,7 +607,7 @@ function Dashboard({
           </div>
         )}
       </div>
-      {open.length === 0 && blockedShown.length === 0 && (
+      {open.length === 0 && blockedLanes.length === 0 && (
         isLive && live.projects.length === 0 ? (
           <p className="empty">You're not in any project yet. Ask a project admin to add you.</p>
         ) : isLive && live.lanes.size === 0 ? (
@@ -615,19 +618,16 @@ function Dashboard({
           <p className="empty">Nothing needs you. 🎉</p>
         )
       )}
-      {laneFiltered && hiddenOpen > 0 ? (
+      {ticketFilter === 'active' && open.length > 0 && onTicket(open).length === 0 && (
+        <p className="empty">Nothing on tickets in a lane. {open.length} hidden: their tickets are parked or over.</p>
+      )}
+      {hiddenByLanes > 0 && (
         <p className="empty">
-          {hiddenOpen} {hiddenOpen === 1 ? 'question' : 'questions'} hidden by the Lanes filters.{' '}
+          {hiddenByLanes} waiting on you hidden by the Lanes filters.{' '}
           <button className="link" onClick={clearLaneFilters}>
             Show all
           </button>
         </p>
-      ) : (
-        ticketFilter === 'active' &&
-        open.length > 0 &&
-        shown(open).length === 0 && (
-          <p className="empty">Nothing on tickets in a lane. {open.length} hidden: their tickets are parked or over.</p>
-        )
       )}
       {shown(open).map((e) => (
         escItem(e, seqOf(e))

@@ -1218,8 +1218,9 @@ textarea {
     display: none;
   }
 
-  /* The Lanes pane (and its filters) sits beside the inbox. */
-  .inbox-lane-filters {
+  /* The Lanes pane (and its filters) sits beside the inbox; on Settings and Requirements it doesn't. */
+  .view-inbox .inbox-lane-filters,
+  .view-lanes .inbox-lane-filters {
     display: none;
   }
 
