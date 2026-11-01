@@ -79,7 +79,8 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `GET /api/people` | project admin | Everyone with an account, for adding members |
 | `GET /api/events` | any | Server-Sent Events: `group`, `group_deleted`, `lane`, `lane_deleted`, `escalation`, `ticket`, `epic`, `requirement`, `product`. Only your projects' events. Agent and personal keys never get a rejected requirement: they get `requirement_removed` with just its `id` instead. So does anyone who could see a requirement a person moved into a project they can't see. The stream ends when memberships or projects change; reconnect and re-snapshot. Heartbeat every 25s. `?access_token=` is accepted here only, for clients that can't set headers |
 | `GET /api/groups` | any | |
-| `PUT /api/groups/:id` | agent | Create or update `{name?, links?}`. A group's `ticket` is read-only now (its epic has it): one sent is ignored, with a `warning` |
+| `PUT /api/groups/:id/products?project=` | human | `{products}`: a signed-in person sets which products a group works on (`[]` for none). Unknown or archived products: `404`. `403` for a personal key |
+| `PUT /api/groups/:id` | agent | Create or update `{name?, links?, products?}`. `products` is taken while the group has none (unknown or archived products: `404`); after that it's kept and the rest of the update still applies, with a `warning`. With `LANESIGNAL_REQUIREMENTS=false`, it's ignored with a `warning`. A group's `ticket` is read-only now (its epic has it): one sent is ignored, with a `warning` |
 | `DELETE /api/groups/:id` | human | Archives it. Its lanes show as ungrouped, and exports keep the link |
 | `GET /api/lanes` | any | |
 | `GET /api/lanes/:id` | any | Lane, its recent escalations, the last 100 activity entries (its conversation left out), and its conversation (`messages`, the latest 100; the owner's carry `seen`: whether the agent has had them) |

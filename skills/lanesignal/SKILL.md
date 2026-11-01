@@ -11,7 +11,7 @@ Vocabulary: a **group** is your epic or train (one overseer per group). A **lane
 
 ## Publishing state
 
-- **Your group:** `update_group` with the `group_id` your owner's policy gives you and your Remote Control session in `links`; a group must exist before lanes are published in it.
+- **Your group:** `update_group` with the `group_id` your owner's policy gives you, your Remote Control session in `links`, and the `products` you work on when this server has them (`list_products`), the narrowest that cover your work; the dashboard titles your group from them. A group must exist before lanes are published in it.
 - **Your epic:** the ticket the owner gave you goes to `update_epic` (its ref as `epic`, plus `group`), once. Its `status_line` is one line on the epic's card.
 - **Lanes:** a lane holds one ticket at a time, and a ticket is in one lane at a time. `fill_lane` changes tickets, parking (with a reason) the one it held; a parked ticket's questions stay open.
 - A lane holding no ticket shows `idle`, and one with an open blocking escalation shows `blocked_human`, whatever you publish.

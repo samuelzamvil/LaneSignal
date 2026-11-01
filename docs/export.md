@@ -97,7 +97,7 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 
 ### `groups.csv` (every group, including archived ones)
 
-`id`, `name`, `ticket`, `ticket_url`, `links`, `last_published_by`, `created_at`, `updated_at`, `archived_at`. `ticket` is a group's ticket from before epics (read-only now; its epics carry the ticket).
+`id`, `name`, `ticket`, `ticket_url`, `links`, `products` (the ones it works on), `last_published_by`, `created_at`, `updated_at`, `archived_at`. `ticket` is a group's ticket from before epics (read-only now; its epics carry the ticket).
 
 ### `tickets.csv` (every ticket lanes have held)
 

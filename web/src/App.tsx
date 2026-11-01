@@ -11,6 +11,7 @@ import {
   type Lane,
   type LaneStatus,
   type Principal,
+  type Product,
   type PublicConfig,
   type Ticket,
 } from './api.ts';
@@ -33,6 +34,7 @@ import { RequirementsPane } from './requirements.tsx';
 import { baselineSeen, hasNewMessage, useSeenVersion } from './seen.ts';
 import { Toaster } from './toast.tsx';
 import { ProductsSection } from './products-panel.tsx';
+import { groupTitles, productGroups } from './products.ts';
 import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection, ProjectsSection } from './settings.tsx';
 
 // ---- routing (hash based, so it works from file-less Capacitor URLs and push deep links) ----
@@ -201,6 +203,23 @@ function Dashboard({
   const [me, setMe] = useState<Principal | null>(null);
   const [authError, setAuthError] = useState(false);
   const live = useLiveData(client);
+  // Products, for titling groups: an overseer's own name for its group only tells two boxes apart.
+  const [productList, setProductList] = useState<Product[]>([]);
+  useEffect(() => {
+    if (!config?.requirements) return;
+    let cancelled = false;
+    client
+      .products()
+      .then((p) => !cancelled && setProductList(p))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [client, config?.requirements, live.requirementsVersion]);
+  const namedGroups = useMemo(() => {
+    const titles = groupTitles([...live.groups.values()], productList);
+    return new Map([...live.groups].map(([key, g]) => [key, { ...g, name: titles.get(g) ?? g.name }]));
+  }, [live.groups, productList]);
   // History refreshes when an escalation closes (leaves the live set), not on every update.
   const unresolvedIds = useMemo(() => [...live.escalations.keys()].sort().join(','), [live.escalations]);
   const now = useNow();
@@ -333,11 +352,11 @@ function Dashboard({
   );
   const laneOf = (e: Escalation) => live.lanes.get(laneKeyOf(e));
   const groupOfLane = (l: { project: string; group: string | null } | undefined) =>
-    l?.group ? live.groups.get(keyOf(l.project, l.group)) : undefined;
+    l?.group ? namedGroups.get(keyOf(l.project, l.group)) : undefined;
   /** An escalation's group: its lane's, or for one raised on an epic, the epic's. */
   const groupOfEsc = (e: Escalation) => {
     const epic = e.epicId ? live.epics.get(String(e.epicId)) : undefined;
-    return !hasLane(e.laneId) && epic ? live.groups.get(keyOf(epic.project, epic.group)) : groupOfLane(laneOf(e));
+    return !hasLane(e.laneId) && epic ? namedGroups.get(keyOf(epic.project, epic.group)) : groupOfLane(laneOf(e));
   };
   // Inbox order: lanes by their oldest open question, then each lane's questions in order,
   // so a batch ("four questions from #921") reads top to bottom.
@@ -470,7 +489,7 @@ function Dashboard({
   /** Group keys are keyOf(project, group). */
   const groupName = (key: string | null) => {
     if (!key) return `No ${label.toLowerCase()}`;
-    const g = live.groups.get(key);
+    const g = namedGroups.get(key);
     const name = g?.name ?? key.slice(key.indexOf('/') + 1);
     return showProject ? `${projectKeyOf(g?.project ?? key.slice(0, key.indexOf('/')))} · ${name}` : name;
   };
@@ -478,10 +497,10 @@ function Dashboard({
   // Groups that have lanes, plus any the overseers published without lanes yet.
   const groupIds = [
     ...new Set([
-      ...[...live.groups.values()].filter((g) => inScope(g.project)).map((g) => keyOf(g.project, g.id)),
+      ...[...namedGroups.values()].filter((g) => inScope(g.project)).map((g) => keyOf(g.project, g.id)),
       ...lanes.map(laneGroupKey).filter((g): g is string => !!g),
     ]),
-  ];
+  ].sort((a, b) => groupName(a).localeCompare(groupName(b)));
   const statusOptions = config.statuses.filter((s) => s !== 'completed' || filters.showCompleted);
   // Only filters the user can currently see (and so undo) take effect.
   const activeGroups = filters.groups.filter((g) => groupIds.includes(g));
@@ -557,8 +576,26 @@ function Dashboard({
       />
     );
 
+  const productFilters = productGroups([...live.groups.values()].filter((g) => groupIds.includes(keyOf(g.project, g.id))), productList);
+
   const laneChips = (
     <>
+    {productFilters.size > 0 && (
+      <Chips
+        label="Product"
+        options={[...productFilters.keys()]}
+        selected={new Set([...productFilters].filter(([, chip]) => chip.keys.every((k) => filters.groups.includes(k))).map(([key]) => key))}
+        onToggle={(key) => {
+          const { keys } = productFilters.get(key)!;
+          const all = keys.every((k) => filters.groups.includes(k));
+          setFilters({ groups: all ? filters.groups.filter((k) => !keys.includes(k)) : [...new Set([...filters.groups, ...keys])] });
+        }}
+        render={(key) => {
+          const chip = productFilters.get(key)!;
+          return `All ${showProject ? `${projectKeyOf(chip.project)} · ` : ''}${chip.name}`;
+        }}
+      />
+    )}
     {(groupIds.length > 1 || activeGroups.length > 0) && (
       <Chips
         label={label}
@@ -722,7 +759,7 @@ function Dashboard({
       {sections.map((sec) => {
         if (!sectionShows(sec)) return null;
         const epics = sec.groupId !== undefined ? epicsOf(sec.groupId) : [];
-        const group = sec.groupId ? live.groups.get(sec.groupId) : undefined;
+        const group = sec.groupId ? namedGroups.get(sec.groupId) : undefined;
         const laneList = (list: typeof visible) =>
           list.length > 0 && (
             <div className={laneLayout === 'list' ? 'lane-list' : 'lane-grid'}>
@@ -861,7 +898,7 @@ function Dashboard({
         <dd>{config.ticketSystems.join(', ') || 'none configured'}</dd>
       </dl>
       <ProjectsSection client={client} me={me} projects={live.projects} onChanged={live.refresh} />
-      {config.requirements && me?.role === 'human' && !me.personalKey && <ProductsSection client={client} projects={live.projects} version={live.requirementsVersion} />}
+      {config.requirements && me?.role === 'human' && !me.personalKey && <ProductsSection client={client} projects={live.projects} groups={[...live.groups.values()]} version={live.requirementsVersion} />}
       {me?.userId ? (
         <>
           <AgentKeysSection
@@ -945,7 +982,7 @@ function Dashboard({
           {route.view === 'history' ? (
             <HistoryPane
               client={client}
-              groups={live.groups}
+              groups={namedGroups}
               lanes={live.lanes}
               projects={live.projects}
               project={projectFilter}
@@ -966,7 +1003,7 @@ function Dashboard({
           ) : route.view === 'reqs' && config.requirements ? (
             <RequirementsPane
               client={client}
-              groups={live.groups}
+              groups={namedGroups}
               projects={live.projects}
               project={projectFilter}
               groupLabel={config.groupLabel}
@@ -1004,7 +1041,7 @@ function Dashboard({
             id={route.escId}
             client={client}
             lanes={live.lanes}
-            groups={live.groups}
+            groups={namedGroups}
             laneOpenIds={escLaneKey && route.view !== 'history' ? (openByLane.get(escLaneKey) ?? []).map((e) => e.id) : []}
             showProject={multiProject}
             decisions={config.decisions}
@@ -1025,7 +1062,7 @@ function Dashboard({
             now={now}
             group={(() => {
               const ep = live.epics.get(String(route.epicId));
-              return ep ? live.groups.get(keyOf(ep.project, ep.group)) : undefined;
+              return ep ? namedGroups.get(keyOf(ep.project, ep.group)) : undefined;
             })()}
             groupLabel={config.groupLabel}
             canWrite={me?.role === 'human' && config.decisions}

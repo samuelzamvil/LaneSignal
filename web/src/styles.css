@@ -1914,6 +1914,29 @@ textarea {
   max-width: 11rem;
 }
 
+.group-products {
+  margin-top: 12px;
+}
+.group-products h4 {
+  margin: 0 0 4px;
+}
+.group-products-row {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.group-products-row summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  display: list-item;
+}
+.group-products-row .check {
+  display: flex;
+  margin-top: 6px;
+}
+.product-check-child {
+  margin-left: 18px;
+}
+
 .product-project {
   display: block;
   margin-bottom: 8px;
