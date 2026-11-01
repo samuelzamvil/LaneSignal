@@ -280,6 +280,23 @@ describe('the regroup queue over HTTP', () => {
   });
 });
 
+describe('adding a product whose id is taken', () => {
+  test('the refusal names what holds the id as people see it, renamed or archived', async () => {
+    await srv.call('POST', '/api/products', ALICE, { id: 'product-renamed', name: 'First name' });
+    await srv.call('PATCH', '/api/products/product-renamed', ALICE, { name: 'Second name' });
+    const renamed = await srv.call('POST', '/api/products', ALICE, { id: 'product-renamed', name: 'First name' });
+    assert.equal(renamed.status, 409);
+    assert.match(renamed.body.error, /"Second name"/);
+    assert.match(renamed.body.error, /in Main/);
+    assert.doesNotMatch(renamed.body.error, /in default/);
+
+    await srv.call('PATCH', '/api/products/product-renamed', ALICE, { archived: true });
+    const archived = await srv.call('POST', '/api/products', ALICE, { id: 'product-renamed', name: 'First name' });
+    assert.equal(archived.status, 409);
+    assert.match(archived.body.error, /"Second name" in Main \(archived\)/);
+  });
+});
+
 describe('archiving', () => {
   test('refused while requirements are in force; hidden from the list once archived', async () => {
     await srv.call('POST', '/api/products', ALICE, { id: 'product-old', name: 'Old' });
