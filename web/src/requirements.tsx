@@ -4,7 +4,6 @@ import { LayoutToggle, RichText, useLayout } from './components.tsx';
 import { LinkedText } from './linked-text.tsx';
 import { absolute } from './format.ts';
 import { keyOf } from './merge.ts';
-import { productIdProblem, productSlug } from './products.ts';
 
 const STATUS_LABEL: Record<Requirement['status'], string> = {
   pending: 'Pending approval',
@@ -149,7 +148,7 @@ function ScopePicker({
       )}
       {scope === 'products' && (
         <div className="scope-products">
-          {options.length === 0 && <p className="hint">This project has no products yet. Add them under Products above.</p>}
+          {options.length === 0 && <p className="hint">This project has no products yet. Add them in Settings.</p>}
           {options.map((p) => (
             <label key={p.id} className="check">
               <input
@@ -213,103 +212,6 @@ function ScopeHistory({ req, client, products }: { req: Requirement; client: Cli
         </li>
       ))}
     </ul>
-  );
-}
-
-/** A colour picker that saves once the choice settles, not on every step of a drag. */
-function ColorInput({ label, value, onCommit }: { label: string; value: string; onCommit: (color: string) => void }) {
-  const [color, setColor] = useState(value);
-  useEffect(() => setColor(value), [value]);
-  useEffect(() => {
-    if (color.toLowerCase() === value.toLowerCase()) return;
-    const t = setTimeout(() => onCommit(color), 600);
-    return () => clearTimeout(t);
-  }, [color]);
-  return <input type="color" aria-label={label} value={color} onChange={(e) => setColor(e.target.value)} />;
-}
-
-/**
- * The products requirements are scoped to, for a person to add, rename, recolour, lock and archive.
- * A locked product refuses agents' changes to its requirements.
- */
-function ProductsPanel({ client, project, products }: { client: Client; project: string; products: Product[] }) {
-  const [name, setName] = useState('');
-  const [id, setId] = useState('');
-  const [color, setColor] = useState('#3b82f6');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const idProblem = productIdProblem(name, id, products);
-  const act =(fn: () => Promise<unknown>) => {
-    setError(null);
-    fn().catch((e: Error) => setError(e.message));
-  };
-  async function add(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      await client.createProduct(project, { id: id.trim() || productSlug(name), name, color });
-      setName('');
-      setId('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <details className="products-panel">
-      <summary>
-        Products <span className="count">{products.filter((p) => !p.archived).length}</span>
-      </summary>
-      <p className="hint">
-        Requirements apply globally, project-wide, or to the products you add here. Agents can't add products. Lock one
-        and agents can't add, change or move its requirements; you still can.
-      </p>
-      {products.map((p) => (
-        <div key={p.id} className={`product-row${p.archived ? ' archived' : ''}`}>
-          <ColorInput
-            label={`Colour of ${p.name}`}
-            value={p.color ?? '#888888'}
-            onCommit={(color) => act(() => client.updateProduct(project, p.id, { color }))}
-          />
-          <span className="product-name">
-            <strong>{p.name}</strong> <span className="muted small">{p.id}</span>
-            <span className="muted small">
-              {' '}
-              · {p.requirements} in force{p.archived ? ' · archived' : ''}
-            </span>
-          </span>
-          <div className="actions">
-            <button
-              className="ghost"
-              onClick={() => {
-                const next = prompt('Rename product', p.name)?.trim();
-                if (next && next !== p.name) act(() => client.updateProduct(project, p.id, { name: next }));
-              }}
-            >
-              Rename
-            </button>
-            <button className={p.locked ? 'primary' : 'ghost'} onClick={() => act(() => client.updateProduct(project, p.id, { locked: !p.locked }))}>
-              {p.locked ? '🔒 Locked' : 'Lock'}
-            </button>
-            <button className="ghost" onClick={() => act(() => client.updateProduct(project, p.id, { archived: !p.archived }))}>
-              {p.archived ? 'Unarchive' : 'Archive'}
-            </button>
-          </div>
-        </div>
-      ))}
-      <form className="product-add inline-form" onSubmit={add}>
-        <input type="color" aria-label="Colour" value={color} onChange={(e) => setColor(e.target.value)} />
-        <input placeholder="Product name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} required />
-        <input placeholder={productSlug(name) || 'id'} value={id} maxLength={40} onChange={(e) => setId(e.target.value)} aria-label="Product id" />
-        <button className="primary" disabled={busy || !name.trim() || !!idProblem}>
-          Add
-        </button>
-      </form>
-      {idProblem && <p className="hint">{idProblem}</p>}
-      {error && <p className="error">{error}</p>}
-    </details>
   );
 }
 
@@ -756,7 +658,7 @@ export function RequirementsPane({
     };
   }, [client, version]);
   const products: Products = new Map(productList.map((p) => [keyOf(p.project, p.id), p]));
-  // Product filters and management need one project: the one being viewed, or the only one.
+  // Product filters need one project: the one being viewed, or the only one.
   const scopeProject = project || (projects.length === 1 ? projects[0].id : '');
   const projectProducts = productList.filter((p) => p.project === scopeProject);
   // The regroup queue, for people who rescope: its count heads the page while anything waits.
@@ -829,7 +731,6 @@ export function RequirementsPane({
         Rules every agent working on a project or product must follow, recorded with the owner's reasoning. Each applies
         globally, project-wide, or to chosen products. An agent's record stays pending until a person approves it.
       </p>
-      {canApprove && scopeProject && <ProductsPanel client={client} project={scopeProject} products={projectProducts} />}
       {queue && queue.items.length > 0 && !regrouping && (
         <div className="regroup-banner">
           <span>

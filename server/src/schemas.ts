@@ -265,10 +265,10 @@ const productIds = z.array(productId).min(1).max(20);
 const productColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'colours are hex, e.g. "#3b82f6"').nullable();
 
 /** POST /api/products: a person adds a product to a project. */
-export const productInput = z.object({ id: productId, name: z.string().trim().min(1).max(60), color: productColor.optional() }).strict();
+export const productInput = z.object({ id: productId, name: z.string().trim().min(1).max(60), color: productColor.optional(), parent: productId.nullable().optional() }).strict();
 /** PATCH /api/products/:id */
 export const productPatch = z
-  .object({ name: z.string().trim().min(1).max(60).optional(), color: productColor.optional(), locked: z.boolean().optional(), archived: z.boolean().optional() })
+  .object({ name: z.string().trim().min(1).max(60).optional(), color: productColor.optional(), locked: z.boolean().optional(), archived: z.boolean().optional(), parent: productId.nullable().optional() })
   .strict();
 
 /**

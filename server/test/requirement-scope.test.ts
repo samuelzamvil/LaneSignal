@@ -297,6 +297,49 @@ describe('adding a product whose id is taken', () => {
   });
 });
 
+describe('the product tree', () => {
+  const add = (id: string, parent?: string | null) => srv.call('POST', '/api/products', ALICE, { id, name: id.toUpperCase(), ...(parent !== undefined ? { parent } : {}) });
+  const move = (id: string, parent: string | null) => srv.call('PATCH', `/api/products/${id}`, ALICE, { parent });
+
+  test('a subproject sits under a top-level product; agents see it and cannot move it', async () => {
+    assert.equal((await add('tree-root')).body.parent, null);
+    const sub = await add('tree-sub', 'tree-root');
+    assert.equal(sub.status, 201, JSON.stringify(sub.body));
+    assert.equal(sub.body.parent, 'tree-root');
+    assert.equal((await add('tree-loose')).status, 201);
+    assert.equal((await move('tree-loose', 'tree-root')).body.parent, 'tree-root');
+    assert.equal((await move('tree-loose', null)).body.parent, null);
+    assert.equal((await srv.call('PATCH', '/api/products/tree-loose', AGENT, { parent: 'tree-root' })).status, 403);
+    const listed = (await srv.tool(AGENT, 'list_products', {})).value as { id: string; parent?: string }[];
+    assert.equal(listed.find((p) => p.id === 'tree-sub')?.parent, 'tree-root');
+    assert.equal(listed.find((p) => p.id === 'tree-root')?.parent, undefined);
+  });
+
+  test('other changes leave its place in the tree alone', async () => {
+    assert.equal((await srv.call('PATCH', '/api/products/tree-sub', ALICE, { name: 'Renamed' })).body.parent, 'tree-root');
+  });
+
+  test('one level deep, no loops, and only under a product that exists', async () => {
+    assert.equal((await add('tree-deep', 'tree-sub')).status, 409);
+    assert.equal((await move('tree-root', 'tree-loose')).status, 409, 'a product with subprojects stays at the top');
+    assert.equal((await move('tree-loose', 'tree-loose')).status, 400);
+    assert.equal((await move('tree-loose', 'tree-missing')).status, 404);
+    assert.equal((await add('tree-orphan', 'tree-missing')).status, 404);
+    assert.equal((await srv.call('GET', '/api/products', ALICE)).body.some((p: { id: string }) => p.id === 'tree-orphan' || p.id === 'tree-deep'), false);
+  });
+
+  test('archiving keeps the tree whole', async () => {
+    assert.equal((await srv.call('PATCH', '/api/products/tree-root', ALICE, { archived: true })).status, 409);
+    await srv.call('PATCH', '/api/products/tree-sub', ALICE, { archived: true });
+    assert.equal((await srv.call('PATCH', '/api/products/tree-root', ALICE, { archived: true })).status, 200);
+    assert.equal((await srv.call('PATCH', '/api/products/tree-sub', ALICE, { archived: false })).status, 409, 'its parent is archived');
+    assert.equal((await add('tree-under-archived', 'tree-root')).status, 409);
+    assert.equal((await move('tree-loose', 'tree-root')).status, 409);
+    assert.equal((await srv.call('PATCH', '/api/products/tree-root', ALICE, { archived: false })).status, 200);
+    assert.equal((await srv.call('PATCH', '/api/products/tree-sub', ALICE, { archived: false })).status, 200);
+  });
+});
+
 describe('archiving', () => {
   test('refused while requirements are in force; hidden from the list once archived', async () => {
     await srv.call('POST', '/api/products', ALICE, { id: 'product-old', name: 'Old' });
@@ -373,6 +416,29 @@ test('a supersede into another project must say where it applies there', () => {
   const moved = store.supersedeRequirement(old.requirement.id, { requirement: 'New.', justification: 'J.', project: 'other', scope: 'project', decidedBy: 'Sam' }, 'Sam', true);
   assert.equal(moved.requirement.project, 'other');
   store.close();
+});
+
+test('upgrading keeps products, at the top level', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-'));
+  const file = path.join(dir, 'db.sqlite');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl: () => null });
+    store.createProduct('default', { id: 'kept', name: 'Kept', color: '#3b82f6' }, 'sam');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`ALTER TABLE products DROP COLUMN parent_id; UPDATE meta SET value = '20' WHERE key = 'schema_version';`);
+    db.close();
+
+    store = new Store({ path: file, resolveTicketUrl: () => null });
+    const kept = store.getProduct('default', 'kept')!;
+    assert.equal(kept.parent, null);
+    assert.equal(kept.color, '#3b82f6');
+    store.createProduct('default', { id: 'under', name: 'Under', parent: 'kept' }, 'sam');
+    assert.equal(store.getProduct('default', 'under')!.parent, 'kept');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('the regroup queue suggests products from old tags, trains and wording, and product names not yet added', () => {

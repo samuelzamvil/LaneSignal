@@ -393,6 +393,8 @@ export interface Product {
   /** Kebab-case, unique within the project, e.g. "billing". */
   id: string;
   name: string;
+  /** The product this one is a subproject of, or null at the top level. One level deep. */
+  parent: string | null;
   /** A CSS hex colour, e.g. "#3b82f6", or null for the default. */
   color: string | null;
   /** Locked: agents can't add requirements to it, change its requirements, or move requirements in or out. */

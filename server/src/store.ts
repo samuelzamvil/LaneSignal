@@ -222,7 +222,7 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
     'id', 'project', 'group_id', 'requirement', 'justification', 'tags', 'status', 'superseded_by', 'decided_by',
     'source_escalation', 'recorded_by', 'created_at', 'updated_at', 'rejection_reason', 'scope', 'products', 'needs_regrouping',
   ],
-  products: ['project', 'id', 'name', 'color', 'locked', 'archived', 'requirements', 'created_by', 'created_at', 'updated_at'],
+  products: ['project', 'id', 'name', 'parent', 'color', 'locked', 'archived', 'requirements', 'created_by', 'created_at', 'updated_at'],
   requirement_changes: ['id', 'requirement', 'kind', 'actor', 'from_scope', 'from_project', 'from_products', 'to_scope', 'to_project', 'to_products', 'at'],
 };
 export interface ExportFilter {
@@ -312,7 +312,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 20;
+const SCHEMA_VERSION = 21;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -623,6 +623,8 @@ export class Store {
         this.db.exec('ALTER TABLE requirements ADD COLUMN rejection_reason TEXT; ALTER TABLE requirements ADD COLUMN rejected_replacing TEXT');
       }
       if (version < 20) this.migrateV20();
+      // v21: a product can sit under another, one level deep.
+      if (version < 21 && !this.hasColumn('products', 'parent_id')) this.db.exec('ALTER TABLE products ADD COLUMN parent_id TEXT');
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -3970,6 +3972,7 @@ export class Store {
           project: p.project,
           id: p.id,
           name: p.name,
+          parent: p.parent,
           color: p.color,
           locked: p.locked,
           archived: p.archived,
@@ -4742,7 +4745,7 @@ export class Store {
         const names = known.map((p) => p.id);
         throw new NotFoundError(
           `Product "${id}" not found in ${target.project}` +
-            (names.length ? ` (products: ${names.join(', ')})` : ' (it has no products yet; a person adds them on the Requirements page)'),
+            (names.length ? ` (products: ${names.join(', ')})` : ' (it has no products yet; a person adds them in Settings)'),
         );
       }
       if (!byPerson && product.locked) {
@@ -5249,6 +5252,7 @@ export class Store {
       project: r.project_id as string,
       id: r.id as string,
       name: r.name as string,
+      parent: (r.parent_id as string | null) ?? null,
       color: (r.color as string | null) ?? null,
       locked: !!r.locked,
       archived: r.archived_at != null,
@@ -5287,7 +5291,7 @@ export class Store {
   }
 
   /** A person adds a product to a project. Agents never create products. */
-  createProduct(project: string, input: { id: string; name: string; color?: string | null }, actor: string): Product {
+  createProduct(project: string, input: { id: string; name: string; color?: string | null; parent?: string | null }, actor: string): Product {
     const product = this.tx(() => {
       const owner = this.getProject(project);
       if (!owner) throw new NotFoundError(`Project "${project}" not found`);
@@ -5298,21 +5302,34 @@ export class Store {
         const remedy = taken.archived ? 'Unarchive it or choose another id.' : 'A product keeps its id when renamed: choose another id.';
         throw new ConflictError(`The id "${id}" is already used by the product "${taken.name}" in ${owner.name}${taken.archived ? ' (archived)' : ''}. ${remedy}`);
       }
+      const parent = this.checkProductParent(project, id, input.parent ?? null);
       const at = this.now().toISOString();
       this.db
-        .prepare('INSERT INTO products (project_id, id, name, color, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(project, id, input.name.trim(), input.color ?? null, actor, at, at);
+        .prepare('INSERT INTO products (project_id, id, name, parent_id, color, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(project, id, input.name.trim(), parent, input.color ?? null, actor, at, at);
       return this.requireProduct(project, id);
     });
     this.emit({ type: 'product', product });
     return product;
   }
 
+  /** The parent a product may have: another live product of its project that's at the top level. Null for none. */
+  private checkProductParent(project: string, id: string, parent: string | null): string | null {
+    if (parent === null) return null;
+    const wanted = parent.trim().toLowerCase();
+    if (wanted === id) throw new ValidationError('A product can\'t be under itself');
+    const found = this.getProduct(project, wanted);
+    if (!found) throw new NotFoundError(`Product "${wanted}" not found`);
+    if (found.archived) throw new ConflictError(`Product "${found.name}" is archived: unarchive it to put products under it`);
+    if (found.parent !== null) throw new ConflictError(`Product "${found.name}" is itself a subproject, and products nest one level deep`);
+    return found.id;
+  }
+
   /**
-   * Renames, recolours, locks or unlocks, archives or unarchives a product. A product with
+   * Moves, renames, recolours, locks or unlocks, archives or unarchives a product. A product with
    * requirements in force isn't archived: they'd drop out of what agents see. Move them first.
    */
-  updateProduct(project: string, id: string, patch: { name?: string; color?: string | null; locked?: boolean; archived?: boolean }): Product {
+  updateProduct(project: string, id: string, patch: { name?: string; color?: string | null; locked?: boolean; archived?: boolean; parent?: string | null }): Product {
     const product = this.tx(() => {
       const current = this.requireProduct(project, id);
       if (patch.archived && !current.archived && current.requirements > 0) {
@@ -5320,11 +5337,23 @@ export class Store {
           `Product "${current.id}" has ${current.requirements} requirement${current.requirements > 1 ? 's' : ''} in force; rescope ${current.requirements > 1 ? 'them' : 'it'} before archiving`,
         );
       }
+      const subprojects = this.db.prepare('SELECT id, archived_at FROM products WHERE project_id = ? AND parent_id = ?').all(project, current.id) as Row[];
+      if (patch.archived && !current.archived && subprojects.some((r) => r.archived_at == null)) {
+        throw new ConflictError(`Product "${current.name}" has subprojects: move or archive them before archiving it`);
+      }
+      const parent = patch.parent === undefined ? current.parent : this.checkProductParent(project, current.id, patch.parent);
+      if (parent !== null && patch.parent !== undefined && subprojects.length) {
+        throw new ConflictError(`Product "${current.name}" has subprojects, and products nest one level deep: move them first`);
+      }
+      if (patch.archived === false && current.archived && parent !== null && this.requireProduct(project, parent).archived) {
+        throw new ConflictError(`Product "${current.name}" is under an archived product: unarchive that first, or move this one`);
+      }
       const at = this.now().toISOString();
       this.db
-        .prepare('UPDATE products SET name = ?, color = ?, locked = ?, archived_at = ?, updated_at = ? WHERE project_id = ? AND id = ?')
+        .prepare('UPDATE products SET name = ?, parent_id = ?, color = ?, locked = ?, archived_at = ?, updated_at = ? WHERE project_id = ? AND id = ?')
         .run(
           patch.name?.trim() ?? current.name,
+          parent,
           patch.color === undefined ? current.color : patch.color,
           (patch.locked ?? current.locked) ? 1 : 0,
           // Archiving again keeps when it was first archived.
