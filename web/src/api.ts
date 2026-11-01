@@ -300,9 +300,9 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
       if (archived) p.set('archived', 'true');
       return request<Product[]>('GET', `/api/products?${p}`);
     },
-    createProduct: (project: string, input: { id: string; name: string; color?: string | null }) =>
+    createProduct: (project: string, input: { id: string; name: string; color?: string | null; parent?: string | null }) =>
       request<Product>('POST', `/api/products?project=${encodeURIComponent(project)}`, input),
-    updateProduct: (project: string, id: string, patch: { name?: string; color?: string | null; locked?: boolean; archived?: boolean }) =>
+    updateProduct: (project: string, id: string, patch: { name?: string; color?: string | null; locked?: boolean; archived?: boolean; parent?: string | null }) =>
       request<Product>('PATCH', `/api/products/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`, patch),
     rejectRequirement: (id: string, reason: string) =>
       request<Requirement>('POST', `/api/requirements/${encodeURIComponent(id)}/reject`, { reason }),

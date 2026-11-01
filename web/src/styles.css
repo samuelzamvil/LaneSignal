@@ -1871,22 +1871,13 @@ textarea {
   gap: 6px;
 }
 
-/* Products, managed by a person on the Requirements page. */
+/* Products, managed by a person in Settings. */
 .products-panel {
   margin: 0 0 12px;
   padding: 10px 12px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--surface);
-}
-
-.products-panel summary {
-  cursor: pointer;
-  font-weight: 600;
-  min-height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .product-row {
@@ -1902,6 +1893,32 @@ textarea {
   opacity: 0.6;
 }
 
+/* A subproject, under its product. */
+.product-row.child {
+  margin-left: 10px;
+  padding-left: 12px;
+  border-left: 2px solid var(--accent);
+}
+
+.product-branch:first-child > .product-row:first-child {
+  border-top: 0;
+}
+
+.product-parent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.product-parent select {
+  max-width: 11rem;
+}
+
+.product-project {
+  display: block;
+  margin-bottom: 8px;
+}
+
 .product-row .product-name {
   flex: 1;
   min-width: 10rem;
@@ -1915,6 +1932,7 @@ textarea {
 
 .product-add {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--border);

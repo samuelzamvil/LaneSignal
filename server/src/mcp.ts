@@ -799,7 +799,7 @@ function buildServer(
       {
         description:
           'The products requirements are scoped to, with whether each is locked (a locked product refuses agents\' changes ' +
-          'to its requirements) and how many requirements it has. Only the owner adds products.',
+          'to its requirements), how many requirements it has, and its `parent` when it\'s a subproject. Only the owner adds products.',
         inputSchema: { ...PROJECT },
         annotations: { readOnlyHint: true },
       },
@@ -808,7 +808,7 @@ function buildServer(
           return listJson(
             store
               .listProducts(a.scope(project))
-              .map((p) => compact({ id: p.id, name: p.name, project: p.project, locked: p.locked || undefined, requirements: p.requirements })),
+              .map((p) => compact({ id: p.id, name: p.name, parent: p.parent ?? undefined, project: p.project, locked: p.locked || undefined, requirements: p.requirements })),
           );
         } catch (err) {
           return fail(err);
