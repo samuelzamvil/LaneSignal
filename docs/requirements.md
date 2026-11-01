@@ -38,7 +38,7 @@ Every requirement says where it applies, and there's no default:
 | **Project-wide** | Every product in one project |
 | **Products** | One or more products of one project |
 
-**Products** are named parts of a project (a project can hold several). Only a signed-in person adds them, on the Requirements page (or `POST /api/products`); agents can't. A requirement scoped to an unknown product is refused, and the error lists the project's products.
+**Products** are named parts of a project (a project can hold several). Only a signed-in person adds them, on the Requirements page (or `POST /api/products`); agents can't. A product keeps its id when renamed, so a new product can't reuse the id of one renamed since (or archived); the refusal names the product holding it. A requirement scoped to an unknown product is refused, and the error lists the project's products.
 
 **Locks.** A person can lock a product. Agents and personal keys then can't record a requirement in it, or supersede, edit, retire or restore one of its requirements. Only signed-in people move requirements between scopes anyway. People still can do all of it. Locks apply only to products.
 

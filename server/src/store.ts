@@ -5289,9 +5289,15 @@ export class Store {
   /** A person adds a product to a project. Agents never create products. */
   createProduct(project: string, input: { id: string; name: string; color?: string | null }, actor: string): Product {
     const product = this.tx(() => {
-      if (!this.getProject(project)) throw new NotFoundError(`Project "${project}" not found`);
+      const owner = this.getProject(project);
+      if (!owner) throw new NotFoundError(`Project "${project}" not found`);
       const id = input.id.trim().toLowerCase();
-      if (this.getProduct(project, id)) throw new ConflictError(`Product "${id}" already exists in ${project}`);
+      const taken = this.getProduct(project, id);
+      if (taken) {
+        // An id outlives renames, so say what holds it by the name the person knows it by.
+        const remedy = taken.archived ? 'Unarchive it or choose another id.' : 'A product keeps its id when renamed: choose another id.';
+        throw new ConflictError(`The id "${id}" is already used by the product "${taken.name}" in ${owner.name}${taken.archived ? ' (archived)' : ''}. ${remedy}`);
+      }
       const at = this.now().toISOString();
       this.db
         .prepare('INSERT INTO products (project_id, id, name, color, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')

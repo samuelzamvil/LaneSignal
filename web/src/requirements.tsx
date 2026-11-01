@@ -4,6 +4,7 @@ import { LayoutToggle, RichText, useLayout } from './components.tsx';
 import { LinkedText } from './linked-text.tsx';
 import { absolute } from './format.ts';
 import { keyOf } from './merge.ts';
+import { productIdProblem, productSlug } from './products.ts';
 
 const STATUS_LABEL: Record<Requirement['status'], string> = {
   pending: 'Pending approval',
@@ -237,13 +238,8 @@ function ProductsPanel({ client, project, products }: { client: Client; project:
   const [color, setColor] = useState('#3b82f6');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const slug = (text: string) =>
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40);
-  const act = (fn: () => Promise<unknown>) => {
+  const idProblem = productIdProblem(name, id, products);
+  const act =(fn: () => Promise<unknown>) => {
     setError(null);
     fn().catch((e: Error) => setError(e.message));
   };
@@ -252,7 +248,7 @@ function ProductsPanel({ client, project, products }: { client: Client; project:
     setBusy(true);
     setError(null);
     try {
-      await client.createProduct(project, { id: id || slug(name), name, color });
+      await client.createProduct(project, { id: id.trim() || productSlug(name), name, color });
       setName('');
       setId('');
     } catch (err) {
@@ -306,11 +302,12 @@ function ProductsPanel({ client, project, products }: { client: Client; project:
       <form className="product-add inline-form" onSubmit={add}>
         <input type="color" aria-label="Colour" value={color} onChange={(e) => setColor(e.target.value)} />
         <input placeholder="Product name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} required />
-        <input placeholder={slug(name) || 'id'} value={id} maxLength={40} onChange={(e) => setId(e.target.value)} aria-label="Product id" />
-        <button className="primary" disabled={busy || !name.trim()}>
+        <input placeholder={productSlug(name) || 'id'} value={id} maxLength={40} onChange={(e) => setId(e.target.value)} aria-label="Product id" />
+        <button className="primary" disabled={busy || !name.trim() || !!idProblem}>
           Add
         </button>
       </form>
+      {idProblem && <p className="hint">{idProblem}</p>}
       {error && <p className="error">{error}</p>}
     </details>
   );
