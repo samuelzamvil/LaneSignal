@@ -205,7 +205,7 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
     'created_at', 'updated_at', 'status_since', 'blocked_seconds_total', 'blocked_since', 'escalations_total',
     'escalations_open', 'links', 'archived_at', 'ticket_id',
   ],
-  groups: ['id', 'project', 'name', 'ticket', 'ticket_url', 'links', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
+  groups: ['id', 'project', 'name', 'ticket', 'ticket_url', 'links', 'products', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
   tickets: [
     'id', 'project', 'ref', 'display_ref', 'code', 'ticket_url', 'group_id', 'lane_id', 'state', 'park_reason', 'waiting_on',
     'status', 'blocked_seconds_total', 'escalations_total', 'escalations_open', 'created_at', 'updated_at', 'closed_at',
@@ -237,6 +237,8 @@ export interface ExportFilter {
 }
 
 export interface GroupPatch {
+  /** The products it works on: taken while it has none, then a person's to change. */
+  products?: string[];
   name?: string;
   ticket?: string | null;
   links?: Link[];
@@ -312,7 +314,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 21;
+const SCHEMA_VERSION = 22;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -625,6 +627,10 @@ export class Store {
       if (version < 20) this.migrateV20();
       // v21: a product can sit under another, one level deep.
       if (version < 21 && !this.hasColumn('products', 'parent_id')) this.db.exec('ALTER TABLE products ADD COLUMN parent_id TEXT');
+      // v22: which products a group works on.
+      if (version < 22) {
+        this.db.exec('CREATE TABLE IF NOT EXISTS group_products (group_id TEXT NOT NULL, product_id TEXT NOT NULL, PRIMARY KEY (group_id, product_id))');
+      }
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -1099,10 +1105,23 @@ export class Store {
       ticket,
       ticketUrl: ticket ? this.resolveTicketUrl(ticket) : null,
       links: JSON.parse(r.links as string) as Link[],
+      products: this.groupProductIds(r.id as string, r.project_id as string),
       agent: (r.agent as string | null) ?? null,
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
     };
+  }
+
+  /** The live products a group works on. An archived one drops out, and comes back if it's unarchived. */
+  private groupProductIds(id: string, project: string): string[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT gp.product_id FROM group_products gp JOIN products p ON p.project_id = ? AND p.id = gp.product_id
+           WHERE gp.group_id = ? AND p.archived_at IS NULL ORDER BY gp.product_id`,
+        )
+        .all(project, id) as Row[]
+    ).map((p) => p.product_id as string);
   }
 
   /** `AND project_id IN (...)` for an optional project list (undefined = every project). */
@@ -1177,14 +1196,42 @@ export class Store {
 
   /** `owner`: the registering key ("user:<account>:<key name>"), recorded as the group's overseer. */
   upsertGroup(id: string, patch: GroupPatch, actor: string | null, owner?: string): Group {
-    projectOf(id);
+    const project = projectOf(id);
     const { group, restored } = this.tx(() => {
-      const restored = this.writeGroup(id, patch, actor, this.now().toISOString(), owner);
+      // An overseer says what it works on when it registers. After that the choice is a person's,
+      // and naming others changes nothing, so it can't cost the rest of this update.
+      const takes = !!patch.products && !this.groupProductIds(id, project).length;
+      if (takes) this.requireProducts(project, patch.products!);
+      const at = this.now().toISOString();
+      const restored = this.writeGroup(id, patch, actor, at, owner);
+      if (takes) {
+        this.writeGroupProducts(id, patch.products!);
+        this.db.prepare('UPDATE groups SET updated_at = ?, agent = COALESCE(?, agent) WHERE id = ?').run(at, actor, id);
+      }
       return { group: this.getGroup(id)!, restored };
     });
     this.emit({ type: 'group', group });
     this.emitGroupEpics(id);
     if (restored) this.emitGroupLanes(id);
+    return group;
+  }
+
+  /** Must run inside a transaction. */
+  private writeGroupProducts(id: string, products: string[]) {
+    this.db.prepare('DELETE FROM group_products WHERE group_id = ?').run(id);
+    for (const product of new Set(products)) this.db.prepare('INSERT INTO group_products (group_id, product_id) VALUES (?, ?)').run(id, product);
+  }
+
+  /** A person sets which products a group works on; none takes it back to "No product". */
+  setGroupProducts(id: string, products: string[]): Group {
+    const group = this.tx(() => {
+      if (!this.getGroup(id)) throw new NotFoundError(`Group "${localId(id)}" not found`);
+      if (products.length) this.requireProducts(projectOf(id), products);
+      this.writeGroupProducts(id, products);
+      this.db.prepare('UPDATE groups SET updated_at = ? WHERE id = ?').run(this.now().toISOString(), id);
+      return this.getGroup(id)!;
+    });
+    this.emit({ type: 'group', group });
     return group;
   }
 
@@ -4031,6 +4078,7 @@ export class Store {
         ticket: r.ticket,
         ticket_url: r.ticket ? this.resolveTicketUrl(r.ticket as string) : null,
         links: r.links,
+        products: this.groupProductIds(r.id as string, r.project_id as string).join(' | '),
         last_published_by: r.agent,
         created_at: r.created_at,
         updated_at: r.updated_at,

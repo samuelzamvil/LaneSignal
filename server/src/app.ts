@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
-import { accessFor, approvesRequirements, briefMessages, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, approvesRequirements, productsKeptWarning, briefMessages, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { checkAttachment, readUpload } from './attachments.ts';
 import { CLIENT_IP_HEADER, FAILOVER_KEY_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, SESSION_HEADER, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
@@ -648,10 +648,23 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.put('/api/groups/:id', agent, (req, res) => {
     const id = parse(s.groupId, req.params.id);
     const project = acc(res).pick(projectQuery(req), { group: id });
-    const { ticket, ...patch } = parse(s.groupPatch, req.body);
+    const { ticket, products, ...rest } = parse(s.groupPatch, req.body);
+    // Requirements off: there are no products to name, and that shouldn't cost the rest of the update.
+    const patch = config.requirements ? { ...rest, products } : rest;
     const group = pub.group(store.upsertGroup(q(project, id), patch, principalOf(res).name, ownerOf(principalOf(res))));
     // A group's ticket is read-only now: its epic has it.
-    res.json(ticket?.trim() ? { ...group, warning: `A group's ticket is now its epic's: POST /api/epics with {group, ref} adds it` } : group);
+    const warning = [ticket?.trim() ? `A group's ticket is now its epic's: POST /api/epics with {group, ref} adds it` : undefined, config.requirements ? productsKeptWarning(group, products) : products && 'Products are off on this server (LANESIGNAL_REQUIREMENTS): `products` was ignored.']
+      .filter(Boolean)
+      .join(' ');
+    res.json(warning ? { ...group, warning } : group);
+  });
+
+  /** A person sets which products a group works on, whatever its overseer said. */
+  app.put('/api/groups/:id/products', human, requirementsOnly, (req, res) => {
+    requireOwner(res, 'Set a group\'s products');
+    const id = parse(s.groupId, req.params.id);
+    const project = acc(res).pick(projectQuery(req), { group: id });
+    res.json(pub.group(store.setGroupProducts(q(project, id), parse(s.groupProducts, req.body).products)));
   });
 
   app.delete('/api/groups/:id', human, (req, res) => {

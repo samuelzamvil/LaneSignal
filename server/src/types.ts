@@ -33,6 +33,8 @@ export interface Group {
   ticketUrl: string | null;
   /** Typically the overseer's Remote Control session (kind "session"). */
   links: Link[];
+  /** Ids of the products it works on. Its title on the dashboard comes from them. */
+  products: string[];
   /** Token name that last updated the group. */
   agent: string | null;
   createdAt: string;
