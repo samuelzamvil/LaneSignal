@@ -2139,6 +2139,27 @@ export class Store {
     return r;
   }
 
+  /**
+   * The epic a ticket's lane is listed under, in that group: how agents name it, or null when it has
+   * none there. `closed` says it names one of the group's epics that has since closed.
+   */
+  ticketEpic(ticketId: number | null, groupId: string | null): { name: string | null; closed: boolean } {
+    if (ticketId === null || groupId === null) return { name: null, closed: false };
+    const r = this.db
+      .prepare(
+        `SELECT e.display_ref, e.state FROM tickets t JOIN epics e ON e.num = t.epic_id
+         WHERE t.num = ? AND e.group_id = ? AND e.stand_in = 0`,
+      )
+      .get(ticketId, groupId) as Row | undefined;
+    if (!r) return { name: null, closed: false };
+    return r.state === 'closed' ? { name: null, closed: true } : { name: (r.display_ref as string | null) ?? null, closed: false };
+  }
+
+  /** Whether a ticket numbered this exists in the project: a lane id ending in it was named after it. */
+  hasTicketNumbered(project: string, number: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM tickets WHERE project_id = ? AND (code_ref = ? OR ref LIKE ?) LIMIT 1').get(project, number, `%:${number}`);
+  }
+
   private ticketFromRow(r: Row): Ticket {
     // While a lane holds it, its status is the lane's.
     const lane = r.lane_id
