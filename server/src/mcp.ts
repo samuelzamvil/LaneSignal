@@ -11,6 +11,7 @@ import {
   briefLane,
   briefRequirement,
   briefTicket,
+  laneAdvice,
   productsKeptWarning,
   briefWait,
   digestWait,
@@ -193,6 +194,8 @@ export interface Features {
   /** People answer in LaneSignal; agents wait for and acknowledge decisions. */
   decisions: boolean;
   requirements: boolean;
+  /** `update_lane` and `fill_lane` warn about publishing habits that make the dashboard hard to read. */
+  laneAdvice: boolean;
 }
 
 /** Limits set in the server's environment. */
@@ -235,6 +238,9 @@ function buildServer(
     if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
     return e.id;
   };
+  /** A ticket as agents read it, with the epic it names: without this they can't check where its lane will sit. */
+  const ticketForAgent = (t: Ticket) => ({ ...briefTicket(pub.ticket(t)), epic: store.ticketEpic(t.id, t.group).name ?? undefined });
+
   /** A ticket by any form of its ref, in the project given or the only one of the caller's that has it. */
   const findTicket = (ref: string, project?: string): Ticket => {
     const hits = a.scope(project).flatMap((p) => store.getTicket(p, ref) ?? []);
@@ -257,9 +263,9 @@ function buildServer(
         return listJson(
           store
             .listLanes(a.scope(project))
-            .map(pub.lane)
-            .filter((l) => (!status || l.status === status) && (!group || l.group === group))
-            .map((l) => briefLane(l, features.decisions, a.projects.length === 1)),
+            .map((l) => ({ l: pub.lane(l), epic: store.ticketEpic(l.ticketId, l.group).name ?? undefined }))
+            .filter(({ l }) => (!status || l.status === status) && (!group || l.group === group))
+            .map(({ l, epic }) => ({ ...briefLane(l, features.decisions, a.projects.length === 1), epic })),
         );
       } catch (err) {
         return fail(err);
@@ -288,7 +294,7 @@ function buildServer(
         const tickets = group
           ? projects.flatMap((p) => store.listTickets({ projects: [p], groupId: q(p, group), states: state }))
           : store.listTickets({ projects, states: state });
-        return listJson(tickets.map((t) => briefTicket(pub.ticket(t))));
+        return listJson(tickets.map(ticketForAgent));
       } catch (err) {
         return fail(err);
       }
@@ -308,7 +314,7 @@ function buildServer(
       try {
         const t = findTicket(ticket, project);
         return json({
-          ...briefTicket(pub.ticket(t)),
+          ...ticketForAgent(t),
           escalations: store.listEscalations({ ticketId: t.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 100 }).map((e) =>
             brief(pub.escalation(e)),
           ),
@@ -921,9 +927,33 @@ function buildServer(
     );
 
     /** What publishing a lane returns: where it stands, not everything echoed (the most frequent call). */
-    const published = (laneId: string, requested: string | undefined, lane: ReturnType<typeof store.upsertLane>) => {
+    const published = (
+      laneId: string,
+      requested: string | undefined,
+      lane: ReturnType<typeof store.upsertLane>,
+      call: { activity?: string | null; before: number | null; epicCleared?: boolean; previous?: string; reason?: string | null },
+    ) => {
       const unread = store.takeUnreadForAgent(laneId);
       const pubLane = pub.lane(lane);
+      const ticketEpic = store.ticketEpic(lane.ticketId, lane.group);
+      // Worked out only when the ticket changed: this is the most frequent call.
+      const changed = call.before !== lane.ticketId;
+      const number = changed ? /(\d{3,})$/.exec(pubLane.id)?.[1] : undefined;
+      const advice = features.laneAdvice
+        ? laneAdvice({
+            ...call,
+            after: lane.ticketId,
+            namedAfterTicket: number && store.hasTicketNumbered(lane.project, number) ? pubLane.id : undefined,
+            ticketEpic,
+            groupEpics:
+              changed && lane.group
+                ? store
+                    .listEpics({ groupId: lane.group })
+                    .filter((e) => !e.standIn && e.displayRef)
+                    .map((e) => e.displayRef!)
+                : [],
+          })
+        : [];
       // Say so when the status was kept, rather than letting it look accepted.
       const kept =
         requested && pubLane.status !== requested && pubLane.status === 'blocked_human'
@@ -935,8 +965,9 @@ function buildServer(
           project: pubLane.project,
           letter: pubLane.letter,
           status: pubLane.status,
+          epic: ticketEpic.name ?? undefined,
           blockingEscalations: pubLane.blockingEscalations || undefined,
-          warning: [kept, lane.warning].filter(Boolean).join(' ') || undefined,
+          warning: [kept, lane.warning, ...advice].filter(Boolean).join(' ') || undefined,
           // The owner wrote on the lane since you last heard: read and act on it (reply with notify_owner).
           ownerMessages: unread.length ? briefMessages(unread) : undefined,
         }),
@@ -970,8 +1001,9 @@ function buildServer(
           const patch = { ...rest, group: rest.group !== undefined ? rest.group : group_id };
           const pr = a.pick(project, { lane: lane_id, group: patch.group ?? undefined });
           const qualified = { ...patch, group: patch.group ? q(pr, patch.group) : patch.group };
+          const before = store.getLane(q(pr, lane_id))?.ticketId ?? null;
           const lane = store.upsertLane(q(pr, lane_id), qualified, who.name, { waitingOn: waiting_on });
-          return published(q(pr, lane_id), patch.status, lane);
+          return published(q(pr, lane_id), patch.status, lane, { activity: rest.activity, before });
         } catch (err) {
           return fail(err);
         }
@@ -985,7 +1017,8 @@ function buildServer(
           'Move a lane to another ticket. `previous` (required when the lane holds a different ticket): `park` (with ' +
           '`reason`), `done` or `drop`. `ticket` moves in (created on first use; a parked or done one comes back with ' +
           'its questions); leave it out to empty the lane. A ticket is in one lane at a time. `epic`: the epic the ' +
-          'ticket is for. Takes update_lane\'s fields too, applied after the switch.',
+          'ticket is for (list_epics): with one named, the lane sits under its card on the dashboard. Takes update_lane\'s ' +
+          'fields too, applied after the switch.',
         inputSchema: {
           lane_id: s.laneId,
           ticket: z.string().max(300).nullable().optional().describe('The ticket to work next; leave out or null to empty the lane.'),
@@ -1003,6 +1036,7 @@ function buildServer(
           const patch = { ...rest, group: rest.group !== undefined ? rest.group : group_id };
           const pr = a.pick(project, { lane: lane_id, group: patch.group ?? undefined });
           const qualified = { ...patch, group: patch.group ? q(pr, patch.group) : patch.group, ticket: ticket ?? null };
+          const before = store.getLane(q(pr, lane_id))?.ticketId ?? null;
           const lane = store.upsertLane(q(pr, lane_id), qualified, who.name, {
             previous,
             reason,
@@ -1010,7 +1044,7 @@ function buildServer(
             epic: epicNumber(epic, pr),
             strict: true,
           });
-          return published(q(pr, lane_id), patch.status, lane);
+          return published(q(pr, lane_id), patch.status, lane, { activity: rest.activity, before, epicCleared: epic === null, previous, reason });
         } catch (err) {
           return fail(err);
         }

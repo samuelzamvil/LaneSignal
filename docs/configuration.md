@@ -10,6 +10,7 @@ Set these in the stack's environment (Compose / `.env`); there's no switch in th
 |---|---|---|
 | `LANESIGNAL_DECISIONS` | `true` | Answering in LaneSignal. On (the default), escalations get answer buttons on the dashboard and phone app, and agents wait for and acknowledge the decision. `false` makes LaneSignal alerts only: you answer in the agent's own session (e.g. Remote Control) and the agent dismisses the alert with a justification; the dashboard is read-only apart from dismissing stale alerts. See [Lanes, groups and escalations](concepts.md#escalations) |
 | `LANESIGNAL_REQUIREMENTS` | `true` | The [requirements](requirements.md) register: a durable, searchable record of the owner's decisions outside the repository. `false` removes its tools, page, API and export |
+| `LANESIGNAL_LANE_ADVICE` | `true` | The MCP lane tools add [publishing advice](agents.md#publishing-advice) to their `warning`. `false` turns it off, for agents following your own usage |
 | `LANESIGNAL_CLOUDFLARE_ACCESS` | `false` | Beta. [Sign in with Cloudflare Access](cloudflare-access.md): people Access lets in are signed in as the account with their email, in the browser and (through Access's Managed OAuth) in the Android app. Needs the settings under [Cloudflare Access](#cloudflare-access) |
 | `LANESIGNAL_OIDC_ISSUER` | | [Sign in with Cloudflare](oidc.md), or another OIDC provider: a **Sign in with…** button whose LaneSignal session works with or without Cloudflare in the path. Needs the settings under [OIDC sign-in](#oidc-sign-in) |
 
