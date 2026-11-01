@@ -13,7 +13,7 @@ Vocabulary: a **group** is your epic or train (one overseer per group). A **lane
 
 - **Your group:** `update_group` with the `group_id` your owner's policy gives you, your Remote Control session in `links`, and the `products` you work on when this server has them (`list_products`), the narrowest that cover your work; the dashboard titles your group from them. A group must exist before lanes are published in it.
 - **Your epic:** the ticket the owner gave you goes to `update_epic` (its ref as `epic`, plus `group`), once. Its `status_line` is one line on the epic's card.
-- **Lanes:** a lane holds one ticket at a time, and a ticket is in one lane at a time. `fill_lane` changes tickets, parking (with a reason) the one it held; a parked ticket's questions stay open.
+- **Lanes:** a lane holds one ticket at a time, and a ticket is in one lane at a time. `fill_lane` changes tickets, parking (with a reason) the one it held; a parked ticket's questions stay open. When your group has epics, name the ticket's with `epic`, so its lane sits under that epic's card on the dashboard.
 - A lane holding no ticket shows `idle`, and one with an open blocking escalation shows `blocked_human`, whatever you publish.
 - **Ticket refs:** in any text, `#1234` links to the default ticket system and `redmine:1234` to that one; in `ticket` fields use `system:id`.
 
@@ -41,7 +41,8 @@ Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalat
 ## Usage: publishing and asking
 
 - **Session start:** `update_group` once, before publishing lanes.
-- **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. A worker and a reviewer on one ticket share a lane.
+- **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. A worker and a reviewer on one ticket share a lane. `remove_lane` a slot you no longer need.
+- **Finished tickets are `done`,** not parked: parked ones wait on the dashboard to be picked up again.
 - **Publish changes, not heartbeats.** Use the epic's `status_line` for what's queued or waiting; never publish placeholder lanes. Keep `activity` to one line, written for a phone.
 - **Parking:** dismiss a parked ticket's questions that no longer matter.
 - **One decision per escalation:** four questions in a plan are four escalations. Questions that steer the whole group (direction, scope, which tickets to file) go on the epic (`epic`, no `lane_id`). Attach a plan or preview instead of pasting it into `context`.

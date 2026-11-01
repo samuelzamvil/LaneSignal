@@ -501,3 +501,100 @@ test('upgrading to epics: two groups with one ticket, and a lane its own earlier
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+describe('advice on how a lane was published', () => {
+  const pub = (name: string, args: Record<string, unknown>) => srv.tool(AGENT, name, args);
+
+  test('a filled ticket with no epic is told which to name; once named, list_lanes and list_tickets show it', async () => {
+    await pub('update_group', { group_id: 'advice', name: 'Advice' });
+    await pub('update_epic', { epic: '7001', group: 'advice', name: 'Seven' });
+    const loose = await pub('fill_lane', { lane_id: 'advice-1', group_id: 'advice', ticket: '7100' });
+    assert.match(loose.value.warning, /name one with fill_lane's `epic`/);
+    assert.match(loose.value.warning, /7001/);
+    assert.equal(loose.value.epic, undefined);
+
+    const named = await pub('fill_lane', { lane_id: 'advice-2', group_id: 'advice', ticket: '7101', epic: '7001' });
+    assert.equal(named.value.warning, undefined, JSON.stringify(named.value));
+    assert.equal(named.value.epic, '7001');
+    const lanes = (await pub('list_lanes', { group_id: 'advice' })).value as { id: string; epic?: string }[];
+    assert.equal(lanes.find((l) => l.id === 'advice-2')?.epic, '7001');
+    assert.equal(lanes.find((l) => l.id === 'advice-1')?.epic, undefined);
+    const tickets = (await pub('list_tickets', { group_id: 'advice' })).value as { code: string; epic?: string }[];
+    assert.equal(tickets.find((t) => t.code === '7101')?.epic, '7001');
+    assert.equal((await pub('get_ticket', { ticket: '7101' })).value.epic, '7001');
+  });
+
+  test('a group with no epics of its own hears nothing about naming one', async () => {
+    await pub('update_group', { group_id: 'advice-plain', name: 'Plain' });
+    const res = await pub('fill_lane', { lane_id: 'plain-1', group_id: 'advice-plain', ticket: '7200' });
+    assert.equal(res.value.warning, undefined, JSON.stringify(res.value));
+  });
+
+  test('long activity, ticket-named lanes, emptied lanes, and finished tickets parked', async () => {
+    await pub('update_group', { group_id: 'advice-habits', name: 'Habits' });
+    assert.match((await pub('update_lane', { lane_id: 'habit-1', group_id: 'advice-habits', activity: 'x'.repeat(141) })).value.warning, /one line/);
+    assert.equal((await pub('update_lane', { lane_id: 'habit-1', activity: 'x'.repeat(140) })).value.warning, undefined);
+
+    assert.match((await pub('fill_lane', { lane_id: 'pr-7300', group_id: 'advice-habits', ticket: '7300' })).value.warning, /looks named after a ticket/);
+    // A number no ticket has: a stream, not a ticket.
+    assert.equal((await pub('fill_lane', { lane_id: 'release-2026', group_id: 'advice-habits', ticket: '7304' })).value.warning, undefined);
+    assert.equal((await pub('fill_lane', { lane_id: 'slot-12', group_id: 'advice-habits', ticket: '7301' })).value.warning, undefined);
+
+    const parked = await pub('fill_lane', { lane_id: 'slot-12', ticket: '7302', previous: 'park', reason: 'Merged PR #1, ticket resolved' });
+    assert.match(parked.value.warning, /it's `done`, not parked/);
+    assert.equal((await pub('fill_lane', { lane_id: 'slot-12', ticket: '7303', previous: 'park', reason: 'waiting on the vendor' })).value.warning, undefined);
+    for (const [i, reason] of ['not merged yet', 'waiting until #945 is merged', 'unresolved conflicts', 'parked once #9 is resolved'].entries()) {
+      const res = await pub('fill_lane', { lane_id: 'slot-12', ticket: String(7310 + i), previous: 'park', reason });
+      assert.equal(res.value.warning, undefined, reason);
+    }
+
+    const emptied = await pub('fill_lane', { lane_id: 'slot-12', previous: 'done' });
+    assert.match(emptied.value.warning, /remove_lane/);
+    assert.equal((await pub('fill_lane', { lane_id: 'slot-12' })).value.warning, undefined, 'already empty: not told again');
+  });
+
+  test('advice comes once, when the ticket changes', async () => {
+    await pub('update_group', { group_id: 'advice-once', name: 'Once' });
+    await pub('update_epic', { epic: '7400', group: 'advice-once', name: 'Four' });
+    assert.match((await pub('fill_lane', { lane_id: 'once-1', group_id: 'advice-once', ticket: '7401' })).value.warning, /fill_lane's `epic`/);
+    assert.equal((await pub('update_lane', { lane_id: 'once-1', ticket: '7401', activity: 'Still on it' })).value.warning, undefined);
+    assert.equal((await pub('fill_lane', { lane_id: 'once-1', ticket: '7401' })).value.warning, undefined);
+    // Leaving a ticket with no epic on purpose isn't nagged.
+    assert.equal((await pub('fill_lane', { lane_id: 'once-2', group_id: 'advice-once', ticket: '7402', epic: null })).value.warning, undefined);
+  });
+
+  test('a ticket naming a closed epic is not told to name one; another group\'s epic does not count', async () => {
+    await pub('update_group', { group_id: 'advice-closed', name: 'Closed' });
+    await pub('update_epic', { epic: '7500', group: 'advice-closed', name: 'Done soon' });
+    await pub('update_epic', { epic: '7501', group: 'advice-closed', name: 'Stays' });
+    const lane = await pub('fill_lane', { lane_id: 'closed-1', group_id: 'advice-closed', ticket: '7502', epic: '7500' });
+    assert.equal(lane.value.epic, '7500');
+    await pub('fill_lane', { lane_id: 'closed-1', previous: 'park', reason: 'for a moment' });
+    await pub('request_epic_close', { epic: '7500', reason: 'Finished' });
+    const list = (await srv.call('GET', '/api/epics?group=advice-closed', ALICE)).body as { id: number; displayRef: string }[];
+    await srv.call('POST', `/api/epics/${list.find((e) => e.displayRef === '7500')!.id}/close`, ALICE, { approve: true });
+    const back = await pub('fill_lane', { lane_id: 'closed-1', ticket: '7502' });
+    assert.equal(back.value.epic, undefined);
+    assert.doesNotMatch(back.value.warning ?? '', /name one with/);
+
+    await pub('update_group', { group_id: 'advice-other', name: 'Other' });
+    await pub('update_epic', { epic: '7600', group: 'advice-other', name: 'Theirs' });
+    await pub('fill_lane', { lane_id: 'closed-2', group_id: 'advice-closed', ticket: '7601', epic: '7501' });
+    await pub('fill_lane', { lane_id: 'closed-2', previous: 'park', reason: 'moving' });
+    const moved = await pub('fill_lane', { lane_id: 'other-1', group_id: 'advice-other', ticket: '7601' });
+    assert.equal(moved.value.epic, undefined);
+    assert.match(moved.value.warning, /7600/);
+    const lanes = (await pub('list_lanes', { group_id: 'advice-other' })).value as { id: string; epic?: string }[];
+    assert.equal(lanes.find((l) => l.id === 'other-1')?.epic, undefined);
+  });
+
+  test('a server can turn advice off', async () => {
+    const quiet = await startServer({ LANESIGNAL_LANE_ADVICE: 'false' });
+    try {
+      const res = await quiet.tool(AGENT, 'update_lane', { lane_id: 'q-1', activity: 'x'.repeat(200) });
+      assert.equal(res.value.warning, undefined);
+    } finally {
+      await quiet.close();
+    }
+  });
+});

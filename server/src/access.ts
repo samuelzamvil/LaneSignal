@@ -385,6 +385,57 @@ export const briefLane = (l: Lane, decisions: boolean, oneProject = false) =>
     agentWaiting: decisions && l.agentWaiting ? true : undefined,
   });
 
+/** How long a lane's `activity` can be and still read as one line on a phone. */
+export const ACTIVITY_ONE_LINE = 140;
+
+/** A park reason saying the work is finished, not one waiting for something else to finish. */
+const SAYS_FINISHED = /\b(merged|resolved)\b/i;
+const SAYS_WAITING = /\b(not|until|till|after|once|when|before|pending|waiting|waits|awaiting|blocked|needs?|being|to be)\b[^.;]*\b(merged|resolved)\b/i;
+
+/**
+ * What an overseer should hear about how it just published a lane: habits that make the dashboard
+ * hard to read. They're advice, never refusals, and each comes from what this call changed, so a
+ * lane left as it is isn't told again on every publish.
+ */
+export function laneAdvice(call: {
+  /** The activity this call set, if any. */
+  activity?: string | null;
+  /** The ticket it held before this call, and holds now. */
+  before: number | null;
+  after: number | null;
+  /** Its id, when that ends in the number of a ticket: it was named after one. */
+  namedAfterTicket?: string;
+  /** The epic its ticket names in its group, and whether that's closed. */
+  ticketEpic: { name: string | null; closed: boolean };
+  /** How agents name the group's real epics. */
+  groupEpics: string[];
+  /** The caller cleared the ticket's epic on purpose. */
+  epicCleared?: boolean;
+  /** What this call did with the ticket it held, and why. */
+  previous?: string;
+  reason?: string | null;
+}): string[] {
+  const advice: string[] = [];
+  if (call.activity && call.activity.length > ACTIVITY_ONE_LINE) {
+    advice.push(`Keep activity to one line for a phone (under ${ACTIVITY_ONE_LINE} characters): detail goes in notify_owner or an attachment.`);
+  }
+  if (call.before === call.after) return advice;
+  if (call.namedAfterTicket) {
+    advice.push(`Lane "${call.namedAfterTicket}" looks named after a ticket. Lanes are slots that tickets pass through: use stable ids like slot-1 for new lanes.`);
+  }
+  if (call.after !== null && !call.ticketEpic.name && !call.ticketEpic.closed && !call.epicCleared && call.groupEpics.length) {
+    const named = call.groupEpics.slice(0, 5).join(', ') + (call.groupEpics.length > 5 ? ', …' : '');
+    advice.push(`This group has epics (${named}): name one with fill_lane's \`epic\` so this lane sits under its card, not under "No epic".`);
+  }
+  if (call.after === null) {
+    advice.push('An empty lane stays on the dashboard: remove_lane when you no longer need the slot, and put what\'s queued in the epic\'s status_line.');
+  }
+  if (call.previous === 'park' && call.reason && SAYS_FINISHED.test(call.reason) && !SAYS_WAITING.test(call.reason)) {
+    advice.push('If that ticket is finished, it\'s `done`, not parked: parked ones wait on the dashboard to be picked up again.');
+  }
+  return advice;
+}
+
 /** A ticket as agents read it: where it is and why, without bookkeeping (takes the public shape). */
 export const briefTicket = (t: Ticket) =>
   compact({

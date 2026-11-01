@@ -5,10 +5,10 @@ Replace each TODO with how your agents should work; each example is the default 
 ### Publishing
 
 - **Session start:** TODO (e.g. "`update_group` once, before publishing lanes")
-- **Lanes:** TODO (e.g. "stable slot ids, `slot-1` … `slot-5`, not one per ticket; a worker and a reviewer on one ticket share a lane")
+- **Lanes:** TODO (e.g. "stable slot ids, `slot-1` … `slot-5`, not one per ticket; a worker and a reviewer on one ticket share a lane; `remove_lane` a slot you no longer need")
 - **How often to publish:** TODO (e.g. "changes, not heartbeats; the epic's `status_line` for what's queued; never placeholder lanes")
 - **Activity text:** TODO (e.g. "one line, written for a phone")
-- **Parking:** TODO (e.g. "dismiss a parked ticket's questions that no longer matter")
+- **Parking:** TODO (e.g. "dismiss a parked ticket's questions that no longer matter; finished tickets are `done`, not parked")
 
 ### Asking the owner
 

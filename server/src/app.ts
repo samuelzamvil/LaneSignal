@@ -1440,7 +1440,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     '/mcp',
     any,
     mcpBody,
-    mcpHandler(store, { decisions: config.decisions, requirements: config.requirements }, { attachmentMaxBytes: config.attachmentMaxBytes }),
+    mcpHandler(store, { decisions: config.decisions, requirements: config.requirements, laneAdvice: config.laneAdvice }, { attachmentMaxBytes: config.attachmentMaxBytes }),
   );
   app.all('/mcp', (_req, res) => {
     res.status(405).set('allow', 'POST').json({ error: 'Stateless MCP endpoint: use POST' });

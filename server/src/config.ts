@@ -60,6 +60,8 @@ export interface Config {
   decisions: boolean;
   /** The requirements register (on by default). */
   requirements: boolean;
+  /** MCP lane tools warn about publishing habits that make the dashboard hard to read. */
+  laneAdvice: boolean;
   /** Hosts a project's TRMNL webhook URL may point at (TRMNL's own, plus self-hosted TRMNL servers). */
   trmnlHosts: string[];
   /**
@@ -364,6 +366,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     eventRetention: int('LANESIGNAL_EVENT_RETENTION', env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention, 200, 1, 100_000),
     decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, true),
     requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),
+    laneAdvice: bool('LANESIGNAL_LANE_ADVICE', env.LANESIGNAL_LANE_ADVICE, true),
     trmnlHosts: [...TRMNL_HOSTS, ...(list(env.LANESIGNAL_TRMNL_HOSTS) ?? []).map((h) => h.toLowerCase())],
     cloudflareAccess: parseCloudflareAccess(env),
     oidc: parseOidc(env, publicUrl),
