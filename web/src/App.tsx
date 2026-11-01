@@ -7,7 +7,6 @@ import {
   saveConnection,
   type Client,
   type Connection,
-  type Epic,
   type Escalation,
   type Lane,
   type LaneStatus,
@@ -15,10 +14,10 @@ import {
   type PublicConfig,
   type Ticket,
 } from './api.ts';
-import { Chips, GroupHeader, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout, useStored } from './components.tsx';
+import { Chips, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout, useStored } from './components.tsx';
 import { onActiveTicket, ParkedRow, TicketDetail, TicketsContext } from './ticket-views.tsx';
-import { EpicCard, EpicDetail, EpicsContext, epicRoute, hasLane, laneKeyOf } from './epic-views.tsx';
-import { epicShows, epicsOnScreen, laneEpic } from './epics.ts';
+import { EpicCard, EpicDetail, EpicsContext, epicRoute, GroupHeader, hasLane, laneKeyOf, QuietLanes } from './epic-views.tsx';
+import { epicShows, epicsOnScreen, groupLayout } from './epics.ts';
 import { TicketLinksContext } from './linked-text.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
 import { accessSignOut, accessTokens } from './access-session.ts';
@@ -31,7 +30,7 @@ import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { HistoryPane } from './history.tsx';
 import { RequirementsPane } from './requirements.tsx';
-import { baselineSeen, useSeenVersion } from './seen.ts';
+import { baselineSeen, hasNewMessage, useSeenVersion } from './seen.ts';
 import { Toaster } from './toast.tsx';
 import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection, ProjectsSection } from './settings.tsx';
 
@@ -678,6 +677,12 @@ function Dashboard({
     </section>
   );
 
+  // An epic's card shows while a status filter is off, or a group filter picks its group.
+  const epicCardsIn = (sec: Section) => !activeStatuses.length && (!activeGroups.length || (!!sec.groupId && activeGroups.includes(sec.groupId)));
+  const sectionShows = (sec: Section) =>
+    sec.lanes.length > 0 ||
+    (sec.groupId !== undefined && (parkedIn(sec.groupId).length > 0 || (epicCardsIn(sec) && epicsOf(sec.groupId).some(epicShows))));
+
   const lanePane = (
     <section className="pane lanes" aria-label="Lanes">
       <div className="pane-head">
@@ -712,13 +717,10 @@ function Dashboard({
           )}
         </div>
       </div>
-      {visible.length === 0 && parkedAll.length === 0 && <p className="empty">No lanes match.</p>}
+      {!sections.some(sectionShows) && parkedAll.length === 0 && <p className="empty">No lanes match.</p>}
       {sections.map((sec) => {
+        if (!sectionShows(sec)) return null;
         const epics = sec.groupId !== undefined ? epicsOf(sec.groupId) : [];
-        // An epic's card shows while a status filter is off, or a group filter picks its group.
-        const epicCards = !activeStatuses.length && (!activeGroups.length || (!!sec.groupId && activeGroups.includes(sec.groupId)));
-        const shows = sec.lanes.length > 0 || (sec.groupId !== undefined && parkedIn(sec.groupId).length > 0) || (epicCards && epics.some(epicShows));
-        if (!shows) return null;
         const group = sec.groupId ? live.groups.get(sec.groupId) : undefined;
         const laneList = (list: typeof visible) =>
           list.length > 0 && (
@@ -739,54 +741,63 @@ function Dashboard({
               )}
             </div>
           );
-        const card = (e: Epic, under: typeof visible) => (
-          <EpicCard
-            key={e.id}
-            epic={e}
-            group={group}
-            name={e.standIn ? groupName(sec.groupId ?? null) : showProject ? `${projectKeyOf(e.project)} · ${e.name}` : e.name}
-            lanes={under.length}
-            needYou={under.filter(needsHuman).length}
-            client={client}
-            canApprove={me?.role === 'human' && !me.personalKey}
-            onOpen={() => navigate(epicRoute(e.project, e.id))}
-          />
-        );
-        // Each lane once: under its ticket's epic, or under the group (its stand-in's card when it has no epic of its own).
-        const real = epics.filter((e) => !e.standIn);
-        const rest = sec.lanes.filter((l) => !laneEpic(l, real, live.tickets));
-        return (
-          <div key={sec.key} className="group">
-            {sec.groupId === undefined ? (
-              sec.title && (
+        // Arranged by priority or status: a flat list, each lane card naming its group.
+        if (sec.groupId === undefined) {
+          return (
+            <div key={sec.key} className="group">
+              {sec.title && (
                 <h3 className="subhead">
                   {sec.title} <span className="count">{sec.lanes.length}</span>
                 </h3>
-              )
-            ) : real.length > 0 ? (
-              <>
-                {real.map((e) => {
-                  const under = sec.lanes.filter((l) => laneEpic(l, real, live.tickets) === e);
-                  return (
-                    <div key={e.id}>
-                      {card(e, under)}
-                      {laneList(under)}
-                    </div>
-                  );
-                })}
-                {rest.length > 0 && (
-                  <h4 className="group-rest">
-                    {groupName(sec.groupId)} <span className="count">{rest.length}</span>
-                  </h4>
-                )}
-              </>
-            ) : epics[0] ? (
-              card(epics[0], sec.lanes)
-            ) : (
-              <GroupHeader group={group} name={groupName(sec.groupId)} lanes={sec.lanes} />
+              )}
+              {laneList(sec.lanes)}
+            </div>
+          );
+        }
+        // Each lane once: under its ticket's epic, or directly in the group's box. While a status
+        // filter is picking lanes, nothing folds away and epics with no matching lanes stay out.
+        const layout = groupLayout(sec.lanes, epics, live.tickets, {
+          showEmptyEpics: epicCardsIn(sec),
+          isQuiet: (l) => !activeStatuses.length && l.status === 'idle' && l.openEscalations === 0 && !hasNewMessage(l),
+        });
+        const standIn = epics.find((e) => e.standIn);
+        const hasRealEpics = epics.length > 0 && !standIn;
+        // Only what's in the box: a filter leaves out epics, and the count shouldn't point at a card that isn't there.
+        const waiting = sec.lanes.filter(needsHuman).length + layout.epics.reduce((n, { epic: e }) => n + e.blockingEscalations, standIn?.blockingEscalations ?? 0);
+        return (
+          <div key={sec.key} className="group group-box">
+            <GroupHeader
+              group={group}
+              name={groupName(sec.groupId)}
+              lanes={sec.lanes.length}
+              waiting={waiting}
+              standIn={standIn}
+              showTicket={!hasRealEpics}
+              onOpen={standIn && (() => navigate(epicRoute(standIn.project, standIn.id)))}
+            />
+            {layout.epics.map(({ epic: e, lanes: under }) => (
+              <div key={e.id} className="epic-block">
+                <EpicCard
+                  epic={e}
+                  group={group}
+                  name={showProject ? `${projectKeyOf(e.project)} · ${e.name}` : e.name}
+                  lanes={under.length}
+                  needYou={under.filter(needsHuman).length}
+                  client={client}
+                  canApprove={me?.role === 'human' && !me.personalKey}
+                  onOpen={() => navigate(epicRoute(e.project, e.id))}
+                />
+                {under.length > 0 && <div className="epic-lanes">{laneList(under)}</div>}
+              </div>
+            ))}
+            {hasRealEpics && layout.noEpic.length > 0 && (
+              <h4 className="group-rest">
+                No epic <span className="count">{layout.noEpic.length}</span>
+              </h4>
             )}
-            {laneList(sec.groupId !== undefined && real.length > 0 ? rest : sec.lanes)}
-            {sec.groupId !== undefined && <ParkedRow tickets={parkedIn(sec.groupId)} now={now} laneName={leftLane} />}
+            {laneList(layout.noEpic)}
+            <QuietLanes count={layout.quiet.length}>{laneList(layout.quiet)}</QuietLanes>
+            <ParkedRow tickets={parkedIn(sec.groupId)} now={now} laneName={leftLane} />
           </div>
         );
       })}
