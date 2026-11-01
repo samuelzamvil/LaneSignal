@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Client, Product, ProjectAccess } from './api.ts';
-import { parentChoices, productIdProblem, productSlug, productTree } from './products.ts';
+import type { Client, Group, Product, ProjectAccess } from './api.ts';
+import { isCatchAll, parentChoices, productIdProblem, productSlug, productTree } from './products.ts';
 
 /** Saves a colour a moment after the picker stops moving, so dragging it doesn't send every step. */
 function ColorInput({ label, value, onCommit }: { label: string; value: string; onCommit: (color: string) => Promise<boolean> }) {
@@ -189,8 +189,74 @@ function ProductTree({ client, project, version }: { client: Client; project: st
   );
 }
 
+/** Which products each of a project's groups works on: the dashboard titles a group from them. */
+function GroupProducts({ client, project, groups, version }: { client: Client; project: string; groups: Group[]; version: number }) {
+  const [products, setProducts] = useState<Product[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    client
+      .products(project)
+      .then(setProducts)
+      .catch((e: Error) => setError(e.message));
+  }, [client, project, version]);
+  // A tick shows at once and stays until the group's update comes back: quick ticks build on each other.
+  const [ticked, setTicked] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    setTicked((now) => {
+      const waiting = Object.entries(now).filter(([id, list]) => {
+        const held = groups.find((g) => g.id === id)?.products ?? [];
+        return [...list].sort().join() !== [...held].sort().join();
+      });
+      return waiting.length === Object.keys(now).length ? now : Object.fromEntries(waiting);
+    });
+  }, [groups]);
+  // One save at a time, in order: quick ticks can't land out of order and leave the server behind.
+  const saving = useRef<Promise<unknown>>(Promise.resolve());
+  if (!groups.length) return null;
+  const tree = productTree(products);
+  const toggle = (g: Group, id: string) => {
+    const current = ticked[g.id] ?? g.products ?? [];
+    const next = current.includes(id) ? current.filter((p) => p !== id) : [...current, id];
+    setError(null);
+    setTicked((now) => ({ ...now, [g.id]: next }));
+    saving.current = saving.current.then(() =>
+      client.setGroupProducts(project, g.id, next).catch((e: Error) => {
+        setError(e.message);
+        setTicked(({ [g.id]: _dropped, ...rest }) => rest);
+      }),
+    );
+  };
+  return (
+    <div className="group-products">
+      <h4>Overseer groups</h4>
+      <p className="hint">Each group's box on the Lanes page is titled from its products. An overseer can say when it registers; after that, only you change them.</p>
+      {error && <p className="error">{error}</p>}
+      {groups.map((g) => {
+        const held = ticked[g.id] ?? g.products ?? [];
+        const chosen = held.map((id) => products.find((p) => p.id === id)?.name ?? id);
+        return (
+          <details key={g.id} className="group-products-row">
+            <summary>
+              <strong>{g.name}</strong> <span className="muted small">{chosen.length ? chosen.join(', ') : 'No product'}</span>
+            </summary>
+            {tree.map(({ product, subprojects }) => (
+              <div key={product.id}>
+                {[product, ...subprojects].map((p) => (
+                  <label key={p.id} className={`check${p.parent ? ' product-check-child' : ''}`}>
+                    <input type="checkbox" checked={held.includes(p.id)} onChange={() => toggle(g, p.id)} /> {p.name}
+                  </label>
+                ))}
+              </div>
+            ))}
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Settings: the products requirements are scoped to, as a tree, for people who approve requirements. */
-export function ProductsSection({ client, projects, version }: { client: Client; projects: ProjectAccess[]; version: number }) {
+export function ProductsSection({ client, projects, groups, version }: { client: Client; projects: ProjectAccess[]; groups: Group[]; version: number }) {
   const [chosen, setChosen] = useState('');
   const project = projects.find((p) => p.id === chosen)?.id ?? projects[0]?.id;
   if (!project) return null;
@@ -214,6 +280,7 @@ export function ProductsSection({ client, projects, version }: { client: Client;
         </label>
       )}
       <ProductTree key={project} client={client} project={project} version={version} />
+      <GroupProducts key={`groups-${project}`} client={client} project={project} groups={groups.filter((g) => g.project === project && !isCatchAll(g))} version={version} />
     </section>
   );
 }

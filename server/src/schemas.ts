@@ -17,11 +17,25 @@ export const link = z.object({
 /** Group ids follow the lane id format, e.g. "payments-epic" or "train-42". */
 export const groupId = laneId;
 
+/** A product's id within its project: kebab-case, e.g. "billing". */
+export const productId = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(2)
+  .max(40)
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'product ids are lowercase kebab-case words, e.g. "billing"');
+
 export const groupPatch = z.object({
   name: z.string().min(1).max(200).optional(),
   ticket: z.string().max(300).nullable().optional(),
   links: z.array(link).max(20).optional(),
+  /** The products this group works on. Once a group has some, only a person changes them. */
+  products: z.array(productId).min(1).max(20).optional(),
 });
+
+/** PUT /api/groups/:id/products: a person sets which products a group works on. */
+export const groupProducts = z.object({ products: z.array(productId).max(20) }).strict();
 
 export const lanePatch = z.object({
   name: z.string().min(1).max(200).optional(),
@@ -250,15 +264,6 @@ export const waitQuery = z
   .strict();
 
 // ---- requirements ----
-
-/** A product's id within its project: kebab-case, e.g. "billing". */
-export const productId = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .min(2)
-  .max(40)
-  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'product ids are lowercase kebab-case words, e.g. "billing"');
 
 export const REQUIREMENT_SCOPES = ['global', 'project', 'products'] as const;
 const productIds = z.array(productId).min(1).max(20);

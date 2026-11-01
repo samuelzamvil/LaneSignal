@@ -513,6 +513,13 @@ export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
  * Whether what this caller records about requirements counts as approved, and whether it may
  * approve: people, but not agents or personal keys (Claude writing in someone's session).
  */
+/** When an overseer named other products than its group has: a person's choice stands. Undefined when there's nothing to say. */
+export function productsKeptWarning(group: { products: string[] }, asked: string[] | undefined): string | undefined {
+  if (!asked) return undefined;
+  const same = [...new Set(asked)].sort().join() === [...group.products].sort().join();
+  return same ? undefined : `This group already works on ${group.products.join(', ')}, so those stay and the ones you named were ignored: only a person changes them, in Settings.`;
+}
+
 export const approvesRequirements = (p: Principal) => p.role === 'human' && !p.personalKey;
 
 export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);

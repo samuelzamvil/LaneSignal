@@ -11,6 +11,7 @@ import {
   briefLane,
   briefRequirement,
   briefTicket,
+  productsKeptWarning,
   briefWait,
   digestWait,
   briefEpic,
@@ -881,7 +882,12 @@ function buildServer(
       {
         description:
           'Register or update your group (the train you oversee): `name`, and your Remote Control session in `links` ' +
-          'with kind "session", so the dashboard links people straight to you. Its epic\'s ticket goes in update_epic.',
+          'with kind "session", so the dashboard links people straight to you' +
+          (features.requirements
+            ? ', and `products` (from list_products), the narrowest that cover your work: the dashboard titles your group from ' +
+              'them. Once a group has products, only the owner changes them'
+            : '') +
+          '. Its epic\'s ticket goes in update_epic.',
         inputSchema: {
           group_id: s.groupId,
           ...s.groupPatch.shape,
@@ -889,16 +895,23 @@ function buildServer(
           ...PROJECT_WRITE,
         },
       },
-      async ({ group_id, project, ticket, ...patch }) => {
+      async ({ group_id, project, ticket, products, ...rest }) => {
         try {
+          // Requirements off: there are no products to name, and that shouldn't cost the rest of the update.
+          const patch = features.requirements ? { ...rest, products } : rest;
           const group = store.upsertGroup(q(a.pick(project, { group: group_id }), group_id), patch, who.name, ownerOf(who));
           return json(
             compact({
               id: localId(group.id),
               project: group.project,
-              warning: ticket?.trim()
-                ? `A group's ticket is now its epic's: update_epic with epic "${ticket.trim()}" and group "${group_id}" adds it.`
-                : undefined,
+              products: group.products.length ? group.products : undefined,
+              warning:
+                [
+                  ticket?.trim() ? `A group's ticket is now its epic's: update_epic with epic "${ticket.trim()}" and group "${group_id}" adds it.` : undefined,
+                  features.requirements ? productsKeptWarning(group, products) : products && 'Products are off on this server (LANESIGNAL_REQUIREMENTS): `products` was ignored.',
+                ]
+                  .filter(Boolean)
+                  .join(' ') || undefined,
             }),
           );
         } catch (err) {

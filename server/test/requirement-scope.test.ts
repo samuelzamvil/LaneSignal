@@ -418,6 +418,93 @@ describe('requirements follow the product tree', () => {
   });
 });
 
+describe('a group\'s products', () => {
+  const register = (args: Record<string, unknown>) => srv.tool(AGENT, 'update_group', args);
+  const groupOf = async (id: string) => (await srv.call('GET', '/api/groups', ALICE)).body.find((g: { id: string }) => g.id === id);
+
+  before(async () => {
+    for (const id of ['group-a', 'group-b']) await srv.call('POST', '/api/products', ALICE, { id, name: id });
+  });
+
+  test('an overseer names them when it registers; after that they stay', async () => {
+    const first = await register({ group_id: 'linked', name: 'Linked', products: ['group-a'] });
+    assert.deepEqual(first.value.products, ['group-a']);
+    assert.equal(first.value.warning, undefined);
+    assert.deepEqual((await groupOf('linked')).products, ['group-a']);
+
+    const again = await register({ group_id: 'linked', products: ['group-a'] });
+    assert.equal(again.value.warning, undefined, 'the same ones say nothing');
+
+    const other = await register({ group_id: 'linked', products: ['group-b'] });
+    assert.match(other.value.warning, /group-a/);
+    assert.deepEqual((await groupOf('linked')).products, ['group-a']);
+
+    await register({ group_id: 'linked', name: 'Renamed' });
+    assert.deepEqual((await groupOf('linked')).products, ['group-a'], 'leaving them out changes nothing');
+  });
+
+  test('a product that does not exist is refused before the group is made', async () => {
+    const res = await register({ group_id: 'never-made', products: ['group-missing'] });
+    assert.ok(res.isError ?? res.error, JSON.stringify(res));
+    assert.equal(await groupOf('never-made'), undefined);
+  });
+
+  test('a person sets them, whatever the overseer said; agents and unknown products cannot', async () => {
+    const set = (id: string, token: string, products: string[]) => srv.call('PUT', `/api/groups/${id}/products`, token, { products });
+    assert.deepEqual((await set('linked', ALICE, ['group-b', 'group-a'])).body.products, ['group-a', 'group-b']);
+    assert.equal((await set('linked', AGENT, [])).status, 403);
+    assert.equal((await set('linked', ALICE, ['group-missing'])).status, 404);
+    assert.equal((await set('no-such-group', ALICE, [])).status, 404);
+    assert.deepEqual((await set('linked', ALICE, [])).body.products, []);
+    const open = await register({ group_id: 'linked', products: ['group-b'] });
+    assert.equal(open.value.warning, undefined, 'none set again: the overseer may say');
+    assert.deepEqual((await groupOf('linked')).products, ['group-b']);
+  });
+
+  test('a re-registering overseer naming a bad product keeps the rest of its update', async () => {
+    await register({ group_id: 'kept-update', products: ['group-a'] });
+    const res = await register({ group_id: 'kept-update', name: 'New name', products: ['group-missing'] });
+    assert.ok(!(res.isError ?? res.error), JSON.stringify(res));
+    assert.match(res.value.warning, /group-a/);
+    const g = await groupOf('kept-update');
+    assert.equal(g.name, 'New name');
+    assert.deepEqual(g.products, ['group-a']);
+  });
+
+  test('an archived product drops out of a group, and comes back; meanwhile the group can be set', async () => {
+    await srv.call('POST', '/api/products', ALICE, { id: 'group-gone', name: 'Gone' });
+    await register({ group_id: 'archiving', products: ['group-gone'] });
+    await srv.call('PATCH', '/api/products/group-gone', ALICE, { archived: true });
+    assert.deepEqual((await groupOf('archiving')).products, []);
+    await srv.call('PATCH', '/api/products/group-gone', ALICE, { archived: false });
+    assert.deepEqual((await groupOf('archiving')).products, ['group-gone']);
+    await srv.call('PATCH', '/api/products/group-gone', ALICE, { archived: true });
+    const relinked = await register({ group_id: 'archiving', products: ['group-a'] });
+    assert.equal(relinked.value.warning, undefined);
+    assert.deepEqual((await groupOf('archiving')).products, ['group-a']);
+    assert.equal((await srv.call('PUT', '/api/groups/archiving/products', ALICE, { products: ['group-b'] })).status, 200);
+  });
+
+  test('with requirements off, products are ignored and the rest of the update stands', async () => {
+    const off = await startServer({ LANESIGNAL_REQUIREMENTS: 'false' });
+    try {
+      const res = await off.tool(AGENT, 'update_group', { group_id: 'plain', name: 'Plain', products: ['anything'] });
+      assert.match(res.value.warning, /ignored/);
+      const http = await off.call('PUT', '/api/groups/plain', AGENT, { name: 'Plainer', products: ['anything'] });
+      assert.equal(http.status, 200);
+      assert.equal(http.body.name, 'Plainer');
+      assert.match(http.body.warning, /ignored/);
+    } finally {
+      await off.close();
+    }
+  });
+
+  test('the export lists them', async () => {
+    const rows = (await srv.call('GET', '/api/export/groups.json', ALICE)).body;
+    assert.equal(rows.find((g: { id: string }) => g.id === 'linked').products, 'group-b');
+  });
+});
+
 describe('archiving', () => {
   test('refused while requirements are in force; hidden from the list once archived', async () => {
     await srv.call('POST', '/api/products', ALICE, { id: 'product-old', name: 'Old' });
@@ -513,6 +600,27 @@ test('upgrading keeps products, at the top level', () => {
     assert.equal(kept.color, '#3b82f6');
     store.createProduct('default', { id: 'under', name: 'Under', parent: 'kept' }, 'sam');
     assert.equal(store.getProduct('default', 'under')!.parent, 'kept');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrading gives groups no products, and they can then have some', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-'));
+  const file = path.join(dir, 'db.sqlite');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl: () => null });
+    store.createProduct('default', { id: 'kept', name: 'Kept' }, 'sam');
+    store.upsertGroup('default/older', { name: 'Older' }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`DROP TABLE group_products; UPDATE meta SET value = '21' WHERE key = 'schema_version';`);
+    db.close();
+
+    store = new Store({ path: file, resolveTicketUrl: () => null });
+    assert.deepEqual(store.getGroup('default/older')!.products, []);
+    assert.deepEqual(store.setGroupProducts('default/older', ['kept']).products, ['kept']);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

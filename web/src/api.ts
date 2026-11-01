@@ -300,6 +300,8 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
       if (archived) p.set('archived', 'true');
       return request<Product[]>('GET', `/api/products?${p}`);
     },
+    setGroupProducts: (project: string, group: string, products: string[]) =>
+      request<Group>('PUT', `/api/groups/${encodeURIComponent(group)}/products?project=${encodeURIComponent(project)}`, { products }),
     createProduct: (project: string, input: { id: string; name: string; color?: string | null; parent?: string | null }) =>
       request<Product>('POST', `/api/products?project=${encodeURIComponent(project)}`, input),
     updateProduct: (project: string, id: string, patch: { name?: string; color?: string | null; locked?: boolean; archived?: boolean; parent?: string | null }) =>
