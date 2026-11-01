@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Client, Epic, Escalation, Group, LaneEvent, LaneMessage } from './api.ts';
 import { AttachmentList } from './attachments.tsx';
-import { FOLD, LaneComposer, Links, RichText, SheetSection, useStored, type Fold } from './components.tsx';
+import { FOLD, LaneComposer, Links, RichText, SheetSection, TicketLink, useStored, type Fold } from './components.tsx';
 import { absolute, ago } from './format.ts';
 import { hasNewMessage, markMessagesSeen } from './seen.ts';
 import { toast } from './toast.tsx';
@@ -84,8 +84,103 @@ function CloseRequest({ epic, client, canApprove }: { epic: Epic; client: Client
 }
 
 /**
- * On the Lanes page, in place of the group header: the epic's name and ticket, the overseer's
- * session, its status line, how many need you, and whether one of its own questions waits on you.
+ * A card's title, as the one thing on it that opens its sheet from the keyboard. A card holds links
+ * and buttons of its own, so the card itself can't be a button; a tap anywhere else on it still opens.
+ */
+function TitleButton({ name, onOpen }: { name: string; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      className="title-open"
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen();
+      }}
+    >
+      {name}
+    </button>
+  );
+}
+
+/**
+ * The head of a group's box on the Lanes page: whose lanes these are, the overseer's session, and how
+ * many need you. A group with no epic of its own stands in as one, so this head is also its epic's
+ * card: its status line and questions show here, and tapping it opens the epic's sheet.
+ */
+export function GroupHeader({
+  group,
+  name,
+  lanes,
+  waiting,
+  standIn,
+  showTicket,
+  onOpen,
+}: {
+  group: Group | undefined;
+  name: string;
+  /** How many lanes are in the box. */
+  lanes: number;
+  /** Lanes and epics in the box waiting on a person. */
+  waiting: number;
+  standIn?: Epic;
+  /** The group's own ticket from before epics: not shown once its epics carry theirs. */
+  showTicket: boolean;
+  onOpen?: () => void;
+}) {
+  const session = sessionLink(group);
+  const others = group?.links.filter((l) => l !== session) ?? [];
+  const blocked = (standIn?.blockingEscalations ?? 0) > 0;
+  const open = standIn && onOpen;
+  return (
+    <header className={`group-head${open ? ' opens' : ''}${blocked ? ' needs-human' : ''}`} onClick={open ? onOpen : undefined}>
+      <div className="group-title">
+        <h3>{open ? <TitleButton name={name} onOpen={onOpen} /> : name}</h3>
+        <span className="count">{lanes}</span>
+        {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
+        {blocked && <span className="pill tone-danger">Waiting on you</span>}
+        {showTicket && (standIn ? <EpicTicket epic={standIn} group={group} /> : group && <TicketLink lane={group} />)}
+        {standIn && hasNewMessage(board(standIn)) && (
+          <span className="new-message" title="The overseer wrote on this group's board: open it to read">
+            💬
+          </span>
+        )}
+        {session && (
+          <a className="session-link" href={session.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+            💬 {session.label}
+          </a>
+        )}
+      </div>
+      {standIn?.statusLine && <p className="status-line">{standIn.statusLine}</p>}
+      {others.length > 0 && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <Links links={others} />
+        </div>
+      )}
+    </header>
+  );
+}
+
+/** Quiet lanes in a group's box, folded into one row until asked for. */
+export function QuietLanes({ count, children }: { count: number; children: ReactNode }) {
+  const [fold, setFold] = useStored<Fold>('lanesignal.lanes.idle', FOLD, 'folded');
+  if (!count) return null;
+  const open = fold === 'open';
+  return (
+    <div className={`parked${open ? '' : ' folded'}`}>
+      <button className="section-toggle" aria-expanded={open} onClick={() => setFold(open ? 'folded' : 'open')}>
+        <span className="chevron" aria-hidden="true">
+          ▸
+        </span>
+        Idle <span className="count">{count}</span>
+      </button>
+      {open && children}
+    </div>
+  );
+}
+
+/**
+ * An epic inside its group's box: its name and ticket, its status line, how many need you, and
+ * whether one of its own questions waits on you. With no lanes and nothing to act on, it's one line.
  */
 export function EpicCard({
   epic,
@@ -109,22 +204,21 @@ export function EpicCard({
   canApprove: boolean;
   onOpen: () => void;
 }) {
-  const session = sessionLink(group);
   const waiting = needYou + epic.blockingEscalations;
+  const compact = lanes === 0 && waiting === 0 && epic.state === 'open';
   return (
     <header
-      className={`epic-card${epic.blockingEscalations > 0 ? ' needs-human' : ''}`}
+      className={`epic-card${compact ? ' compact' : ''}${epic.blockingEscalations > 0 ? ' needs-human' : ''}`}
       onClick={onOpen}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => e.key === 'Enter' && onOpen()}
     >
       <div className="group-title">
         <span className="epic-mark" aria-hidden="true">
           ◆
         </span>
-        <h3>{name}</h3>
-        <span className="count">{lanes}</span>
+        <h3>
+          <TitleButton name={name} onOpen={onOpen} />
+        </h3>
+        {!compact && <span className="count">{lanes}</span>}
         {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
         {epic.blockingEscalations > 0 && <span className="pill tone-danger">Waiting on you</span>}
         <EpicTicket epic={epic} group={group} />
@@ -132,11 +226,6 @@ export function EpicCard({
           <span className="new-message" title="The overseer wrote on this epic's board: open it to read">
             💬
           </span>
-        )}
-        {session && (
-          <a className="session-link" href={session.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
-            💬 {session.label}
-          </a>
         )}
       </div>
       {epic.statusLine && <p className="status-line">{epic.statusLine}</p>}
