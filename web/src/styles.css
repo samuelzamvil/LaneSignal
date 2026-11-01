@@ -1311,10 +1311,44 @@ textarea {
   margin-top: 8px;
 }
 
+/* One overseer's box: its header, then its epics and lanes inside. */
+.group-box {
+  margin-top: 16px;
+  padding: 0 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-width: 0;
+}
+.group-box + .group-box {
+  margin-top: 16px;
+}
+
 .group-head {
-  margin: 20px 0 10px;
-  padding-bottom: 8px;
+  margin: 0 -8px 10px;
+  padding: 10px 12px;
+  background: var(--surface-2);
   border-bottom: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.group-head.opens {
+  cursor: pointer;
+}
+.group-head.needs-human {
+  box-shadow: inset 4px 0 0 var(--danger);
+}
+.group-head .session-link {
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+/* An epic and the lanes under it, marked by a line down their left edge. */
+.epic-block + .epic-block {
+  margin-top: 10px;
+}
+.epic-lanes {
+  margin: 8px 0 0 4px;
+  padding-left: 6px;
+  border-left: 2px solid var(--accent);
 }
 
 .group-title {
@@ -1333,9 +1367,8 @@ textarea {
   margin-top: 6px;
 }
 
-/* An epic's card, in place of the group header: its lanes are listed under it. */
+/* An epic's card inside its group's box: its lanes are listed under it. */
 .epic-card {
-  margin: 20px 0 10px;
   background: var(--surface);
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -1349,9 +1382,36 @@ textarea {
 .epic-mark {
   color: var(--accent);
 }
-.epic-card .session-link {
-  font-size: 0.85rem;
-  text-decoration: none;
+/* A long name wraps beside its mark on a phone, rather than dropping below it. */
+.epic-card:not(.compact) .group-title h3 {
+  flex: 1 1 calc(100% - 32px);
+  min-width: 0;
+}
+/* An epic with no lanes and nothing to act on: its name and status cut short, on one line when there's room. */
+.epic-card.compact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 12px;
+  min-width: 0;
+}
+.epic-card.compact .group-title {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.epic-card.compact h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.epic-card.compact .status-line {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .status-line {
   margin: 6px 0 0;
@@ -1373,11 +1433,55 @@ textarea {
   display: flex;
   gap: 8px;
 }
-/* The lanes of a group whose ticket names none of its epics. */
+/* The lanes of a group whose tickets name none of its epics. */
 .group-rest {
   margin: 14px 0 8px;
   font-size: 0.95rem;
   color: var(--muted);
+}
+/* A card's title: looks like text, opens its sheet. */
+.title-open {
+  display: block;
+  max-width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: inherit;
+}
+/* Wide enough to spread out. After the base rules above: same specificity, so order decides. */
+@media (min-width: 720px) {
+  .group-box {
+    padding: 0 12px 12px;
+  }
+  .group-head {
+    margin: 0 -12px 12px;
+  }
+  .epic-lanes {
+    margin-left: 6px;
+    padding-left: 12px;
+  }
+  .epic-card:not(.compact) .group-title h3 {
+    flex: 0 1 auto;
+  }
+  .epic-card.compact {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .epic-card.compact .group-title {
+    flex: none;
+    max-width: 70%;
+  }
+  .epic-card.compact .status-line {
+    flex: 1;
+  }
 }
 /* The epic a question belongs to. */
 .epic-ref {

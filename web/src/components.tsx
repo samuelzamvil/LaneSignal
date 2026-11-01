@@ -9,6 +9,8 @@ import { withSwitchMarkers } from './switches.ts';
 import { TicketChip } from './ticket-views.tsx';
 import { EpicChip } from './epic-views.tsx';
 
+const STORED_CHANGED = 'lanesignal.stored-changed';
+
 /** A choice from `allowed`, remembered on this device; `fallback` when nothing (valid) is stored. */
 export function useStored<T extends string>(key: string, allowed: readonly T[], fallback: T): [T, (v: T) => void] {
   const [value, setValue] = useState<T>(() => {
@@ -19,6 +21,15 @@ export function useStored<T extends string>(key: string, allowed: readonly T[], 
       return fallback;
     }
   });
+  // Everything showing this choice follows it: each group's Idle or Parked row, say, shares one key.
+  useEffect(() => {
+    const follow = (e: Event) => {
+      const { key: changed, value: next } = (e as CustomEvent<{ key: string; value: T }>).detail;
+      if (changed === key) setValue(next);
+    };
+    window.addEventListener(STORED_CHANGED, follow);
+    return () => window.removeEventListener(STORED_CHANGED, follow);
+  }, [key]);
   return [
     value,
     (v) => {
@@ -28,6 +39,7 @@ export function useStored<T extends string>(key: string, allowed: readonly T[], 
       } catch {
         /* storage unavailable: keep it for this visit */
       }
+      window.dispatchEvent(new CustomEvent(STORED_CHANGED, { detail: { key, value: v } }));
     },
   ];
 }
@@ -310,22 +322,6 @@ export function LaneComposer({
         </button>
       </div>
     </div>
-  );
-}
-
-/** Header for one epic/train/overseer: its ticket, overseer session link and how many lanes need you. */
-export function GroupHeader({ group, name, lanes }: { group: Group | undefined; name: string; lanes: Lane[] }) {
-  const waiting = lanes.filter(needsHuman).length;
-  return (
-    <header className="group-head">
-      <div className="group-title">
-        <h3>{name}</h3>
-        <span className="count">{lanes.length}</span>
-        {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
-        {group && <TicketLink lane={group} />}
-      </div>
-      {group && <Links links={group.links} />}
-    </header>
   );
 }
 

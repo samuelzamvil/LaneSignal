@@ -10,7 +10,7 @@ A group has:
 - its [epics](#epics), which carry the epic/train ticket (a group's own `ticket` from before epics is kept, read-only)
 - links, most usefully the overseer's Remote Control session, so a decision is one tap from the conversation that owns it
 
-The overseer registers its group with `update_group` before publishing lanes in it. Every lane is in a group: a lane published without one joins the project's **Ungrouped** group. The lane list is arranged by group by default, and groups that need you sort first. Each group has at least one [epic](#epics), whose card heads the group's lanes.
+The overseer registers its group with `update_group` before publishing lanes in it. Every lane is in a group: a lane published without one joins the project's **Ungrouped** group. The lane list is arranged by group by default, and groups that need you sort first. Each group is one box headed by its name and overseer's session, with its [epics](#epics), lanes and parked tickets inside, so you can tell one overseer's work from another's at a glance.
 
 ## Lanes
 
@@ -89,7 +89,7 @@ An epic is a long-lived ticket a group steers its work by: the direction, scope 
 - **Every group has an epic.** Until it has one of its own, the group stands in as its epic (the *stand-in*): named after the group, and named by the group's id in agents' tools.
 - **Real epics** are named by their ticket's ref (`680`, `redmine:680`, its URL: one epic). A group can have several. The overseer adds one with `update_epic` (a ref no epic has yet, plus the group). The first one retires the stand-in: its questions, board and status line move to the new epic, keeping their codes. Closing the group's last real epic brings the stand-in back.
 - **Tickets name their epic** when a lane is filled with them (`fill_lane` with `epic`). It's optional.
-- **On the Lanes page each lane is listed once:** under its ticket's epic's card, or, when its ticket names no epic or it holds none, under the group (the stand-in's card when the group has no epic of its own).
+- **On the Lanes page each lane is listed once:** under its ticket's epic's card, or, when its ticket names no epic or it holds none, directly in the group's box (under **No epic** when the group has epics of its own). A quiet idle lane folds into the box's **Idle** row.
 - **Status line:** one line the overseer sets on the card (`update_epic`), e.g. "3 of 5 lanes busy; next up #966". Use it instead of placeholder lanes.
 - **Questions:** the overseer raises the durable ones on the epic: direction, scope, which tickets to file (`create_escalation` with `epic`). Questions from a lane holding no ticket go to the group's epic too. They're in your inbox like any other and can block, but block no lane: a blocking one shows **Waiting on you** on the card and counts in "Needs you".
 - **Message board:** the conversation that steers the epic, with the same rules as a [lane's conversation](#lane-conversations): the overseer posts with `notify_epic` (at most 500 characters, files allowed, one post per epic per minute, a quiet push that opens the epic); you write back from the epic's sheet (2,000 characters), and your note reaches the group's overseer on its next wait on the group. The card shows 💬 while there's a post you haven't read.
@@ -98,7 +98,10 @@ An epic is a long-lived ticket a group steers its work by: the direction, scope 
 
 **In the app:**
 
-- **Epic cards** head each group on the Lanes page, in place of the group header: the epic's name and ticket, the overseer's session, its status line, how many need you (its lanes' and its own blocking questions), **Waiting on you** when one of its own questions blocks, 💬 for a board post you haven't read, and **Close requested** with **Approve** and **Decline**. A card shows even with no lanes under it when it has something to say (a status line, questions, board posts or a close request), and always for a real epic. Lanes whose ticket names none of the group's epics are listed after the cards, under the group's name.
+- **Group boxes:** arranged by group, each group is a box. Its header shows the group's name, how many lanes it holds and how many need you (its lanes' and its epics' blocking questions), and the overseer's session. Inside are its epic cards with their lanes under them, then any lanes that name no epic, then folded **Idle** and **Parked** rows. Arranged by priority or status, lanes are a flat list instead.
+- **Epic cards** show the epic's name and ticket, its status line, how many need you, **Waiting on you** when one of its own questions blocks, 💬 for a board post you haven't read, and **Close requested** with **Approve** and **Decline**. A real epic always shows; with no lanes and nothing for you to act on, it shrinks to one line (two on a phone), with its status line cut short. While a status filter is on, epics without a matching lane stay out.
+- **A group standing in as its epic** has no card: its header does the job, showing the status line, **Waiting on you** and 💬, and tapping it opens the epic's sheet.
+- **The Idle row** holds lanes with nothing to look at: idle, no open questions, no unread message, and not under an epic. It's folded by default, remembered on the device, and left out while a status filter is on, so the lanes it picks stay visible.
 - **An epic's sheet** opens from its card, or from the epic on a question. It shows the epic's questions, its board with a box to write to the overseer, and its lanes with their combined feed: status changes, activity and ticket switches across them, latest first.
 
 ## Escalations
