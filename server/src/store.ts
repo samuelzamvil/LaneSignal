@@ -4760,6 +4760,16 @@ export class Store {
     this.checkScope({ scope: 'products', project, products: ids }, true);
   }
 
+  /**
+   * The products whose requirements apply to work on these: each one and the product it's a subproject
+   * of. Never downwards or sideways: SplitBands' work doesn't get its subprojects' requirements.
+   */
+  productsApplyingTo(project: string, ids: string[]): string[] {
+    const named = [...new Set(ids.map((id) => id.trim().toLowerCase()))];
+    const parents = named.map((id) => this.getProduct(project, id)?.parent).filter((p): p is string => !!p);
+    return [...new Set([...named, ...parents])].sort();
+  }
+
   /** Must run inside a transaction. */
   private setRequirementProducts(num: number, project: string | null, products: string[]) {
     this.db.prepare('DELETE FROM requirement_products WHERE requirement_num = ?').run(num);
