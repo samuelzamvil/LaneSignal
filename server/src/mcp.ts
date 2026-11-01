@@ -643,8 +643,9 @@ function buildServer(
 
     const REQ_ID_HELP = 'Requirement id, e.g. "R14".';
     const SCOPE_HELP =
-      'Where it applies: "products" (with `products`), "project" (every product in the project) or "global" (every ' +
-      'project). list_products shows the products.';
+      'Where it applies: "products" (with `products`; a rule on a product also reaches its subprojects, so name the ' +
+      'product rather than listing them), "project" (every product in the project) or "global" (every project). ' +
+      'list_products shows the products.';
     const requirementFields = {
       requirement: s.requirementInput.shape.requirement.describe('One normative statement, e.g. "Payouts retry at most 5 times."'),
       justification: s.requirementInput.shape.justification.describe('Why the owner decided it, and where.'),
@@ -720,8 +721,9 @@ function buildServer(
       'find_requirements',
       {
         description:
-          'Everything that applies to your work, in one call: the requirements of the `products` you name, plus the ' +
-          'project-wide and global ones. Work not tied to a product: `project_only: true` (project-wide and global only). ' +
+          'Everything that applies to your work, in one call: the requirements of the `products` you name, those of the ' +
+          'product each is a subproject of, and the project-wide and global ones. Name the narrowest products you work on: ' +
+          'a product doesn\'t bring in its subprojects\' requirements. Work not tied to a product: `project_only: true` (project-wide and global only). ' +
           'One of the two is required; list_products shows the products. The response names the scope it used. Justification ' +
           'isn\'t included: get_requirement with include_justification has it. `query` narrows by free text (or finds an id ' +
           'like "R14"). Pending and active ones unless you set `statuses`; `status: "pending"` means the owner hasn\'t ' +
@@ -759,12 +761,15 @@ function buildServer(
             );
           }
           if (products) store.requireProducts(pr, products);
-          const scope = products ? { project: pr, products: [...new Set(products)].sort() } : { project: pr, projectOnly: true as const };
+          const applying = products && store.productsApplyingTo(pr, products);
+          const named = products && [...new Set(products)].sort();
+          const inherited = applying?.filter((id) => !named!.includes(id));
+          const scope = named ? { project: pr, products: named, inherited: inherited?.length ? inherited : undefined } : { project: pr, projectOnly: true as const };
           const found = store.findRequirements({
             query,
             projects: [pr],
             statuses,
-            scope: { project: pr, products, projectWide: true, global: true },
+            scope: { project: pr, products: applying, projectWide: true, global: true },
             limit: limit ?? 200,
           });
           return json(

@@ -323,7 +323,7 @@ export const requirementReject = z.object({ reason: z.string().trim().min(1, 'Sa
 export const requirementQuery = z
   .object({
     q: z.string().max(500).optional(),
-    /** Everything that applies to these products: theirs, plus project-wide and global ones (as find_requirements). */
+    /** Everything that applies to these products: theirs, their parents', and project-wide and global ones (as find_requirements). */
     applies_to: z.preprocess(csv, z.array(productId).min(1).max(20)).optional(),
     group: groupId.optional(),
     /** Only global or only project-wide requirements. */
