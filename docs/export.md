@@ -141,7 +141,7 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 
 ### `products.csv` (what requirements are scoped to)
 
-`project`, `id`, `name`, `color`, `locked`, `archived`, `requirements` (how many in force), `created_by`, `created_at`, `updated_at`. Complete, archived products too.
+`project`, `id`, `name`, `parent` (the product it's a subproject of), `color`, `locked`, `archived`, `requirements` (how many in force), `created_by`, `created_at`, `updated_at`. Complete, archived products too.
 
 ### `requirement_changes.csv` (scope changes, for audits)
 

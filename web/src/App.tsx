@@ -32,6 +32,7 @@ import { HistoryPane } from './history.tsx';
 import { RequirementsPane } from './requirements.tsx';
 import { baselineSeen, hasNewMessage, useSeenVersion } from './seen.ts';
 import { Toaster } from './toast.tsx';
+import { ProductsSection } from './products-panel.tsx';
 import { AgentKeysSection, ExportSection, PasswordSection, PeopleSection, ProjectsSection } from './settings.tsx';
 
 // ---- routing (hash based, so it works from file-less Capacitor URLs and push deep links) ----
@@ -860,6 +861,7 @@ function Dashboard({
         <dd>{config.ticketSystems.join(', ') || 'none configured'}</dd>
       </dl>
       <ProjectsSection client={client} me={me} projects={live.projects} onChanged={live.refresh} />
+      {config.requirements && me?.role === 'human' && !me.personalKey && <ProductsSection client={client} projects={live.projects} version={live.requirementsVersion} />}
       {me?.userId ? (
         <>
           <AgentKeysSection
