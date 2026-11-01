@@ -1144,12 +1144,11 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     if (group && !store.groupExists(group)) throw new NotFoundError(`Group "${query.group}" not found`);
     // Rejected records are for people only: agents (and Claude sessions on a personal key) never get them back.
     const statuses = approvesRequirements(principalOf(res)) ? query.status : query.status?.filter((x) => x !== 'rejected');
-    if (statuses && !statuses.length) return void res.json([]);
     if (query.applies_to && (query.product || query.scope)) throw new ValidationError('applies_to already covers project-wide and global ones: leave out product and scope');
     const appliesTo = query.applies_to ? a.pick(query.project) : undefined;
     if (appliesTo) store.requireProducts(appliesTo, query.applies_to!);
     const scope = appliesTo
-      ? { project: appliesTo, products: query.applies_to, projectWide: true, global: true }
+      ? { project: appliesTo, products: store.productsApplyingTo(appliesTo, query.applies_to!), projectWide: true, global: true }
       : query.product
       ? { project: a.pick(query.project), products: [query.product] }
       : query.scope === 'global'
@@ -1157,10 +1156,14 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         : query.scope === 'project'
           ? { projectWide: true, project: query.project ? a.pick(query.project) : undefined }
           : undefined;
+    // Asked and checked first, so a bad request is refused whatever the statuses.
+    if (statuses && !statuses.length) return void res.json([]);
     const needsRegrouping = query.regroup === undefined ? undefined : query.regroup === 'true';
+    // "Everything that applies" mustn't quietly lose its oldest rules at the general default of 50.
+    const limit = query.limit ?? (appliesTo ? 200 : undefined);
     res.json(
       store
-        .findRequirements({ query: query.q, group, projects, statuses, scope, needsRegrouping, limit: query.limit })
+        .findRequirements({ query: query.q, group, projects, statuses, scope, needsRegrouping, limit })
         .map(pub.requirement),
     );
   });

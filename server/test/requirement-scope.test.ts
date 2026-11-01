@@ -340,6 +340,84 @@ describe('the product tree', () => {
   });
 });
 
+describe('requirements follow the product tree', () => {
+  const texts = (res: { value: { requirements: { requirement: string }[] } }) => res.value.requirements.map((r) => r.requirement);
+  const find = (args: Record<string, unknown>) => srv.tool(AGENT, 'find_requirements', args);
+  const on = (requirement: string, scope: string, products?: string[]) =>
+    srv.call('POST', '/api/requirements', ALICE, { ...base, requirement, scope, ...(products ? { products } : {}) });
+
+  before(async () => {
+    for (const [id, parent] of [['ladder', null], ['ladder-a', 'ladder'], ['ladder-b', 'ladder'], ['ladder-other', null]] as const) {
+      await srv.call('POST', '/api/products', ALICE, { id, name: id, ...(parent ? { parent } : {}) });
+    }
+    await on('Ladder product rule.', 'products', ['ladder']);
+    await on('Ladder A rule.', 'products', ['ladder-a']);
+    await on('Ladder B rule.', 'products', ['ladder-b']);
+    await on('Other product rule.', 'products', ['ladder-other']);
+  });
+
+  test('a product gets its own, project and global, not its subprojects', async () => {
+    const res = await find({ products: ['ladder'] });
+    assert.deepEqual(res.value.scope, { project: 'default', products: ['ladder'] });
+    const found = texts(res);
+    assert.ok(found.includes('Ladder product rule.'));
+    assert.ok(!found.includes('Ladder A rule.') && !found.includes('Ladder B rule.'));
+  });
+
+  test('a subproject also gets its product, not its siblings', async () => {
+    const res = await find({ products: ['ladder-a'] });
+    assert.deepEqual(res.value.scope, { project: 'default', products: ['ladder-a'], inherited: ['ladder'] });
+    const found = texts(res);
+    assert.ok(found.includes('Ladder A rule.') && found.includes('Ladder product rule.'));
+    assert.ok(!found.includes('Ladder B rule.') && !found.includes('Other product rule.'));
+    assert.ok(res.value.requirements.some((r: { scope: string }) => r.scope === 'project'));
+    assert.ok(res.value.requirements.some((r: { scope: string }) => r.scope === 'global'));
+  });
+
+  test('several subprojects each bring their product, once', async () => {
+    const res = await find({ products: ['ladder-a', 'ladder-b'] });
+    assert.deepEqual(res.value.scope.inherited, ['ladder']);
+    const found = texts(res);
+    assert.equal(found.filter((t: string) => t === 'Ladder product rule.').length, 1);
+    assert.ok(found.includes('Ladder A rule.') && found.includes('Ladder B rule.'));
+  });
+
+  test('naming a subproject with its product adds nothing inherited', async () => {
+    const res = await find({ products: ['ladder', 'ladder-a'] });
+    assert.deepEqual(res.value.scope, { project: 'default', products: ['ladder', 'ladder-a'] });
+  });
+
+  test('the HTTP route follows it too, and product= stays exact', async () => {
+    const list = async (q: string) => (await srv.call('GET', `/api/requirements?${q}`, AGENT)).body.map((r: { requirement: string }) => r.requirement);
+    const applies = await list('applies_to=ladder-a');
+    assert.ok(applies.includes('Ladder product rule.') && applies.includes('Ladder A rule.') && !applies.includes('Ladder B rule.'));
+    const exact = await list('product=ladder-a');
+    assert.ok(exact.includes('Ladder A rule.') && !exact.includes('Ladder product rule.'));
+  });
+
+  test('applies_to refuses a bad request whatever the statuses, and is not cut at the general 50', async () => {
+    assert.equal((await srv.call('GET', '/api/requirements?applies_to=ladder-missing&status=rejected', AGENT)).status, 404);
+    assert.equal((await srv.call('GET', '/api/requirements?applies_to=ladder-a&product=ladder&status=rejected', AGENT)).status, 400);
+    await srv.call('POST', '/api/products', ALICE, { id: 'ladder-many', name: 'Many', parent: 'ladder' });
+    for (let i = 0; i < 55; i++) await on(`Many rule number ${i} is distinct word${i}.`, 'products', ['ladder-many']);
+    const all = (await srv.call('GET', '/api/requirements?applies_to=ladder-many', AGENT)).body;
+    assert.ok(all.length > 55, String(all.length));
+    assert.ok(all.some((r: { requirement: string }) => r.requirement === 'Ladder product rule.'), 'older parent rules stay in');
+    assert.equal((await srv.call('GET', '/api/requirements?applies_to=ladder-many&limit=5', AGENT)).body.length, 5);
+  });
+
+  test('moving a product changes what applies straight away', async () => {
+    await srv.call('PATCH', '/api/products/ladder-b', ALICE, { parent: 'ladder-other' });
+    const moved = await find({ products: ['ladder-b'] });
+    assert.deepEqual(moved.value.scope.inherited, ['ladder-other']);
+    assert.ok(texts(moved).includes('Other product rule.') && !texts(moved).includes('Ladder product rule.'));
+    await srv.call('PATCH', '/api/products/ladder-b', ALICE, { parent: null });
+    const top = await find({ products: ['ladder-b'] });
+    assert.equal(top.value.scope.inherited, undefined);
+    assert.ok(!texts(top).includes('Other product rule.'));
+  });
+});
+
 describe('archiving', () => {
   test('refused while requirements are in force; hidden from the list once archived', async () => {
     await srv.call('POST', '/api/products', ALICE, { id: 'product-old', name: 'Old' });
