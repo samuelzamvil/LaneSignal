@@ -40,7 +40,7 @@ export function parentChoices<P extends Pick<Product, 'id' | 'parent' | 'archive
   return products.filter((p) => p.parent === null && !p.archived && p.id !== product?.id);
 }
 
-/** A subproject's name without its product's: "SplitCloud-Accounts" under SplitCloud reads "Accounts". */
+/** A subproject's name without its product's: "Globex-Accounts" under Globex reads "Accounts". */
 const shortName = (name: string, parent: string) => {
   if (!name.toLowerCase().startsWith(parent.toLowerCase())) return name;
   const rest = name.slice(parent.length);
@@ -55,7 +55,7 @@ type Grouped = Pick<Group, 'id' | 'project' | 'name' | 'products'>;
 export const isCatchAll = (g: Pick<Group, 'id'>) => g.id === 'ungrouped';
 
 /**
- * A group's title from its products: "SplitBands", "SplitCloud › Accounts, Licensing", or both joined
+ * A group's title from its products: "Acme", "Globex › Accounts, Licensing", or both joined
  * by " · ". A product it names itself covers its subprojects. Null when it names no live product.
  */
 export function groupTitle(linked: string[], products: Titled[]): string | null {

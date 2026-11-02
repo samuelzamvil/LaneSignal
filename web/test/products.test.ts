@@ -9,21 +9,21 @@ test('a slug never ends in a hyphen left by the 40-character cut', () => {
 });
 
 test('a slug is kebab-case', () => {
-  assert.equal(productSlug('  SplitCloud: the API! '), 'splitcloud-the-api');
+  assert.equal(productSlug('  Globex: the API! '), 'globex-the-api');
 });
 
 const products = [
-  { id: 'splitbands', name: 'SplitBands-Vector', archived: false },
+  { id: 'acme', name: 'Acme-Web', archived: false },
   { id: 'old', name: 'Old one', archived: true },
 ];
 
 test('a name whose id is held names the product holding it', () => {
-  assert.match(productIdProblem('SplitBands', '', products)!, /"SplitBands-Vector"/);
+  assert.match(productIdProblem('Acme', '', products)!, /"Acme-Web"/);
 });
 
 test('a typed id is what counts, in any case', () => {
-  assert.equal(productIdProblem('SplitBands', 'splitbands-suite', products), null);
-  assert.match(productIdProblem('Anything', ' SPLITBANDS ', products)!, /"SplitBands-Vector"/);
+  assert.equal(productIdProblem('Acme', 'acme-suite', products), null);
+  assert.match(productIdProblem('Anything', ' ACME ', products)!, /"Acme-Web"/);
 });
 
 test('an archived holder can be unarchived', () => {
@@ -39,10 +39,10 @@ test('a name with no usable id asks for one; an empty form says nothing', () => 
 
 const tree = [
   { id: 'cloud-sdk', name: 'SDK', parent: 'cloud', archived: false },
-  { id: 'bands', name: 'SplitBands', parent: null, archived: false },
-  { id: 'cloud', name: 'SplitCloud', parent: null, archived: false },
+  { id: 'bands', name: 'Acme', parent: null, archived: false },
+  { id: 'cloud', name: 'Globex', parent: null, archived: false },
   { id: 'cloud-api', name: 'API', parent: 'cloud', archived: false },
-  { id: 'gone', name: 'Gone', parent: null, archived: true },
+  { id: 'gone', name: 'Abandoned', parent: null, archived: true },
 ];
 
 test('the tree lists top-level products by name, each with its subprojects by name', () => {
@@ -62,35 +62,35 @@ test('a product can go under live top-level products, never itself or a subproje
 });
 
 const shelf = [
-  { id: 'bands', name: 'SplitBands', parent: null, archived: false, project: 'p' },
-  { id: 'cloud', name: 'SplitCloud', parent: null, archived: false, project: 'p' },
-  { id: 'accounts', name: 'SplitCloud-Accounts', parent: 'cloud', archived: false, project: 'p' },
-  { id: 'licensing', name: 'SplitCloud-Licensing', parent: 'cloud', archived: false, project: 'p' },
+  { id: 'bands', name: 'Acme', parent: null, archived: false, project: 'p' },
+  { id: 'cloud', name: 'Globex', parent: null, archived: false, project: 'p' },
+  { id: 'accounts', name: 'Globex-Accounts', parent: 'cloud', archived: false, project: 'p' },
+  { id: 'licensing', name: 'Globex-Licensing', parent: 'cloud', archived: false, project: 'p' },
   { id: 'demo', name: 'Demo site', parent: 'cloud', archived: false, project: 'p' },
   { id: 'old', name: 'Old', parent: null, archived: true, project: 'p' },
 ];
 
 test('a title reads from the tree', () => {
-  assert.equal(groupTitle(['bands'], shelf), 'SplitBands');
-  assert.equal(groupTitle(['licensing', 'accounts'], shelf), 'SplitCloud › Accounts, Licensing');
-  assert.equal(groupTitle(['demo'], shelf), 'SplitCloud › Demo site', 'a name without the prefix stays whole');
-  assert.equal(groupTitle(['cloud', 'accounts'], shelf), 'SplitCloud', 'a product covers its subprojects');
-  assert.equal(groupTitle(['cloud', 'bands'], shelf), 'SplitBands · SplitCloud');
+  assert.equal(groupTitle(['bands'], shelf), 'Acme');
+  assert.equal(groupTitle(['licensing', 'accounts'], shelf), 'Globex › Accounts, Licensing');
+  assert.equal(groupTitle(['demo'], shelf), 'Globex › Demo site', 'a name without the prefix stays whole');
+  assert.equal(groupTitle(['cloud', 'accounts'], shelf), 'Globex', 'a product covers its subprojects');
+  assert.equal(groupTitle(['cloud', 'bands'], shelf), 'Acme · Globex');
   assert.equal(groupTitle(['old'], shelf), null);
   assert.equal(groupTitle([], shelf), null);
 });
 
 test('a group is called by its products, and by its own name only to tell it apart', () => {
   const g = (name: string, products: string[], project = 'p') => ({ id: name, name, products, project });
-  const one = g('Product train', ['bands']);
+  const one = g('Main train', ['bands']);
   const two = g('Print', ['cloud']);
   const three = g('Deletion', ['cloud']);
   const none = g('Loose', []);
   const elsewhere = g('Theirs', [], 'q');
   const titles = groupTitles([one, two, three, none, elsewhere], shelf);
-  assert.equal(titles.get(one), 'SplitBands');
-  assert.equal(titles.get(two), 'SplitCloud · Print');
-  assert.equal(titles.get(three), 'SplitCloud · Deletion');
+  assert.equal(titles.get(one), 'Acme');
+  assert.equal(titles.get(two), 'Globex · Print');
+  assert.equal(titles.get(three), 'Globex · Deletion');
   assert.equal(titles.get(none), 'No product · Loose');
   assert.equal(titles.get(elsewhere), 'Theirs', 'a project with no products keeps the overseer\'s name');
 });
@@ -98,7 +98,7 @@ test('a group is called by its products, and by its own name only to tell it apa
 test('a filter chip for a product with several boxes, counting its subprojects', () => {
   const g = (id: string, products: string[]) => ({ id, name: id, products, project: 'p' });
   const chips = productGroups([g('a', ['accounts']), g('b', ['cloud']), g('c', ['bands']), g('d', [])], shelf);
-  assert.deepEqual([...chips.values()], [{ name: 'SplitCloud', project: 'p', keys: ['p/a', 'p/b'] }]);
+  assert.deepEqual([...chips.values()], [{ name: 'Globex', project: 'p', keys: ['p/a', 'p/b'] }]);
 });
 
 test('a catch-all group and a server without products keep their names', () => {
