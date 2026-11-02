@@ -111,7 +111,8 @@ The owner's durable product decisions are kept as requirements, scoped to produc
 
 ### Usage: requirements
 
-- **Before escalating a product or scope question,** `find_requirements` with the narrowest products your work touches: a subproject also returns its parent product's requirements, but a product doesn't return its subprojects'. If a requirement answers it, follow it and cite its id ("per R14") instead of asking again; a `pending` one too.
+- **Read them once:** `find_requirements` with the narrowest products your work touches (`project_only` if none), at session start and after a compaction or restart. When work reaches a product you haven't read, read only that one with `only_named`, naming its parent too if you haven't read that. Otherwise read again only when you're told a requirement changed, or to search before recording one.
+- **Before escalating a product or scope question,** check what you've read. If a requirement answers it, follow it and cite its id ("per R14") instead of asking again; a `pending` one too.
 
 If your owner's policy asks you to record decisions (or you're told to):
 

@@ -25,7 +25,7 @@ Don't escalate routine progress or choices you can reverse cheaply; escalations 
 **While you wait:** keep working on lanes that aren't blocked. When I answer in LaneSignal, acknowledge before acting (if I answer Other, act on it or reply in one or two short sentences); when I answer here, dismiss the escalation with what I decided. Either way, publish the lane's next status in the same call.
 
 **Requirements** (optional: keep, change or drop this part):
-- Before escalating a product question to me, search the requirements and follow any that answer it.
+- Read the requirements at session start and after a compaction or restart. Before escalating a product question to me, check what you've read and follow any that answer it.
 - When I decide something that sets product direction, record it as a short requirement scoped to the products it concerns, naming me as the decider and citing the escalation.
 - Never record your own design choices as requirements.
 `;

@@ -36,7 +36,8 @@ Replace each TODO with how your agents should work; each example is the default 
 
 ### Requirements (when they're on)
 
-- **Looking them up:** TODO (e.g. "before escalating a product or scope question, with the products your work touches; follow and cite what applies, pending ones too")
+- **Looking them up:** TODO (e.g. "at session start and after a compaction or restart, with the narrowest products your work touches, or `project_only` if none; `only_named` for a product you haven't read, plus its parent if unread; again only when told one changed or to search before recording")
+- **Using them:** TODO (e.g. "before escalating a product or scope question, check what you've read; follow and cite what applies, pending ones too")
 - **What to record:** TODO (e.g. "only what a person decided, never your own design choices; one decision each, naming who decided")
 - **Before recording:** TODO (e.g. "search first; supersede an earlier decision the owner changed; tell the owner about a `similar` one that's the same")
 - **Scope:** TODO (e.g. "the narrowest true one; global only when the owner says so; ask rather than stretch a product")
