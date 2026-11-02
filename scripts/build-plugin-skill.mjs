@@ -1,6 +1,7 @@
 // Writes the plugin's skill (plugin/skills/lanesignal/SKILL.md): the skill a server with the default
 // features hands out at /api/skill (answering in LaneSignal and requirements on). Run after editing
-// skills/lanesignal/; a test checks the two stay the same.
+// skills/lanesignal/, and bump "version" in plugin/.claude-plugin/plugin.json: Claude Code won't update an
+// installed plugin whose version hasn't changed. A test checks this file matches what /api/skill serves.
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const part = (name) => readFileSync(new URL(`../skills/lanesignal/${name}`, import.meta.url), 'utf8');
