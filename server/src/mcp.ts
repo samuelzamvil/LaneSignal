@@ -731,7 +731,9 @@ function buildServer(
           'Everything that applies to your work, in one call: the requirements of the `products` you name, those of the ' +
           'product each is a subproject of, and the project-wide and global ones. Name the narrowest products you work on: ' +
           'a product doesn\'t bring in its subprojects\' requirements. Work not tied to a product: `project_only: true` (project-wide and global only). ' +
-          'One of the two is required; list_products shows the products. The response names the scope it used. Justification ' +
+          '`only_named: true` with `products` returns just those products, for adding one to what you already read; ' +
+          '`scope.parentsNotRead` lists any parent it left out. ' +
+          'One of `products` and `project_only` is required; list_products shows the products. The response names the scope it used. Justification ' +
           'isn\'t included: get_requirement with include_justification has it. `query` narrows by free text (or finds an id ' +
           'like "R14"). Pending and active ones unless you set `statuses`; `status: "pending"` means the owner hasn\'t ' +
           'approved the record yet, so it may still be corrected. A requirement in force with `supersededBy` ' +
@@ -742,6 +744,7 @@ function buildServer(
         inputSchema: {
           products: z.array(s.productId).min(1).max(20).optional(),
           project_only: z.boolean().optional(),
+          only_named: z.boolean().optional(),
           query: z.string().max(500).optional(),
           statuses: z.array(z.enum(s.AGENT_REQUIREMENT_STATUSES)).optional(),
           limit: z.number().int().min(1).max(200).optional(),
@@ -749,8 +752,9 @@ function buildServer(
         },
         annotations: { readOnlyHint: true },
       },
-      async ({ products, project_only, query, statuses, limit, project }) => {
+      async ({ products, project_only, only_named, query, statuses, limit, project }) => {
         try {
+          if (only_named && !products) throw new ValidationError('only_named needs `products`: the ones to read');
           // A key that sees every project but has none yet still reads the global ones.
           if (project_only && !project && !a.projects.length && a.global) {
             const found = store.findRequirements({ query, projects: [], statuses, scope: { global: true }, limit: limit ?? 200 });
@@ -768,15 +772,25 @@ function buildServer(
             );
           }
           if (products) store.requireProducts(pr, products);
-          const applying = products && store.productsApplyingTo(pr, products);
           const named = products && [...new Set(products)].sort();
+          const chain = products && store.productsApplyingTo(pr, products);
+          const applying = only_named ? named : chain;
           const inherited = applying?.filter((id) => !named!.includes(id));
-          const scope = named ? { project: pr, products: named, inherited: inherited?.length ? inherited : undefined } : { project: pr, projectOnly: true as const };
+          const parentsNotRead = only_named ? chain?.filter((id) => !named!.includes(id)) : undefined;
+          const scope = named
+            ? {
+                project: pr,
+                products: named,
+                inherited: inherited?.length ? inherited : undefined,
+                onlyNamed: only_named || undefined,
+                parentsNotRead: parentsNotRead?.length ? parentsNotRead : undefined,
+              }
+            : { project: pr, projectOnly: true as const };
           const found = store.findRequirements({
             query,
             projects: [pr],
             statuses,
-            scope: { project: pr, products: applying, projectWide: true, global: true },
+            scope: only_named ? { project: pr, products: applying } : { project: pr, products: applying, projectWide: true, global: true },
             limit: limit ?? 200,
           });
           return json(

@@ -387,6 +387,26 @@ describe('requirements follow the product tree', () => {
     assert.deepEqual(res.value.scope, { project: 'default', products: ['ladder', 'ladder-a'] });
   });
 
+  test('only_named returns just the products named, for adding one to an earlier read', async () => {
+    const res = await find({ products: ['ladder-a'], only_named: true });
+    assert.deepEqual(res.value.scope, { project: 'default', products: ['ladder-a'], onlyNamed: true, parentsNotRead: ['ladder'] });
+    assert.deepEqual(texts(res), ['Ladder A rule.']);
+    assert.ok(res.value.requirements.every((r: { scope: string }) => r.scope === 'products'), 'no project-wide or global ones');
+    const two = await find({ products: ['ladder-a', 'ladder-other'], only_named: true });
+    assert.deepEqual(texts(two).sort(), ['Ladder A rule.', 'Other product rule.']);
+    assert.deepEqual(texts(await find({ products: ['ladder-a', 'ladder'], only_named: true })).sort(), ['Ladder A rule.', 'Ladder product rule.'], 'a parent can be asked for too');
+    // The default stays the whole chain.
+    assert.ok(texts(await find({ products: ['ladder-a'], only_named: false })).includes('Ladder product rule.'));
+  });
+
+  test('only_named needs products, and an unknown product is still refused', async () => {
+    assert.ok((await find({ project_only: true, only_named: true })).isError);
+    assert.ok((await find({ only_named: true })).isError);
+    assert.ok((await find({ products: ['ladder-missing'], only_named: true })).isError);
+    const named = await find({ products: ['ladder', 'ladder-a'], only_named: true });
+    assert.equal(named.value.scope.parentsNotRead, undefined, 'its parent was named, so nothing was left out');
+  });
+
   test('the HTTP route follows it too, and product= stays exact', async () => {
     const list = async (q: string) => (await srv.call('GET', `/api/requirements?${q}`, AGENT)).body.map((r: { requirement: string }) => r.requirement);
     const applies = await list('applies_to=ladder-a');
