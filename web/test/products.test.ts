@@ -9,11 +9,11 @@ test('a slug never ends in a hyphen left by the 40-character cut', () => {
 });
 
 test('a slug is kebab-case', () => {
-  assert.equal(productSlug('  Globex: the API! '), 'Globex-the-api');
+  assert.equal(productSlug('  Globex: the API! '), 'globex-the-api');
 });
 
 const products = [
-  { id: 'Acme', name: 'Acme-Web', archived: false },
+  { id: 'acme', name: 'Acme-Web', archived: false },
   { id: 'old', name: 'Old one', archived: true },
 ];
 
@@ -22,8 +22,8 @@ test('a name whose id is held names the product holding it', () => {
 });
 
 test('a typed id is what counts, in any case', () => {
-  assert.equal(productIdProblem('Acme', 'Acme-suite', products), null);
-  assert.match(productIdProblem('Anything', ' Acme ', products)!, /"Acme-Web"/);
+  assert.equal(productIdProblem('Acme', 'acme-suite', products), null);
+  assert.match(productIdProblem('Anything', ' ACME ', products)!, /"Acme-Web"/);
 });
 
 test('an archived holder can be unarchived', () => {
@@ -42,7 +42,7 @@ const tree = [
   { id: 'bands', name: 'Acme', parent: null, archived: false },
   { id: 'cloud', name: 'Globex', parent: null, archived: false },
   { id: 'cloud-api', name: 'API', parent: 'cloud', archived: false },
-  { id: 'gone', name: 'Gone', parent: null, archived: true },
+  { id: 'gone', name: 'Abandoned', parent: null, archived: true },
 ];
 
 test('the tree lists top-level products by name, each with its subprojects by name', () => {

@@ -4831,7 +4831,7 @@ export class Store {
 
   /**
    * The products whose requirements apply to work on these: each one and the product it's a subproject
-   * of. Never downwards or sideways: Acme' work doesn't get its subprojects' requirements.
+   * of. Never downwards or sideways: Acme's work doesn't get its subprojects' requirements.
    */
   productsApplyingTo(project: string, ids: string[]): string[] {
     const named = [...new Set(ids.map((id) => id.trim().toLowerCase()))];
