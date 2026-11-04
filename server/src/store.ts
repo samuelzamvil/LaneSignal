@@ -115,6 +115,13 @@ export const DEFAULT_PROJECT = 'default';
 /** Lane and group ids are stored qualified with their project: "project/lane". */
 export const qualify = (project: string, id: string) => `${project}/${id}`;
 export const localId = (qualified: string) => qualified.slice(qualified.indexOf('/') + 1);
+
+/** An overseer's key as people know it: its name ("user:<account>:<key name>" and "token:<name>" both end in it). */
+export const overseerName = (owner: string | null) => {
+  if (owner === null) return null;
+  const m = /^(?:user:[^:]*|token):(.*)$/s.exec(owner);
+  return m ? m[1] : owner;
+};
 export const projectOf = (qualified: string) => {
   const i = qualified.indexOf('/');
   // A bare id here is a bug in the caller, not bad input: fail loudly rather than write to project "".
@@ -205,7 +212,7 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
     'created_at', 'updated_at', 'status_since', 'blocked_seconds_total', 'blocked_since', 'escalations_total',
     'escalations_open', 'links', 'archived_at', 'ticket_id',
   ],
-  groups: ['id', 'project', 'name', 'ticket', 'ticket_url', 'links', 'products', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
+  groups: ['id', 'project', 'name', 'ticket', 'ticket_url', 'links', 'products', 'last_published_by', 'overseer', 'overseer_since', 'created_at', 'updated_at', 'archived_at'],
   tickets: [
     'id', 'project', 'ref', 'display_ref', 'code', 'ticket_url', 'group_id', 'lane_id', 'state', 'park_reason', 'waiting_on',
     'status', 'blocked_seconds_total', 'escalations_total', 'escalations_open', 'created_at', 'updated_at', 'closed_at',
@@ -314,7 +321,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 22;
+const SCHEMA_VERSION = 23;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -433,6 +440,17 @@ export class Store {
       );
     }
     this.tx(() => {
+      // v23's record of overseers, created first: reading a group (as earlier steps may) reads it.
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS group_overseers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          group_id TEXT NOT NULL,
+          overseer TEXT NOT NULL,
+          previous TEXT,
+          at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS group_overseers_group ON group_overseers(group_id, id);
+      `);
       if (version < 1) this.migrateV1();
       if (version < 2) {
         // Escalation fields: its own ticket/PR reference, cost of the recommendation, alternatives.
@@ -631,10 +649,34 @@ export class Store {
       if (version < 22) {
         this.db.exec('CREATE TABLE IF NOT EXISTS group_products (group_id TEXT NOT NULL, product_id TEXT NOT NULL, PRIMARY KEY (group_id, product_id))');
       }
+      if (version < 23) this.migrateV23();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
     });
+  }
+
+  /**
+   * v23: who oversees each group, and since when (a change of overseer is recorded); and no lane
+   * outside a group: live lanes whose group was removed are removed with it, as removing a group now does.
+   */
+  private migrateV23() {
+    this.db.exec(`
+      INSERT INTO group_overseers (group_id, overseer, previous, at)
+        SELECT id, owner, NULL, updated_at FROM groups WHERE owner IS NOT NULL; -- when it took control isn't known: its last update stands in
+    `);
+    const at = this.now().toISOString();
+    const stray = this.db
+      .prepare(
+        `SELECT l.id FROM lanes l LEFT JOIN groups g ON g.id = l.group_id
+         WHERE l.archived_at IS NULL AND instr(l.id, '/~') = 0 AND (l.group_id IS NULL OR g.id IS NULL OR g.archived_at IS NOT NULL)`,
+      )
+      .all() as Row[];
+    const touched: Touched = { escalations: new Set(), lanes: new Set(), tickets: new Set() };
+    for (const r of stray) {
+      const lane = this.getLane(r.id as string);
+      if (lane) this.archiveLane(lane, null, {}, at, touched);
+    }
   }
 
   /**
@@ -1107,9 +1149,35 @@ export class Store {
       links: JSON.parse(r.links as string) as Link[],
       products: this.groupProductIds(r.id as string, r.project_id as string),
       agent: (r.agent as string | null) ?? null,
+      overseer: overseerName((r.owner as string | null) ?? null),
+      overseerSince: (r.owner as string | null)
+        ? (((this.db.prepare('SELECT at FROM group_overseers WHERE group_id = ? ORDER BY id DESC LIMIT 1').get(r.id as string) as Row | undefined)
+            ?.at as string | undefined) ?? null)
+        : null,
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
     };
+  }
+
+  /** Who has overseen the group, latest first: each change of overseer, when it happened, and who it replaced. */
+  groupOverseers(id: string): { overseer: string; previous: string | null; at: string }[] {
+    if (!this.getGroup(id)) throw new NotFoundError(`Group "${localId(id)}" not found`);
+    return (this.db.prepare('SELECT * FROM group_overseers WHERE group_id = ? ORDER BY id DESC').all(id) as Row[]).map((r) => ({
+      overseer: overseerName(r.overseer as string)!,
+      previous: overseerName((r.previous as string | null) ?? null),
+      at: r.at as string,
+    }));
+  }
+
+  /**
+   * Must run inside a transaction. Any overseer may take control of a group at any time: registering
+   * it with another key makes that key its overseer, and the change is recorded.
+   */
+  private setOverseer(id: string, owner: string, at: string) {
+    const current = ((this.db.prepare('SELECT owner FROM groups WHERE id = ?').get(id) as Row | undefined)?.owner as string | null) ?? null;
+    if (current === owner) return;
+    this.db.prepare('UPDATE groups SET owner = ? WHERE id = ?').run(owner, id);
+    this.db.prepare('INSERT INTO group_overseers (group_id, overseer, previous, at) VALUES (?, ?, ?, ?)').run(id, owner, current, at);
   }
 
   /** The live products a group works on. An archived one drops out, and comes back if it's unarchived. */
@@ -1156,8 +1224,7 @@ export class Store {
 
   /**
    * Must run inside a transaction. Publishing to an archived group brings it
-   * back; returns true in that case so callers re-emit its lanes, which clients
-   * have been showing as ungrouped. A group's `ticket` is read-only (its epic has it now):
+   * back; returns true in that case so callers re-emit its lanes. A group's `ticket` is read-only (its epic has it now):
    * `patch.ticket` is ignored.
    */
   private writeGroup(id: string, patch: GroupPatch, actor: string | null, at: string, owner?: string): boolean {
@@ -1168,12 +1235,12 @@ export class Store {
       this.db
         .prepare('INSERT INTO groups (id, name, links, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
         .run(id, patch.name ?? localId(id), JSON.stringify(patch.links ?? []), actor, at, at);
-      if (owner) this.db.prepare('UPDATE groups SET owner = ? WHERE id = ?').run(owner, id);
+      if (owner) this.setOverseer(id, owner, at);
       // Every group has an epic: a new one starts with its stand-in.
       this.ensureEpic(id, at);
       return false;
     }
-    if (owner) this.db.prepare('UPDATE groups SET owner = ? WHERE id = ?').run(owner, id);
+    if (owner) this.setOverseer(id, owner, at);
     if (patch.name === undefined && patch.links === undefined) return restored;
     this.db
       .prepare('UPDATE groups SET name = ?, links = ?, agent = ?, updated_at = ? WHERE id = ?')
@@ -1187,7 +1254,7 @@ export class Store {
     return restored;
   }
 
-  /** Re-sends a restored group's lanes, which clients have been showing as ungrouped. */
+  /** Re-sends a restored group's lanes, so clients show them in it again. */
   private emitGroupLanes(groupId: string, exceptLaneId?: string) {
     for (const lane of this.listLanes()) {
       if (lane.group === groupId && lane.id !== exceptLaneId) this.emit({ type: 'lane', lane });
@@ -1236,22 +1303,26 @@ export class Store {
   }
 
   /**
-   * Archives the group: it disappears from the dashboard and its lanes show as
-   * ungrouped, but lanes keep their group id so exports still attribute them.
+   * Archives the group: it disappears from the dashboard, and its lanes are removed with it (a lane
+   * is never outside a group). Everything stays in the database for export.
    */
   deleteGroup(id: string, actor: string | null = null) {
-    const lanes = this.tx(() => {
-      const affected = this.listLanes()
-        .filter((l) => l.group === id)
-        .map((l) => l.id);
+    const touched: Touched = { escalations: new Set(), lanes: new Set(), tickets: new Set() };
+    const removed = this.tx(() => {
+      const affected = this.listLanes().filter((l) => l.group === id);
       const at = this.now().toISOString();
       const res = this.db.prepare('UPDATE groups SET archived_at = ? WHERE id = ? AND archived_at IS NULL').run(at, id);
       if (res.changes === 0) throw new NotFoundError(`Group "${localId(id)}" not found`);
-      for (const laneId of affected) this.addEvent(laneId, at, 'status', `Group "${localId(id)}" removed`, actor);
-      return affected.map((laneId) => this.requireLane(laneId));
+      for (const lane of affected) {
+        this.addEvent(lane.id, at, 'status', `Group "${localId(id)}" removed`, actor);
+        this.archiveLane(this.requireLane(lane.id), actor, {}, at, touched);
+      }
+      return affected.map((l) => l.id);
     });
+    for (const laneId of removed) touched.lanes.delete(laneId);
+    this.emitTouched(touched);
     this.emit({ type: 'group_deleted', id, project: projectOf(id) });
-    for (const lane of lanes) this.emit({ type: 'lane', lane });
+    for (const laneId of removed) this.emit({ type: 'lane_deleted', id: laneId, project: projectOf(laneId) });
   }
 
   // ---- lanes -------------------------------------------------------------
@@ -1388,6 +1459,7 @@ export class Store {
     }
     let createdGroup: Group | null = null;
     let groupRestored = false;
+    let restoredGroup: string | null = null;
     let previous: LaneStatus | null = null;
     const touched: Touched = { escalations: new Set(), lanes: new Set(), tickets: new Set() };
     let warning: string | undefined;
@@ -1396,18 +1468,23 @@ export class Store {
       const at = this.now().toISOString();
       this.restoreLane(id, actor, at);
       previous = this.getLane(id)?.status ?? null;
-      if (patch.group && !this.getGroup(patch.group)) {
-        groupRestored = this.writeGroup(patch.group, {}, actor, at);
-        createdGroup = this.getGroup(patch.group);
+      // The group it names, or the one it's in: a removed group comes back with its lane, so no lane is outside one.
+      const inGroup =
+        patch.group === undefined
+          ? (((this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(id) as Row | undefined)?.group_id as string | null) ?? null)
+          : patch.group;
+      if (inGroup && !this.getGroup(inGroup)) {
+        groupRestored = this.writeGroup(inGroup, {}, actor, at);
+        createdGroup = this.getGroup(inGroup);
+        restoredGroup = inGroup;
       }
       const { ticket, ...rest } = patch;
       let existing = this.getLane(id);
-      // Every lane is in a group, so a question it raises without a ticket has an epic to go to.
+      // Every lane is in a group: a new one names it, and none moves out of its group.
       if ((!existing && !rest.group) || rest.group === null) {
-        const ungrouped = qualify(projectOf(id), 'ungrouped');
-        const isNew = !this.getGroup(ungrouped);
-        rest.group = this.ungroupedGroup(projectOf(id), at);
-        if (isNew) createdGroup = this.getGroup(ungrouped);
+        throw new ValidationError(
+          `Lane "${localId(id)}" needs a group: register one with update_group (or PUT /api/groups/:id) and name it in \`group\``,
+        );
       }
       if (!existing) {
         // A lane with no ticket shows idle.
@@ -1474,7 +1551,7 @@ export class Store {
       this.emit({ type: 'group', group: createdGroup });
       this.emitGroupEpics((createdGroup as Group).id);
     }
-    if (groupRestored && patch.group) this.emitGroupLanes(patch.group, id);
+    if (groupRestored && restoredGroup) this.emitGroupLanes(restoredGroup, id);
     this.emitTouched(touched, id);
     this.emit({ type: 'lane', lane, statusChanged: previous !== lane.status || finished, ...(finished ? { completed: true } : {}) });
     return warning ? { ...lane, warning } : lane;
@@ -1533,21 +1610,26 @@ export class Store {
     this.tx(() => {
       const lane = Store.isEpicLane(id) ? null : this.getLane(id);
       if (!lane) throw new NotFoundError(`Lane "${localId(id)}" not found`);
-      const at = this.now().toISOString();
-      if (lane.ticketId !== null) {
-        const how = release.previous ?? (lane.status === 'completed' ? 'done' : 'park');
-        this.releaseTicket(lane, how, release.reason?.trim() || (how === 'park' ? 'Lane removed' : null), actor, at, touched);
-      }
-      // Questions raised here stay with their ticket or epic.
-      // End any blocked spell now, so archived time isn't counted as blocked.
-      const now = this.requireLane(id);
-      if (now.status === 'blocked_human') this.applyLaneUpdate(now, { status: 'idle' }, actor, at);
-      this.db.prepare('UPDATE lanes SET ticket_id = NULL, archived_at = ?, updated_at = ? WHERE id = ?').run(at, at, id);
-      this.addEvent(id, at, 'status', 'Lane removed', actor, null);
-      this.syncLetter(id);
+      this.archiveLane(lane, actor, release, this.now().toISOString(), touched);
     });
     this.emitTouched(touched, id);
     this.emit({ type: 'lane_deleted', id, project: projectOf(id) });
+  }
+
+  /** Must run inside a transaction. Removes a live lane from the dashboard (see deleteLane). */
+  private archiveLane(lane: Lane, actor: string | null, release: { previous?: TicketRelease; reason?: string | null }, at: string, touched: Touched) {
+    const id = lane.id;
+    if (lane.ticketId !== null) {
+      const how = release.previous ?? (lane.status === 'completed' ? 'done' : 'park');
+      this.releaseTicket(lane, how, release.reason?.trim() || (how === 'park' ? 'Lane removed' : null), actor, at, touched);
+    }
+    // Questions raised here stay with their ticket or epic.
+    // End any blocked spell now, so archived time isn't counted as blocked.
+    const now = this.requireLane(id);
+    if (now.status === 'blocked_human') this.applyLaneUpdate(now, { status: 'idle' }, actor, at);
+    this.db.prepare('UPDATE lanes SET ticket_id = NULL, archived_at = ?, updated_at = ? WHERE id = ?').run(at, at, id);
+    this.addEvent(id, at, 'status', 'Lane removed', actor, null);
+    this.syncLetter(id);
   }
 
   /** `ticketId`: the ticket it concerns; by default the one the lane holds. */
@@ -3032,9 +3114,17 @@ export class Store {
       }
       return { ...this.requireEscalation(id), duplicate: true };
     }
+    let restoredGroup: string | null = null;
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
-      if (!Store.isEpicLane(input.laneId)) this.restoreLane(input.laneId, actor, at);
+      // A removed lane comes back for its question, and its group with it: no lane is outside one.
+      if (!Store.isEpicLane(input.laneId) && this.restoreLane(input.laneId, actor, at)) {
+        const groupId = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row).group_id as string;
+        if (!this.getGroup(groupId)) {
+          this.writeGroup(groupId, {}, actor, at);
+          restoredGroup = groupId;
+        }
+      }
       const lane = this.laneIncludingArchived(input.laneId)!.lane;
       const id = randomUUID();
       const ref = Number((this.db.prepare('SELECT COALESCE(MAX(ref), 0) + 1 AS n FROM escalations').get() as Row).n);
@@ -3088,6 +3178,10 @@ export class Store {
       }
       return { escalation: this.requireEscalation(id), lane: Store.isEpicLane(input.laneId) ? null : this.requireLane(input.laneId), blocks };
     });
+    if (restoredGroup) {
+      this.emit({ type: 'group', group: this.getGroup(restoredGroup)! });
+      this.emitGroupEpics(restoredGroup);
+    }
     this.emit({ type: 'escalation', escalation });
     if (lane) this.emit({ type: 'lane', lane, statusChanged: blocks });
     return escalation;
@@ -4101,6 +4195,11 @@ export class Store {
         links: r.links,
         products: this.groupProductIds(r.id as string, r.project_id as string).join(' | '),
         last_published_by: r.agent,
+        overseer: overseerName((r.owner as string | null) ?? null),
+        overseer_since: (r.owner as string | null)
+          ? (((this.db.prepare('SELECT at FROM group_overseers WHERE group_id = ? ORDER BY id DESC LIMIT 1').get(r.id as string) as Row | undefined)
+              ?.at as string | undefined) ?? null)
+          : null,
         created_at: r.created_at,
         updated_at: r.updated_at,
         archived_at: r.archived_at,

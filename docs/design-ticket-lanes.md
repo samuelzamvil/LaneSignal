@@ -1,6 +1,6 @@
 # Plan: tickets, epics and explicit lane filling
 
-Status: **signed off by both overseers, revision 3**. Built over PRs #38, #40, #41 and #42, with an audit follow-up (see [Delivery](#delivery) and [As built](#as-built)).
+Status: **signed off by both overseers, revision 3**. Superseded in part: lanes can no longer be published without a group, and the "Ungrouped" group described here only remains in databases upgraded from earlier versions. Built over PRs #38, #40, #41 and #42, with an audit follow-up (see [Delivery](#delivery) and [As built](#as-built)).
 
 ## Why
 

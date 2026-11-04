@@ -25,6 +25,8 @@ before(async () => {
     LANESIGNAL_SIGNIN_RATE_MAX: '12',
   });
   const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
+  // Every lane is in a group: these tests publish theirs in "main".
+  store.upsertGroup('default/main', { name: 'main' }, 'overseer');
   const accounts = await createAccounts(config, ':memory:');
   accounts.people.on('gone', (_id, name) => gone.push(name ?? '?'));
   setupCode = accounts.setupCode!;
@@ -109,7 +111,7 @@ describe('accounts', () => {
     agentKey = created.body.key;
     assert.match(agentKey, /^ls_/);
 
-    const lane = await call('PUT', '/api/lanes/wiring', agentKey, { status: 'active' });
+    const lane = await call('PUT', '/api/lanes/wiring', agentKey, { group: 'main', status: 'active' });
     assert.equal(lane.status, 200);
     assert.equal(lane.body.agent, 'payments-overseer');
 
@@ -289,7 +291,7 @@ describe('accounts', () => {
 
   test('revoking a key closes its open event stream and fails its in-flight long-poll', async () => {
     const key = (await call('POST', '/api/auth/api-key/create', adminToken, { name: 'streamer' })).body.key;
-    await call('PUT', '/api/lanes/stream-lane', key, {});
+    await call('PUT', '/api/lanes/stream-lane', key, { group: 'main' });
     const esc = (await call('POST', '/api/escalations', key, { laneId: 'stream-lane', question: 'Q?' })).body;
     const ctrl = new AbortController();
     const stream = await fetch(`${base}/api/events?access_token=${key}`, { signal: ctrl.signal });

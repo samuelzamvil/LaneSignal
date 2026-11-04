@@ -12,7 +12,7 @@ A group has:
 
 **Group titles come from products.** A group links to the [products](requirements.md#scope) it works on, and the app titles its box from them: `Acme`, or `Globex › Accounts, Licensing` for subprojects. When two groups have the same title, the overseer's own name for the group is added (`Acme · print`). A group with no product reads `No product · <its name>`, so you can see it needs one. An overseer names its products when it registers (`update_group` with `products`, the narrowest that cover its work); after that, only a person changes them, in Settings under **Products**. A project with no products at all keeps the overseers' names, and so does its catch-all **Ungrouped** group. A product that's archived drops out of the groups linked to it, and comes back if it's unarchived.
 
-The overseer registers its group with `update_group` before publishing lanes in it. Every lane is in a group: a lane published without one joins the project's **Ungrouped** group. The lane list is arranged by group by default, and groups that need you sort first. Each group is one box headed by its title and overseer's session, with its [epics](#epics), lanes and parked tickets inside, so you can tell one overseer's work from another's at a glance.
+The overseer registers its group with `update_group` before publishing lanes in it. Every lane is in a group: publishing one without its group is refused, and removing a group removes its lanes. Registering a group takes control of it: any overseer can, at any time, and each change of overseer is recorded (`GET /api/groups/:id/overseers`). Projects upgraded from earlier versions keep the **Ungrouped** group their lanes were put in. Only the overseer writes to LaneSignal; workers it starts read requirements and report to it. The lane list is arranged by group by default, and groups that need you sort first. Each group is one box headed by its title and overseer's session, with its [epics](#epics), lanes and parked tickets inside, so you can tell one overseer's work from another's at a glance.
 
 ## Lanes
 
@@ -53,7 +53,7 @@ A ticket is what a lane works on. It owns its escalations and its status history
 The rules:
 
 - **One record per ticket:** `967`, `#967`, `redmine:967` and the Redmine URL are the same ticket (refs are put into one form, using the default ticket system). A ticket is created the first time a lane is filled with it.
-- **One lane at a time:** filling a lane with a ticket another lane holds is refused. A worker and a reviewer on one ticket share a lane. Any lane can take a parked ticket, and filling a lane with a done or dropped one reopens it.
+- **One lane at a time:** filling a lane with a ticket another lane holds is refused. Any lane can take a parked ticket, and filling a lane with a done or dropped one reopens it.
 - **Questions keep their lane:** an escalation stays recorded on the lane it was raised in (for history and export), and counts, blocks and is waited on where its ticket is now.
 - **Letting go:** a lane lets its ticket go as **parked** (to pick up again, with a reason), **done**, or **dropped** (unfinished). Whatever happens to a ticket, its open questions stay open and in your inbox, answered as ever; they block only the lane holding it. A lane published as `completed` marks its ticket done and empties (`idle`), ready for the next.
 - **Not a tracker:** a ticket's state here only says whether a lane holds it and how the last one let it go. Its real status lives in Redmine, GitHub or wherever it's tracked; LaneSignal never syncs it.

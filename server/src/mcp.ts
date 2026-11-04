@@ -907,7 +907,8 @@ function buildServer(
             ? ', and `products` (from list_products), the narrowest that cover your work: the dashboard titles your group from ' +
               'them. Once a group has products, only the owner changes them'
             : '') +
-          '. Its epic\'s ticket goes in update_epic.',
+          '. Its epic\'s ticket goes in update_epic. Registering a group takes control of it: your key becomes its overseer ' +
+          '(any earlier overseer is replaced, and the change is recorded).',
         inputSchema: {
           group_id: s.groupId,
           ...s.groupPatch.shape,
@@ -998,7 +999,7 @@ function buildServer(
       'update_lane',
       {
         description:
-          `Publish a lane's state. Creates it on first call (pass your \`group_id\`); omitted fields ` +
+          `Publish a lane's state. Creates it on first call (\`group_id\` required: every lane is in a group); omitted fields ` +
           `are unchanged. ${STATUS_HELP} \`completed\` finishes its ticket and empties the lane. To change tickets use fill_lane ` +
           '(a different `ticket` here parks the one it held). PRs go in `links`, never `ticket`.' +
           (features.decisions ? ' `ownerMessages`: the owner\'s notes on the lane.' : ''),
