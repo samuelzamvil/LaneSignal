@@ -518,6 +518,12 @@ function buildServer(
         .string()
         .optional()
         .describe('Pass the previous result\'s `checkedAt`: what changed since then comes back, again if you repeat it.'),
+      ack: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe('With your group: the id of the last `group_note` you handled. It and those before it stop coming back.'),
       ...PROJECT,
     };
 
@@ -527,7 +533,8 @@ function buildServer(
         description:
           'Wait for what needs you in your group, some lanes or escalations; it waits even when nothing is open. Returns ' +
           '`items`: `{code, kind, text}` for an escalation, `{kind, id, text}` for a lane, ticket or epic (the owner\'s words, or what happened). Kinds: `decided` (answered), `reply` (the owner answered Other), ' +
-          '`closed`, `lane_removed`, `lane_note`, `board_note`, `ticket_moved`. `decided` and `reply` repeat until handled; ' +
+          '`closed`, `lane_removed`, `lane_note`, `board_note`, `ticket_moved`, `group_note` (a person wrote to your group; `id` is the ' +
+          'message\'s: pass the last one you handled as `ack`). `decided`, `reply` and `group_note` repeat until handled; ' +
           'the rest come once per `since`. `counts` (left out when all zero): `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
           'it timed out: call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
           '0 for a quick check). `format: "full"`: the older shape.',
@@ -538,12 +545,13 @@ function buildServer(
         },
         annotations: { readOnlyHint: true },
       },
-      async ({ group_id, group, lane_ids, ids, wait_seconds, since, format, project }, extra) => {
+      async ({ group_id, group, lane_ids, ids, wait_seconds, since, ack, format, project }, extra) => {
         try {
           const scope = {
             ...waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project),
             mode: format ?? 'digest',
           };
+          if (ack !== undefined && scope.groupId) store.ackGroupMessages(scope.groupId, ack);
           const timeout = wait_seconds ?? 300;
           const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
             store.waitForDecisions(scope, timeout * 1000, signal),
@@ -565,13 +573,15 @@ function buildServer(
       {
         description:
           'Everything in scope that involves you, without waiting: `decided`, `replies`, `open`, unread `laneMessages` and ' +
-          '`boardMessages`, and with `since`, what was withdrawn or removed since.',
+          '`boardMessages`, your group\'s unacknowledged `groupMessages` (pass the last id handled as `ack`), and with `since`, ' +
+          'what was withdrawn or removed since.',
         inputSchema: waitInput,
         annotations: { readOnlyHint: true },
       },
-      async ({ group_id, group, lane_ids, ids, since, project }) => {
+      async ({ group_id, group, lane_ids, ids, since, ack, project }) => {
         try {
           const scope = waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project);
+          if (ack !== undefined && scope.groupId) store.ackGroupMessages(scope.groupId, ack);
           // Digest rules (notes since `since` included), the full shape.
           const value = store.decisionsFor(scope);
           store.handOver(value, a.projects);
@@ -1107,6 +1117,74 @@ function buildServer(
           const e = updateEpicFor(store, a, { epic, group, name, ref, links, statusLine: status_line }, project, who.name);
           const unread = store.takeUnreadEpicForAgent(e.id);
           return json(compact({ ...briefEpic(pub.epic(store.getEpic(e.id)!)), ownerMessages: unread.length ? briefMessages(unread) : undefined }));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'read_conversation',
+      {
+        description:
+          'Your group\'s conversation, newest first (50 a time): messages written to the group, and its escalations ' +
+          '(`type: "escalation"`, each where its thread starts; get_escalation has the thread). `next`: pass it as `before` for older ones.',
+        inputSchema: {
+          group_id: s.groupId,
+          before: z.string().max(80).optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+          ...PROJECT,
+        },
+        annotations: { readOnlyHint: true },
+      },
+      async ({ group_id, before, limit, project }) => {
+        try {
+          const page = store.groupConversation(q(a.pick(project, { group: group_id }), group_id), { before, limit });
+          return json({
+            items: page.items.map((i) =>
+              i.type === 'message'
+                ? compact({
+                    type: i.type,
+                    id: i.id,
+                    from: i.from,
+                    by: i.author,
+                    body: i.body,
+                    at: i.at,
+                    escalation: i.escalationId ?? undefined,
+                    attachments: i.attachments.length ? i.attachments : undefined,
+                  })
+                : compact({ type: i.type, id: i.id, code: i.ref, question: i.question, state: i.state, decision: i.decision ?? undefined, at: i.at }),
+            ),
+            next: page.next,
+          });
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'post_to_group',
+      {
+        description:
+          'Write in your group\'s conversation, for the people following it: what changed, what you need, a question that ' +
+          'isn\'t a decision. One per group per minute. `client_key`: a retry with the same key returns the first instead of posting twice.',
+        inputSchema: {
+          group_id: s.groupId,
+          message: s.notice.shape.message,
+          attachments: s.notice.shape.attachments.describe('Ids from upload_attachment.'),
+          client_key: z.string().trim().min(1).max(100).optional(),
+          ...PROJECT_WRITE,
+        },
+      },
+      async ({ group_id, message, attachments, client_key, project }) => {
+        try {
+          const m = store.postGroupMessage(
+            q(a.pick(project, { group: group_id }), group_id),
+            { from: who.role === 'agent' ? 'agent' : 'owner', author: who.name, body: message, attachments, clientKey: client_key },
+            ownerOf(who),
+          );
+          return json(compact({ id: m.id, at: m.at, duplicate: m.duplicate || undefined }));
         } catch (err) {
           return fail(err);
         }

@@ -145,6 +145,23 @@ export const decision = z.object({
   change: z.boolean().optional(),
 });
 
+/** A message written to a group's conversation. `clientKey`: the same key again returns the first, so a retry never posts twice. */
+export const groupMessage = z.object({
+  body: z.string().max(5000),
+  attachments: z.array(z.string().min(1).max(64)).max(20).optional(),
+  clientKey: z.string().trim().min(1).max(100).optional(),
+});
+
+export const groupAck = z.object({ upTo: z.number().int().min(0) });
+
+export const conversationQuery = z
+  .object({
+    before: z.string().max(80).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    project: z.string().max(40).optional(),
+  })
+  .strict();
+
 /** A message in an escalation's conversation (length limits depend on who writes it). */
 export const message = z.object({
   body: z.string().max(5000),
@@ -261,6 +278,8 @@ export const waitQuery = z
     since: z.string().max(40).optional(),
     project: z.string().max(40).optional(),
     format: z.enum(['digest', 'full']).optional(),
+    /** With `group`: the last group message handled; it and those before it are acknowledged first. */
+    ack: z.coerce.number().int().min(0).optional(),
   })
   .strict();
 

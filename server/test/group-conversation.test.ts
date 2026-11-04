@@ -1,0 +1,187 @@
+// A group's conversation: people write to the group, its overseer hears them through its group wait
+// and acknowledges them, and anyone reads it back newest first, escalations included.
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { after, before, describe, test } from 'node:test';
+import { Store } from '../src/store.ts';
+import { AGENT, ALICE, startServer } from './helpers.ts';
+import { lane as publishLane } from './publish.ts';
+
+let srv: Awaited<ReturnType<typeof startServer>>;
+before(async () => {
+  srv = await startServer();
+});
+after(() => srv.close());
+
+const say = (group: string, body: Record<string, unknown>, token = ALICE) => srv.call('POST', `/api/groups/${group}/messages`, token, body);
+const notes = async (group: string, extra = '') =>
+  ((await srv.call('GET', `/api/wait?group=${group}&timeout=0${extra}`, AGENT)).body.items as { kind: string; id: string; text: string }[]).filter(
+    (i) => i.kind === 'group_note',
+  );
+
+describe('group conversations', () => {
+  test('a person\'s message reaches the overseer\'s group wait until it acknowledges it', async () => {
+    await srv.call('PUT', '/api/groups/talk', AGENT, {});
+    const first = await say('talk', { body: 'Do the billing export next' });
+    assert.equal(first.status, 201);
+    assert.equal(first.body.from, 'owner');
+    assert.equal(first.body.seen, false);
+    const second = (await say('talk', { body: 'And keep the CSV columns as they are' })).body;
+    // It comes back on every wait (a restart or a lost result loses nothing) until acknowledged.
+    assert.deepEqual((await notes('talk')).map((n) => n.text), ['Do the billing export next', 'And keep the CSV columns as they are']);
+    assert.equal((await notes('talk')).length, 2);
+    assert.deepEqual((await notes('talk', `&ack=${first.body.id}`)).map((n) => n.id), [String(second.id)]);
+    // Acknowledging never moves back.
+    assert.deepEqual((await notes('talk', '&ack=0')).map((n) => n.id), [String(second.id)]);
+    assert.equal((await srv.call('POST', '/api/groups/talk/ack', AGENT, { upTo: second.id })).body.acknowledgedUpTo, second.id);
+    assert.deepEqual(await notes('talk'), []);
+    const page = (await srv.call('GET', '/api/groups/talk/conversation', ALICE)).body;
+    assert.deepEqual(page.items.map((i: { body: string; seen: boolean }) => [i.body, i.seen]), [
+      ['And keep the CSV columns as they are', true],
+      ['Do the billing export next', true],
+    ]);
+  });
+
+  test('a waiting overseer hears a message as soon as it\'s written', async () => {
+    await srv.call('PUT', '/api/groups/listen', AGENT, {});
+    const waiting = srv.call('GET', '/api/wait?group=listen&timeout=10', AGENT);
+    await new Promise((r) => setTimeout(r, 100));
+    await say('listen', { body: 'Are you there?' });
+    const result = (await waiting).body;
+    assert.equal(result.ready, true);
+    assert.deepEqual(result.items.map((i: { kind: string; text: string }) => [i.kind, i.text]), [['group_note', 'Are you there?']]);
+  });
+
+  test('a retry never posts twice', async () => {
+    await srv.call('PUT', '/api/groups/retry', AGENT, {});
+    const a = await say('retry', { body: 'Once', clientKey: 'k-1' });
+    const b = await say('retry', { body: 'Once', clientKey: 'k-1' });
+    assert.equal(a.status, 201);
+    assert.equal(b.status, 200);
+    assert.equal(b.body.id, a.body.id);
+    // Without a key, the same text from the same person within a minute is the same message.
+    const c = await say('retry', { body: 'Twice?' });
+    assert.equal((await say('retry', { body: 'Twice?' })).body.id, c.body.id);
+    assert.equal((await srv.call('GET', '/api/groups/retry/conversation', ALICE)).body.items.length, 2);
+  });
+
+  test('the overseer writes once a minute; its messages need no acknowledging', async () => {
+    await srv.call('PUT', '/api/groups/updates', AGENT, {});
+    const posted = await srv.tool(AGENT, 'post_to_group', { group_id: 'updates', message: 'Merged #921' });
+    assert.ok(!posted.isError, posted.text);
+    const again = await srv.tool(AGENT, 'post_to_group', { group_id: 'updates', message: 'And #922' });
+    assert.ok(again.isError);
+    assert.match(again.text, /One message per group per minute/);
+    assert.deepEqual(await notes('updates'), []);
+    const read = await srv.tool(AGENT, 'read_conversation', { group_id: 'updates' });
+    assert.deepEqual(read.value.items.map((i: { from: string; body: string }) => [i.from, i.body]), [['agent', 'Merged #921']]);
+  });
+
+  test('a removed group\'s conversation stays readable and takes no new messages', async () => {
+    await srv.call('PUT', '/api/groups/gone', AGENT, {});
+    await say('gone', { body: 'Before it went' });
+    assert.equal((await srv.call('DELETE', '/api/groups/gone', ALICE)).status, 204);
+    const refused = await say('gone', { body: 'Anyone?' });
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error, /read-only/);
+    assert.deepEqual((await srv.call('GET', '/api/groups/gone/conversation', ALICE)).body.items.map((i: { body: string }) => i.body), ['Before it went']);
+    // Registering it again opens it.
+    await srv.call('PUT', '/api/groups/gone', AGENT, {});
+    assert.equal((await say('gone', { body: 'Back' })).status, 201);
+  });
+
+  test('wait_for_decisions acknowledges with `ack`', async () => {
+    await srv.call('PUT', '/api/groups/mcp-ack', AGENT, {});
+    const m = (await say('mcp-ack', { body: 'Ping' })).body;
+    const first = await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'mcp-ack', wait_seconds: 0 });
+    assert.deepEqual(first.value.items.map((i: { kind: string; id: string }) => [i.kind, i.id]), [['group_note', String(m.id)]]);
+    const second = await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'mcp-ack', wait_seconds: 0, ack: m.id });
+    assert.ok(!second.value.items.some((i: { kind: string }) => i.kind === 'group_note'));
+  });
+});
+
+describe('a group\'s conversation, page by page', () => {
+  test('newest first, escalations where their threads start, in an order that never changes', () => {
+    let now = Date.parse('2026-11-04T10:00:00Z');
+    const store = new Store({ path: ':memory:', resolveTicketUrl: () => null, now: () => new Date(now) });
+    publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
+    store.postGroupMessage('default/g', { from: 'owner', author: 'alice', body: 'one' }, 'user:a');
+    now += 1000;
+    const e = store.createEscalation({ laneId: 'default/l', question: 'Ship it?' }, 'bot');
+    // Same time as the question: the question comes first.
+    store.postMessage(e.id, { from: 'owner', author: 'alice', body: 'Other: wait' }, 'user:a');
+    now += 1000;
+    store.postGroupMessage('default/g', { from: 'owner', author: 'alice', body: 'three' }, 'user:a');
+    store.postGroupMessage('default/g', { from: 'owner', author: 'alice', body: 'four' }, 'user:a');
+    const all = store.groupConversation('default/g').items.map((i) => (i.type === 'message' ? i.body : `? ${i.question}`));
+    assert.deepEqual(all, ['four', 'three', 'Other: wait', '? Ship it?', 'one']);
+    // Two at a time, the same order, nothing repeated or skipped.
+    const paged: string[] = [];
+    let before: string | undefined;
+    do {
+      const page = store.groupConversation('default/g', { limit: 2, before });
+      paged.push(...page.items.map((i) => (i.type === 'message' ? i.body : `? ${i.question}`)));
+      before = page.next ?? undefined;
+    } while (before);
+    assert.deepEqual(paged, all);
+    assert.throws(() => store.groupConversation('default/g', { before: 'nonsense' }), /previous page/);
+    store.close();
+  });
+
+  test('unacknowledged messages survive a restart, and acknowledging is idempotent', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-ack-'));
+    const file = path.join(dir, 'lanesignal.db');
+    try {
+      let store = new Store({ path: file, resolveTicketUrl: () => null });
+      store.upsertGroup('default/g', {}, 'bot');
+      const a = store.postGroupMessage('default/g', { from: 'owner', author: 'alice', body: 'a' }, 'user:a');
+      const b = store.postGroupMessage('default/g', { from: 'owner', author: 'alice', body: 'b' }, 'user:a');
+      store.close();
+      store = new Store({ path: file, resolveTicketUrl: () => null });
+      assert.deepEqual(store.unacknowledgedGroupMessages('default/g').map((m) => m.body), ['a', 'b']);
+      assert.equal(store.ackGroupMessages('default/g', a.id), a.id);
+      assert.equal(store.ackGroupMessages('default/g', a.id), a.id);
+      // Never past the latest message, never back.
+      assert.equal(store.ackGroupMessages('default/g', b.id + 1000), b.id);
+      assert.equal(store.ackGroupMessages('default/g', 0), b.id);
+      assert.deepEqual(store.unacknowledgedGroupMessages('default/g'), []);
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('upgrading to v25: each escalation joins the conversation of the group it was raised in', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v24-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl: () => null });
+    publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
+    const onLane = store.createEscalation({ laneId: 'default/l', question: 'On the lane?' }, 'bot');
+    const epic = store.listEpics({ groupId: 'default/g' })[0];
+    const onEpic = store.createEscalation({ laneId: Store.epicLaneId('default', epic.id), epic: epic.id, question: 'On the epic?' }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      DROP INDEX escalations_group;
+      ALTER TABLE escalations DROP COLUMN group_id;
+      DROP INDEX group_messages_group_time;
+      ALTER TABLE groups DROP COLUMN overseer_read_id;
+      UPDATE meta SET value = '24' WHERE key = 'schema_version';`);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl: () => null });
+    const ids = store
+      .groupConversation('default/g')
+      .items.filter((i) => i.type === 'escalation')
+      .map((i) => i.id)
+      .sort();
+    assert.deepEqual(ids, [onLane.id, onEpic.id].sort());
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

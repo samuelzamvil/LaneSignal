@@ -14,6 +14,8 @@ A group has:
 
 The overseer registers its group with `update_group` before publishing lanes in it. Every lane is in a group: publishing one without its group is refused, and removing a group removes its lanes. Registering a group takes control of it: any overseer can, at any time, and each change of overseer is recorded (`GET /api/groups/:id/overseers`). Projects upgraded from earlier versions keep the **Ungrouped** group their lanes were put in. Only the overseer writes to LaneSignal; workers it starts read requirements and report to it. The lane list is arranged by group by default, and groups that need you sort first. Each group is one box headed by its title and overseer's session, with its [epics](#epics), lanes and parked tickets inside, so you can tell one overseer's work from another's at a glance.
 
+**Each group has one conversation.** It holds the messages written to the group and every message on its escalations, in one place, oldest to newest, with each escalation where its thread starts; a message stays with the group it was written in. Messages written to the group reach its overseer through its group wait (`wait_for_decisions` with `group_id`) and keep coming back until the overseer acknowledges them, so a restart loses nothing. A removed group's conversation stays readable but takes no new messages until the group is registered again.
+
 ## Lanes
 
 A lane is a slot work goes through, one ticket at a time, with a stable id the agent picks (`slot-1`, or a work stream such as `e2e-stabilize`). It carries:

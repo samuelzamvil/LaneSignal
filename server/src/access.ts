@@ -11,7 +11,7 @@ import {
   type WaitResult,
   type WaitScope,
 } from './store.ts';
-import type { Epic, Escalation, Group, Lane, Link, Message, Principal, ProjectRole, Requirement, RequirementScope, StreamEvent, Ticket } from './types.ts';
+import type { Epic, Escalation, Group, GroupMessage, Lane, Link, Message, Principal, ProjectRole, Requirement, RequirementScope, StreamEvent, Ticket } from './types.ts';
 
 /**
  * What a caller may see and do across projects, and the translation between
@@ -284,6 +284,7 @@ export function requirementInputFor(
 
 export const pub = {
   group: (g: Group): Group => ({ ...g, id: localId(g.id) }),
+  groupMessage: <M extends GroupMessage>(m: M): M => ({ ...m, laneId: m.laneId && localId(m.laneId) }),
   lane: (l: Lane): Lane => ({ ...l, id: localId(l.id), group: l.group && localId(l.group) }),
   // An epic's own question has no lane a client knows: its internal lane is never shown.
   escalation: <E extends Escalation>(e: E): E => ({ ...e, laneId: pubLaneId(e.laneId) }),
@@ -311,6 +312,9 @@ export const pub = {
       laneMessages: w.laneMessages.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
       movedTickets: w.movedTickets.filter((m) => keep(m.laneId)).map((m) => ({ ...m, laneId: localId(m.laneId) })),
       boardMessages: w.boardMessages.filter((b) => !projects || projects.includes(b.project)),
+      groupMessages: w.groupMessages
+        .filter((g) => !projects || projects.includes(projectOf(g.group)))
+        .map((g) => ({ group: localId(g.group), messages: g.messages.map(pub.groupMessage) })),
     };
   },
   /** The event as a client sees it, or null when the caller can't see its project. */
@@ -320,6 +324,8 @@ export const pub = {
         return projects.includes(e.group.project) ? { ...e, group: pub.group(e.group) } : null;
       case 'lane':
         return projects.includes(e.lane.project) ? { ...e, lane: pub.lane(e.lane) } : null;
+      case 'group_message':
+        return projects.includes(e.project) ? { ...e, group: localId(e.group), message: pub.groupMessage(e.message) } : null;
       case 'escalation':
         return projects.includes(e.escalation.project) ? { ...e, escalation: pub.escalation(e.escalation) } : null;
       case 'group_deleted':
@@ -530,6 +536,10 @@ export const digestWait = (w: WaitResult, keyed = false) => {
     ...w.laneMessages.map((l) => ({ kind: 'lane_note', id: l.laneId, text: ownerWords(l.messages) })),
     ...w.movedTickets.map((m) => ({ kind: 'ticket_moved', id: m.ticket, text: `Taken into lane ${m.laneId}${m.by ? ` by ${m.by}` : ''}` })),
     ...w.boardMessages.map((b) => ({ kind: 'board_note', id: b.epic, text: ownerWords(b.messages) })),
+    // One item each, with its id: acknowledge the last one handled (`ack`), or they come back.
+    ...w.groupMessages.flatMap((g) =>
+      g.messages.map((m) => ({ kind: 'group_note', id: String(m.id), text: ownerWords([m]), by: m.author })),
+    ),
   ];
   const counts = { open: w.open.length, decidedUnacknowledged: w.decided.length, waitingOnYou: w.replies.length };
   return {
@@ -552,6 +562,12 @@ export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
   laneMessages: w.laneMessages.length ? w.laneMessages.map((l) => ({ ...l, messages: briefMessages(l.messages) })) : undefined,
   boardMessages: w.boardMessages.length
     ? w.boardMessages.map(({ project: _project, ...b }) => ({ ...b, messages: briefMessages(b.messages) }))
+    : undefined,
+  groupMessages: w.groupMessages.length
+    ? w.groupMessages.map((g) => ({
+        group: g.group,
+        messages: g.messages.map((m) => compact({ id: m.id, body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined })),
+      }))
     : undefined,
 });
 
