@@ -596,8 +596,10 @@ export const ackerOf = (p: Principal) => ({ key: ownerOf(p), agent: p.role === '
  * Records that the caller (its key) was handed the group notes in this result, so
  * the next wait treats them as had already once its `since` is past them. Call it with what was returned.
  */
-export function markNotesDelivered(store: Store, w: WaitResult, p: Principal) {
+export function markNotesDelivered(store: Store, w: WaitResult, p: Principal, projects?: string[]) {
   for (const g of w.groupMessages) {
+    // What the caller no longer sees isn't returned to it (pub.wait), so it isn't handed over either.
+    if (projects && !projects.includes(projectOf(g.group))) continue;
     const last = g.messages.at(-1);
     if (last) store.markGroupMessagesDelivered(g.group, last.id, ownerOf(p));
   }

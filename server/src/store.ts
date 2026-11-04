@@ -693,10 +693,6 @@ export class Store {
   }
 
   /**
-   * v26: how far the group's overseer has been handed the group's messages (its waits and
-   * get_updates), so a note it never received is never treated as one it had already.
-   */
-  /**
    * v27: how far each key was handed each group's messages (its waits and get_updates), so a note
    * counts as one a caller had only when it was handed to that caller. Replaces v26's single
    * groups.overseer_delivered_id, which is no longer read.
@@ -710,6 +706,7 @@ export class Store {
     )`);
   }
 
+  /** v26: how far the group's overseer was handed the group's messages (no longer read since v27). */
   private migrateV26() {
     if (!this.hasColumn('groups', 'overseer_delivered_id')) {
       this.db.exec('ALTER TABLE groups ADD COLUMN overseer_delivered_id INTEGER NOT NULL DEFAULT 0');
@@ -3583,8 +3580,10 @@ export class Store {
     };
   }
 
-  /** How far the group's overseer has been handed the group's messages (0: none yet). */
-  /** How far the group's messages were handed to `key` (0: never). */
+  /**
+   * How far the group's messages were handed to `key` (0: never). Per key, not per session: sessions
+   * sharing a key share what they were handed.
+   */
   private deliveredTo(groupId: string, key: string | undefined): number {
     if (!key) return 0;
     const r = this.db.prepare('SELECT up_to FROM group_note_deliveries WHERE group_id = ? AND key = ?').get(groupId, key) as Row | undefined;
@@ -3605,10 +3604,8 @@ export class Store {
   }
 
   /**
-   * The overseer was handed the group's messages up to `upTo` (a wait or get_updates result that
-   * listed them), recorded with its key: another key (a new overseer, or another agent while the group
-   * has none) starts again from there. Never moves back for the same key; anyone who can't acknowledge
-   * changes nothing.
+   * `key` was handed the group's messages up to `upTo` (a wait or get_updates result that listed
+   * them). Recorded for every caller, overseer or not; never moves back.
    */
   markGroupMessagesDelivered(groupId: string, upTo: number, key: string): void {
     this.db

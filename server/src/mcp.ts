@@ -567,7 +567,7 @@ function buildServer(
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
           const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
           // Only what reaches the caller counts as handed over: not a call it cancelled.
-          if (!extra.signal.aborted) markNotesDelivered(store, value, who);
+          if (!extra.signal.aborted) markNotesDelivered(store, value, who, timeout ? visible : undefined);
           const result = pub.wait(value, timeout ? visible : undefined);
           return json({ ...(format === 'full' ? briefWait(result) : digestWait(result, a.projects.length > 1)), ...(acked !== undefined ? { acked } : {}) });
         } catch (err) {
