@@ -135,11 +135,19 @@ export const projectOf = (qualified: string) => {
 /** How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker. */
 const WAIT_GRACE_MS = 30_000;
 
-/** The same question in other spacing, case or punctuation ("Ship it?" and "ship it"). */
+/**
+ * The same question in other spacing, case or closing punctuation ("Ship it?" and "ship  it"). Only
+ * what ends it is ignored: punctuation inside it ("a > b", "foo-bar", "C++") can change what it asks.
+ */
 export const sameQuestion = (a: string, b: string) => {
-  const norm = (t: string) => t.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-  const x = norm(a);
-  return x !== '' ? x === norm(b) : a.trim().toLowerCase() === b.trim().toLowerCase();
+  const norm = (t: string) =>
+    t
+      .normalize('NFKC')
+      .toLowerCase()
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .replace(/[\s?!.…。？！]+$/u, '');
+  return norm(a) === norm(b);
 };
 
 /** What `waitForDecisions` watches: explicit escalations, whole lanes, and/or a group's lanes. */
@@ -3216,24 +3224,28 @@ export class Store {
       home.epicId !== null
         ? ((this.db.prepare('SELECT group_id FROM epics WHERE num = ?').get(home.epicId) as Row | undefined)?.group_id as string | undefined)
         : ((this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row | undefined)?.group_id as string | undefined);
-    // The same question again (ignoring spacing, case and punctuation) from the same raiser is a retry:
-    // on the same ticket or epic, or an FYI anywhere in the same group (an agent moves between a lane
-    // and its group's epic). The same ticket or epic is preferred.
+    // The same question again (ignoring spacing, case and closing punctuation) from the same raiser is a
+    // retry: on the same ticket or epic, or, raised from a lane, an FYI on its group's epic (an agent
+    // moves between a lane and its group's epic). Never another lane's ticket. The same ticket or epic
+    // is preferred.
     const sameHome = (r: Row) => (home.ticketId !== null ? Number(r.ticket_id) === home.ticketId : Number(r.epic_id) === home.epicId);
+    const groupEpic = home.ticketId !== null && groupOfCall;
     const existing = (
       this.db
         .prepare(
           `SELECT id, question, ticket_id, epic_id FROM escalations WHERE state = 'open'
-             AND (${home.ticketId !== null ? 'ticket_id' : 'epic_id'} = ? OR (blocking = 0 AND group_id = ?))
+             AND (${home.ticketId !== null ? 'ticket_id' : 'epic_id'} = ?
+               ${groupEpic ? "OR (blocking = 0 AND epic_id IN (SELECT num FROM epics WHERE group_id = ? AND state <> 'closed'))" : ''})
              AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`,
         )
-        .all(home.ticketId ?? home.epicId!, groupOfCall ?? '', owner ?? actor) as Row[]
+        .all(home.ticketId ?? home.epicId!, ...(groupEpic ? [groupOfCall] : []), owner ?? actor) as Row[]
     )
       .filter((r) => sameQuestion(r.question as string, input.question))
       .sort((a, b) => Number(sameHome(b)) - Number(sameHome(a)))[0];
     if (existing) {
       const id = existing.id as string;
-      // Raising an open FYI again as blocking (the default) makes it need the owner now (same code).
+      // Raising an open FYI again as blocking (the default) makes it need the owner now (same code),
+      // even during the agent's turn: it goes back to the owner.
       if (input.blocking !== false && !this.requireEscalation(id).blocking) {
         return { ...this.makeBlocking(id, input, actor, owner), duplicate: true, upgraded: true };
       }
@@ -3325,19 +3337,29 @@ export class Store {
     // A new blocking question while FYIs are open in its group: name them, so a question raised
     // again in other words can be upgraded (`upgrade`) or the FYI dismissed rather than left open twice.
     if (escalation.blocking) {
-      const fyis = this.openFyisIn(groupOfCall ?? null, escalation.id);
+      const fyis = this.openFyisIn(groupOfCall ?? null, escalation.id, owner ?? actor, !!owner);
       if (fyis.length) return { ...escalation, openFyis: fyis };
     }
     return escalation;
   }
 
-  /** Codes of the group's open FYI questions, oldest first, but `except`. */
-  private openFyisIn(groupId: string | null, except: string): string[] {
+  /**
+   * Codes of the open FYI questions in the group now (on its tickets, wherever they were raised, or its
+   * epics), oldest first, but `except`: those the caller can upgrade, all of them for the group's
+   * overseer, otherwise its own. `raiser` is its key (`byKey`) or, for a config token, its name.
+   */
+  private openFyisIn(groupId: string | null, except: string, raiser: string, byKey: boolean): string[] {
     if (!groupId) return [];
+    const overseer = (this.db.prepare('SELECT owner FROM groups WHERE id = ?').get(groupId) as Row | undefined)?.owner === raiser && byKey;
     return (
       this.db
-        .prepare("SELECT id FROM escalations WHERE state = 'open' AND blocking = 0 AND group_id = ? AND id <> ? ORDER BY created_at, ref LIMIT 20")
-        .all(groupId, except) as Row[]
+        .prepare(
+          `SELECT id FROM escalations WHERE state = 'open' AND blocking = 0 AND id <> ?
+             AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?) OR epic_id IN (SELECT num FROM epics WHERE group_id = ?))
+             ${overseer ? '' : byKey ? 'AND raised_by_owner = ?' : 'AND created_by = ?'}
+           ORDER BY created_at, ref LIMIT 20`,
+        )
+        .all(except, groupId, groupId, ...(overseer ? [] : [raiser])) as Row[]
     ).map((r) => this.requireEscalation(r.id as string).ref);
   }
 
@@ -3355,8 +3377,16 @@ export class Store {
   ): Escalation & { duplicate: true; upgraded?: true } {
     const e = this.requireEscalation(id);
     if (e.state !== 'open') throw new ConflictError(`${e.ref} is ${e.state}: raise a new question instead`);
+    // A recommended option alone must be one of the FYI's own options.
+    if (input.recommendedOption && !input.options?.length && !e.options.includes(input.recommendedOption)) {
+      throw new ValidationError(`recommendedOption must be one of ${e.ref}'s options (${e.options.join(', ') || 'it has none'}), or give options too`);
+    }
     if (e.blocking) {
-      if (input.attachments?.length) this.tx(() => this.linkAttachments(id, input.attachments!, owner ?? actor));
+      if (input.attachments?.length) {
+        const before = this.attachmentsOf(id).length;
+        this.tx(() => this.linkAttachments(id, input.attachments!, owner ?? actor));
+        if (this.attachmentsOf(id).length !== before) this.emit({ type: 'escalation', escalation: this.requireEscalation(id) });
+      }
       return { ...this.requireEscalation(id), duplicate: true };
     }
     return { ...this.makeBlocking(id, { ...input, laneId: e.laneId!, question: input.question ?? e.question }, actor, owner), duplicate: true, upgraded: true };

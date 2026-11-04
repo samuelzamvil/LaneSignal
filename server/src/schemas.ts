@@ -130,10 +130,12 @@ export const escalationFields = {
  */
 export const escalationUpgrade = z
   .object(escalationFields)
-  .omit({ laneId: true, epic: true, blocking: true })
+  .omit({ laneId: true, epic: true, blocking: true, positions: true })
   .partial()
   .extend({ upgrade: z.string().trim().min(1).max(100) })
-  .refine((e) => !e.recommendedOption || (e.options ?? []).includes(e.recommendedOption), {
+  .strict()
+  // With options given, the recommended one is among them (else the store checks the FYI's own).
+  .refine((e) => !e.recommendedOption || !e.options?.length || e.options.includes(e.recommendedOption), {
     message: 'recommendedOption must be one of options',
     path: ['recommendedOption'],
   });
