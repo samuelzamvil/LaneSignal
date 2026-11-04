@@ -146,9 +146,12 @@ describe('observer keys', () => {
       srv.tool(WATCHER, 'get_escalation', { id: e.id, wait_seconds: 1 }),
       srv.tool(WATCHER, 'wait_for_decisions', { lane_ids: ['watched-lane'], wait_seconds: 1 }),
     ];
-    await new Promise((r) => setTimeout(r, 300));
-    assert.equal(await waiting(), false, 'observers only watch');
-    await Promise.all(pending);
+    try {
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(await waiting(), false, 'observers only watch');
+    } finally {
+      await Promise.allSettled(pending);
+    }
     // An agent's wait does.
     const agentWait = srv.call('GET', '/api/wait?lane=watched-lane&timeout=1', AGENT);
     await new Promise((r) => setTimeout(r, 300));
@@ -166,6 +169,12 @@ describe('observer keys', () => {
     // The agent itself isn't told about its own.
     const own = (await srv.call('GET', `/api/updates?lane=closing&since=${encodeURIComponent(since)}`, AGENT)).body;
     assert.ok(!own.closed.some((c: { id: string }) => c.id === e.id));
+    // Nor a lane it removed; the observer is.
+    assert.equal((await srv.call('DELETE', '/api/lanes/closing', AGENT)).status, 204);
+    const removed = (await srv.call('GET', `/api/updates?lane=closing&since=${encodeURIComponent(since)}`, WATCHER)).body;
+    assert.deepEqual(removed.removedLanes.map((l: { laneId: string }) => l.laneId), ['closing']);
+    const ownRemoval = (await srv.call('GET', `/api/updates?lane=closing&since=${encodeURIComponent(since)}`, AGENT)).body;
+    assert.deepEqual(ownRemoval.removedLanes, []);
   });
 
   test('account observer keys, unbound or bound to one project', async () => {
