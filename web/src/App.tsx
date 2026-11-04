@@ -1070,6 +1070,11 @@ function Dashboard({
             laneName={(project, id) => live.lanes.get(keyOf(project, id))?.name ?? null}
             onClose={() => closeTo('#/lanes')}
             backTo={backLabel('#/lanes')}
+            decisions={config.decisions}
+            groupLaneIds={(() => {
+              const ep = live.epics.get(String(route.epicId));
+              return ep ? [...live.lanes.values()].filter((l) => l.project === ep.project && l.group === ep.group).map((l) => l.id) : [];
+            })()}
           />
         )}
         {route.ticketRef && route.ticketProject && (

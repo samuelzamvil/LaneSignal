@@ -184,7 +184,7 @@ function AnswerBar({
  * New ones get the Accept / Reject / Other bar. `compact` (inbox cards) shows only the option
  * buttons and Send; the full form lives in the detail sheet.
  */
-function DecisionForm({
+export function DecisionForm({
   esc,
   client,
   compact,
@@ -326,7 +326,7 @@ function DecisionForm({
   );
 }
 
-function EscHead({
+export function EscHead({
   esc,
   lane,
   group,

@@ -5,6 +5,7 @@ import { FOLD, LaneComposer, Links, RichText, SheetSection, TicketLink, useStore
 import { absolute, ago } from './format.ts';
 import { hasNewMessage, markMessagesSeen } from './seen.ts';
 import { toast } from './toast.tsx';
+import { GroupConversation } from './group-conversation.tsx';
 
 /** Open epics (and ones waiting for close approval), by number. */
 export const EpicsContext = createContext<Map<string, Epic>>(new Map());
@@ -247,7 +248,11 @@ export function EpicDetail({
   laneName,
   onClose,
   backTo,
+  groupLaneIds = [],
+  decisions = false,
 }: {
+  groupLaneIds?: string[];
+  decisions?: boolean;
   id: number;
   client: Client;
   /** Changes when something about the epic changed, to refetch. */
@@ -340,6 +345,21 @@ export function EpicDetail({
             <Links links={epic.links} />
             {group && sessionLink(group) && <Links links={[sessionLink(group)!]} />}
 
+            {epic.standIn && (
+              <SheetSection title="Conversation" open onToggle={() => {}}>
+                <GroupConversation
+                  client={client}
+                  epic={epic}
+                  laneIds={groupLaneIds}
+                  group={group}
+                  version={version}
+                  now={now}
+                  canWrite={canWrite}
+                  decisions={decisions}
+                />
+              </SheetSection>
+            )}
+            {!epic.standIn && (<>
             <SheetSection
               title="Escalations"
               count={data.escalations.length}
@@ -410,6 +430,7 @@ export function EpicDetail({
               )}
             </SheetSection>
 
+            </>)}
             <SheetSection
               title="Lanes"
               count={data.lanes.length}
