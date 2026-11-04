@@ -26,6 +26,7 @@ A server starts with one project, **Main** (id `default`, key `MAIN`). Data from
 | Account admin (and keys they own) | all | admin |
 | Person | the ones they're a member of | `member` or `admin`, per project |
 | Agent key | its owner's projects, or the one project the key is bound to | — |
+| Observer key (read-only) | its owner's projects, or the one project the key is bound to | `member`, read-only |
 
 - Another project's data is invisible, not just read-only: its lanes, escalations, requirements, events and exports don't exist for you.
 - On a server with one project, new people join it. With several, new people belong to no project until a project admin adds them, and their inbox says so.

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
-import { accessFor, ackerOf, approvesRequirements, markNotesDelivered, upgradeFor, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, ackerOf, approvesRequirements, isWriter, markNotesDelivered, requireWriter, upgradeFor, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { checkAttachment, readUpload } from './attachments.ts';
 import { CLIENT_IP_HEADER, FAILOVER_KEY_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, SESSION_HEADER, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
@@ -369,7 +369,19 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     }
   });
 
-  const any = auth.require();
+  /** Any credential, observer keys included: for MCP, which checks each tool itself. */
+  const signedIn = auth.require();
+  /**
+   * Observer keys only read: refused on anything but GET and HEAD (a GET that changes something,
+   * like `ack` on a wait, checks with `requireWriter`). Positive list, so an unknown role can't write either.
+   */
+  const readsOnly = (req: Request, res: Response, next: NextFunction) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || isWriter(principalOf(res))) return next();
+    res.status(403).json({ error: "Observer keys are read-only: they can't make changes" });
+  };
+  /** Any credential; observer keys only on reads. */
+  const any = (req: Request, res: Response, next: NextFunction) =>
+    signedIn(req, res, (err?: unknown) => (err ? next(err) : readsOnly(req, res, next)));
   const agent = auth.require('agent');
   const human = auth.require('human');
 
@@ -987,6 +999,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       query.project,
     );
     // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+    if (query.ack !== undefined) requireWriter(principalOf(res), 'acknowledge group notes');
     const acked = query.ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, query.ack, ackerOf(principalOf(res))) : undefined;
     const value = store.decisionsFor(scope);
     markNotesDelivered(store, value, principalOf(res));
@@ -1016,6 +1029,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       };
       const shape = (w: WaitResult) => (query.format === 'full' ? briefWait(w) : digestWait(w, acc(res).projects.length > 1));
       // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+      if (query.ack !== undefined) requireWriter(principalOf(res), 'acknowledge group notes');
       const acked = query.ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, query.ack, ackerOf(principalOf(res))) : undefined;
       const withAck = <T extends object>(body: T) => (acked !== undefined ? { ...body, acked } : body);
       const now = store.decisionsFor(scope);
@@ -1454,7 +1468,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   const mcpBody = express.json({ limit: config.attachmentMaxBytes * 2 + 256 * 1024 });
   app.post(
     '/mcp',
-    any,
+    signedIn,
     mcpBody,
     mcpHandler(store, { decisions: config.decisions, requirements: config.requirements, laneAdvice: config.laneAdvice }, { attachmentMaxBytes: config.attachmentMaxBytes }),
   );

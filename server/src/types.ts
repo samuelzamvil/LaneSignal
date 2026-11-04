@@ -391,7 +391,8 @@ export interface PublicConfig {
   cloudflareAccess?: boolean;
 }
 
-export type Role = 'human' | 'agent';
+/** `observer`: a read-only key for agents that watch (Settings → Keys); it reads what an agent key reads and changes nothing. */
+export type Role = 'human' | 'agent' | 'observer';
 
 export interface Principal {
   name: string;
@@ -403,7 +404,7 @@ export interface Principal {
   admin?: boolean;
   /** Account admins (and keys they own): admin of every project. */
   superuser?: boolean;
-  /** An agent key bound to one project. */
+  /** An agent or observer key bound to one project. */
   project?: string;
   /** A personal key: acts as its owner, but from a Claude session, so its requirements still wait for approval. */
   personalKey?: boolean;

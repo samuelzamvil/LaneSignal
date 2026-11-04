@@ -21,6 +21,8 @@ import {
   compact,
   ownerOf,
   ackerOf,
+  isWriter,
+  requireWriter,
   markNotesDelivered,
   upgradeFor,
   pub,
@@ -559,6 +561,7 @@ function buildServer(
             mode: format ?? 'digest',
           };
           // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+          if (ack !== undefined) requireWriter(who, 'acknowledge group notes');
           const acked = ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, ack, ackerOf(who)) : undefined;
           const timeout = wait_seconds ?? 300;
           const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
@@ -588,6 +591,7 @@ function buildServer(
         try {
           const scope = waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project);
           // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+          if (ack !== undefined) requireWriter(who, 'acknowledge group notes');
           const acked = ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, ack, ackerOf(who)) : undefined;
           // Digest rules (notes since `since` included), the full shape.
           const value = store.decisionsFor(scope);
@@ -601,8 +605,8 @@ function buildServer(
     );
   }
 
-  // People's own Claude sessions can export; agents don't need it in every session's tool list.
-  if (who.role === 'human') {
+  // People's own Claude sessions and observer keys can export; agents don't need it in every session's tool list.
+  if (who.role !== 'agent') {
     server.registerTool(
       'export_data',
       {
@@ -859,59 +863,105 @@ function buildServer(
       },
     );
 
-    server.registerTool(
-      'record_requirement',
-      {
-        description:
-          'Record one product decision, scoped to where it applies: the products it concerns, the whole project, or every ' +
-          'project. ' +
-          (features.decisions
-            ? 'Cite `source_escalation` alone if it was answered on the dashboard; otherwise say who decided (`decided_by`), ' +
-              'plus `source_escalation` when it answered an escalation in your session. '
-            : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
-          'The same requirement from the same escalation returns the first (`duplicate: true`). ' +
-          '`similar` lists ones that read alike (supersede_requirement replaces one). ' +
-          'A locked product refuses new requirements from agents.' +
-          (approvesRequirements(who) ? '' : ' What you record is `pending` until a person approves it, whatever its scope.'),
-        inputSchema: { ...requirementFields, ...PROJECT_WRITE },
-      },
-      async (args) => {
-        try {
-          return json(
-            pubRecord(a, store.recordRequirement(toInput(args), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who))),
-          );
-        } catch (err) {
-          return fail(err);
-        }
-      },
-    );
+    // Observer keys only read.
+    if (isWriter(who)) {
+      server.registerTool(
+        'record_requirement',
+        {
+          description:
+            'Record one product decision, scoped to where it applies: the products it concerns, the whole project, or every ' +
+            'project. ' +
+            (features.decisions
+              ? 'Cite `source_escalation` alone if it was answered on the dashboard; otherwise say who decided (`decided_by`), ' +
+                'plus `source_escalation` when it answered an escalation in your session. '
+              : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
+            'The same requirement from the same escalation returns the first (`duplicate: true`). ' +
+            '`similar` lists ones that read alike (supersede_requirement replaces one). ' +
+            'A locked product refuses new requirements from agents.' +
+            (approvesRequirements(who) ? '' : ' What you record is `pending` until a person approves it, whatever its scope.'),
+          inputSchema: { ...requirementFields, ...PROJECT_WRITE },
+        },
+        async (args) => {
+          try {
+            return json(
+              pubRecord(a, store.recordRequirement(toInput(args), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who))),
+            );
+          } catch (err) {
+            return fail(err);
+          }
+        },
+      );
 
+      server.registerTool(
+        'supersede_requirement',
+        {
+          description:
+            'The owner changed a decision: record the new one and mark the old one superseded (kept for history). ' +
+            'Fields as in record_requirement; scope defaults to the old one\'s. Refused for a requirement in a locked product.' +
+            (approvesRequirements(who)
+              ? ''
+              : ' The new one is `pending`; the old one stays in force, its `supersededBy` naming the replacement, until a person approves it.'),
+          inputSchema: { id: z.string().describe(REQ_ID_HELP), ...supersedeFields, ...PROJECT_WRITE },
+        },
+        async ({ id, ...args }) => {
+          try {
+            const current = visibleRequirement(id);
+            return json(
+              pubRecord(
+                a,
+                store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who)),
+              ),
+            );
+          } catch (err) {
+            return fail(err);
+          }
+        },
+      );
+    }
+  }
+
+  /** A group's conversation: for agents, and observer keys. */
+  const registerReadConversation = () => {
     server.registerTool(
-      'supersede_requirement',
+      'read_conversation',
       {
         description:
-          'The owner changed a decision: record the new one and mark the old one superseded (kept for history). ' +
-          'Fields as in record_requirement; scope defaults to the old one\'s. Refused for a requirement in a locked product.' +
-          (approvesRequirements(who)
-            ? ''
-            : ' The new one is `pending`; the old one stays in force, its `supersededBy` naming the replacement, until a person approves it.'),
-        inputSchema: { id: z.string().describe(REQ_ID_HELP), ...supersedeFields, ...PROJECT_WRITE },
+          'Your group\'s conversation, newest first (50 a time): messages written to the group, and its escalations ' +
+          '(`type: "escalation"`, each where its thread starts; get_escalation has the thread). `next`: pass it as `before` for older ones.',
+        inputSchema: {
+          group_id: s.groupId,
+          before: z.string().max(80).optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+          ...PROJECT,
+        },
+        annotations: { readOnlyHint: true },
       },
-      async ({ id, ...args }) => {
+      async ({ group_id, before, limit, project }) => {
         try {
-          const current = visibleRequirement(id);
-          return json(
-            pubRecord(
-              a,
-              store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who)),
+          const page = store.groupConversation(q(a.pick(project, { group: group_id }), group_id), { before, limit });
+          return json({
+            items: page.items.map((i) =>
+              i.type === 'message'
+                ? compact({
+                    type: i.type,
+                    id: i.id,
+                    from: i.from,
+                    by: i.author,
+                    body: i.body,
+                    at: i.at,
+                    escalation: i.escalationId ?? undefined,
+                    attachments: i.attachments.length ? i.attachments : undefined,
+                  })
+                : compact({ type: i.type, id: i.id, code: i.ref, question: i.question, state: i.state, decision: i.decision ?? undefined, at: i.at }),
             ),
-          );
+            next: page.next,
+          });
         } catch (err) {
           return fail(err);
         }
       },
     );
-  }
+  };
 
   if (who.role === 'agent') {
     server.registerTool(
@@ -1125,45 +1175,7 @@ function buildServer(
       },
     );
 
-    server.registerTool(
-      'read_conversation',
-      {
-        description:
-          'Your group\'s conversation, newest first (50 a time): messages written to the group, and its escalations ' +
-          '(`type: "escalation"`, each where its thread starts; get_escalation has the thread). `next`: pass it as `before` for older ones.',
-        inputSchema: {
-          group_id: s.groupId,
-          before: z.string().max(80).optional(),
-          limit: z.number().int().min(1).max(100).optional(),
-          ...PROJECT,
-        },
-        annotations: { readOnlyHint: true },
-      },
-      async ({ group_id, before, limit, project }) => {
-        try {
-          const page = store.groupConversation(q(a.pick(project, { group: group_id }), group_id), { before, limit });
-          return json({
-            items: page.items.map((i) =>
-              i.type === 'message'
-                ? compact({
-                    type: i.type,
-                    id: i.id,
-                    from: i.from,
-                    by: i.author,
-                    body: i.body,
-                    at: i.at,
-                    escalation: i.escalationId ?? undefined,
-                    attachments: i.attachments.length ? i.attachments : undefined,
-                  })
-                : compact({ type: i.type, id: i.id, code: i.ref, question: i.question, state: i.state, decision: i.decision ?? undefined, at: i.at }),
-            ),
-            next: page.next,
-          });
-        } catch (err) {
-          return fail(err);
-        }
-      },
-    );
+    registerReadConversation();
 
     server.registerTool(
       'post_to_group',
@@ -1410,6 +1422,8 @@ function buildServer(
       },
     );
   }
+
+  if (who.role === 'observer') registerReadConversation();
 
   if (who.role === 'human') {
   if (features.decisions) {

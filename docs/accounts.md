@@ -57,6 +57,17 @@ Pick **Personal key** instead of **Agent key** to use LaneSignal from your own C
 
 Keys are marked *personal* in the list.
 
+### Observer keys
+
+Pick **Observer key (read-only)** for an agent that only watches: a status reporter, a dashboard bot, a reviewer that reads what overseers are doing. An observer key:
+
+- Reads what an agent key reads: lanes, groups, tickets, epics, escalations, group conversations, attachments, requirements, exports, the event stream, and waits (`wait_for_decisions`, `get_updates`, `GET /api/wait`).
+- Changes nothing. It gets no tool that writes, and over HTTP every `POST`, `PUT`, `PATCH` and `DELETE` is refused (`403`). It can't acknowledge decisions or group notes either: `ack` on a wait is refused.
+- Sees its owner's projects, as a member (even where its owner is an admin), or only the one project you bind it to, exactly like an agent key. Bound to a project its owner can't see, it sees nothing.
+- Keeps its own record of what it was handed. A group note it saw still counts as new for the agent, even when they share a name.
+
+Settings shows the command that adds it to Claude Code. Keys are marked *observer · read-only* in the list. A static observer token works the same, across every project (`LANESIGNAL_OBSERVER_TOKENS`, see [Configuration](configuration.md)).
+
 **Revoke** a key from the same list. Any agent using it is cut off immediately, including its open long-polls. The list shows when each key was last used.
 
 ## Sessions

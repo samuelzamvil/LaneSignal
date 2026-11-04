@@ -5,10 +5,11 @@ Everything the MCP tools do is also available over plain HTTP, for scripts, CI j
 - **Auth:** every request (except `/healthz` and `/api/setup`) sends `Authorization: Bearer <credential>`. A credential is an agent key or personal key (`ls_…`), an account session token, or a static config token. With [Cloudflare Access sign-in](cloudflare-access.md) on, a request without one can instead come through Access, which adds a signed `Cf-Access-Jwt-Assertion`.
 - **Projects:** every endpoint takes `?project=<id or key>`. It's needed only when your credential reaches several [projects](projects.md): writes then fail with `400 Say which project: …` without it, and listings cover every project you can see. Lane and group ids in paths and bodies are per project.
 - **Escalation ids:** wherever a path or field takes an escalation id, its code works too, e.g. `A12` (case doesn't matter), or `SH-A12` to name the project. Plain numbers from before lane codes (`42`) still resolve.
+- **Observer keys** are read-only: they may use the *any* routes below with `GET` only, and never pass `ack`. Anything else is `403`. See [Observer keys](accounts.md#observer-keys).
 - **Errors:** responses are JSON. Errors look like `{"error": "…"}` with a 4xx status:
   - `400` validation (with `issues`)
   - `401` no or invalid credential
-  - `403` wrong role, or not a project admin
+  - `403` wrong role (including any change from an observer key), or not a project admin
   - `404` not found
   - `409` a state conflict, such as deciding an already-decided escalation
 

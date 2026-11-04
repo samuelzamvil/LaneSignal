@@ -8,6 +8,8 @@ In LaneSignal, go to **Settings → Keys** and create one **agent key** per over
 
 To answer escalations from your own Claude session, create a **personal key** there instead and add it the same way. It acts as you: it gets `decide_escalation`, and decisions show your name.
 
+For an agent that only watches (a status reporter, a dashboard bot, a reviewer that reads what overseers are doing), create an **observer key**. It's read-only: it gets the read tools and nothing that changes anything. See [Observer keys](accounts.md#observer-keys).
+
 ## 2. Add the MCP server
 
 ### Claude Code
@@ -95,7 +97,7 @@ Whichever usage you install, each overseer's `CLAUDE.md` says what's specific to
 
 ## Tools
 
-Which tools a client sees depends on its credential (agent keys get the agent tools, personal keys and human sessions the human ones) and on the server's [features](configuration.md#features): the waiting and answering tools exist only with `LANESIGNAL_DECISIONS=true`, the requirement tools only with `LANESIGNAL_REQUIREMENTS` on (the default).
+Which tools a client sees depends on its credential (agent keys get the agent tools, personal keys and human sessions the human ones, observer keys only the read tools: those marked *any* except `record_requirement` and `supersede_requirement`, plus `read_conversation` and `export_data`; `wait_for_decisions` and `get_updates` refuse `ack` from them) and on the server's [features](configuration.md#features): the waiting and answering tools exist only with `LANESIGNAL_DECISIONS=true`, the requirement tools only with `LANESIGNAL_REQUIREMENTS` on (the default).
 
 Results are compact JSON with empty fields left out (a lane's `project`, too, when the key reaches one project). The server's MCP instructions carry the conventions every tool shares (`project`, escalation codes, `group`/`group_id`), once per session, and the advertised schemas leave out limits that are only validation; every argument is still checked in full. Escalations come back in brief (code, question, state, and the decision or justification once there is one), lanes as where they stand (status, letter, counts), and `update_lane` and `update_group` don't echo what you sent. `get_escalation` has an escalation in full. Tools that take a group accept `group_id` and `group` alike. Unknown groups, lanes and attachments are errors, so a typo never looks like an empty result or creates a lane nobody waits on. Wherever a tool takes an escalation id, it also accepts its code, e.g. `"A12"`.
 
@@ -114,7 +116,7 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 | `list_epics` | any | The groups' [epics](concepts.md#epics): status line and open questions. `epic` in each is how to name it in other tools (its ref, or the group's id for a group standing in as its epic) |
 | `update_epic` | agent | Set an epic's `status_line` (one line on its card, instead of placeholder lanes), `name`, `ref` or `links`. A ref no epic has yet, with `group`, adds that epic to the group (so does giving a group's stand-in a `ref`). Returns the epic |
 | `post_to_group` | agent | Write in your group's conversation, with any files in `attachments`. At most 500 characters, one per group per minute; `client_key` makes a retry return the first instead of posting twice |
-| `read_conversation` | agent | Your group's conversation, newest first, 50 at a time: messages and escalations, each escalation where its thread starts. `next` pages back |
+| `read_conversation` | agent, observer | Your group's conversation, newest first, 50 at a time: messages and escalations, each escalation where its thread starts. `next` pages back |
 | `request_epic_close` | agent | Ask a person to close an epic whose work is over, with a `reason`; they approve or decline in the app. Refused while it has open questions, or answered ones not yet acknowledged |
 | `dismiss_escalation` | agent | Close an alert once it's dealt with (the owner answered in the session, or it's moot), with a required `justification` saying what was decided. `status` and `activity` publish the lane's next state. Only the agent that raised it can dismiss it, or the overseer of the group its ticket (or epic) is in now |
 | `get_escalation` | any | Read one escalation in full |
@@ -127,8 +129,8 @@ Every tool takes an optional `project` (id or key). A key bound to one [project]
 | `acknowledge_escalation` | agent | Decisions on: closes a decided escalation (or one the owner answered Other, taking their latest messages as the decision; acknowledge instead of replying when you'll act on them, though it still works after a reply) and returns the final decision; `status` and `activity` publish the lane's next state. Only the agent that raised it can acknowledge it, or the overseer of the group its ticket (or epic) is in now |
 | `list_lanes` / `list_groups` / `list_escalations` | any | Read state. `list_escalations` returns escalations in brief, filtered by `group_id` or `lane_id`, latest 50 by default (`limit` up to 500) |
 | `find_requirements` / `get_requirement` / `list_products` | any | Everything that applies to the products you name (plus the products they're subprojects of, and project-wide and global ones) in one call, without justification; one requirement with its justification on request; the products. See [Requirements](requirements.md) |
-| `record_requirement` / `supersede_requirement` | any | Record a decision the owner made (citing the escalation or the person) with its scope (`products`, `project` or `global`), or replace one they changed |
-| `export_data` | human | All data for analysis (escalations, positions, conversations, lanes, groups, tickets, epics and their boards, history, requirements) as CSV or JSON, paged. See [Export](export.md) |
+| `record_requirement` / `supersede_requirement` | agent, human | Record a decision the owner made (citing the escalation or the person) with its scope (`products`, `project` or `global`), or replace one they changed |
+| `export_data` | human, observer | All data for analysis (escalations, positions, conversations, lanes, groups, tickets, epics and their boards, history, requirements) as CSV or JSON, paged. See [Export](export.md) |
 | `decide_escalation` | human | Decisions on: answer from your own Claude session. `change: true` corrects a decision the agent hasn't acknowledged yet |
 | `dismiss_escalation` | human | Dismiss an alert that no longer needs an answer, e.g. its session ended |
 

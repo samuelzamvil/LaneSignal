@@ -137,6 +137,8 @@ const list = (v: string | undefined) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+const ROLES = ['human', 'agent', 'observer'] as const satisfies readonly Role[];
+
 /** "name:token,name2:token2" */
 function parseTokens(v: string | undefined, role: Role): TokenEntry[] {
   return (list(v) ?? []).map((pair) => {
@@ -312,6 +314,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // Former name of LANESIGNAL_HUMAN_TOKENS, still accepted.
     ...parseTokens(env.LANESIGNAL_OVERSEER_TOKENS, 'human'),
     ...parseTokens(env.LANESIGNAL_AGENT_TOKENS, 'agent'),
+    ...parseTokens(env.LANESIGNAL_OBSERVER_TOKENS, 'observer'),
     // "overseer" was the former name of the human role.
     ...(file.tokens ?? []).map((t) => ({ ...t, role: (t.role as string) === 'overseer' ? ('human' as const) : t.role })),
   ];
@@ -322,6 +325,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   for (const t of tokens) {
     if (t.token.length < 16) throw new Error(`Token for "${t.name}" is shorter than 16 characters`);
+    if (!(ROLES as readonly string[]).includes(t.role)) throw new Error(`Token for "${t.name}" has role "${t.role}": use ${ROLES.join(', ')}`);
   }
 
   // Ticket system names are lower-case wherever they appear ("Redmine" configures "redmine").
