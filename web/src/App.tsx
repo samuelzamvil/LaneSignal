@@ -32,7 +32,7 @@ import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { HistoryPane } from './history.tsx';
 import { RequirementsPane } from './requirements.tsx';
-import { baselineSeen, baselineSeenEscalations, latestEscalationAt, useSeenVersion } from './seen.ts';
+import { baselineSeen, baselineSeenEscalations, latestEscalationAt, markMessagesSeen, useSeenVersion } from './seen.ts';
 import { Toaster } from './toast.tsx';
 import { ProductsSection } from './products-panel.tsx';
 import { groupTitles, productGroups } from './products.ts';
@@ -429,6 +429,11 @@ function Dashboard({
       [...live.escalations.values()].find((e) => isCodeOf(e, route.escId!) && inScope(e.project)) ??
       [...live.escalations.values()].find((e) => isCodeOf(e, route.escId!)))
     : undefined;
+  // An escalation opened anywhere (Needs you, History, the inbox) has been seen: its group's chat
+  // button stops marking it as new.
+  useEffect(() => {
+    if (routeEsc?.group) markMessagesSeen({ project: routeEsc.project, id: routeEsc.group }, null, routeEsc.createdAt);
+  }, [routeEsc?.id]);
   // Closed escalations drop out of the live map, which also changes this key.
   const escVersion = route.escId ? (routeEsc?.updatedAt ?? 'closed') : '';
   const seqOf = (e: (typeof escalations)[number]) => {

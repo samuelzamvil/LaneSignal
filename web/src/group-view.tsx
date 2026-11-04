@@ -114,7 +114,8 @@ export function GroupView({
   useEffect(() => {
     if (!focus || !items || focused.current === focus) return;
     if (!items.has(`escalation:${focus}`)) {
-      if (loadingOlder) return;
+      // A page that failed to load isn't retried here (no loop on a flaky network): the button does that.
+      if (loadingOlder || error) return;
       if (next) void loadOlder();
       // Every page read and it isn't here: say so, with a way to it.
       else {
@@ -131,7 +132,7 @@ export function GroupView({
       const el = [...(list.current?.querySelectorAll<HTMLElement>('[data-esc]') ?? [])].find((n) => n.dataset.esc === focus);
       el?.scrollIntoView({ block: 'start' });
     });
-  }, [focus, items, next, loadingOlder]);
+  }, [focus, items, next, loadingOlder, error]);
 
   // Opens at the newest message, and stays there as threads fill in and messages arrive, unless you scrolled up.
   useLayoutEffect(() => {
@@ -225,7 +226,7 @@ export function GroupView({
                 </li>
               ) : (
                 <li key={keyOf(i)} className={`convo-esc${i.id === focus ? ' focused' : ''}`} data-esc={i.id}>
-                  <EscalationThread item={i} live={escalations.get(i.id)} client={client} now={now} focused={i.id === focus} />
+                  <EscalationThread item={i} live={escalations.get(i.id)} client={client} now={now} focused={i.id === focus} canAnswer={canWrite} />
                 </li>
               ),
             )}
@@ -261,6 +262,7 @@ function EscalationThread({
   client,
   now,
   focused = false,
+  canAnswer = false,
 }: {
   item: Extract<GroupFeedItem, { type: 'escalation' }>;
   live: Escalation | undefined;
@@ -268,6 +270,8 @@ function EscalationThread({
   now: number;
   /** The thread a push opened: on your turn, its decision is one tap away. */
   focused?: boolean;
+  /** You may answer here (a person, with answering in LaneSignal on). */
+  canAnswer?: boolean;
 }) {
   const [esc, setEsc] = useState<Escalation | null>(null);
   // Refetched when the live copy changes (a reply, an answer), or the feed says it moved on.
@@ -300,7 +304,7 @@ function EscalationThread({
           <span className={`pill ${yourTurn ? 'tone-danger' : state === 'acknowledged' ? 'tone-ok' : ''}`}>
             {yourTurn ? 'Waiting on you' : state === 'open' ? 'Waiting on the overseer' : STATE_LABEL[state]}
           </span>
-          {focused && yourTurn ? (
+          {focused && yourTurn && canAnswer ? (
             <a className="button primary" href={`#/esc/${item.id}`}>
               {blocking ? 'Decide' : 'Open to answer'}
             </a>
