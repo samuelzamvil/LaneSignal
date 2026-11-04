@@ -62,7 +62,7 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `POST /api/setup` | public + code | First admin account: `{email, name, password, code}`. The code isn't needed when sending a static human token |
 | `GET /api/me` | any | Who the credential is: `{name, role, admin?, superuser?, project?, email?, userId?}` |
 | `GET /api/config` | any | Group label, statuses, ticket systems, push availability, the features (`decisions`, `requirements`) and `quietAlerts` |
-| `GET /api/snapshot` | any | Projects, groups, lanes, unresolved escalations, tickets (held and parked ones, and any an unresolved escalation belongs to), and epics (open ones and ones waiting for close approval) |
+| `GET /api/snapshot` | any | Projects, groups, lanes, unresolved escalations, tickets (held and parked ones, and any an unresolved escalation belongs to), and epics (open ones, ones waiting for close approval, and closed ones waiting for reopen approval) |
 | `GET /api/projects` | any | Projects the credential reaches, with your `role` and `notify` setting |
 | `POST /api/projects` | instance admin | `{id, key, name}`. The creator becomes its admin |
 | `PATCH /api/projects/:id` | project admin | `{name?, key?}` |
@@ -94,7 +94,7 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `DELETE /api/lanes/:id?previous=&reason=` | any | Archives the lane. Its ticket is done if the lane was completed, otherwise parked (`reason` "Lane removed"), unless `previous` says otherwise; it keeps its escalations. Escalations raised while the lane held no ticket stay with the group's epic. Its history stays for export, and republishing restores it |
 | `GET /api/tickets?group=&state=in_lane,parked&project=` | any | Tickets, most recently changed first: by default the ones lanes hold and the parked ones |
 | `GET /api/tickets/:ref` | any | One ticket by any form of its ref (URL-encode it: `%23967`, `redmine%3A967`): `{ticket, escalations, events, lanes}` |
-| `GET /api/epics?group=&state=open,close_requested,closed&project=` | any | [Epics](concepts.md#epics): by default the open ones, those waiting for close approval, and closed ones waiting for reopen approval (`reopenRequest`), in groups that aren't removed |
+| `GET /api/epics?group=&state=open,close_requested,closed&project=` | any | [Epics](concepts.md#epics): by default the open ones and those waiting for close approval, in groups that aren't removed. A closed epic waiting for reopen approval carries `reopenRequest` (`state=closed` lists it) |
 | `GET /api/epics/:id` | any | One epic by its number: `{epic, escalations, messages, lanes, feed}` (its questions, its board, the lanes listed under it, and their combined status and activity feed, latest first) |
 | `POST /api/epics` | agent | `{group, ref, name?, links?, statusLine?}`: a real epic for the group, by its ticket's ref (or that epic, updated, when it exists). The group's stand-in steps aside: its questions, board and status line move to the new epic, codes kept. `201` with the epic |
 | `PUT /api/epics/:id` | agent | `{name?, ref?, links?, statusLine?}`. A `ref` for a group's stand-in adds the group's real epic instead. |

@@ -316,6 +316,9 @@ export const pub = {
       open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: pubLaneId(o.laneId) })),
       removedLanes: w.removedLanes.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
       movedTickets: w.movedTickets.filter((m) => keep(m.laneId)).map((m) => ({ ...m, laneId: localId(m.laneId) })),
+      reopenDecisions: w.reopenDecisions
+        .filter((d) => !projects || projects.includes(projectOf(d.group)))
+        .map((d) => ({ ...d, group: localId(d.group) })),
       groupMessages: w.groupMessages
         .filter((g) => !projects || projects.includes(projectOf(g.group)))
         .map((g) => ({ group: localId(g.group), messages: g.messages.map(pub.groupMessage) })),

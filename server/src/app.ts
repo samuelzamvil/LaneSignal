@@ -478,7 +478,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       lanes: store.listLanes(projects).map(pub.lane),
       escalations: store.listEscalations({ projects }).map(pub.escalation),
       tickets: store.snapshotTickets(projects).map(pub.ticket),
-      epics: store.listEpics({ projects }).map(pub.epic),
+      epics: store.listEpics({ projects, reopenRequests: true }).map(pub.epic),
       serverTime: new Date().toISOString(),
     });
   });

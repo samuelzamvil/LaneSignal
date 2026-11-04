@@ -267,11 +267,13 @@ describe('closing an epic', () => {
     assert.equal(asked.isError, false, asked.text);
     assert.equal(asked.value.state, 'closed');
     assert.equal(asked.value.reopenRequested, 'Auditors came back');
-    // People see it among the group's epics, to decide.
-    const listed = (await srv.call('GET', '/api/epics?group=closing', ALICE)).body as any[];
-    const e800 = listed.find((e) => e.displayRef === '800');
+    // People see it in the app's snapshot, to decide; agents' lists of epics leave it out, since it's still closed.
+    const e800 = ((await srv.call('GET', '/api/snapshot', ALICE)).body.epics as any[]).find((e) => e.displayRef === '800');
     assert.equal(e800.reopenRequest.reason, 'Auditors came back');
-    assert.ok((await srv.call('GET', '/api/snapshot', ALICE)).body.epics.some((e: any) => e.displayRef === '800'));
+    assert.deepEqual((await epics('closing')).map((e) => e.epic), ['closing']);
+    assert.ok(!((await srv.call('GET', '/api/epics?group=closing', AGENT)).body as any[]).some((e) => e.id === e800.id));
+    const advice = await srv.tool(AGENT, 'fill_lane', { lane_id: 'reopen-slot', group: 'closing', ticket: '820' });
+    assert.doesNotMatch(advice.text, /This group has epics \(800\)/);
     assert.equal((await srv.call('POST', `/api/epics/${e800.id}/reopen`, AGENT, { approve: true })).status, 403);
     assert.equal((await srv.call('POST', `/api/epics/${e800.id}/reopen`, personal, { approve: true })).status, 403);
     const since = new Date().toISOString();
@@ -306,7 +308,7 @@ describe('closing an epic', () => {
     const declined = await srv.call('POST', `/api/epics/${id}/reopen`, ALICE, { approve: false });
     assert.equal(declined.body.state, 'closed');
     assert.equal(declined.body.reopenRequest, null);
-    assert.ok(!(await srv.call('GET', '/api/epics?group=closing', ALICE)).body.some((e: any) => e.id === id), 'closed epics drop out again');
+    assert.ok(!(await srv.call('GET', '/api/snapshot', ALICE)).body.epics.some((e: any) => e.id === id), 'closed epics drop out again');
     const direct = await srv.call('POST', `/api/epics/${id}/reopen`, ALICE, { approve: true });
     assert.equal(direct.body.state, 'open');
     assert.deepEqual((await epics('closing')).map((e) => e.epic), ['800']);

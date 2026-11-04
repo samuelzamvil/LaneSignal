@@ -209,7 +209,7 @@ export interface WaitResult {
   /** Digest only: tickets from lanes in scope that a lane outside it took since `since` (another overseer, usually). */
   movedTickets: { ticket: string; ticketId: number; laneId: string; by: string | null; at: string }[];
   /** Digest only, on a group's wait: the group's epics a person reopened, or declined to reopen, since `since`. */
-  reopenDecisions: { epic: string; approved: boolean; by: string | null; at: string }[];
+  reopenDecisions: { group: string; epic: string; approved: boolean; by: string | null; at: string }[];
   /**
    * A group's wait: people's messages written to the group that its overseer hasn't acknowledged,
    * oldest first. They come back on every wait until acknowledged (`ack` with the last id handled);
@@ -2103,11 +2103,11 @@ export class Store {
   }
 
   /** Epics in some projects (or a group): open and close-requested ones by default, in groups that aren't removed. */
-  listEpics(filter: { projects?: string[]; groupId?: string; states?: EpicState[] } = {}): Epic[] {
+  listEpics(filter: { projects?: string[]; groupId?: string; states?: EpicState[]; reopenRequests?: boolean } = {}): Epic[] {
     const states = filter.states?.length ? filter.states : (['open', 'close_requested'] as EpicState[]);
-    // By default, closed epics an overseer asked to reopen come too: a person has to see them to decide.
+    // `reopenRequests`: closed epics an overseer asked to reopen come too, for the people who decide (the app's snapshot).
     const where = [
-      `(e.state IN (${states.map(() => '?').join(',')})${filter.states?.length ? '' : " OR (e.state = 'closed' AND e.reopen_requested_at IS NOT NULL)"})`,
+      `(e.state IN (${states.map(() => '?').join(',')})${filter.reopenRequests ? " OR (e.state = 'closed' AND e.reopen_requested_at IS NOT NULL)" : ''})`,
     ];
     const params: string[] = [...states];
     if (filter.groupId) {
@@ -4440,6 +4440,7 @@ export class Store {
         .all(scope.groupId, scope.since) as Row[];
       for (const r of rows) {
         reopenDecisions.push({
+          group: r.group_id as string,
           epic: (r.display_ref as string | null) ?? (r.name as string),
           approved: r.reopen_decision === 'approved',
           by: (r.reopen_decided_by as string | null) ?? null,
@@ -4532,7 +4533,8 @@ export class Store {
       };
       const onChange = (e: StreamEvent) => {
         const note = e.type === 'group_message' && e.message.from === 'owner' && e.group === scope.groupId;
-        if (e.type !== 'escalation' && e.type !== 'lane_deleted' && e.type !== 'ticket' && e.type !== 'epic' && !note) return;
+        const epicHere = e.type === 'epic' && e.epic.group === scope.groupId;
+        if (e.type !== 'escalation' && e.type !== 'lane_deleted' && e.type !== 'ticket' && !epicHere && !note) return;
         try {
           const now = this.decisionsFor(scope);
           if (now.ready) finish();

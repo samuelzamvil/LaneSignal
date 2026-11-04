@@ -152,7 +152,7 @@ Answers can take minutes or a day. An overseer waits on its whole group with one
     - `closed`: withdrawn by someone else; `text` says how
     - `lane_removed`: a lane someone else took off the dashboard, even with nothing open (`id` is the lane)
     - `ticket_moved`: a lane outside the scope (usually another overseer's) took a ticket from one of these lanes (`id` is the ticket)
-    - `reopen_approved` / `reopen_declined`: on a group wait, a person decided whether to reopen one of the group's closed epics (`id` is the epic)
+    - `reopen_approved` / `reopen_declined`: on a group wait, a person reopened one of the group's closed epics (asked or not), or declined a `request_epic_reopen` (`id` is the epic)
     - `group_note`: on a group wait, someone wrote to the group (`id` is the message's); it comes back until acknowledged with `ack`. `since` doesn't clear it: one written before `since` comes back with `seen: true` and doesn't end the wait on its own
   - Files the owner attached are named in `text` with their id ("[attached: plan.md (id …)]"): read one with `get_attachment` (or `GET /api/attachments/:id`).
   - `decided` and `reply` come back on every wait until the agent acknowledges or replies. The others come back once per `since`, and again if the agent repeats a `since`, so a wait that crashed before acting loses nothing. With a `since`, the digest depends on nothing else (whether a note was handed over doesn't matter).

@@ -342,7 +342,7 @@ export function EpicDetail({
             </dl>
             {epic.statusLine && <p className="status-line full">{epic.statusLine}</p>}
             <CloseRequest epic={epic} client={client} canApprove={canApprove} />
-            {!epic.standIn && (
+            {!epic.standIn && group && (
               <ReopenControls
                 name={`epic ${epic.name}`}
                 request={epic.reopenRequest}
