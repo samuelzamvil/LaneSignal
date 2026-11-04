@@ -32,6 +32,8 @@ export async function startServer(env: Record<string, string> = {}, opts: { trmn
     waitGraceMs: 50,
     attachmentsPerItem: config.attachmentsPerItem,
   });
+  // Every lane is in a group: tests publish theirs in "main", here in each project they use.
+  for (const project of ['default', 'shop']) store.upsertGroup(`${project}/main`, { name: 'main' }, 'overseer');
   const accounts = await createAccounts(config, ':memory:');
   const skillFile = fileURLToPath(new URL('../../skills/lanesignal/SKILL.md', import.meta.url));
   const trmnl = opts.trmnl ? new TrmnlPusher(store, opts.trmnl).start() : undefined;
@@ -61,15 +63,17 @@ export async function startServer(env: Record<string, string> = {}, opts: { trmn
 
   /**
    * Publishes a lane (as an agent must before escalating on it), leaving an existing one as is.
-   * With `group`, registers the group first. A new lane holds a ticket named after it (`ticket`
+   * Registers its group first (`group`, or "main" for a new lane). A new lane holds a ticket named after it (`ticket`
    * overrides; null for none), so it works and its questions block it.
    */
   async function publish(laneId: string, opts: { token?: string; project?: string; group?: string; ticket?: string | null } = {}) {
     const token = opts.token ?? AGENT;
     const qs = opts.project ? `?project=${encodeURIComponent(opts.project)}` : '';
-    if (opts.group) await call('PUT', `/api/groups/${encodeURIComponent(opts.group)}${qs}`, token, {});
     const existing = await call('GET', `/api/lanes/${encodeURIComponent(laneId)}${qs}`, token);
     if (!opts.group && existing.status === 200) return;
+    // Every lane is in a group: a new one without one named goes in "main".
+    opts = { ...opts, group: opts.group ?? 'main' };
+    await call('PUT', `/api/groups/${encodeURIComponent(opts.group!)}${qs}`, token, {});
     const ticket = existing.status === 200 ? {} : { ticket: opts.ticket === undefined ? laneId : opts.ticket };
     const res = await call('PUT', `/api/lanes/${encodeURIComponent(laneId)}${qs}`, token, { ...(opts.group ? { group: opts.group } : {}), ...ticket });
     if (res.status !== 200) throw new Error(`publishing lane ${laneId}: ${res.status} ${JSON.stringify(res.body)}`);

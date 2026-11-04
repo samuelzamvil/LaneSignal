@@ -8,6 +8,7 @@ import { Store } from '../src/store.ts';
 import { ticketRefs, ticketResolver } from '../src/tickets.ts';
 
 const AGENT = 'agent-token-0123456789';
+const AGENT2 = 'agent2-token-0123456789';
 const ALICE = 'alice-token-0123456789';
 const BOB = 'bob-token-0123456789ab';
 
@@ -19,7 +20,7 @@ before(async () => {
   const config = loadConfig({
     LANESIGNAL_DATA_DIR: '/nonexistent-unused',
     LANESIGNAL_CONFIG: '/nonexistent.json',
-    LANESIGNAL_AGENT_TOKENS: `bot:${AGENT}`,
+    LANESIGNAL_AGENT_TOKENS: `bot:${AGENT},bot2:${AGENT2}`,
     LANESIGNAL_HUMAN_TOKENS: `alice:${ALICE}`,
     // legacy name of the human-token variable
     LANESIGNAL_OVERSEER_TOKENS: `bob:${BOB}`,
@@ -31,6 +32,8 @@ before(async () => {
     resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem),
     ticketRefs: ticketRefs(config.ticketTemplates, config.defaultTicketSystem),
   });
+  // Every lane is in a group: these tests publish theirs in "main".
+  store.upsertGroup('default/main', { name: 'main' }, 'overseer');
   const accounts = await createAccounts(config, ':memory:');
   const app = createApp({ config, store, accounts, push: { fcm: false, ntfy: false } });
   const server = app.listen(0);
@@ -124,7 +127,7 @@ describe('lanes', () => {
   test('a group registered without a name is named after its id; overseer fills in its metadata', async () => {
     const groups = (await call('GET', '/api/groups', ALICE)).body;
     assert.deepEqual(
-      groups.map((g: { id: string; name: string }) => [g.id, g.name]),
+      groups.filter((g: { id: string }) => g.id !== 'main').map((g: { id: string; name: string }) => [g.id, g.name]),
       [['payments-epic', 'payments-epic']],
     );
     const updated = await call('PUT', '/api/groups/payments-epic', AGENT, {
@@ -165,12 +168,21 @@ describe('lanes', () => {
     assert.equal((await call('GET', '/api/export', null)).status, 401);
   });
 
-  test('deleting a group ungroups its lanes', async () => {
+  test('deleting a group removes its lanes with it', async () => {
     await call('PUT', '/api/groups/tmp-group', AGENT, {});
     await call('PUT', '/api/lanes/tmp-lane', AGENT, { group: 'tmp-group' });
     assert.equal((await call('DELETE', '/api/groups/tmp-group', ALICE)).status, 204);
-    assert.equal((await call('GET', '/api/lanes/tmp-lane', ALICE)).body.lane.group, null);
-    await call('DELETE', '/api/lanes/tmp-lane', ALICE);
+    assert.equal((await call('GET', '/api/lanes/tmp-lane', ALICE)).status, 404);
+  });
+
+  test('registering a group takes control of it, and the change is recorded', async () => {
+    await call('PUT', '/api/groups/handover', AGENT, {});
+    await call('PUT', '/api/groups/handover', AGENT2, {});
+    const groups = (await call('GET', '/api/groups', ALICE)).body as { id: string; overseer: string | null }[];
+    assert.equal(groups.find((g) => g.id === 'handover')?.overseer, 'bot2');
+    const history = (await call('GET', '/api/groups/handover/overseers', ALICE)).body;
+    assert.deepEqual(history.map((h: { overseer: string; previous: string | null }) => [h.overseer, h.previous]), [['bot2', 'bot'], ['bot', null]]);
+    assert.equal((await call('GET', '/api/groups/nope/overseers', ALICE)).status, 404);
   });
 
   test('body-parser errors are client errors, not 500s', async () => {
@@ -207,7 +219,7 @@ describe('escalation lifecycle', () => {
     const unpublished = await call('POST', '/api/escalations', AGENT, { laneId: 'train-a', question: 'Too early?' });
     assert.equal(unpublished.status, 404, 'the lane must be published first');
     assert.match(unpublished.body.error, /Lane "train-a" not found: publish it first/);
-    await call('PUT', '/api/lanes/train-a', AGENT, { ticket: '500' });
+    await call('PUT', '/api/lanes/train-a', AGENT, { group: 'main', ticket: '500' });
     const res = await call('POST', '/api/escalations', AGENT, {
       laneId: 'train-a',
       context: 'legacy_role has had no reads for 90 days.',
@@ -303,7 +315,7 @@ describe('real-time stream', () => {
     const res = await fetch(`${base}/api/events?access_token=${ALICE}`, { signal: ctrl.signal });
     assert.equal(res.status, 200);
     const reader = res.body!.getReader();
-    await call('PUT', '/api/lanes/sse-lane', AGENT, { activity: 'hello' });
+    await call('PUT', '/api/lanes/sse-lane', AGENT, { group: 'main', activity: 'hello' });
     let text = '';
     const decoder = new TextDecoder();
     while (!text.includes('sse-lane')) {
@@ -347,7 +359,7 @@ describe('mcp', () => {
 
     const out = await rpc(AGENT, 'tools/call', {
       name: 'update_lane',
-      arguments: { lane_id: 'mcp-lane', status: 'pending_ci', ticket: 'gh:5' },
+      arguments: { lane_id: 'mcp-lane', group_id: 'main', status: 'pending_ci', ticket: 'gh:5' },
     });
     const lane = JSON.parse(out.result.content[0].text);
     assert.deepEqual(Object.keys(lane).sort(), ['id', 'letter', 'project', 'status'], 'where the lane stands, nothing echoed');

@@ -21,7 +21,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe('escalation codes', () => {
   test("codes are the ticket's ref and a letter, usable wherever an id is", async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'refs', ticket: '967' });
+    await srv.tool(AGENT, 'update_lane', { group_id: 'main', lane_id: 'refs', ticket: '967' });
     // The lane keeps its letter as a card label.
     assert.match((await srv.call('GET', '/api/lanes/refs', ALICE)).body.lane.letter, /^[A-Z]+$/);
     const a = await ask('refs', 'First?');
@@ -45,9 +45,9 @@ describe('escalation codes', () => {
   });
 
   test('overseers can remove a lane whose work is over; questions stay with its ticket or epic', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'finished', ticket: '777' });
+    await srv.tool(AGENT, 'update_lane', { group_id: 'main', lane_id: 'finished', ticket: '777' });
     const e = await ask('finished', 'Still needed?');
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'empty' });
+    await srv.tool(AGENT, 'update_lane', { group_id: 'main', lane_id: 'empty' });
     const loose = await ask('empty', 'Which ticket next?');
     for (const lane of ['finished', 'empty']) {
       const res = await srv.tool(AGENT, 'remove_lane', { lane_id: lane });
@@ -110,7 +110,7 @@ describe('safe retries', () => {
 
 describe('acknowledging publishes the next lane state', () => {
   test('status and activity are applied in the same call', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'next', ticket: '600', status: 'active' });
+    await srv.tool(AGENT, 'update_lane', { group_id: 'main', lane_id: 'next', ticket: '600', status: 'active' });
     const e = await ask('next', 'Go?');
     await decide(e.id, 'go');
     assert.equal((await srv.call('GET', '/api/lanes/next', ALICE)).body.lane.status, 'awaiting_agent');
@@ -273,7 +273,7 @@ describe('waiting on many escalations', () => {
 
 describe('the HTTP wait for long waits', () => {
   test('answers at once with JSON when something is ready', async () => {
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'empty-lane' });
+    await srv.tool(AGENT, 'update_lane', { group_id: 'main', lane_id: 'empty-lane' });
     const res = await srv.call('GET', '/api/wait?format=full&lane=empty-lane&timeout=60', AGENT);
     assert.equal(res.status, 200);
     assert.equal(res.body.ready, true);

@@ -37,6 +37,10 @@ export interface Group {
   products: string[];
   /** Token name that last updated the group. */
   agent: string | null;
+  /** Its overseer: the name of the key that registered it last. Any overseer may take control; each change is recorded. */
+  overseer: string | null;
+  /** When the current overseer took control. */
+  overseerSince: string | null;
   createdAt: string;
   updatedAt: string;
 }

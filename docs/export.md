@@ -180,6 +180,6 @@ To rebuild blocked time per lane over a period, pair the status changes in `stat
 
 If an agent publishes to the same lane id again, the lane comes back with its history.
 
-**Removing a group** hides it. Its lanes show as ungrouped, but they keep their group in exports. Publishing to the group again restores it.
+**Removing a group** hides it and removes its lanes; both stay in exports. Publishing to the group again restores it, and publishing a lane restores that lane.
 
 There's no hard-delete in the app. To erase data, delete or restore the database file ([Operations](operations.md)).

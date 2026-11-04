@@ -667,6 +667,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json(pub.group(store.setGroupProducts(q(project, id), parse(s.groupProducts, req.body).products)));
   });
 
+  /** Who has overseen the group, latest first: each time an overseer took control, and whom it replaced. */
+  app.get('/api/groups/:id/overseers', any, (req, res) => {
+    const project = acc(res).pick(projectQuery(req), { group: String(req.params.id) });
+    res.json(store.groupOverseers(q(project, String(req.params.id))));
+  });
+
   app.delete('/api/groups/:id', human, (req, res) => {
     const project = acc(res).pick(projectQuery(req), { group: String(req.params.id) });
     store.deleteGroup(q(project, String(req.params.id)), principalOf(res).name);

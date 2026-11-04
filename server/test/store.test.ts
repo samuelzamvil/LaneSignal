@@ -254,23 +254,84 @@ test('removing a lane archives it: hidden from the dashboard, kept for export, r
   store.close();
 });
 
-test('removing a group archives it; lanes read as ungrouped but exports keep the group', () => {
+test('removing a group removes its lanes with it; exports keep both, and publishing brings them back', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
   store.upsertGroup('default/payments', { name: 'Payments epic' }, 'bot');
   publishLane(store, 'default/l', { group: 'default/payments' }, 'bot');
+  const events: string[] = [];
+  store.events.on('change', (e) => events.push(e.type === 'lane_deleted' ? `lane_deleted:${e.id}` : e.type));
   store.deleteGroup('default/payments', 'alice');
-  assert.equal(store.getLane('default/l')?.group, null);
+  assert.equal(store.getLane('default/l'), null);
+  assert.deepEqual(store.listLanes(), []);
   assert.deepEqual(store.listGroups(), []);
-  // An unrelated update must not drop the lane's group association.
-  publishLane(store, 'default/l', { activity: 'still going' }, 'bot');
-  const lane = store.exportRows('lanes')[0];
-  assert.equal(lane.group_id, 'payments');
-  assert.equal(lane.group_name, 'Payments epic');
+  assert.ok(events.includes('lane_deleted:default/l') && events.includes('group_deleted'));
+  // Its ticket was parked, not lost.
+  assert.equal(store.exportRows('lanes')[0].group_id, 'payments');
   assert.ok(store.exportRows('groups')[0].archived_at);
-  // Publishing to the group again brings it back.
-  publishLane(store, 'default/l2', { group: 'default/payments' }, 'bot');
+  // Publishing the lane again brings it back in its group, and the group with it: no lane is outside one.
+  publishLane(store, 'default/l', { activity: 'still going' }, 'bot');
+  assert.equal(store.getLane('default/l')?.group, 'default/payments');
   assert.equal(store.listGroups()[0].name, 'Payments epic');
   store.close();
+});
+
+test('any overseer can take control of a group, and each change is recorded', () => {
+  let now = Date.parse('2026-11-01T10:00:00Z');
+  const store = new Store({ path: ':memory:', resolveTicketUrl, now: () => new Date(now) });
+  store.upsertGroup('default/g', { name: 'G' }, 'bot', 'user:u1:laptop');
+  assert.equal(store.getGroup('default/g')?.overseer, 'laptop');
+  now += 60_000;
+  // The same key registering again changes nothing.
+  store.upsertGroup('default/g', { name: 'G' }, 'bot', 'user:u1:laptop');
+  now += 60_000;
+  store.upsertGroup('default/g', {}, 'other', 'token:desk:2');
+  const g = store.getGroup('default/g')!;
+  assert.equal(g.overseer, 'desk:2');
+  assert.equal(g.overseerSince, '2026-11-01T10:02:00.000Z');
+  assert.deepEqual(store.groupOverseers('default/g'), [
+    { overseer: 'desk:2', previous: 'laptop', at: '2026-11-01T10:02:00.000Z' },
+    { overseer: 'laptop', previous: null, at: '2026-11-01T10:00:00.000Z' },
+  ]);
+  store.close();
+});
+
+test('a lane is never outside a group', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  assert.throws(() => store.upsertLane('default/loner', { name: 'Loner' }, 'bot'), /needs a group/);
+  assert.equal(store.laneExists('default/loner'), false);
+  publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
+  assert.throws(() => store.upsertLane('default/l', { group: null }, 'bot'), /needs a group/);
+  assert.equal(store.getLane('default/l')?.group, 'default/g');
+  store.close();
+});
+
+test('upgrading to v23: live lanes of a removed group are removed with it; overseers are recorded', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v22-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl });
+    store.upsertGroup('default/gone', { name: 'Gone' }, 'bot', 'user:u1:laptop');
+    store.upsertGroup('default/kept', { name: 'Kept' }, 'bot');
+    publishLane(store, 'default/a', { group: 'default/gone' }, 'bot');
+    publishLane(store, 'default/b', { group: 'default/kept' }, 'bot');
+    store.close();
+    // Back to v22: a removed group's lanes stayed on the dashboard, and overseers weren't recorded.
+    const db = new DatabaseSync(file);
+    db.exec(`
+      UPDATE groups SET archived_at = '2026-11-01T00:00:00.000Z' WHERE id = 'default/gone';
+      DROP TABLE group_overseers;
+      UPDATE meta SET value = '22' WHERE key = 'schema_version';`);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    assert.deepEqual(store.listLanes().map((l) => l.id), ['default/b']);
+    assert.ok(store.laneEvents('default/a').some((e) => e.message === 'Lane removed'));
+    assert.deepEqual(store.groupOverseers('default/kept'), []);
+    store.upsertGroup('default/gone', {}, 'bot');
+    assert.equal(store.groupOverseers('default/gone')[0].overseer, 'laptop');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('only routine activity text is trimmed; status and escalation history is kept', () => {
@@ -394,15 +455,15 @@ test('removing a blocked lane ends its blocked spell; decided answers survive an
   store.close();
 });
 
-test('restoring an archived group re-sends its lanes so clients regroup them', () => {
+test('restoring a removed group leaves its lanes removed until they are published again', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
   publishLane(store, 'default/b', { group: 'default/g2' }, 'bot');
   publishLane(store, 'default/c', { group: 'default/g2' }, 'bot');
   store.deleteGroup('default/g2', 'alice');
-  const lanes: string[] = [];
-  store.events.on('change', (e) => e.type === 'lane' && lanes.push(`${e.lane.id}:${e.lane.group}`));
   store.upsertGroup('default/g2', { name: 'G2 again' }, 'bot');
-  assert.deepEqual(lanes.sort(), ['default/b:default/g2', 'default/c:default/g2']);
+  assert.deepEqual(store.listLanes(), []);
+  publishLane(store, 'default/b', { activity: 'back' }, 'bot');
+  assert.deepEqual(store.listLanes().map((l) => `${l.id}:${l.group}`), ['default/b:default/g2']);
   store.close();
 });
 

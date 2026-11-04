@@ -34,7 +34,7 @@ describe('one project', () => {
       projects.map((p: any) => [p.id, p.key, p.role]),
       [['default', 'MAIN', 'admin']],
     );
-    const lane = await srv.call('PUT', '/api/lanes/auth', AGENT, { status: 'active' });
+    const lane = await srv.call('PUT', '/api/lanes/auth', AGENT, { group: 'main', status: 'active' });
     assert.equal(lane.status, 200);
     assert.equal(lane.body.id, 'auth');
     assert.equal(lane.body.project, 'default');
@@ -53,23 +53,23 @@ describe('several projects', () => {
 
   test('a credential that reaches several projects names one only where an id is new or ambiguous', async () => {
     // An overseer that was running before the second project appeared keeps working.
-    const existing = await srv.call('PUT', '/api/lanes/auth', AGENT, { status: 'active' });
+    const existing = await srv.call('PUT', '/api/lanes/auth', AGENT, { group: 'main', status: 'active' });
     assert.equal(existing.status, 200, JSON.stringify(existing.body));
     assert.equal(existing.body.project, 'default');
-    const res = await srv.call('PUT', '/api/lanes/brand-new', AGENT, { status: 'active' });
+    const res = await srv.call('PUT', '/api/lanes/brand-new', AGENT, { group: 'main', status: 'active' });
     assert.equal(res.status, 400);
     assert.match(res.body.error, /Say which project: (MAIN, SH|SH, MAIN)/);
     // By id or by key.
-    assert.equal((await srv.call('PUT', '/api/lanes/auth?project=sh', AGENT, { status: 'idle' })).status, 200);
-    assert.equal((await srv.call('PUT', '/api/lanes/auth?project=default', AGENT, { status: 'active' })).status, 200);
+    assert.equal((await srv.call('PUT', '/api/lanes/auth?project=sh', AGENT, { group: 'main', status: 'idle' })).status, 200);
+    assert.equal((await srv.call('PUT', '/api/lanes/auth?project=default', AGENT, { group: 'main', status: 'active' })).status, 200);
     // Now "auth" is in both: ambiguous again.
-    const both = await srv.call('PUT', '/api/lanes/auth', AGENT, { status: 'active' });
+    const both = await srv.call('PUT', '/api/lanes/auth', AGENT, { group: 'main', status: 'active' });
     assert.equal(both.status, 400);
     assert.match(both.body.error, /Say which project/);
   });
 
   test('lane ids and codes are per project; KEY-500A names one across projects', async () => {
-    for (const p of ['default', 'shop']) assert.equal((await srv.call('PUT', `/api/lanes/auth?project=${p}`, AGENT, { ticket: '500' })).status, 200);
+    for (const p of ['default', 'shop']) assert.equal((await srv.call('PUT', `/api/lanes/auth?project=${p}`, AGENT, { group: 'main', ticket: '500' })).status, 200);
     const main = (await srv.call('POST', '/api/escalations?project=default', AGENT, { laneId: 'auth', question: 'Main?' })).body;
     const shop = (await srv.call('POST', '/api/escalations?project=shop', AGENT, { laneId: 'auth', question: 'Shop?' })).body;
     assert.equal(main.ref, '500A');
@@ -140,9 +140,9 @@ describe('several projects', () => {
     });
     assert.equal(created.status, 200, JSON.stringify(created.body));
     const key = created.body.key;
-    assert.equal((await srv.call('PUT', '/api/lanes/cart', key, { status: 'active' })).body.project, 'shop');
+    assert.equal((await srv.call('PUT', '/api/lanes/cart', key, { group: 'main', status: 'active' })).body.project, 'shop');
     assert.deepEqual((await srv.call('GET', '/api/projects', key)).body.map((p: any) => p.id), ['shop']);
-    assert.equal((await srv.call('PUT', '/api/lanes/cart?project=default', key, { status: 'active' })).status, 404);
+    assert.equal((await srv.call('PUT', '/api/lanes/cart?project=default', key, { group: 'main', status: 'active' })).status, 404);
     const tools = await srv.tool(key, 'list_lanes', {});
     assert.ok(tools.value.length > 0 && tools.value.every((l: any) => l.project === undefined), 'one project: lanes leave it out');
   });
@@ -176,8 +176,8 @@ describe('several projects', () => {
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let text = '';
-      await srv.call('PUT', '/api/lanes/secret?project=default', AGENT, { activity: 'main only' });
-      await srv.call('PUT', '/api/lanes/visible?project=shop', AGENT, { activity: 'shop lane' });
+      await srv.call('PUT', '/api/lanes/secret?project=default', AGENT, { group: 'main', activity: 'main only' });
+      await srv.call('PUT', '/api/lanes/visible?project=shop', AGENT, { group: 'main', activity: 'shop lane' });
       while (!text.includes('shop lane')) {
         const { done, value } = await reader.read();
         if (done) throw new Error('stream ended early');
@@ -209,7 +209,7 @@ describe('review findings', () => {
       ).body.key;
       assert.deepEqual((await srv.call('GET', '/api/projects', key)).body, []);
       assert.equal((await srv.call('GET', '/api/lanes/auth', key)).status, 404);
-      assert.equal((await srv.call('PUT', '/api/lanes/auth', key, { status: 'idle' })).status, 404);
+      assert.equal((await srv.call('PUT', '/api/lanes/auth', key, { group: 'main', status: 'idle' })).status, 404);
       assert.equal((await srv.call('POST', '/api/escalations', key, { laneId: 'auth', question: 'x' })).status, 404);
       assert.equal((await srv.call('PUT', '/api/groups/ops', key, { name: 'x' })).status, 404);
     }
