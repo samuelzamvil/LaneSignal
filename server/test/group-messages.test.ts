@@ -104,7 +104,7 @@ function seedV23(file: string) {
   const escFile = store.addAttachment(png, 'user:a', 'alice');
   store.postMessage(e.id, { from: 'owner', author: 'alice', body: 'Other: see the shot', attachments: [escFile.id] }, 'user:a');
   const laneFile = store.addAttachment(png, 'bot', 'bot');
-  const epic = store.listEpics({ groupId: 'default/g' })[0];
+  const epic = store.upsertEpic('default', { groupId: 'default/g', ref: '700' }, 'bot');
   store.close();
   exec(
     file,

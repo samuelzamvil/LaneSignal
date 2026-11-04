@@ -37,7 +37,7 @@ export function EpicChip({ esc }: { esc: Pick<Escalation, 'project' | 'epicId' |
 
 /** The epic's ticket (for a group standing in as its epic, the group's), a link to its tracker when there's one. */
 function EpicTicket({ epic, group }: { epic: Epic; group?: Group }) {
-  const ref = epic.displayRef ?? (epic.standIn ? group?.ticket : null);
+  const ref = epic.displayRef;
   const url = epic.displayRef ? epic.url : (group?.ticketUrl ?? null);
   if (!ref) return null;
   return url ? (
@@ -101,17 +101,16 @@ function TitleButton({ name, onOpen }: { name: string; onOpen: () => void }) {
 
 /**
  * The head of a group's box on the Lanes page: whose lanes these are, the overseer's session, and how
- * many need you. A group with no epic of its own stands in as one, so this head is also its epic's
- * card: its status line and questions show here, and tapping it opens the epic's sheet.
+ * many need you. The group's own status line shows here, it reads Waiting on you while one of its
+ * own questions blocks it, and tapping it (or Chat) opens the group's conversation.
  */
 export function GroupHeader({
   group,
   name,
   lanes,
   waiting,
-  standIn,
+  blocking,
   showTicket,
-  onOpen,
   onChat,
 }: {
   group: Group | undefined;
@@ -120,33 +119,32 @@ export function GroupHeader({
   lanes: number;
   /** Lanes and epics in the box waiting on a person. */
   waiting: number;
-  standIn?: Epic;
+  /** The group's own questions that block it, waiting on a person. */
+  blocking: number;
   /** The group's own ticket from before epics: not shown once its epics carry theirs. */
   showTicket: boolean;
-  onOpen?: () => void;
   /** Opens the group's conversation. */
   onChat?: () => void;
 }) {
   const session = sessionLink(group);
   const others = group?.links.filter((l) => l !== session) ?? [];
-  const blocked = (standIn?.blockingEscalations ?? 0) > 0;
-  const open = standIn && onOpen;
+  const blocked = blocking > 0;
   return (
-    <header className={`group-head${open ? ' opens' : ''}${blocked ? ' needs-human' : ''}`} onClick={open ? onOpen : undefined}>
+    <header className={`group-head${onChat ? ' opens' : ''}${blocked ? ' needs-human' : ''}`} onClick={onChat}>
       <div className="group-head-main">
       <div className="group-title">
-        <h3>{open ? <TitleButton name={name} onOpen={onOpen} /> : name}</h3>
+        <h3>{onChat ? <TitleButton name={name} onOpen={onChat} /> : name}</h3>
         <span className="count">{lanes}</span>
         {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
         {blocked && <span className="pill tone-danger">Waiting on you</span>}
-        {showTicket && (standIn ? <EpicTicket epic={standIn} group={group} /> : group && <TicketLink lane={group} />)}
+        {showTicket && group && <TicketLink lane={group} />}
         {session && (
           <a className="session-link" href={session.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
             💬 {session.label}
           </a>
         )}
       </div>
-      {standIn?.statusLine && <p className="status-line">{standIn.statusLine}</p>}
+      {group?.statusLine && <p className="status-line">{group.statusLine}</p>}
       {others.length > 0 && (
         <div onClick={(e) => e.stopPropagation()}>
           <Links links={others} />
@@ -306,7 +304,7 @@ export function EpicDetail({
             ← {backTo}
           </button>
           <div className="sheet-title">
-            <span className="sheet-kind">Epic{epic?.standIn ? ` · ${groupLabel} as its epic` : ''}{closed ? ' · Closed' : ''}</span>
+            <span className="sheet-kind">Epic{closed ? ' · Closed' : ''}</span>
             <h2>{epic?.name ?? '…'}</h2>
           </div>
           {epic && epic.blockingEscalations > 0 && <span className="pill tone-danger">Waiting on you</span>}
@@ -315,7 +313,7 @@ export function EpicDetail({
         {epic && data && (
           <div className="sheet-body">
             <dl className="facts">
-              {(epic.displayRef || (epic.standIn && group?.ticket)) && (
+              {epic.displayRef && (
                 <>
                   <dt>Ticket</dt>
                   <dd>

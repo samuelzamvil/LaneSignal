@@ -689,7 +689,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.get('/api/lanes/:id', any, (req, res) => {
     const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
     const laneId = q(project, String(req.params.id));
-    const lane = Store.isEpicLane(laneId) ? null : store.getLane(laneId);
+    const lane = Store.isInternalLane(laneId) ? null : store.getLane(laneId);
     if (!lane) throw new NotFoundError('Lane not found');
     res.json({
       lane: pub.lane(lane),
@@ -771,7 +771,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     });
   });
 
-  /** A real epic for a group, by its ticket's ref (or that epic, updated, if it exists). Retires the group's stand-in. */
+  /** An epic for a group, by its ticket's ref (or that epic, updated, if it exists). */
   app.post('/api/epics', agent, (req, res) => {
     const body = parse(s.epicCreate, req.body ?? {});
     const project = acc(res).pick(projectQuery(req), { group: body.group });
@@ -782,11 +782,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.put('/api/epics/:id', agent, (req, res) => {
     const epic = epicOf(req, res);
     const body = parse(s.epicPatch, req.body ?? {});
-    // A ref for a group's stand-in adds the group's real epic.
-    const updated =
-      epic.standIn && body.ref?.trim()
-        ? store.upsertEpic(epic.project, { groupId: epic.group, ...body }, principalOf(res).name)
-        : store.upsertEpic(epic.project, { epic: epic.id, ...body }, principalOf(res).name);
+    const updated = store.upsertEpic(epic.project, { epic: epic.id, ...body }, principalOf(res).name);
     res.json(pub.epic(store.getEpic(updated.id)!));
   });
 
@@ -965,8 +961,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   /** 201 when created; 200 with `duplicate: true` when the same open question already exists (a retry). */
   app.post('/api/escalations', agent, (req, res) => {
-    const { epic, ...input } = parse(s.escalationInput, req.body);
-    const target = escalationTarget(store, acc(res), { laneId: input.laneId, epic }, projectQuery(req));
+    const { epic, group, ...input } = parse(s.escalationInput, req.body);
+    const target = escalationTarget(store, acc(res), { laneId: input.laneId, epic, group }, projectQuery(req));
     const escalation = store.createEscalation({ ...input, ...target }, principalOf(res).name, ownerOf(principalOf(res)));
     res.status(escalation.duplicate ? 200 : 201).json(pub.escalation(escalation));
   });

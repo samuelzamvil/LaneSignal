@@ -45,6 +45,13 @@ export interface Group {
   lastMessageId: number | null;
   /** The overseer's latest message in the group's conversation, for marking the group as having something new to read. */
   lastAgentMessageId: number | null;
+  /** One line the overseer sets (update_group), e.g. "3 of 5 lanes busy; next up #966". */
+  statusLine: string | null;
+  /** What its own questions' codes start with ("680A", or its id when it has no ticket). */
+  code: string;
+  /** Its own questions waiting on a person (not its tickets' or epics'), and of those how many block: it shows "Waiting on you". */
+  openEscalations: number;
+  blockingEscalations: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -137,27 +144,26 @@ export const EPIC_STATES = ['open', 'close_requested', 'closed'] as const;
 export type EpicState = (typeof EPIC_STATES)[number];
 
 /**
- * A long-lived ticket a group steers its work by: its own questions and message board, not worked in
- * a lane. Every group has one; when none was given, the group stands in as its epic (`standIn`).
+ * A long-lived ticket a group steers its work by: its own questions, not worked in a lane. A group has
+ * any number of epics, or none (its own questions are then the group's).
  */
 export interface Epic {
   /** Short number, unique across projects. */
   id: number;
   project: string;
   group: string;
-  /** Canonical ref of its ticket ("redmine:680"); null for a group's stand-in epic. */
+  /** Canonical ref of its ticket ("redmine:680"). */
   ref: string | null;
   /** The ref as first written. */
   displayRef: string | null;
   url: string | null;
-  /** What its escalation codes start with: "680A", or the group's id for a stand-in. */
+  /** What its escalation codes start with: "680A". */
   code: string;
   name: string;
   links: Link[];
   /** One line the overseer sets: "3 of 5 lanes busy; next up #966". */
   statusLine: string | null;
   state: EpicState;
-  standIn: boolean;
   /** Why the overseer asked to close it, while waiting for a person. */
   closeReason: string | null;
   closeRequestedBy: string | null;

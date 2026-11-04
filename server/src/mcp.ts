@@ -331,8 +331,7 @@ function buildServer(
     {
       description:
         'List epics: the long-lived tickets groups steer their work by, each with its status line and open questions. ' +
-        'Every group has one; a group with none of its own stands in as its epic ' +
-        '(`standIn`, named by the group\'s id). `epic` is how to name one in other tools.',
+        'A group may have none (its own questions are then raised on the group). `epic` is how to name one in other tools.',
       inputSchema: { group_id: GROUP_FILTER, group: GROUP_ALIAS, ...PROJECT },
       annotations: { readOnlyHint: true },
     },
@@ -912,19 +911,23 @@ function buildServer(
             ? ', and `products` (from list_products), the narrowest that cover your work: the dashboard titles your group from ' +
               'them. Once a group has products, only the owner changes them'
             : '') +
-          '. Its epic\'s ticket goes in update_epic. Registering a group takes control of it: your key becomes its overseer ' +
+          '. `status_line`: one line on its box, e.g. "3 of 5 lanes busy; next up #966" (instead of placeholder lanes). ' +
+          'An epic\'s ticket goes in update_epic. Registering a group takes control of it: your key becomes its overseer ' +
           '(any earlier overseer is replaced, and the change is recorded).',
         inputSchema: {
           group_id: s.groupId,
-          ...s.groupPatch.shape,
+          name: s.groupPatch.shape.name,
+          links: s.groupPatch.shape.links,
+          products: s.groupPatch.shape.products,
+          status_line: s.groupPatch.shape.statusLine,
           ticket: s.groupPatch.shape.ticket.describe('Ignored: name the epic with update_epic.'),
           ...PROJECT_WRITE,
         },
       },
-      async ({ group_id, project, ticket, products, ...rest }) => {
+      async ({ group_id, project, ticket, products, status_line, ...rest }) => {
         try {
           // Requirements off: there are no products to name, and that shouldn't cost the rest of the update.
-          const patch = features.requirements ? { ...rest, products } : rest;
+          const patch = { ...(features.requirements ? { ...rest, products } : rest), statusLine: status_line };
           const group = store.upsertGroup(q(a.pick(project, { group: group_id }), group_id), patch, who.name, ownerOf(who));
           return json(
             compact({
@@ -968,7 +971,7 @@ function buildServer(
               changed && lane.group
                 ? store
                     .listEpics({ groupId: lane.group })
-                    .filter((e) => !e.standIn && e.displayRef)
+                    .filter((e) => e.displayRef)
                     .map((e) => e.displayRef!)
                 : [],
           })
@@ -1229,13 +1232,16 @@ function buildServer(
       {
         description:
           'Ask the owner for a decision (each escalation gets one answer): notifies their phone and blocks the lane holding its ticket ' +
-          '(`blocking: false` for an FYI). Raised on a lane (published first), it\'s the lane\'s ticket\'s, or its ' +
-          'group\'s epic\'s if it holds none; `epic` with no `lane_id` raises it on the epic (blocks no lane). ' +
+          '(`blocking: false` for an FYI). Raised on a lane (published first), it\'s the lane\'s ticket\'s, or if it holds none, ' +
+          'its group\'s epic\'s (`epic` says which when there are several) or, with no epic, the group\'s. `epic` with no ' +
+          '`lane_id` raises it on the epic; `group_id` alone raises it on your group (direction, scope, what comes next): ' +
+          'it blocks the group, not a lane. ' +
           'Returns its code (`ref`, e.g. "967A"). The same open question again returns the first (`duplicate: true`); ' +
           'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give (attachments are added).',
         inputSchema: {
-          lane_id: s.laneId.optional().describe('The lane it\'s raised in; leave out to raise it on `epic`.'),
-          epic: s.epicName.optional().describe('The epic it\'s for: its ref, or the group\'s id.'),
+          lane_id: s.laneId.optional().describe('The lane it\'s raised in; leave out to raise it on `epic` or your group.'),
+          epic: s.epicName.optional().describe('The epic it\'s for: its ref.'),
+          group_id: s.groupId.optional().describe('Raise it on your group itself, with no lane or epic.'),
           question: s.escalationFields.question,
           context: s.escalationFields.context,
           recommendation: s.escalationFields.recommendation,
@@ -1256,16 +1262,17 @@ function buildServer(
           ...PROJECT_WRITE,
         },
       },
-      async ({ lane_id, accept_means, reject_means, allow_reject, project, ...rest }) => {
+      async ({ lane_id, group_id, accept_means, reject_means, allow_reject, project, ...rest }) => {
         try {
-          const { epic, ...input } = s.escalationInput.parse({
+          const { epic, group, ...input } = s.escalationInput.parse({
             laneId: lane_id,
+            group: group_id,
             acceptMeans: accept_means,
             rejectMeans: reject_means,
             allowReject: allow_reject,
             ...rest,
           });
-          const target = escalationTarget(store, a, { laneId: input.laneId, epic }, project);
+          const target = escalationTarget(store, a, { laneId: input.laneId, epic, group }, project);
           return json(brief(pub.escalation(store.createEscalation({ ...input, ...target }, who.name, ownerOf(who)))));
         } catch (err) {
           return fail(err);
