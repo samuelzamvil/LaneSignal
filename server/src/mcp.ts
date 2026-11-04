@@ -437,7 +437,7 @@ function buildServer(
       try {
         const target = a.escalation(id, project);
         const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
-          store.waitForDecision(target.id, (wait_seconds ?? 0) * 1000, signal),
+          store.waitForDecision(target.id, (wait_seconds ?? 0) * 1000, signal, isWriter(who)),
         );
         if (revoked || (wait_seconds && !(await stillValid()))) return fail(new Error('Credential revoked'));
         if (wait_seconds && !accessFor(store, a.principal).projects.includes(value.project)) {

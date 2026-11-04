@@ -1085,7 +1085,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       });
       let escalation;
       try {
-        escalation = await store.waitForDecision(target.id, wait * 1000, abort.signal);
+        escalation = await store.waitForDecision(target.id, wait * 1000, abort.signal, isWriter(principalOf(res)));
       } finally {
         unwatch();
       }

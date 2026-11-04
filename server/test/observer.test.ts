@@ -135,6 +135,39 @@ describe('observer keys', () => {
     assert.deepEqual(agent.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(note.id), undefined]]);
   });
 
+  test("its waits don't show lanes as having an agent waiting", async () => {
+    await srv.publish('watched-lane');
+    const e = (await srv.call('POST', '/api/escalations', AGENT, { laneId: 'watched-lane', question: 'Waiting?' })).body;
+    const waiting = async () => (await srv.call('GET', '/api/lanes/watched-lane', ALICE)).body.lane.agentWaiting;
+    assert.equal(await waiting(), false);
+    const pending = [
+      srv.call('GET', '/api/wait?lane=watched-lane&timeout=1', WATCHER),
+      srv.call('GET', `/api/escalations/${e.id}?wait=1`, WATCHER),
+      srv.tool(WATCHER, 'get_escalation', { id: e.id, wait_seconds: 1 }),
+      srv.tool(WATCHER, 'wait_for_decisions', { lane_ids: ['watched-lane'], wait_seconds: 1 }),
+    ];
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(await waiting(), false, 'observers only watch');
+    await Promise.all(pending);
+    // An agent's wait does.
+    const agentWait = srv.call('GET', '/api/wait?lane=watched-lane&timeout=1', AGENT);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(await waiting(), true);
+    await agentWait;
+  });
+
+  test("an agent's withdrawals reach an observer with the agent's name", async () => {
+    await srv.publish('closing');
+    const since = (await srv.call('GET', '/api/updates?lane=closing', WATCHER)).body.checkedAt;
+    const e = (await srv.call('POST', '/api/escalations', AGENT, { laneId: 'closing', question: 'Moot?' })).body;
+    assert.equal((await srv.call('POST', `/api/escalations/${e.id}/withdraw`, AGENT, { note: 'Moot now' })).status, 200);
+    const seen = (await srv.call('GET', `/api/updates?lane=closing&since=${encodeURIComponent(since)}`, WATCHER)).body;
+    assert.ok(seen.closed.some((c: { id: string }) => c.id === e.id), JSON.stringify(seen));
+    // The agent itself isn't told about its own.
+    const own = (await srv.call('GET', `/api/updates?lane=closing&since=${encodeURIComponent(since)}`, AGENT)).body;
+    assert.ok(!own.closed.some((c: { id: string }) => c.id === e.id));
+  });
+
   test('account observer keys, unbound or bound to one project', async () => {
     assert.equal((await srv.call('POST', '/api/projects', ALICE, { id: 'shop', key: 'SH', name: 'Shop' })).status, 201);
     const ivy = await signIn('Ivy', 'ivy@example.com');
@@ -159,12 +192,43 @@ describe('observer keys', () => {
     assert.equal((await srv.call('GET', '/api/lanes/auth?project=default', bound.body.key)).status, 404);
     assert.equal((await srv.call('GET', `/api/escalations/${escalation.id}`, bound.body.key)).status, 404);
     assert.equal((await srv.call('PUT', '/api/lanes/cart', bound.body.key, { group: 'main', status: 'active' })).status, 403);
+    // Over MCP too: only its project's lanes, and naming another is "not found".
+    await srv.call('PUT', '/api/lanes/cart?project=shop', AGENT, { group: 'main', status: 'active', ticket: 'cart' });
+    const lanes = (await srv.tool(bound.body.key, 'list_lanes', {})).value;
+    assert.deepEqual(lanes.map((l: { id: string }) => l.id), ['cart']);
+    assert.ok((await srv.tool(bound.body.key, 'list_lanes', { project: 'default' })).isError);
+
+    // It can't mint or change keys through the account routes, whatever it sends.
+    for (const [path, body] of [
+      ['/api/auth/api-key/create', { name: 'escalate', metadata: { role: 'agent' } }],
+      ['/api/auth/api-key/update', { keyId: bound.body.id, metadata: { role: 'agent' } }],
+    ] as const) {
+      assert.equal((await srv.call('POST', path, bound.body.key, body)).status, 401, path);
+    }
+    assert.equal((await srv.call('GET', '/api/me', bound.body.key)).body.role, 'observer');
 
     // Bound to a project its owner can't see: it reaches nothing.
     const elsewhere = await signIn('Jo', 'jo@example.com');
     await srv.call('DELETE', `/api/projects/default/members/${elsewhere.id}`, ALICE);
     const stray = (await srv.call('POST', '/api/auth/api-key/create', elsewhere.token, { name: 'jo-watch', metadata: { role: 'observer', project: 'shop' } })).body.key;
     assert.deepEqual((await srv.call('GET', '/api/projects', stray)).body, []);
+  });
+
+  test("an account admin's observer key sees every project, as a member, and still only reads", async () => {
+    const created = await srv.call('POST', '/api/admin/people', ALICE, { email: 'root@example.com', name: 'Root', password: 'correct horse battery', admin: true });
+    assert.equal(created.status, 201);
+    const res = await fetch(`${srv.base}/api/auth/sign-in/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: srv.base },
+      body: JSON.stringify({ email: 'root@example.com', password: 'correct horse battery' }),
+    });
+    const session = res.headers.get('set-auth-token')!;
+    const key = (await srv.call('POST', '/api/auth/api-key/create', session, { name: 'root-watch', metadata: { role: 'observer' } })).body.key;
+    const projects = (await srv.call('GET', '/api/projects', key)).body;
+    assert.deepEqual(projects.map((p: { id: string; role: string }) => [p.id, p.role]).sort(), [['default', 'member'], ['shop', 'member']]);
+    assert.equal((await srv.call('POST', '/api/projects', key, { id: 'spy', key: 'SPY', name: 'Spy' })).status, 403);
+    assert.equal((await srv.call('PATCH', '/api/projects/shop', key, { name: 'nope' })).status, 403);
+    assert.equal((await srv.call('POST', '/api/requirements', key, { requirement: 'x.', justification: 'y.', scope: 'global' })).status, 403);
   });
 
   test('an observer key is revoked like any other', async () => {

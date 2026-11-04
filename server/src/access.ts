@@ -222,8 +222,12 @@ export function waitScopeFor(
     laneIds: raw.laneIds?.map((l) => qualify(pr!, l)),
     groupId: raw.groupId ? qualify(pr!, raw.groupId) : undefined,
     since: raw.since,
-    viewer: a.principal.name,
+    // An observer did nothing itself, so nothing is left out as its own (an agent with its name did it). And it
+    // only watches: lanes don't show an agent waiting because of it.
+    // (A name nothing is ever done under, rather than none: rows without an actor would match none.)
+    viewer: isWriter(a.principal) ? a.principal.name : '\u0000observer',
     viewerKey: ownerOf(a.principal),
+    ...(isWriter(a.principal) ? {} : { holdsWaiting: false }),
   };
 }
 

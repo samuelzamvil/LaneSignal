@@ -172,6 +172,8 @@ export interface WaitScope {
   notesSince?: string | null;
   /** Who is waiting: their own withdrawals aren't reported back to them. */
   viewer?: string;
+  /** False: the wait doesn't mark its lanes as having a waiting agent (observer keys). Default true. */
+  holdsWaiting?: boolean;
   /**
    * The waiting key ("user:<account>:<key name>" or "token:<name>"): group notes count as ones it had
    * only when they were handed to this key.
@@ -4166,12 +4168,12 @@ export class Store {
   }
 
   /** Resolves when the escalation leaves `open`, or with the current value on timeout. */
-  waitForDecision(id: string, timeoutMs: number, signal?: AbortSignal): Promise<Escalation> {
+  waitForDecision(id: string, timeoutMs: number, signal?: AbortSignal, holdsWaiting = true): Promise<Escalation> {
     const current = this.requireEscalation(id);
     // The agent's turn (the owner answered Other) needs the agent as much as a decision does.
     if (current.state !== 'open' || current.turn === 'agent' || timeoutMs <= 0) return Promise.resolve(current);
     id = current.id;
-    const release = this.holdWaiting([current.laneId]);
+    const release = holdsWaiting ? this.holdWaiting([current.laneId]) : () => {};
     return new Promise((resolve, reject) => {
       const done = () => {
         clearTimeout(timer);
@@ -4390,6 +4392,7 @@ export class Store {
     const held = new Set<string>();
     const releases: (() => void)[] = [];
     const hold = (laneIds: Iterable<string | null>) => {
+      if (scope.holdsWaiting === false) return;
       const fresh = [...laneIds].filter((id): id is string => id !== null && !held.has(id));
       if (!fresh.length) return;
       for (const id of fresh) held.add(id);
