@@ -20,6 +20,8 @@ import {
   updateEpicFor,
   compact,
   ownerOf,
+  ackerOf,
+  markNotesDelivered,
   pub,
   q,
   readableAttachment,
@@ -541,7 +543,7 @@ function buildServer(
           '`closed`, `lane_removed`, `ticket_moved`, `group_note` (a person wrote to your group; `id` is the ' +
           'message\'s: pass the last one you handled as `ack`; `since` doesn\'t clear them). `decided`, `reply` and `group_note` repeat until handled ' +
           '(a `group_note` you had before `since` comes back with `seen: true` and doesn\'t end the wait); the rest come once per `since`. `counts` (left out when all zero): `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
-          'it timed out: call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
+          'it timed out (any `items` are notes you had already): call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
           '0 for a quick check). `format: "full"`: the older shape.',
         inputSchema: {
           ...waitInput,
@@ -556,13 +558,14 @@ function buildServer(
             mode: format ?? 'digest',
           };
           // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
-          const acked = ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, ack, ownerOf(who)) : undefined;
+          const acked = ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, ack, ackerOf(who)) : undefined;
           const timeout = wait_seconds ?? 300;
           const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
             store.waitForDecisions(scope, timeout * 1000, signal),
           );
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
           const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
+          markNotesDelivered(store, value, who);
           const result = pub.wait(value, timeout ? visible : undefined);
           return json({ ...(format === 'full' ? briefWait(result) : digestWait(result, a.projects.length > 1)), ...(acked !== undefined ? { acked } : {}) });
         } catch (err) {
@@ -583,9 +586,10 @@ function buildServer(
         try {
           const scope = waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project);
           // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
-          const acked = ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, ack, ownerOf(who)) : undefined;
+          const acked = ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, ack, ackerOf(who)) : undefined;
           // Digest rules (notes since `since` included), the full shape.
           const value = store.decisionsFor(scope);
+          markNotesDelivered(store, value, who);
           const { ready: _ready, ...all } = briefWait(pub.wait(value));
           return json({ ...all, ...(acked !== undefined ? { acked } : {}) });
         } catch (err) {

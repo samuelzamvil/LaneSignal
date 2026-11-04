@@ -123,7 +123,7 @@ describe('group conversations', () => {
     // A worker (any key but the one that registered the group) is refused too, saying who oversees it.
     const worker = await srv.call('GET', `/api/wait?group=owned&timeout=0&ack=${m.id}`, REVIEWER);
     assert.equal(worker.status, 403);
-    assert.match(worker.body.error, /Only the group's overseer acknowledges its messages \(overseer is\)/);
+    assert.match(worker.body.error, /Only the group's overseer \(overseer\) acknowledges its messages: this ack wasn't recorded/);
     assert.equal((await srv.call('POST', '/api/groups/owned/ack', REVIEWER, { upTo: m.id })).status, 403);
     const viaMcp = await srv.tool(REVIEWER, 'wait_for_decisions', { group_id: 'owned', wait_seconds: 0, ack: m.id });
     assert.ok(viaMcp.isError);
@@ -186,6 +186,26 @@ describe('group conversations', () => {
     assert.deepEqual(done.items, []);
   });
 
+  test('a note the overseer was never handed is new, whatever `since` it passes', async () => {
+    await srv.publish('never-lane', { group: 'never' });
+    const m = (await say('never', { body: 'Missed?' })).body;
+    // A `since` from a wait that didn't cover the group (lanes only) is past the note, but the note never reached it.
+    const lanesOnly = (await srv.call('GET', '/api/wait?lane=never-lane&timeout=0', AGENT)).body;
+    const w = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'never', wait_seconds: 5, since: lanesOnly.checkedAt })).value;
+    assert.equal(w.ready, true);
+    assert.deepEqual(w.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(m.id), undefined]]);
+    // Handed over now: from this result's checkedAt it's one it had.
+    const again = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'never', wait_seconds: 0, since: w.checkedAt })).value;
+    assert.deepEqual(again.items.map((i: { seen?: boolean }) => i.seen), [true]);
+    // A worker reading the group doesn't count as handing it to the overseer.
+    const n = (await say('never', { body: 'Second' })).body;
+    const worker = (await srv.tool(REVIEWER, 'get_updates', { group_id: 'never' })).value;
+    assert.ok(worker.groupMessages[0].messages.some((x: { id: number }) => x.id === n.id));
+    const overseer = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'never', wait_seconds: 5, since: worker.checkedAt })).value;
+    assert.equal(overseer.ready, true);
+    assert.deepEqual(overseer.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(m.id), true], [String(n.id), undefined]]);
+  });
+
   test('acknowledging tells clients once, so people see their messages marked seen', async () => {
     await srv.call('PUT', '/api/groups/seen', AGENT, {});
     const m = (await say('seen', { body: 'Read me' })).body;
@@ -243,6 +263,18 @@ describe('a group\'s conversation, page by page', () => {
     assert.deepEqual(in_('default/g'), ['Reply after the move', '? Before the move?']);
     assert.deepEqual(in_('default/h'), []);
     store.close();
+  });
+
+  test('a group with no overseer recorded is acknowledged by any agent, never by a person', () => {
+    const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
+    try {
+      store.upsertGroup('default/old', {}, 'bot');
+      const m = store.postGroupMessage('default/old', { from: 'owner', author: 'alice', body: 'Hi' }, 'alice');
+      assert.throws(() => store.ackGroupMessages('default/old', m.id, { key: 'user:1:alice', agent: false }), /Only the group's overseer acknowledges/);
+      assert.equal(store.ackGroupMessages('default/old', m.id, { key: 'token:any', agent: true }), m.id);
+    } finally {
+      store.close();
+    }
   });
 
   test('unacknowledged messages survive a restart, and acknowledging is idempotent', () => {

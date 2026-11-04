@@ -586,6 +586,20 @@ export const approvesRequirements = (p: Principal) => p.role === 'human' && !p.p
 
 export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);
 
+/** The caller as acknowledging a group's messages needs it: its key, and whether it's an agent. */
+export const ackerOf = (p: Principal) => ({ key: ownerOf(p), agent: p.role === 'agent' });
+
+/**
+ * Records that the caller was handed the group notes in this result (only the overseer's count), so
+ * the next wait treats them as had already once its `since` is past them. Call it with what was returned.
+ */
+export function markNotesDelivered(store: Store, w: WaitResult, p: Principal) {
+  for (const g of w.groupMessages) {
+    const last = g.messages.at(-1);
+    if (last) store.markGroupMessagesDelivered(g.group, last.id, ackerOf(p));
+  }
+}
+
 /**
  * An attachment the caller may read: one on an escalation, lane message or epic message in a
  * project they see (within `project` when given), or their own upload before it's attached.

@@ -65,6 +65,10 @@ export function GroupView({
   const bottom = useRef<HTMLDivElement>(null);
   // Follows new messages while you're at the newest one, like a chat; reading back stays put.
   const atBottom = useRef(true);
+  // How far the overseer has acknowledged, never moving back: a stale copy of the group arriving
+  // after a newer one mustn't turn "seen" back into "not seen yet".
+  const readId = useRef(0);
+  readId.current = Math.max(readId.current, group?.overseerReadId ?? 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,7 +172,7 @@ export function GroupView({
                     {i.laneId && <span> · on lane {i.laneId}</span>}
                     {i.epicId !== null && <span> · on an epic's board</span>}
                     {(() => {
-                      const seen = seenByOverseer(i, group?.overseerReadId);
+                      const seen = seenByOverseer(i, readId.current);
                       return seen === null ? null : <span className="msg-seen">{seen ? ' · seen by the overseer' : ' · not seen yet'}</span>;
                     })()}
                   </div>

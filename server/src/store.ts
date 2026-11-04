@@ -328,7 +328,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 25;
+const SCHEMA_VERSION = 26;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -664,10 +664,21 @@ export class Store {
       if (version < 23) this.migrateV23();
       if (version < 24) this.migrateV24();
       if (version < 25) this.migrateV25();
+      if (version < 26) this.migrateV26();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
     });
+  }
+
+  /**
+   * v26: how far the group's overseer has been handed the group's messages (its waits and
+   * get_updates), so a note it never received is never treated as one it had already.
+   */
+  private migrateV26() {
+    if (!this.hasColumn('groups', 'overseer_delivered_id')) {
+      this.db.exec('ALTER TABLE groups ADD COLUMN overseer_delivered_id INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   /**
@@ -3429,6 +3440,39 @@ export class Store {
     };
   }
 
+  /** How far the group's overseer has been handed the group's messages (0: none yet). */
+  private overseerDeliveredId(groupId: string): number {
+    return Number((this.db.prepare('SELECT overseer_delivered_id FROM groups WHERE id = ?').get(groupId) as Row | undefined)?.overseer_delivered_id ?? 0);
+  }
+
+  /**
+   * Whether `by` may acknowledge the group's messages: its overseer (the key that registered it
+   * last), or any agent while it has none. Throws otherwise.
+   */
+  private requireGroupOverseer(g: Row, by: { key: string; agent: boolean }) {
+    const owner = (g.owner as string | null) ?? null;
+    if (by.agent && (owner === null || owner === by.key)) return;
+    const name = overseerName(owner);
+    throw new ForbiddenError(
+      `Only the group's overseer${name ? ` (${name})` : ''} acknowledges its messages: this ack wasn't recorded`,
+    );
+  }
+
+  /**
+   * The overseer was handed the group's messages up to `upTo` (a wait or get_updates result that
+   * listed them). Never moves back; anyone but the overseer changes nothing.
+   */
+  markGroupMessagesDelivered(groupId: string, upTo: number, by: { key: string; agent: boolean }): void {
+    const g = this.db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Row | undefined;
+    if (!g) return;
+    try {
+      this.requireGroupOverseer(g, by);
+    } catch {
+      return;
+    }
+    this.db.prepare('UPDATE groups SET overseer_delivered_id = ? WHERE id = ? AND overseer_delivered_id < ?').run(upTo, groupId, upTo);
+  }
+
   /** How far the group's overseer has acknowledged the group's messages (0: none yet). */
   private overseerReadId(groupId: string): number {
     return Number((this.db.prepare('SELECT overseer_read_id FROM groups WHERE id = ?').get(groupId) as Row | undefined)?.overseer_read_id ?? 0);
@@ -3629,18 +3673,13 @@ export class Store {
   /**
    * The overseer acknowledges the group's messages up to `upTo` (the last id it handled). Never moves
    * back, and never past the group's latest message, so repeating it changes nothing. Returns the
-   * position now. With `by` (the caller's key, as groups record their overseer), anyone but the
-   * group's overseer is refused. When it moves, clients hear of it (the group's `overseerReadId`), so
-   * people see their messages marked seen.
+   * position now. With `by` (the caller: its key, as groups record their overseer, and whether it's
+   * an agent), anyone but the group's overseer is refused (any agent while it has none). When it
+   * moves, clients hear of it (the group's `overseerReadId`), so people see their messages marked seen.
    */
-  ackGroupMessages(groupId: string, upTo: number, by?: string): number {
+  ackGroupMessages(groupId: string, upTo: number, by?: { key: string; agent: boolean }): number {
     const g = this.requireGroupRow(groupId);
-    if (by !== undefined && g.owner !== by) {
-      const overseer = overseerName((g.owner as string | null) ?? null);
-      throw new ForbiddenError(
-        `Only the group's overseer acknowledges its messages${overseer ? ` (${overseer} is)` : ''}: register the group (update_group) to take control of it`,
-      );
-    }
+    if (by) this.requireGroupOverseer(g, by);
     const latest = Number((this.db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM group_messages WHERE group_id = ?').get(groupId) as Row).n);
     const to = Math.min(Math.max(0, Math.floor(upTo)), latest);
     const moved = Number(this.db.prepare('UPDATE groups SET overseer_read_id = ? WHERE id = ? AND overseer_read_id < ?').run(to, groupId, to).changes) > 0;
@@ -4108,13 +4147,16 @@ export class Store {
       }
     }
     const groupMessages: WaitResult['groupMessages'] = [];
-    // Notes the caller had already (written before its `since`) are listed again but end no wait: a
-    // loop on `checkedAt` that doesn't acknowledge them waits for something new instead of spinning.
+    // Notes the caller had already are listed again but end no wait: a loop on `checkedAt` that
+    // doesn't acknowledge them waits for something new instead of spinning. Had already: written
+    // before its `since`, and handed to the overseer (a note it never received is always new, whatever
+    // `since` it passes).
     let newNotes = 0;
     if (scope.groupId) {
       const notesSince = scope.notesSince === undefined ? scope.since : scope.notesSince;
+      const delivered = this.overseerDeliveredId(scope.groupId);
       const unacknowledged = this.unacknowledgedGroupMessages(scope.groupId).map((m) =>
-        notesSince && m.at < notesSince ? { ...m, repeat: true as const } : m,
+        notesSince && m.at < notesSince && m.id <= delivered ? { ...m, repeat: true as const } : m,
       );
       newNotes = unacknowledged.filter((m) => !('repeat' in m)).length;
       if (unacknowledged.length) groupMessages.push({ group: scope.groupId, messages: unacknowledged });
