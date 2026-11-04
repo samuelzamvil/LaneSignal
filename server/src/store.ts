@@ -321,7 +321,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 23;
+const SCHEMA_VERSION = 24;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -451,6 +451,8 @@ export class Store {
         );
         CREATE INDEX IF NOT EXISTS group_overseers_group ON group_overseers(group_id, id);
       `);
+      // v24's message table, also first: earlier steps read lanes, epics and escalations, and their messages.
+      this.createGroupMessages();
       if (version < 1) this.migrateV1();
       if (version < 2) {
         // Escalation fields: its own ticket/PR reference, cost of the recommendation, alternatives.
@@ -562,6 +564,7 @@ export class Store {
           CREATE INDEX IF NOT EXISTS attachments_escalation ON attachments(escalation_id, position);
           CREATE INDEX IF NOT EXISTS attachments_pending ON attachments(owner, created_at) WHERE escalation_id IS NULL;
         `);
+        this.createGroupMessages();
       }
       // v11: conversations on escalations (the owner's Other, the agent's replies) and whose turn it is.
       if (version < 11 && !this.hasColumn('escalations', 'turn')) {
@@ -650,10 +653,165 @@ export class Store {
         this.db.exec('CREATE TABLE IF NOT EXISTS group_products (group_id TEXT NOT NULL, product_id TEXT NOT NULL, PRIMARY KEY (group_id, product_id))');
       }
       if (version < 23) this.migrateV23();
+      if (version < 24) this.migrateV24();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
     });
+  }
+
+  /**
+   * v24: one table for every conversation message. Escalation, lane and epic messages move into
+   * group_messages, each with the group it belongs to (its escalation's, lane's or epic's group now; it
+   * stays there), keeping its escalation, or recording the lane or epic it was written on. Attachments,
+   * and how far agents have read, follow the new ids. The old tables go.
+   */
+  private migrateV24() {
+    this.createGroupMessages();
+    const tableExists = (name: string) => !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+    // Each old table that's still there moves (none: a database brought back to an earlier version number as it is).
+    const sources = [
+      {
+        table: 'messages',
+        column: 'message_id',
+        select: `SELECT 0 AS src, m.id, m.escalation_id, NULL AS lane_id, NULL AS epic_id, m.author_kind, m.author, m.body, m.created_at,
+                   COALESCE(l.group_id, ep.group_id, t.group_id) AS group_id, e.lane_id AS home
+                 FROM messages m JOIN escalations e ON e.id = m.escalation_id LEFT JOIN lanes l ON l.id = e.lane_id
+                 LEFT JOIN epics ep ON ep.num = e.epic_id LEFT JOIN tickets t ON t.num = e.ticket_id`,
+      },
+      {
+        table: 'lane_messages',
+        column: 'lane_message_id',
+        select: `SELECT 1 AS src, m.id, NULL AS escalation_id, m.lane_id, NULL AS epic_id, m.author_kind, m.author, m.body, m.created_at,
+                   l.group_id, m.lane_id AS home
+                 FROM lane_messages m LEFT JOIN lanes l ON l.id = m.lane_id`,
+      },
+      {
+        table: 'epic_messages',
+        column: 'epic_message_id',
+        select: `SELECT 2 AS src, m.id, NULL AS escalation_id, NULL AS lane_id, m.epic_id, m.author_kind, m.author, m.body, m.created_at,
+                   ep.group_id, ep.project_id || '/' AS home
+                 FROM epic_messages m JOIN epics ep ON ep.num = m.epic_id`,
+      },
+    ].filter((src) => tableExists(src.table));
+    if (!sources.length) return;
+    const at = this.now().toISOString();
+    // Oldest first across the tables, so a group's conversation reads in order. Each table keeps its own
+    // order (what an agent has read is counted in it): a message is placed by the latest time written up
+    // to it in its table, so a clock that went back can't put it before one written earlier.
+    const rows = this.db
+      .prepare(
+        `SELECT *, MAX(created_at) OVER (PARTITION BY src ORDER BY id ROWS UNBOUNDED PRECEDING) AS placed
+         FROM (${sources.map((src) => src.select).join(' UNION ALL ')}) ORDER BY placed, src, id`,
+      )
+      .all() as Row[];
+    const insert = this.db.prepare(
+      `INSERT INTO group_messages (group_id, escalation_id, lane_id, epic_id, author_kind, author, body, created_at, legacy_table, legacy_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const tables = ['messages', 'lane_messages', 'epic_messages'];
+    for (const r of rows) {
+      // A message from before every lane had a group goes to its project's catch-all group.
+      const groupId = (r.group_id as string | null) ?? this.ungroupedGroup(projectOf(r.home as string), at);
+      insert.run(
+        groupId,
+        (r.escalation_id as string | null) ?? null,
+        (r.lane_id as string | null) ?? null,
+        r.epic_id == null ? null : Number(r.epic_id),
+        r.author_kind as string,
+        r.author as string,
+        r.body as string,
+        r.created_at as string,
+        tables[Number(r.src)],
+        Number(r.id),
+      );
+    }
+    // Files follow their messages (through a temporary index: one lookup per file).
+    this.db.exec('CREATE INDEX group_messages_legacy ON group_messages(legacy_table, legacy_id)');
+    for (const { table, column } of [
+      { table: 'messages', column: 'message_id' },
+      { table: 'lane_messages', column: 'lane_message_id' },
+      { table: 'epic_messages', column: 'epic_message_id' },
+    ]) {
+      if (!this.hasColumn('attachments', column)) continue;
+      this.db.exec(`
+        UPDATE attachments SET group_message_id = (SELECT g.id FROM group_messages g WHERE g.legacy_table = '${table}' AND g.legacy_id = attachments.${column})
+          WHERE ${column} IS NOT NULL;
+        DROP INDEX IF EXISTS attachments_${column.replace(/_id$/, '')};
+        ALTER TABLE attachments DROP COLUMN ${column};
+      `);
+    }
+    this.db.exec(`
+      -- How far each agent has read: the same messages, by their new ids.
+      UPDATE lanes SET agent_read_id = COALESCE((SELECT MAX(g.id) FROM group_messages g
+        WHERE g.legacy_table = 'lane_messages' AND g.lane_id = lanes.id AND g.legacy_id <= lanes.agent_read_id), 0);
+      UPDATE epics SET agent_read_id = COALESCE((SELECT MAX(g.id) FROM group_messages g
+        WHERE g.legacy_table = 'epic_messages' AND g.epic_id = epics.num AND g.legacy_id <= epics.agent_read_id), 0);
+      DROP INDEX group_messages_legacy;
+    `);
+    for (const { table } of sources) this.db.exec(`DROP TABLE ${table}`);
+  }
+
+  /**
+   * Must run inside a transaction. The message table and the attachments' link to it (v24). Migrating
+   * runs it first, and again once attachments exist: earlier steps read lanes, epics and escalations,
+   * which read their messages.
+   */
+  private createGroupMessages() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS group_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id TEXT NOT NULL,
+        escalation_id TEXT,
+        lane_id TEXT,
+        epic_id INTEGER,
+        author_kind TEXT NOT NULL,
+        author TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        client_key TEXT,
+        legacy_table TEXT,
+        legacy_id INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS group_messages_group ON group_messages(group_id, id);
+      CREATE INDEX IF NOT EXISTS group_messages_escalation ON group_messages(escalation_id, id) WHERE escalation_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS group_messages_lane ON group_messages(lane_id, id) WHERE lane_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS group_messages_epic ON group_messages(epic_id, id) WHERE epic_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS group_messages_client_key ON group_messages(group_id, author, client_key) WHERE client_key IS NOT NULL;
+    `);
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attachments'").get() && !this.hasColumn('attachments', 'group_message_id')) {
+      this.db.exec(`
+        ALTER TABLE attachments ADD COLUMN group_message_id INTEGER;
+        CREATE INDEX IF NOT EXISTS attachments_group_message ON attachments(group_message_id) WHERE group_message_id IS NOT NULL;
+      `);
+    }
+  }
+
+  /** Must run inside a transaction. The group a new message on the lane belongs to: the lane's (it stays there). */
+  private messageGroupOfLane(laneId: string, at: string): string {
+    const g = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(laneId) as Row | undefined)?.group_id as string | null | undefined;
+    return g ?? this.ungroupedGroup(projectOf(laneId), at);
+  }
+
+  /** Must run inside a transaction. Writes one message to the group's conversation; returns its id. */
+  private insertGroupMessage(m: {
+    groupId: string;
+    escalationId?: string | null;
+    laneId?: string | null;
+    epicId?: number | null;
+    from: 'owner' | 'agent';
+    author: string;
+    body: string;
+    at: string;
+  }): number {
+    return Number(
+      this.db
+        .prepare(
+          `INSERT INTO group_messages (group_id, escalation_id, lane_id, epic_id, author_kind, author, body, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(m.groupId, m.escalationId ?? null, m.laneId ?? null, m.epicId ?? null, m.from, m.author, m.body, m.at).lastInsertRowid,
+    );
   }
 
   /**
@@ -663,7 +821,8 @@ export class Store {
   private migrateV23() {
     this.db.exec(`
       INSERT INTO group_overseers (group_id, overseer, previous, at)
-        SELECT id, owner, NULL, updated_at FROM groups WHERE owner IS NOT NULL; -- when it took control isn't known: its last update stands in
+        SELECT id, owner, NULL, updated_at FROM groups
+        WHERE owner IS NOT NULL AND NOT EXISTS (SELECT 1 FROM group_overseers o WHERE o.group_id = groups.id); -- when it took control isn't known: its last update stands in
     `);
     const at = this.now().toISOString();
     const stray = this.db
@@ -1371,9 +1530,9 @@ export class Store {
       (SELECT t.display_ref FROM tickets t WHERE t.num = l.ticket_id) AS ticket_ref,
       (SELECT t.ref FROM tickets t WHERE t.num = l.ticket_id) AS ticket_canonical,
       (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived,
-      (SELECT MAX(m.id) FROM lane_messages m WHERE m.lane_id = l.id) AS last_message_id,
-      (SELECT MAX(m.id) FROM lane_messages m WHERE m.lane_id = l.id AND m.author_kind = 'agent') AS last_agent_message_id,
-      (SELECT COUNT(*) FROM lane_messages m WHERE m.lane_id = l.id AND m.author_kind = 'owner' AND m.id > l.agent_read_id) AS unread_by_agent
+      (SELECT MAX(m.id) FROM group_messages m WHERE m.lane_id = l.id) AS last_message_id,
+      (SELECT MAX(m.id) FROM group_messages m WHERE m.lane_id = l.id AND m.author_kind = 'agent') AS last_agent_message_id,
+      (SELECT COUNT(*) FROM group_messages m WHERE m.lane_id = l.id AND m.author_kind = 'owner' AND m.id > l.agent_read_id) AS unread_by_agent
     FROM lanes l`;
 
   /** Active lanes (archived ones are kept for export but hidden; epics' internal lanes are never listed). */
@@ -1807,9 +1966,9 @@ export class Store {
       .get(num) as Row;
     const msgs = this.db
       .prepare(
-        `SELECT (SELECT MAX(id) FROM epic_messages WHERE epic_id = ?) AS last,
-           (SELECT MAX(id) FROM epic_messages WHERE epic_id = ? AND author_kind = 'agent') AS last_agent,
-           (SELECT COUNT(*) FROM epic_messages WHERE epic_id = ? AND author_kind = 'owner' AND id > ?) AS unread`,
+        `SELECT (SELECT MAX(id) FROM group_messages WHERE epic_id = ?) AS last,
+           (SELECT MAX(id) FROM group_messages WHERE epic_id = ? AND author_kind = 'agent') AS last_agent,
+           (SELECT COUNT(*) FROM group_messages WHERE epic_id = ? AND author_kind = 'owner' AND id > ?) AS unread`,
       )
       .get(num, num, num, Number(r.agent_read_id)) as Row;
     const ref = (r.ref as string | null) ?? null;
@@ -1931,7 +2090,7 @@ export class Store {
             const from = Number(standIn.num);
             moved.push(...unresolved(from));
             this.db.prepare('UPDATE escalations SET epic_id = ? WHERE epic_id = ?').run(num, from);
-            this.db.prepare('UPDATE epic_messages SET epic_id = ? WHERE epic_id = ?').run(num, from);
+            this.db.prepare('UPDATE group_messages SET epic_id = ? WHERE epic_id = ?').run(num, from);
             this.db.prepare('UPDATE epics SET agent_read_id = ? WHERE num = ?').run(Number(standIn.agent_read_id), num);
             this.db.prepare('UPDATE epics SET status_line = ? WHERE num = ?').run((standIn.status_line as string | null) ?? null, num);
             this.db.prepare("UPDATE epics SET state = 'closed', closed_at = ?, updated_at = ? WHERE num = ?").run(at, at, from);
@@ -2084,9 +2243,9 @@ export class Store {
   /** An epic's board, oldest first: its latest `limit` messages. */
   epicMessages(num: number, limit = 100): LaneMessage[] {
     const readId = this.epicReadId(num);
-    return (this.db.prepare('SELECT * FROM epic_messages WHERE epic_id = ? ORDER BY id DESC LIMIT ?').all(num, limit) as Row[])
+    return (this.db.prepare('SELECT * FROM group_messages WHERE epic_id = ? ORDER BY id DESC LIMIT ?').all(num, limit) as Row[])
       .reverse()
-      .map((r) => this.laneMessageFromRow(r, readId, 'epic_message_id'));
+      .map((r) => this.laneMessageFromRow(r, readId));
   }
 
   /** People's notes on an epic's board its overseer hasn't been handed, plus (with `since`) those written at or after it. */
@@ -2094,11 +2253,11 @@ export class Store {
     return (
       this.db
         .prepare(
-          `SELECT m.* FROM epic_messages m JOIN epics e ON e.num = m.epic_id
+          `SELECT m.* FROM group_messages m JOIN epics e ON e.num = m.epic_id
            WHERE m.epic_id = ? AND m.author_kind = 'owner' AND ((? = 0 AND m.id > e.agent_read_id) OR m.created_at >= ?) ORDER BY m.id`,
         )
         .all(num, onlySince ? 1 : 0, since ?? '\uffff') as Row[]
-    ).map((r) => this.laneMessageFromRow(r, undefined, 'epic_message_id'));
+    ).map((r) => this.laneMessageFromRow(r, undefined));
   }
 
   /** Hands people's unread notes on an epic's board to its overseer: returns them and marks them seen. */
@@ -2138,7 +2297,7 @@ export class Store {
     const at = this.now();
     const { posted, duplicate } = this.tx(() => {
       const recent = this.db
-        .prepare('SELECT * FROM epic_messages WHERE epic_id = ? AND author_kind = ? ORDER BY id DESC LIMIT 1')
+        .prepare('SELECT * FROM group_messages WHERE epic_id = ? AND author_kind = ? ORDER BY id DESC LIMIT 1')
         .get(num, message.from) as Row | undefined;
       const fresh = recent && at.getTime() - Date.parse(recent.created_at as string) < 60_000;
       const retry =
@@ -2146,17 +2305,14 @@ export class Store {
         recent.author === message.author &&
         recent.body === body &&
         (message.from === 'agent' || Number(recent.id) > this.epicReadId(num));
-      if (retry) return { posted: this.laneMessageFromRow(recent, this.epicReadId(num), 'epic_message_id'), duplicate: true };
+      if (retry) return { posted: this.laneMessageFromRow(recent, this.epicReadId(num)), duplicate: true };
       if (message.from === 'agent' && fresh) throw new ConflictError('One message per epic per minute: put everything in one message');
-      const id = Number(
-        this.db
-          .prepare('INSERT INTO epic_messages (epic_id, author_kind, author, body, created_at) VALUES (?, ?, ?, ?, ?)')
-          .run(num, message.from, message.author, body, at.toISOString()).lastInsertRowid,
-      );
-      if (message.attachments?.length) this.linkLaneAttachments(id, message.attachments, owner, 'epic_message_id');
+      const groupId = (this.db.prepare('SELECT group_id FROM epics WHERE num = ?').get(num) as Row).group_id as string;
+      const id = this.insertGroupMessage({ groupId, epicId: num, from: message.from, author: message.author, body, at: at.toISOString() });
+      if (message.attachments?.length) this.linkMessageAttachments(id, message.attachments, owner);
       if (message.from === 'agent') this.db.prepare('UPDATE epics SET updated_at = ? WHERE num = ?').run(at.toISOString(), num);
-      const row = this.db.prepare('SELECT * FROM epic_messages WHERE id = ?').get(id) as Row;
-      return { posted: this.laneMessageFromRow(row, this.epicReadId(num), 'epic_message_id'), duplicate: false };
+      const row = this.db.prepare('SELECT * FROM group_messages WHERE id = ?').get(id) as Row;
+      return { posted: this.laneMessageFromRow(row, this.epicReadId(num)), duplicate: false };
     });
     if (duplicate) return posted;
     this.emitEpic(num, message.from);
@@ -2727,7 +2883,7 @@ export class Store {
       const code = /^([A-Za-z]{1,4})(\d{1,9})$/.exec(text.replace(/^#/, ''));
       where.push(
         `(${fields.map((f) => `${f} LIKE ? ESCAPE '\\'`).join(' OR ')}
-          OR EXISTS (SELECT 1 FROM messages m WHERE m.escalation_id = escalations.id AND m.body LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM group_messages m WHERE m.escalation_id = escalations.id AND m.body LIKE ? ESCAPE '\\')
           OR code = ? COLLATE NOCASE OR ticket_id IN (SELECT num FROM tickets WHERE ref = ?)
           OR epic_id IN (SELECT num FROM epics WHERE ref = ?)${code ? ' OR (letter_index = ? AND seq = ?)' : ''})`,
       );
@@ -2805,7 +2961,7 @@ export class Store {
   private attachmentsOf(escalationId: string): AttachmentMeta[] {
     return (
       this.db
-        .prepare('SELECT id, name, type, size FROM attachments WHERE escalation_id = ? AND message_id IS NULL ORDER BY position')
+        .prepare('SELECT id, name, type, size FROM attachments WHERE escalation_id = ? AND group_message_id IS NULL ORDER BY position')
         .all(escalationId) as Row[]
     ).map((r) => ({ id: r.id as string, name: r.name as string, type: r.type as AttachmentType, size: Number(r.size) }));
   }
@@ -2814,7 +2970,7 @@ export class Store {
 
   private messageFromRow(r: Row): Message {
     const attachments = (
-      this.db.prepare('SELECT id, name, type, size FROM attachments WHERE message_id = ? ORDER BY position').all(Number(r.id)) as Row[]
+      this.db.prepare('SELECT id, name, type, size FROM attachments WHERE group_message_id = ? ORDER BY position').all(Number(r.id)) as Row[]
     ).map((a) => ({ id: a.id as string, name: a.name as string, type: a.type as AttachmentType, size: Number(a.size) }));
     return {
       id: Number(r.id),
@@ -2828,15 +2984,15 @@ export class Store {
 
   /** How many messages an escalation has, and the latest. */
   private threadSummary(escalationId: string): { messageCount: number; lastMessage: Message | null } {
-    const n = Number((this.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE escalation_id = ?').get(escalationId) as Row).n);
+    const n = Number((this.db.prepare('SELECT COUNT(*) AS n FROM group_messages WHERE escalation_id = ?').get(escalationId) as Row).n);
     if (!n) return { messageCount: 0, lastMessage: null };
-    const last = this.db.prepare('SELECT * FROM messages WHERE escalation_id = ? ORDER BY id DESC LIMIT 1').get(escalationId) as Row;
+    const last = this.db.prepare('SELECT * FROM group_messages WHERE escalation_id = ? ORDER BY id DESC LIMIT 1').get(escalationId) as Row;
     return { messageCount: n, lastMessage: this.messageFromRow(last) };
   }
 
   /** The conversation, oldest first. */
   messagesOf(escalationId: string): Message[] {
-    return (this.db.prepare('SELECT * FROM messages WHERE escalation_id = ? ORDER BY id').all(escalationId) as Row[]).map((r) =>
+    return (this.db.prepare('SELECT * FROM group_messages WHERE escalation_id = ? ORDER BY id').all(escalationId) as Row[]).map((r) =>
       this.messageFromRow(r),
     );
   }
@@ -2871,7 +3027,7 @@ export class Store {
       }
       const at = this.now().toISOString();
       const recent = this.db
-        .prepare('SELECT author, body, created_at FROM messages WHERE escalation_id = ? ORDER BY id DESC LIMIT 1')
+        .prepare('SELECT author, body, created_at FROM group_messages WHERE escalation_id = ? ORDER BY id DESC LIMIT 1')
         .get(current.id) as Row | undefined;
       const fresh = recent && Date.parse(at) - Date.parse(recent.created_at as string) < 60_000;
       // A retried call (same author, same text, just now) returns the message already sent.
@@ -2883,11 +3039,14 @@ export class Store {
         throw new ConflictError('One update a minute while the owner decides: put everything in one message');
       }
       const turn = message.from === 'owner' ? 'agent' : 'owner';
-      const messageId = Number(
-        this.db
-          .prepare('INSERT INTO messages (escalation_id, author_kind, author, body, created_at) VALUES (?, ?, ?, ?, ?)')
-          .run(current.id, message.from, message.author, body, at).lastInsertRowid,
-      );
+      const messageId = this.insertGroupMessage({
+        groupId: this.messageGroupOfLane(current.laneId, at),
+        escalationId: current.id,
+        from: message.from,
+        author: message.author,
+        body,
+        at,
+      });
       this.linkAttachments(current.id, message.attachments ?? [], owner, messageId);
       this.db.prepare('UPDATE escalations SET turn = ?, updated_at = ? WHERE id = ?').run(turn, at, current.id);
       this.addEvent(
@@ -2938,7 +3097,7 @@ export class Store {
   addAttachment(file: { name: string; type: AttachmentType; data: Uint8Array }, owner: string, uploadedBy: string): AttachmentMeta {
     const now = this.now();
     this.db
-      .prepare('DELETE FROM attachments WHERE escalation_id IS NULL AND lane_message_id IS NULL AND epic_message_id IS NULL AND created_at < ?')
+      .prepare('DELETE FROM attachments WHERE escalation_id IS NULL AND group_message_id IS NULL AND created_at < ?')
       .run(new Date(now.getTime() - UNREFERENCED_TTL_MS).toISOString());
     this.checkUploadRoom(owner);
     const id = randomUUID();
@@ -2955,7 +3114,7 @@ export class Store {
     const pending = Number(
       (
         this.db
-          .prepare('SELECT COUNT(*) AS n FROM attachments WHERE escalation_id IS NULL AND lane_message_id IS NULL AND epic_message_id IS NULL AND owner = ?')
+          .prepare('SELECT COUNT(*) AS n FROM attachments WHERE escalation_id IS NULL AND group_message_id IS NULL AND owner = ?')
           .get(owner) as Row
       ).n,
     );
@@ -2972,33 +3131,33 @@ export class Store {
     if (!ids.length) return;
     let have = messageId === null ? this.attachmentsOf(escalationId).length : 0;
     for (const id of new Set(ids)) {
-      const r = this.db.prepare('SELECT owner, escalation_id, lane_message_id, epic_message_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
+      const r = this.db.prepare('SELECT owner, escalation_id, group_message_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
       if (!r || r.owner !== owner) {
         throw new NotFoundError(`Attachment ${id} not found: upload it first (upload_attachment), with the same key`);
       }
       // Already here (a retry sending the same ids): nothing to add.
       if (r.escalation_id === escalationId && messageId === null) continue;
-      if (r.escalation_id || r.lane_message_id != null || r.epic_message_id != null) throw new ConflictError(`Attachment ${id} is already attached; upload it again`);
+      if (r.escalation_id || r.group_message_id != null) throw new ConflictError(`Attachment ${id} is already attached; upload it again`);
       if (have >= this.attachmentsPerItem) {
         throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per ${messageId === null ? 'escalation' : 'message'}`);
       }
       this.db
-        .prepare('UPDATE attachments SET escalation_id = ?, message_id = ?, position = ? WHERE id = ?')
+        .prepare('UPDATE attachments SET escalation_id = ?, group_message_id = ?, position = ? WHERE id = ?')
         .run(escalationId, messageId, have++, id);
     }
   }
 
   /** Attaches uploads to a lane or epic message (inside a transaction): each the uploader's, not attached elsewhere. */
-  private linkLaneAttachments(laneMessageId: number, ids: string[], owner: string, column: 'lane_message_id' | 'epic_message_id' = 'lane_message_id') {
+  private linkMessageAttachments(messageId: number, ids: string[], owner: string) {
     let have = 0;
     for (const id of new Set(ids)) {
-      const r = this.db.prepare('SELECT owner, escalation_id, lane_message_id, epic_message_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
+      const r = this.db.prepare('SELECT owner, escalation_id, group_message_id FROM attachments WHERE id = ?').get(id) as Row | undefined;
       if (!r || r.owner !== owner) {
         throw new NotFoundError(`Attachment ${id} not found: upload it first (upload_attachment), with the same key`);
       }
-      if (r.escalation_id || r.lane_message_id != null || r.epic_message_id != null) throw new ConflictError(`Attachment ${id} is already attached; upload it again`);
+      if (r.escalation_id || r.group_message_id != null) throw new ConflictError(`Attachment ${id} is already attached; upload it again`);
       if (have >= this.attachmentsPerItem) throw new ValidationError(`At most ${this.attachmentsPerItem} attachments per message`);
-      this.db.prepare(`UPDATE attachments SET ${column} = ?, position = ? WHERE id = ?`).run(laneMessageId, have++, id);
+      this.db.prepare('UPDATE attachments SET group_message_id = ?, position = ? WHERE id = ?').run(messageId, have++, id);
     }
   }
 
@@ -3011,8 +3170,8 @@ export class Store {
   ): (AttachmentMeta & { data: Uint8Array; escalationId: string | null; laneId: string | null; epicId: number | null; owner: string }) | null {
     const r = this.db
       .prepare(
-        `SELECT a.*, m.lane_id AS message_lane_id, em.epic_id AS message_epic_id FROM attachments a
-         LEFT JOIN lane_messages m ON m.id = a.lane_message_id LEFT JOIN epic_messages em ON em.id = a.epic_message_id WHERE a.id = ?`,
+        `SELECT a.*, m.lane_id AS message_lane_id, m.epic_id AS message_epic_id FROM attachments a
+         LEFT JOIN group_messages m ON m.id = a.group_message_id WHERE a.id = ?`,
       )
       .get(id) as Row | undefined;
     if (!r) return null;
@@ -3292,9 +3451,9 @@ export class Store {
 
   // ---- lane conversations ----------------------------------------------
 
-  private laneMessageFromRow(r: Row, readId?: number, column: 'lane_message_id' | 'epic_message_id' = 'lane_message_id'): LaneMessage {
+  private laneMessageFromRow(r: Row, readId?: number): LaneMessage {
     const attachments = (
-      this.db.prepare(`SELECT id, name, type, size FROM attachments WHERE ${column} = ? ORDER BY position`).all(Number(r.id)) as Row[]
+      this.db.prepare('SELECT id, name, type, size FROM attachments WHERE group_message_id = ? ORDER BY position').all(Number(r.id)) as Row[]
     ).map((a) => ({ id: a.id as string, name: a.name as string, type: a.type as AttachmentType, size: Number(a.size) }));
     const from = r.author_kind === 'agent' ? 'agent' : 'owner';
     return {
@@ -3316,7 +3475,7 @@ export class Store {
   laneMessages(laneId: string, limit = 100): LaneMessage[] {
     const readId = this.agentReadId(laneId);
     return (
-      this.db.prepare('SELECT * FROM lane_messages WHERE lane_id = ? ORDER BY id DESC LIMIT ?').all(laneId, limit) as Row[]
+      this.db.prepare('SELECT * FROM group_messages WHERE lane_id = ? ORDER BY id DESC LIMIT ?').all(laneId, limit) as Row[]
     )
       .reverse()
       .map((r) => this.laneMessageFromRow(r, readId));
@@ -3331,7 +3490,7 @@ export class Store {
     return (
       this.db
         .prepare(
-          `SELECT m.* FROM lane_messages m JOIN lanes l ON l.id = m.lane_id
+          `SELECT m.* FROM group_messages m JOIN lanes l ON l.id = m.lane_id
            WHERE m.lane_id = ? AND m.author_kind = 'owner' AND ((? = 0 AND m.id > l.agent_read_id) OR m.created_at >= ?) ORDER BY m.id`,
         )
         .all(laneId, onlySince ? 1 : 0, since ?? '\uffff') as Row[]
@@ -3387,7 +3546,7 @@ export class Store {
     const at = this.now();
     const { posted, duplicate } = this.tx(() => {
       const recent = this.db
-        .prepare('SELECT * FROM lane_messages WHERE lane_id = ? AND author_kind = ? ORDER BY id DESC LIMIT 1')
+        .prepare('SELECT * FROM group_messages WHERE lane_id = ? AND author_kind = ? ORDER BY id DESC LIMIT 1')
         .get(laneId, message.from) as Row | undefined;
       const fresh = recent && at.getTime() - Date.parse(recent.created_at as string) < 60_000;
       // A retry returns the message already sent; the owner saying the same again after the agent read it is new.
@@ -3400,16 +3559,19 @@ export class Store {
       if (message.from === 'agent' && fresh) {
         throw new ConflictError('One message per lane per minute: put everything in one message');
       }
-      const id = Number(
-        this.db
-          .prepare('INSERT INTO lane_messages (lane_id, author_kind, author, body, created_at) VALUES (?, ?, ?, ?, ?)')
-          .run(laneId, message.from, message.author, body, at.toISOString()).lastInsertRowid,
-      );
-      if (message.attachments?.length) this.linkLaneAttachments(id, message.attachments, owner);
+      const id = this.insertGroupMessage({
+        groupId: this.messageGroupOfLane(laneId, at.toISOString()),
+        laneId,
+        from: message.from,
+        author: message.author,
+        body,
+        at: at.toISOString(),
+      });
+      if (message.attachments?.length) this.linkMessageAttachments(id, message.attachments, owner);
       this.addEvent(laneId, at.toISOString(), message.from === 'agent' ? 'notice' : 'message', body, message.author);
       // The agent writing is the agent being alive; the owner's note says nothing about the lane's freshness.
       if (message.from === 'agent') this.db.prepare('UPDATE lanes SET updated_at = ? WHERE id = ?').run(at.toISOString(), laneId);
-      const row = this.db.prepare('SELECT * FROM lane_messages WHERE id = ?').get(id) as Row;
+      const row = this.db.prepare('SELECT * FROM group_messages WHERE id = ?').get(id) as Row;
       return { posted: this.laneMessageFromRow(row, this.agentReadId(laneId)), duplicate: false };
     });
     if (duplicate) return posted;
@@ -4064,8 +4226,10 @@ export class Store {
       laneCol: string | null,
       timeCol?: string,
       projectCol = `substr(${laneCol}, 1, instr(${laneCol}, '/') - 1)`,
+      /** A condition every row meets (which of the conversation's messages a dataset holds). */
+      only?: string,
     ) => {
-      const parts = [`${ridCol} > ?`];
+      const parts = [`${ridCol} > ?`, ...(only ? [only] : [])];
       const params: (string | number)[] = [after];
       if (filter.projects) {
         parts.push(filter.projects.length ? `${projectCol} IN (${filter.projects.map(() => '?').join(',')})` : '0');
@@ -4302,7 +4466,8 @@ export class Store {
       const w = where('m.id', 'e.lane_id', 'm.created_at', "substr(e.lane_id, 1, instr(e.lane_id, '/') - 1)");
       const raw = this.db
         .prepare(
-          `SELECT m.id AS _rid, m.*, e.lane_id, e.ref, e.letter_index, e.seq, e.code FROM messages m JOIN escalations e ON e.id = m.escalation_id ${w.sql}`,
+          `SELECT m.id AS _rid, m.id, m.escalation_id, m.author_kind, m.author, m.body, m.created_at, e.lane_id, e.ref, e.letter_index, e.seq, e.code
+           FROM group_messages m JOIN escalations e ON e.id = m.escalation_id ${w.sql}`,
         )
         .all(...w.params) as Row[];
       return page(raw, (r) => {
@@ -4362,10 +4527,10 @@ export class Store {
     if (dataset === 'epic_messages') {
       const w = where('m.id', null, 'm.created_at', 'e.project_id');
       const raw = this.db
-        .prepare(`SELECT m.id AS _rid, m.*, e.project_id FROM epic_messages m JOIN epics e ON e.num = m.epic_id ${w.sql}`)
+        .prepare(`SELECT m.id AS _rid, m.*, e.project_id FROM group_messages m JOIN epics e ON e.num = m.epic_id ${w.sql}`)
         .all(...w.params) as Row[];
       return page(raw, (r) => {
-        const m = this.laneMessageFromRow(r, undefined, 'epic_message_id');
+        const m = this.laneMessageFromRow(r, undefined);
         return {
           id: m.id,
           project: r.project_id,
@@ -4380,8 +4545,8 @@ export class Store {
     }
 
     if (dataset === 'lane_messages') {
-      const w = where('id', 'lane_id', 'created_at');
-      const raw = this.db.prepare(`SELECT id AS _rid, * FROM lane_messages ${w.sql}`).all(...w.params) as Row[];
+      const w = where('id', 'lane_id', 'created_at', undefined, 'lane_id IS NOT NULL');
+      const raw = this.db.prepare(`SELECT id AS _rid, * FROM group_messages ${w.sql}`).all(...w.params) as Row[];
       return page(raw, (r) => {
         const m = this.laneMessageFromRow(r);
         return {

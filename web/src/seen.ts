@@ -5,7 +5,14 @@ import type { Lane } from './api.ts';
  * Which agent messages on each lane this device has shown: the card marks a lane with something new
  * to read until its sheet is opened. Kept per device; a lost store only shows a message as new again.
  */
-const KEY = 'lanesignal.seenLaneMessages';
+// v2: message ids became one sequence across lanes, epics and escalations (server schema 24), so
+// markers kept by id before then mean nothing now; a device starts again from what it holds.
+const KEY = 'lanesignal.seenLaneMessages.v2';
+try {
+  localStorage.removeItem('lanesignal.seenLaneMessages');
+} catch {
+  /* storage blocked: nothing to tidy */
+}
 const EVENT = 'lanesignal:seen';
 
 function read(): Record<string, number> | null {

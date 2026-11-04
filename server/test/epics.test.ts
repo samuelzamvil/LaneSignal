@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { after, before, describe, test } from 'node:test';
 import { EXPORT_COLUMNS, Store } from '../src/store.ts';
 import { AGENT, ALICE, REVIEWER, startServer } from './helpers.ts';
+import { UNDO_V24 } from './undo.ts';
 
 let srv: Awaited<ReturnType<typeof startServer>>;
 before(async () => {
@@ -344,6 +345,7 @@ describe('REST', () => {
 
 /** Takes a database back from v18 (epics) to v17. */
 const UNDO_V18 = `
+  ${UNDO_V24}
   DELETE FROM lane_events WHERE lane_id LIKE '%/~epic-%';
   DELETE FROM escalations WHERE lane_id LIKE '%/~epic-%';
   DELETE FROM lanes WHERE id LIKE '%/~epic-%';
