@@ -202,6 +202,15 @@ export function startNotifier(
     }
   }
 
+  /**
+   * Where tapping an escalation's notification goes: its thread in the conversation of the group it
+   * was raised in, in focus (one conversation per group); the escalation alone when it has none.
+   */
+  const escalationRoute = (esc: { id: string; project: string; group: string | null }) =>
+    esc.group
+      ? `#/group/${encodeURIComponent(esc.project)}/${encodeURIComponent(localId(esc.group))}/esc/${encodeURIComponent(esc.id)}`
+      : `#/esc/${encodeURIComponent(esc.id)}`;
+
   function toNotification(e: StreamEvent): Notification | null {
     // The agent wrote in a conversation: every message reaches the owner.
     if (e.type === 'escalation' && e.replied && e.escalation.lastMessage && config.notifyOn.has('escalation')) {
@@ -214,7 +223,7 @@ export function startNotifier(
         title: `${reply ? 'Reply' : 'Update'} ${code} · ${where}`,
         body: esc.lastMessage!.body,
         data: { escalationId: esc.id, laneId: localId(esc.laneId ?? ''), project: esc.project },
-        route: `#/esc/${esc.id}`,
+        route: escalationRoute(esc),
         urgent,
         project: esc.project,
       };
@@ -234,7 +243,7 @@ export function startNotifier(
           ? `${e.escalation.question}\nRecommended: ${e.escalation.recommendation}`
           : e.escalation.question,
         data: { escalationId: e.escalation.id, laneId: localId(e.escalation.laneId ?? ''), project: e.escalation.project },
-        route: `#/esc/${e.escalation.id}`,
+        route: escalationRoute(e.escalation),
         urgent,
         project: e.escalation.project,
       };

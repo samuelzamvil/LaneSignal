@@ -59,8 +59,9 @@ test('ntfy gets new escalations only, as UTF-8 JSON, not positions or decisions'
   assert.equal(body.priority, 4);
   assert.equal(body.message, 'Ship it?');
   // Tapping opens the Android app; a button opens the web app instead.
-  assert.equal(body.click, `lanesignal://esc/${esc.id}`);
-  assert.deepEqual(body.actions, [{ action: 'view', label: 'Open in browser', url: `https://ls.example/#/esc/${esc.id}` }]);
+  // Tapping opens the group's conversation with its thread in focus.
+  assert.equal(body.click, `lanesignal://group/default/main/esc/${esc.id}`);
+  assert.deepEqual(body.actions, [{ action: 'view', label: 'Open in browser', url: `https://ls.example/#/group/default/main/esc/${esc.id}` }]);
   sink.close();
   store.close();
 });
