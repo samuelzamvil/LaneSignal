@@ -2,16 +2,18 @@
 
 ## Credentials and roles
 
-Every request carries one bearer credential, which gets one of two roles:
+Every request carries one bearer credential, which gets one of three roles:
 
 | Credential | Role | Can |
 |---|---|---|
 | Agent key (`ls_…`) or static agent token | **agent** | Publish groups and lanes; remove lanes; raise escalations and dismiss its own; with `LANESIGNAL_DECISIONS=true`, also acknowledge them and add positions |
+| Observer key (`ls_…`) or static observer token | **observer** | Read only: the read routes and tools. Every change is refused, `ack` on waits included |
 | Account session, personal key or static human token | **human** | Dismiss stale escalations, remove lanes and groups, register phones for push; with `LANESIGNAL_DECISIONS=true`, also decide escalations |
 
-- Each person sees only the [projects](projects.md) they're a member of; other projects' data is invisible to them and their keys. An agent key can be bound to one project.
+- Each person sees only the [projects](projects.md) they're a member of; other projects' data is invisible to them and their keys. An agent or observer key can be bound to one project.
 - Project **admins** manage that project's members. Account **admins** manage people, create projects, and see every project as admin.
 - Static human tokens can use the break-glass routes.
+- Observer keys are read-only. The HTTP API refuses any method but `GET` and `HEAD` from them before a route runs, and MCP gives them only the read tools. Any role that isn't `human` or `agent` is treated this way. In a project they're members, never admins, whoever owns them.
 - Agents can't decide escalations. Dismissals and decisions are attributed to the key's or account's name.
 
 ## Accounts

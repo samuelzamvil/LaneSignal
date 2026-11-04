@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   isNative,
   type AgentKey,
+  type KeyRole,
   type Client,
   type Person,
   type Principal,
@@ -118,10 +119,10 @@ export function AgentKeysSection({
   const load = useCallback(() => client.listKeys(), [client]);
   const { data: keys, error, reload } = useAsync(load);
   const [name, setName] = useState('');
-  const [role, setRole] = useState<'agent' | 'human'>('agent');
+  const [role, setRole] = useState<KeyRole>('agent');
   /** '' = every project the owner can see. */
   const [project, setProject] = useState('');
-  const [created, setCreated] = useState<{ name: string; key: string; role: 'agent' | 'human'; project: string } | null>(null);
+  const [created, setCreated] = useState<{ name: string; key: string; role: KeyRole; project: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -130,8 +131,9 @@ export function AgentKeysSection({
     setBusy(true);
     setActionError(null);
     try {
-      const k = await client.createKey(name.trim(), role, role === 'agent' && project ? project : undefined);
-      setCreated({ name: name.trim(), key: k.key, role, project: role === 'agent' ? project : '' });
+      const bindable = role !== 'human';
+      const k = await client.createKey(name.trim(), role, bindable && project ? project : undefined);
+      setCreated({ name: name.trim(), key: k.key, role, project: bindable ? project : '' });
       setName('');
       reload();
     } catch (err) {
@@ -178,15 +180,17 @@ export function AgentKeysSection({
       <p className="hint">
         Give each overseer its own <strong>agent key</strong>; the key name is shown as the agent on its lanes. A{' '}
         <strong>personal key</strong> is for your own Claude session: it reads lanes and alerts and acts as you (what it
-        does shows your name), but can't publish lanes. Keys belong to your account and stop working if you revoke them or your account is
+        does shows your name), but can't publish lanes. An <strong>observer key</strong> is for an agent that only
+        watches: it reads lanes, escalations, conversations and requirements, and changes nothing. Keys belong to your account and stop working if you revoke them or your account is
         removed.
       </p>
       <form onSubmit={create} className="inline-form">
-        <select value={role} onChange={(e) => setRole(e.target.value as 'agent' | 'human')} aria-label="Key type">
+        <select value={role} onChange={(e) => setRole(e.target.value as KeyRole)} aria-label="Key type">
           <option value="agent">Agent key</option>
+          <option value="observer">Observer key (read-only)</option>
           <option value="human">Personal key</option>
         </select>
-        {role === 'agent' && projects.length > 1 && (
+        {role !== 'human' && projects.length > 1 && (
           <select value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project">
             <option value="">All my projects</option>
             {projects.map((p) => (
@@ -197,7 +201,9 @@ export function AgentKeysSection({
           </select>
         )}
         <input
-          placeholder={role === 'agent' ? 'Key name, e.g. payments-overseer' : 'Key name, e.g. my-laptop-claude'}
+          placeholder={
+            role === 'agent' ? 'Key name, e.g. payments-overseer' : role === 'observer' ? 'Key name, e.g. status-reporter' : 'Key name, e.g. my-laptop-claude'
+          }
           value={name}
           onChange={(e) => setName(e.target.value)}
           maxLength={32}
@@ -215,6 +221,12 @@ export function AgentKeysSection({
           <CopyBlock label="Key" text={created.key} />
           <p className="hint">1. Add it to Claude Code (run in the project):</p>
           <CopyBlock label="Command" text={mcpCommand} />
+          {created.role === 'observer' && (
+            <p className="hint">
+              It gets LaneSignal's read tools only (lanes, escalations, conversations, requirements, waits and exports), and
+              can't publish, raise, answer or acknowledge anything.
+            </p>
+          )}
           {created.role === 'agent' && (
             <>
               <p className="hint">2. Install the skill that teaches agents how to use LaneSignal:</p>
@@ -245,6 +257,7 @@ export function AgentKeysSection({
             <div>
               <strong>{k.name ?? 'unnamed'}</strong> <code>{k.start}…</code>
               {k.metadata?.role === 'human' && <span className="tag">personal</span>}
+              {k.metadata?.role === 'observer' && <span className="tag">observer · read-only</span>}
               {k.metadata?.project && (
                 <span className="tag">only {projects.find((p) => p.id === k.metadata!.project)?.name ?? k.metadata.project}</span>
               )}

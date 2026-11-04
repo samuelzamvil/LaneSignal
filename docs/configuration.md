@@ -39,8 +39,9 @@ Set these in the stack's environment (Compose / `.env`); there's no switch in th
 | `LANESIGNAL_TRMNL_DIR` | | bundled | Folder with the TRMNL plugin files (`integrations/trmnl`) served as `/api/projects/:id/trmnl/plugin.zip` |
 | `LANESIGNAL_HUMAN_TOKENS` | `tokens[]` | | Optional static human tokens, `name:token,…` (16+ chars each), for break-glass and scripts. `LANESIGNAL_OVERSEER_TOKENS` is the old name and still works |
 | `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | Optional static agent tokens. Prefer [agent keys](accounts.md#agent-keys) |
+| `LANESIGNAL_OBSERVER_TOKENS` | `tokens[]` | | Optional static read-only tokens, for every project. Prefer [observer keys](accounts.md#observer-keys) |
 
-In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "token" }`.
+In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent" | "observer", "token" }`. Any other role stops the server from starting.
 
 ## Cloudflare Access
 

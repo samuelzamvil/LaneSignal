@@ -19,7 +19,8 @@ import type { Epic, Escalation, Group, GroupMessage, Lane, Link, Message, Princi
  *
  * - Config tokens and account admins (and keys they own): every project, as admin.
  * - People: the projects they're members of, with their role there.
- * - Agent keys: their owner's projects, or only the one project the key is bound to.
+ * - Agent and observer keys: their owner's projects, or only the one project the key is bound to.
+ *   Observer keys only read (`requireWriter`).
  */
 export interface Access {
   principal: Principal;
@@ -63,7 +64,8 @@ export function accessFor(store: Store, principal: Principal): Access {
 
   const roleIn = (project: string): ProjectRole | null => {
     if (!visible.includes(project)) return null;
-    if (principal.role === 'agent') return 'member';
+    // Keys that aren't people's are members wherever they see, even an account admin's.
+    if (principal.role !== 'human') return 'member';
     if (all) return 'admin';
     return memberships!.get(project)?.role ?? null;
   };
@@ -220,8 +222,11 @@ export function waitScopeFor(
     laneIds: raw.laneIds?.map((l) => qualify(pr!, l)),
     groupId: raw.groupId ? qualify(pr!, raw.groupId) : undefined,
     since: raw.since,
-    viewer: a.principal.name,
+    // An observer did nothing itself, so nothing is left out as its own (an agent with its name did it). And it
+    // only watches: lanes don't show an agent waiting because of it.
+    viewer: isWriter(a.principal) ? a.principal.name : null,
     viewerKey: ownerOf(a.principal),
+    ...(isWriter(a.principal) ? {} : { holdsWaiting: false }),
   };
 }
 
@@ -587,7 +592,22 @@ export function productsKeptWarning(group: { products: string[] }, asked: string
 
 export const approvesRequirements = (p: Principal) => p.role === 'human' && !p.personalKey;
 
-export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);
+/**
+ * The key something was done with. An observer's is its own even when it shares an agent key's name, so what it
+ * was handed (group notes) never counts as handed to that agent.
+ */
+export const ownerOf = (p: Principal) =>
+  (p.role === 'observer' ? 'observer:' : '') + (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);
+
+/** Roles that may change anything: observer keys only read. */
+export const WRITER_ROLES = ['human', 'agent'] as const;
+
+export const isWriter = (p: Principal) => (WRITER_ROLES as readonly string[]).includes(p.role);
+
+/** Throws for an observer key (or anything else that isn't a person or an agent): `what` names the refused change. */
+export function requireWriter(p: Principal, what: string) {
+  if (!isWriter(p)) throw new ForbiddenError(`Observer keys are read-only: they can't ${what}`);
+}
 
 /** The caller as acknowledging a group's messages needs it: its key, and whether it's an agent. */
 export const ackerOf = (p: Principal) => ({ key: ownerOf(p), agent: p.role === 'agent' });

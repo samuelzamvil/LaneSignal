@@ -170,8 +170,10 @@ export interface WaitScope {
    * wait without a `since` of its own hands over every note as new).
    */
   notesSince?: string | null;
-  /** Who is waiting: their own withdrawals aren't reported back to them. */
-  viewer?: string;
+  /** Who is waiting: their own withdrawals aren't reported back to them. Null: nobody's are left out (observer keys). */
+  viewer?: string | null;
+  /** False: the wait doesn't mark its lanes as having a waiting agent (observer keys). Default true. */
+  holdsWaiting?: boolean;
   /**
    * The waiting key ("user:<account>:<key name>" or "token:<name>"): group notes count as ones it had
    * only when they were handed to this key.
@@ -4166,12 +4168,12 @@ export class Store {
   }
 
   /** Resolves when the escalation leaves `open`, or with the current value on timeout. */
-  waitForDecision(id: string, timeoutMs: number, signal?: AbortSignal): Promise<Escalation> {
+  waitForDecision(id: string, timeoutMs: number, signal?: AbortSignal, holdsWaiting = true): Promise<Escalation> {
     const current = this.requireEscalation(id);
     // The agent's turn (the owner answered Other) needs the agent as much as a decision does.
     if (current.state !== 'open' || current.turn === 'agent' || timeoutMs <= 0) return Promise.resolve(current);
     id = current.id;
-    const release = this.holdWaiting([current.laneId]);
+    const release = holdsWaiting ? this.holdWaiting([current.laneId]) : () => {};
     return new Promise((resolve, reject) => {
       const done = () => {
         clearTimeout(timer);
@@ -4195,6 +4197,8 @@ export class Store {
 
   /** Where things stand for a wait scope right now. Unknown groups and lanes are errors (likely typos). */
   decisionsFor(scope: WaitScope): WaitResult {
+    // Twice, for `(? IS NULL OR … <> ?)`: null leaves nobody's actions out (an observer did nothing itself).
+    const viewerArgs = scope.viewer === null ? [null, null] : [scope.viewer ?? '', scope.viewer ?? ''];
     // A millisecond past everything this result can include, and nothing written later is stamped
     // earlier: a wait from this `since` neither repeats what it returns nor misses what comes next.
     const checkedMs = this.now().getTime() + 1;
@@ -4222,7 +4226,7 @@ export class Store {
       // acknowledgement would otherwise wake every later wait at once.
       if (digest) {
         const by = (this.db.prepare('SELECT withdrawn_by FROM escalations WHERE id = ?').get(e.id) as Row).withdrawn_by;
-        if (e.state !== 'withdrawn' || !scope.since || e.updatedAt < scope.since || (by ?? '') === (scope.viewer ?? '')) continue;
+        if (e.state !== 'withdrawn' || !scope.since || e.updatedAt < scope.since || scope.viewer !== null && (by ?? '') === (scope.viewer ?? '')) continue;
       }
       closedById.set(e.id, e);
     }
@@ -4234,9 +4238,9 @@ export class Store {
           .prepare(
             `SELECT e.at, e.actor FROM lane_events e JOIN lanes l ON l.id = e.lane_id
              WHERE e.lane_id = ? AND l.archived_at IS NOT NULL AND e.kind = 'status' AND e.message = 'Lane removed'
-               AND e.at >= ? AND COALESCE(e.actor, '') <> ? ORDER BY e.id DESC LIMIT 1`,
+               AND e.at >= ? AND (? IS NULL OR COALESCE(e.actor, '') <> ?) ORDER BY e.id DESC LIMIT 1`,
           )
-          .get(laneId, scope.since, scope.viewer ?? '') as Row | undefined;
+          .get(laneId, scope.since, ...viewerArgs) as Row | undefined;
         if (removed) removedLanes.push({ laneId, removedBy: (removed.actor as string | null) ?? null, at: removed.at as string });
       }
       for (const e of this.listEscalations({ laneId, states: ['open', 'decided'] })) byId.set(e.id, e);
@@ -4244,9 +4248,9 @@ export class Store {
         const rows = this.db
           .prepare(
             `SELECT * FROM escalations WHERE lane_id = ? AND state = 'withdrawn' AND updated_at >= ?
-               AND COALESCE(withdrawn_by, '') <> ?`,
+               AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)`,
           )
-          .all(laneId, scope.since, scope.viewer ?? '') as Row[];
+          .all(laneId, scope.since, ...viewerArgs) as Row[];
         for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
       }
     }
@@ -4267,9 +4271,9 @@ export class Store {
         const rows = this.db
           .prepare(
             `SELECT * FROM escalations WHERE ticket_id = ? AND state = 'withdrawn' AND updated_at >= ?
-               AND COALESCE(withdrawn_by, '') <> ?`,
+               AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)`,
           )
-          .all(ticketId, scope.since, scope.viewer ?? '') as Row[];
+          .all(ticketId, scope.since, ...viewerArgs) as Row[];
         for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
       }
     }
@@ -4282,9 +4286,9 @@ export class Store {
           const rows = this.db
             .prepare(
               `SELECT * FROM escalations WHERE epic_id = ? AND state = 'withdrawn' AND updated_at >= ?
-                 AND COALESCE(withdrawn_by, '') <> ?`,
+                 AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)`,
             )
-            .all(epicId, scope.since, scope.viewer ?? '') as Row[];
+            .all(epicId, scope.since, ...viewerArgs) as Row[];
           for (const row of rows) closedById.set(row.id as string, this.escalationFromRow(row));
         }
       }
@@ -4312,12 +4316,12 @@ export class Store {
       const rows = this.db
         .prepare(
           `SELECT f.ticket_id, f.lane_id, f.actor, f.at, t.ref FROM lane_events f JOIN tickets t ON t.num = f.ticket_id
-           WHERE f.kind = 'ticket' AND f.message LIKE 'Filled with %' AND f.at >= ? AND COALESCE(f.actor, '') <> ?
+           WHERE f.kind = 'ticket' AND f.message LIKE 'Filled with %' AND f.at >= ? AND (? IS NULL OR COALESCE(f.actor, '') <> ?)
              AND f.lane_id NOT IN (${marks})
              AND EXISTS (SELECT 1 FROM lane_events p WHERE p.ticket_id = f.ticket_id AND p.lane_id IN (${marks}) AND p.id < f.id)
            ORDER BY f.id`,
         )
-        .all(scope.since, scope.viewer ?? '', ...inScope, ...inScope) as Row[];
+        .all(scope.since, ...viewerArgs, ...inScope, ...inScope) as Row[];
       for (const r of rows) {
         movedTickets.push({
           ticket: this.refs.display(r.ref as string),
@@ -4390,6 +4394,7 @@ export class Store {
     const held = new Set<string>();
     const releases: (() => void)[] = [];
     const hold = (laneIds: Iterable<string | null>) => {
+      if (scope.holdsWaiting === false) return;
       const fresh = [...laneIds].filter((id): id is string => id !== null && !held.has(id));
       if (!fresh.length) return;
       for (const id of fresh) held.add(id);

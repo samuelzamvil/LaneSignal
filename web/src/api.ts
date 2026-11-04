@@ -96,9 +96,12 @@ export interface AgentKey {
   start: string | null;
   createdAt: string;
   lastRequest: string | null;
-  /** role "human" marks a personal key that answers escalations as its owner; `project` binds an agent key. */
+  /** role "human" marks a personal key that answers escalations as its owner, "observer" a read-only key; `project` binds an agent or observer key. */
   metadata?: { role?: string; project?: string } | null;
 }
+
+/** What a key acts as: an agent, a read-only observer, or its owner (a personal key). */
+export type KeyRole = 'agent' | 'observer' | 'human';
 
 export interface Person {
   id: string;
@@ -367,11 +370,15 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
       const res = await request<{ apiKeys: AgentKey[] } | AgentKey[]>('GET', '/api/auth/api-key/list');
       return Array.isArray(res) ? res : res.apiKeys;
     },
-    /** `project` binds an agent key to that one project. */
-    createKey: (name: string, role: 'agent' | 'human' = 'agent', project?: string) =>
+    /** `project` binds an agent or observer key to that one project. */
+    createKey: (name: string, role: KeyRole = 'agent', project?: string) =>
       request<AgentKey & { key: string }>('POST', '/api/auth/api-key/create', {
         name,
-        ...(role === 'human' ? { metadata: { role: 'human' } } : project ? { metadata: { role: 'agent', project } } : {}),
+        ...(role === 'human'
+          ? { metadata: { role: 'human' } }
+          : role === 'observer' || project
+            ? { metadata: { role, ...(project ? { project } : {}) } }
+            : {}),
       }),
     deleteKey: (keyId: string) => request<unknown>('POST', '/api/auth/api-key/delete', { keyId }),
 
