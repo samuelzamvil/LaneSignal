@@ -232,7 +232,7 @@ describe('tickets', () => {
     assert.equal((await ticket('660')).escalations.length, 0);
   });
 
-  test('update_lane follows fill_lane: a held ticket is refused, a done one reopens', async () => {
+  test('update_lane follows fill_lane: a held ticket is refused, a done one waits for approval', async () => {
     await fill({ lane_id: 'pr-967', group: 'train', ticket: '967' });
     const review = await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967-review', group: 'train', ticket: '967' });
     assert.equal(review.isError, true);
@@ -240,8 +240,10 @@ describe('tickets', () => {
     assert.equal((await srv.call('PUT', '/api/lanes/pr-967-review', AGENT, { group: 'train', ticket: '#967' })).status, 409);
     await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967', status: 'completed' });
     assert.equal((await ticket('967')).state, 'done');
-    await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967', ticket: '967' });
-    assert.equal((await ticket('967')).state, 'in_lane');
+    const again = await srv.tool(AGENT, 'update_lane', { lane_id: 'pr-967', ticket: '967' });
+    assert.equal(again.isError, true);
+    assert.match(again.text, /967 is done: reopening it takes a person's approval\. Ask with request_ticket_reopen/);
+    assert.equal((await ticket('967')).state, 'done');
   });
 
   test("finishing a ticket leaves questions the owner answered Other to acknowledge", async () => {
@@ -446,5 +448,84 @@ describe('tickets in the app: live updates', () => {
     const t = (await srv.call('GET', '/api/snapshot', ALICE)).body.tickets.find((x: any) => x.ref === 'redmine:830');
     assert.equal(t.group, null);
     assert.equal(t.lastLane, 'app-d');
+  });
+});
+
+describe('reopening a done or dropped ticket', () => {
+  const wait = async (since: string) =>
+    (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'train', since, wait_seconds: 0 })).value as { items: any[] };
+  const rest = async (ref: string) => (await srv.call('GET', `/api/tickets/${ref}`, ALICE)).body.ticket;
+
+  test('fill_lane refuses one without approval, before letting the held ticket go; a retried completion changes nothing', async () => {
+    await fill({ lane_id: 'slot-r', group: 'train', ticket: '950' });
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-r', status: 'completed' });
+    assert.equal((await ticket('950')).state, 'done');
+    // The call that finished it, retried: no error, still done.
+    const retry = await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-r', ticket: '950', status: 'completed' });
+    assert.equal(retry.isError, false, retry.text);
+    assert.equal((await ticket('950')).state, 'done');
+    await fill({ lane_id: 'slot-r', ticket: '951' });
+    const refused = await fill({ lane_id: 'slot-r', ticket: '950', previous: 'park', reason: 'later' });
+    assert.equal(refused.isError, true);
+    assert.match(refused.text, /950 is done: reopening it takes a person's approval/);
+    assert.equal((await ticket('951')).state, 'in_lane', 'the held ticket stays');
+    assert.equal((await srv.call('PUT', '/api/lanes/slot-r/fill', AGENT, { ticket: '950', previous: 'park', reason: 'x' })).status, 409);
+  });
+
+  test('an agent asks; a signed-in person approves and it comes back parked, for fill_lane to take', async () => {
+    assert.match((await srv.tool(AGENT, 'request_ticket_reopen', { ticket: '951', reason: 'x' })).text, /951 is in lane "slot-r"/);
+    assert.match((await srv.tool(AGENT, 'request_ticket_reopen', { ticket: '999', reason: 'x' })).text, /not found/);
+    const asked = await srv.tool(AGENT, 'request_ticket_reopen', { ticket: '950', reason: 'Regression in 1.4' });
+    assert.equal(asked.isError, false, asked.text);
+    assert.equal(asked.value.reopenRequested, 'Regression in 1.4');
+    const t = await rest('950');
+    assert.equal(t.reopenRequest.reason, 'Regression in 1.4');
+    assert.equal(t.reopenRequest.by, (await srv.call('GET', '/api/me', AGENT)).body.name);
+    // People see it: the snapshot carries tickets waiting for a reopen decision.
+    assert.ok((await srv.call('GET', '/api/snapshot', ALICE)).body.tickets.some((x: any) => x.displayRef === '950'));
+    assert.equal((await srv.call('POST', '/api/tickets/950/reopen', AGENT, { approve: true })).status, 403);
+    const since = new Date().toISOString();
+    const approved = await srv.call('POST', '/api/tickets/950/reopen', ALICE, { approve: true });
+    assert.equal(approved.status, 200, JSON.stringify(approved.body));
+    assert.equal(approved.body.state, 'parked');
+    assert.equal(approved.body.parkReason, 'Reopened: Regression in 1.4');
+    assert.equal(approved.body.reopenRequest, null);
+    assert.equal(approved.body.closedAt, null);
+    const items = (await wait(since)).items.filter((i) => i.kind.startsWith('reopen_'));
+    assert.deepEqual(items.map((i) => [i.kind, i.id]), [['reopen_approved', '950']]);
+    assert.match(items[0].text, /parked, take it with fill_lane/);
+    const taken = await fill({ lane_id: 'slot-r', ticket: '950', previous: 'park', reason: 'after 950' });
+    assert.equal(taken.isError, false, taken.text);
+    assert.equal((await ticket('950')).state, 'in_lane');
+    assert.ok((await ticket('950')).history.some((e: any) => /Reopened 950/.test(e.message)));
+  });
+
+  test('a person declines: it stays as it was, and the wait says so', async () => {
+    await fill({ lane_id: 'slot-s', group: 'train', ticket: '952' });
+    await fill({ lane_id: 'slot-s', ticket: null, previous: 'drop', reason: 'not needed' });
+    assert.equal((await ticket('952')).state, 'dropped');
+    assert.equal((await srv.call('POST', '/api/tickets/952/reopen', ALICE, { approve: false })).status, 409, 'nobody asked');
+    await srv.tool(AGENT, 'request_ticket_reopen', { ticket: '952', reason: 'Needed after all' });
+    const since = new Date().toISOString();
+    const declined = await srv.call('POST', '/api/tickets/952/reopen', ALICE, { approve: false });
+    assert.equal(declined.body.state, 'dropped');
+    assert.equal(declined.body.reopenRequest, null);
+    const items = (await wait(since)).items.filter((i) => i.kind.startsWith('reopen_'));
+    assert.deepEqual(items.map((i) => [i.kind, i.id]), [['reopen_declined', '952']]);
+    assert.equal((await srv.tool(AGENT, 'request_ticket_reopen', { ticket: '952', reason: 'x' })).isError, false, 'it can ask again');
+  });
+
+  test('a signed-in person reopens one directly, with or without a request waiting', async () => {
+    // With a request waiting (from the previous test), approving takes it.
+    const parked = await srv.call('POST', '/api/tickets/952/reopen', ALICE, { approve: true });
+    assert.equal(parked.body.state, 'parked');
+    assert.equal(parked.body.parkReason, 'Reopened: x');
+    await fill({ lane_id: 'slot-s', ticket: '952' });
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-s', status: 'completed' });
+    // With none: the person's own call is the approval.
+    const direct = await srv.call('POST', '/api/tickets/952/reopen', ALICE, { approve: true });
+    assert.equal(direct.body.state, 'parked');
+    assert.equal(direct.body.parkReason, 'Reopened');
+    assert.equal((await srv.call('POST', '/api/tickets/952/reopen', ALICE, { approve: true })).status, 409, 'not done any more');
   });
 });

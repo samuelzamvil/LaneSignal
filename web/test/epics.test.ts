@@ -81,3 +81,9 @@ test('a stand-in holds no lanes of its own: they sit directly in the box', () =>
   assert.deepEqual(layout.epics, []);
   assert.equal(layout.noEpic.length, 1);
 });
+
+test('a closed epic waiting for a reopen decision gets no card of its own', () => {
+  const waiting = epic({ id: 9, state: 'closed', reopenRequest: { reason: 'x', by: 'o', at: '2026-10-01T00:00:00Z' } });
+  assert.deepEqual(epicsOnScreen('p/g1', [standIn, waiting]).map((e) => e.id), [1]);
+  assert.deepEqual(epicsOnScreen('p/g1', [standIn, epic({ id: 7 }), waiting]).map((e) => e.id), [7]);
+});

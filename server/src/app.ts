@@ -738,7 +738,9 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       epic = found.id;
     }
     const patch = { ...rest, group: rest.group ? q(project, rest.group) : rest.group, ...(strict ? { ticket: rest.ticket ?? null } : {}) };
-    res.json(pub.lane(store.upsertLane(q(project, id), patch, principalOf(res).name, { previous, reason, waitingOn, epic, strict })));
+    // A signed-in person filling a lane with a done or dropped ticket reopens it; agents ask first.
+    const reopen = approvesRequirements(principalOf(res));
+    res.json(pub.lane(store.upsertLane(q(project, id), patch, principalOf(res).name, { previous, reason, waitingOn, epic, strict, reopen })));
   };
   app.put('/api/lanes/:id', agent, (req, res) => publishLane(req, res, false));
   app.put('/api/lanes/:id/fill', agent, (req, res) => publishLane(req, res, true));
@@ -820,7 +822,44 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json(pub.epic(store.decideEpicClose(epic.id, parse(s.closeDecision, req.body ?? {}).approve, principalOf(res).name)));
   });
 
+  /** An overseer asks a person to reopen a closed epic. */
+  app.post('/api/epics/:id/reopen-request', agent, (req, res) => {
+    const epic = epicOf(req, res);
+    res.json(pub.epic(store.requestEpicReopen(epic.id, parse(s.reopenRequest, req.body ?? {}).reason, principalOf(res).name)));
+  });
+
+  /** A person approves or declines a reopen request, or (`approve: true` with none waiting) reopens the epic directly. */
+  app.post('/api/epics/:id/reopen', human, (req, res) => {
+    if (!approvesRequirements(principalOf(res))) throw new ForbiddenError('Reopen an epic signed in, not with a personal key');
+    const epic = epicOf(req, res);
+    res.json(pub.epic(store.decideEpicReopen(epic.id, parse(s.reopenDecision, req.body ?? {}).approve, principalOf(res).name)));
+  });
+
   // ---- tickets: held by lanes, parked, done ----
+
+  /** A ticket by any form of its ref, in the project asked for or the only one of the caller's that has it. */
+  const ticketOf = (req: Request, res: Response) => {
+    const ref = String(req.params.ref);
+    const hits = acc(res)
+      .scope(projectQuery(req))
+      .flatMap((p) => store.getTicket(p, ref) ?? []);
+    if (hits.length > 1) throw new ValidationError(`"${ref}" is a ticket in several projects: say which (?project=)`);
+    if (!hits[0]) throw new NotFoundError(`Ticket "${ref}" not found`);
+    return hits[0];
+  };
+
+  /** An agent asks a person to reopen a done or dropped ticket. */
+  app.post('/api/tickets/:ref/reopen-request', agent, (req, res) => {
+    const t = ticketOf(req, res);
+    res.json(pub.ticket(store.requestTicketReopen(t.id, parse(s.reopenRequest, req.body ?? {}).reason, principalOf(res).name)));
+  });
+
+  /** A person approves or declines a reopen request, or (`approve: true` with none waiting) reopens the ticket directly: it's parked. */
+  app.post('/api/tickets/:ref/reopen', human, (req, res) => {
+    if (!approvesRequirements(principalOf(res))) throw new ForbiddenError('Reopen a ticket signed in, not with a personal key');
+    const t = ticketOf(req, res);
+    res.json(pub.ticket(store.decideTicketReopen(t.id, parse(s.reopenDecision, req.body ?? {}).approve, principalOf(res).name)));
+  });
 
   app.get('/api/tickets', any, (req, res) => {
     const query = parse(s.ticketQuery, req.query);
@@ -833,13 +872,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   /** One ticket by any form of its ref (URL-encode it), with its escalations, history and the lanes it passed through. */
   app.get('/api/tickets/:ref', any, (req, res) => {
-    const ref = String(req.params.ref);
-    const hits = acc(res)
-      .scope(projectQuery(req))
-      .flatMap((p) => store.getTicket(p, ref) ?? []);
-    if (hits.length > 1) throw new ValidationError(`"${ref}" is a ticket in several projects: say which (?project=)`);
-    const t = hits[0];
-    if (!t) throw new NotFoundError(`Ticket "${ref}" not found`);
+    const t = ticketOf(req, res);
     res.json({
       ticket: pub.ticket(t),
       escalations: store.listEscalations({ ticketId: t.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 200 }).map(pub.escalation),

@@ -86,6 +86,8 @@ export const epicQuery = z
 
 export const closeRequest = z.object({ reason: z.string().trim().min(1).max(1000) });
 export const closeDecision = z.object({ approve: z.boolean() });
+export const reopenRequest = z.object({ reason: z.string().trim().min(1).max(1000) });
+export const reopenDecision = z.object({ approve: z.boolean() });
 
 export const ticketQuery = z
   .object({

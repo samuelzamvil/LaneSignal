@@ -459,6 +459,7 @@ export const briefTicket = (t: Ticket) =>
     status: t.status,
     parkReason: t.parkReason,
     waitingOn: t.waitingOn,
+    reopenRequested: t.reopenRequest?.reason,
     openEscalations: t.openEscalations || undefined,
     updatedAt: t.updatedAt,
   });
@@ -475,6 +476,7 @@ export const briefEpic = (e: Epic) =>
     state: e.state,
     statusLine: e.statusLine,
     closeReason: e.closeReason,
+    reopenRequested: e.reopenRequest?.reason,
     openEscalations: e.openEscalations || undefined,
     blockingEscalations: e.blockingEscalations || undefined,
     updatedAt: e.updatedAt,
@@ -539,6 +541,13 @@ export const digestWait = (w: WaitResult, keyed = false) => {
     ...w.closed.map((e) => ({ code: code(e), kind: 'closed', text: e.resolution ?? e.state })),
     ...w.removedLanes.map((l) => ({ kind: 'lane_removed', id: l.laneId, text: l.removedBy ? `Removed by ${l.removedBy}` : 'Removed' })),
     ...w.movedTickets.map((m) => ({ kind: 'ticket_moved', id: m.ticket, text: `Taken into lane ${m.laneId}${m.by ? ` by ${m.by}` : ''}` })),
+    ...w.reopenDecisions.map((d) => ({
+      kind: d.approved ? 'reopen_approved' : 'reopen_declined',
+      id: d.name,
+      text: d.approved
+        ? `${d.kind === 'ticket' ? 'Ticket' : 'Epic'} reopened${d.by ? ` by ${d.by}` : ''}${d.kind === 'ticket' ? ': it is parked, take it with fill_lane' : ''}`
+        : `${d.kind === 'ticket' ? 'Ticket' : 'Epic'} stays closed: ${d.by ?? 'a person'} declined to reopen it`,
+    })),
     // One item each, with its id: acknowledge the last one handled (`ack`), or they come back
     // (`seen: true` once the caller's `since` is past them: it had them already).
     ...w.groupMessages.flatMap((g) =>
@@ -558,7 +567,7 @@ export const digestWait = (w: WaitResult, keyed = false) => {
 };
 
 /** A wait result with its escalations in brief. */
-export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
+export const briefWait = ({ movedTickets: _moved, reopenDecisions: _reopened, ...w }: WaitResult) => ({
   ...w,
   decided: w.decided.map(brief),
   replies: w.replies.map(({ projectKey: _key, ...r }) => ({ ...r, messages: briefMessages(r.messages) })),

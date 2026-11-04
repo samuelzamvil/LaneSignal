@@ -543,7 +543,8 @@ function buildServer(
         description:
           'Wait for what needs you in your group, some lanes or escalations; it waits even when nothing is open. Returns ' +
           '`items`: `{code, kind, text}` for an escalation, `{kind, id, text}` for a lane, ticket or epic (the owner\'s words, or what happened). Kinds: `decided` (answered), `reply` (the owner answered Other), ' +
-          '`closed`, `lane_removed`, `ticket_moved`, `group_note` (a person wrote to your group; `id` is the ' +
+          '`closed`, `lane_removed`, `ticket_moved`, `reopen_approved` / `reopen_declined` (a person decided your ' +
+          'request_ticket_reopen or request_epic_reopen; `id` is the ticket or epic), `group_note` (a person wrote to your group; `id` is the ' +
           'message\'s: pass the last one you handled as `ack`; `since` doesn\'t clear them). `decided`, `reply` and `group_note` repeat until handled ' +
           '(a `group_note` you had before `since` comes back with `seen: true` and doesn\'t end the wait); the rest come once per `since`. `counts` (left out when all zero): `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
           'it timed out (any `items` are notes you had already): call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
@@ -1080,7 +1081,7 @@ function buildServer(
           const pr = a.pick(project, { lane: lane_id, group: patch.group ?? undefined });
           const qualified = { ...patch, group: patch.group ? q(pr, patch.group) : patch.group };
           const before = store.getLane(q(pr, lane_id))?.ticketId ?? null;
-          const lane = store.upsertLane(q(pr, lane_id), qualified, who.name, { waitingOn: waiting_on });
+          const lane = store.upsertLane(q(pr, lane_id), qualified, who.name, { waitingOn: waiting_on, reopen: approvesRequirements(who) });
           return published(q(pr, lane_id), patch.status, lane, { activity: rest.activity, before });
         } catch (err) {
           return fail(err);
@@ -1093,8 +1094,9 @@ function buildServer(
       {
         description:
           'Move a lane to another ticket. `previous` (required when the lane holds a different ticket): `park` (with ' +
-          '`reason`), `done` or `drop`. `ticket` moves in (created on first use; a parked or done one comes back with ' +
-          'its questions); leave it out to empty the lane. A ticket is in one lane at a time. `epic`: the epic the ' +
+          '`reason`), `done` or `drop`. `ticket` moves in (created on first use; a parked one comes back with its ' +
+          'questions; a done or dropped one needs a person\'s approval first: request_ticket_reopen); leave it out to ' +
+          'empty the lane. A ticket is in one lane at a time. `epic`: the epic the ' +
           'ticket is for (list_epics): with one named, the lane sits under its card on the dashboard. Takes update_lane\'s ' +
           'fields too, applied after the switch.',
         inputSchema: {
@@ -1121,6 +1123,7 @@ function buildServer(
             waitingOn: waiting_on,
             epic: epicNumber(epic, pr),
             strict: true,
+            reopen: approvesRequirements(who),
           });
           return published(q(pr, lane_id), patch.status, lane, { activity: rest.activity, before, epicCleared: epic === null, previous, reason });
         } catch (err) {
@@ -1218,6 +1221,48 @@ function buildServer(
           const e = a.epic(epic, project);
           if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
           return json(briefEpic(pub.epic(store.requestEpicClose(e.id, reason, who.name))));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'request_epic_reopen',
+      {
+        description:
+          'Ask a person to reopen a closed epic (its work came back); they approve or decline in the app, and your group ' +
+          'wait reports it (`reopen_approved` / `reopen_declined`). Reopened, it takes over from the group\'s stand-in, if that is back.',
+        inputSchema: { epic: EPIC, reason: s.reopenRequest.shape.reason, ...PROJECT_WRITE },
+      },
+      async ({ epic, reason, project }) => {
+        try {
+          const e = a.epic(epic, project);
+          if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
+          return json(briefEpic(pub.epic(store.requestEpicReopen(e.id, reason, who.name))));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'request_ticket_reopen',
+      {
+        description:
+          'Ask a person to reopen a done or dropped ticket (fill_lane refuses one without approval). They approve or ' +
+          'decline in the app, and your group wait reports it (`reopen_approved` / `reopen_declined`). Approved, the ' +
+          'ticket is parked with its questions and history: take it with fill_lane.',
+        inputSchema: {
+          ticket: z.string().min(1).max(300).describe('The ticket: any form of its ref ("967", "#967", its URL).'),
+          reason: s.reopenRequest.shape.reason,
+          ...PROJECT_WRITE,
+        },
+      },
+      async ({ ticket, reason, project }) => {
+        try {
+          const t = findTicket(ticket, project);
+          return json(ticketForAgent(store.requestTicketReopen(t.id, reason, who.name)));
         } catch (err) {
           return fail(err);
         }

@@ -4,8 +4,9 @@ import { FOLD, Links, SheetSection, TicketLink, useStored, type Fold } from './c
 import { absolute, ago } from './format.ts';
 import { hasNewMessage } from './seen.ts';
 import { toast } from './toast.tsx';
+import { ReopenControls } from './reopen.tsx';
 
-/** Open epics (and ones waiting for close approval), by number. */
+/** Open epics (and ones waiting for close approval, or closed ones waiting for reopen approval), by number. */
 export const EpicsContext = createContext<Map<string, Epic>>(new Map());
 
 /** An epic's sheet. */
@@ -341,6 +342,15 @@ export function EpicDetail({
             </dl>
             {epic.statusLine && <p className="status-line full">{epic.statusLine}</p>}
             <CloseRequest epic={epic} client={client} canApprove={canApprove} />
+            {!epic.standIn && (
+              <ReopenControls
+                name={`epic ${epic.name}`}
+                request={epic.reopenRequest}
+                closed={closed}
+                canApprove={canApprove}
+                decide={(approve) => client.decideEpicReopen(epic.id, approve)}
+              />
+            )}
             <Links links={epic.links} />
             {group && sessionLink(group) && <Links links={[sessionLink(group)!]} />}
 
