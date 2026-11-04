@@ -2,7 +2,6 @@ import { useEffect, useState, type ReactNode } from 'react';
 import type { Client, Escalation, Group, Lane, LaneEvent, LaneMessage, LaneStatus, Link, PublicConfig } from './api.ts';
 import { AttachmentList } from './attachments.tsx';
 import { ago, absolute, blockedMs, duration, isStale, needsHuman, STATUS_META } from './format.ts';
-import { hasNewMessage, markMessagesSeen } from './seen.ts';
 import { LinkedText } from './linked-text.tsx';
 import { toast } from './toast.tsx';
 import { withSwitchMarkers } from './switches.ts';
@@ -191,11 +190,6 @@ export function LaneRow({ lane, now, onOpen }: { lane: Lane; now: number; onOpen
           {lane.activity && ` · ${lane.activity}`}
         </span>
       </span>
-      {hasNewMessage(lane) && (
-        <span className="new-message" title="The agent wrote on this lane">
-          💬
-        </span>
-      )}
       <StatusPill status={lane.status} />
       <span className="muted lane-row-when">{ago(lane.updatedAt, now)}</span>
     </button>
@@ -254,11 +248,6 @@ export function LaneCard({
         {lane.agentWaiting && (
           <span className="listening" title="An agent is waiting on this lane's escalations">
             ● agent waiting
-          </span>
-        )}
-        {hasNewMessage(lane) && (
-          <span className="new-message" title="The agent wrote on this lane: open it to read">
-            💬 new message
           </span>
         )}
       </div>
@@ -356,7 +345,6 @@ export function LaneDetail({
   version,
   now,
   canDelete,
-  canWrite,
   group,
   groupLabel,
   onClose,
@@ -370,19 +358,13 @@ export function LaneDetail({
   version: string;
   now: number;
   canDelete: boolean;
-  /** May write to the lane's agent (a person, with answering in LaneSignal on). */
-  canWrite: boolean;
   onClose: () => void;
   /** Where closing goes, named on the back button. */
   backTo: string;
 }) {
-  const [data, setData] = useState<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[]; messages: LaneMessage[] } | null>(
-    null,
-  );
+  const [data, setData] = useState<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(0);
   const [escFold, setEscFold] = useStored<Fold>('lanesignal.lane.escalations', FOLD, 'open');
-  const [talkFold, setTalkFold] = useStored<Fold>('lanesignal.lane.conversation', FOLD, 'open');
   const [eventsFold, setEventsFold] = useStored<Fold>('lanesignal.lane.activity', FOLD, 'open');
   const [escFilter, setEscFilter] = useStored<EscFilter>('lanesignal.lane.escalationFilter', ['active', 'history', 'all'], 'active');
 
@@ -392,20 +374,14 @@ export function LaneDetail({
       .laneDetail(project, laneId)
       .then((d) => {
         if (cancelled) return;
-        // A server from before lane conversations sends none.
-        setData({ ...d, messages: d.messages ?? [] });
+        setData(d);
         setError(null);
       })
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
-  }, [client, project, laneId, version, sent]);
-
-  // The agent's messages are read once the conversation is showing, not while it's folded away.
-  useEffect(() => {
-    if (data && talkFold === 'open') markMessagesSeen(data.lane, data.lane.lastAgentMessageId);
-  }, [data, talkFold]);
+  }, [client, project, laneId, version]);
 
   const activeEscs = data?.escalations.filter((e) => ACTIVE_STATES.includes(e.state)) ?? [];
   const shownEscs =
@@ -530,50 +506,6 @@ export function LaneDetail({
                     </li>
                   ))}
                 </ul>
-              </SheetSection>
-            )}
-
-            {(data.messages.length > 0 || canWrite) && (
-              <SheetSection
-                title="Conversation"
-                count={data.messages.length}
-                badge={
-                  talkFold === 'folded' &&
-                  hasNewMessage(data.lane) && (
-                    <span className="new-message" title="The agent wrote on this lane">
-                      💬 new
-                    </span>
-                  )
-                }
-                open={talkFold === 'open'}
-                onToggle={() => setTalkFold(talkFold === 'open' ? 'folded' : 'open')}
-              >
-                {data.messages.length > 0 ? (
-                  <ol className="thread">
-                    {data.messages.map((m) => (
-                      <li key={m.id} className={`msg from-${m.from}`}>
-                        <div className="msg-meta">
-                          {m.author} <span title={absolute(m.at)}>· {ago(m.at, now)}</span>
-                          {m.from === 'owner' && <span className="msg-seen">{m.seen ? ' · seen by the agent' : ' · not seen yet'}</span>}
-                        </div>
-                        <RichText text={m.body} />
-                        {m.attachments.length > 0 && <AttachmentList client={client} files={m.attachments} />}
-                      </li>
-                    ))}
-                  </ol>
-                ) : (
-                  <p className="hint">The agent's milestones on this lane show here, and you can write to it.</p>
-                )}
-                {canWrite && (
-                  <LaneComposer
-                    key={data.lane.id}
-                    onSend={async (body) => {
-                      await client.laneMessage(data.lane.project, data.lane.id, body);
-                      toast({ text: `Sent to the agent on ${data.lane.name}` });
-                      setSent((n) => n + 1);
-                    }}
-                  />
-                )}
               </SheetSection>
             )}
 

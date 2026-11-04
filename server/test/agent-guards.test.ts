@@ -152,17 +152,19 @@ describe('small results', () => {
 });
 
 describe('notices', () => {
-  test('an overseer tells the owner about a milestone; it lands in the lane history, one per minute', async () => {
+  test("an overseer tells the owner about a milestone; it's in the group's conversation and the lane's history, one a minute", async () => {
     const res = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Merged PR #311' });
     assert.equal(res.isError, false, res.text);
-    const d = (await srv.call('GET', '/api/lanes/pay-1', ALICE)).body;
-    assert.ok(d.messages.some((m: any) => m.from === 'agent' && m.body === 'Merged PR #311'));
-    // Kept in the lane's history (exports), though the sheet shows it in the conversation instead.
+    const group = (await srv.call('GET', '/api/lanes/pay-1', ALICE)).body.lane.group;
+    const items = (await srv.call('GET', `/api/groups/${group}/conversation`, ALICE)).body.items;
+    assert.ok(items.some((m: any) => m.from === 'agent' && m.body === 'Merged PR #311'));
+    // Kept in the lane's history (exports) too.
     assert.ok(srv.store.laneEvents('default/pay-1').some((e) => e.kind === 'notice' && e.message === 'Merged PR #311'));
+    // One a minute for the whole group, from any of its lanes.
     const again = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Starting gh:42' });
     assert.equal(again.isError, true);
-    assert.match(again.text, /One message per lane per minute/);
-    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'Starting gh:42' })).status, 201);
+    assert.match(again.text, /One message per group per minute/);
+    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'Starting gh:42' })).status, 409);
     assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'x'.repeat(501) })).status, 400);
     assert.equal((await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-l', message: 'typo' })).isError, true);
     assert.equal((await srv.call('POST', '/api/lanes/pay-1/notices', ALICE, { message: 'not an agent' })).status, 403);

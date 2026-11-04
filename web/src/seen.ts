@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
-import type { Lane } from './api.ts';
+import type { Group } from './api.ts';
 
 /**
- * Which agent messages on each lane this device has shown: the card marks a lane with something new
- * to read until its sheet is opened. Kept per device; a lost store only shows a message as new again.
+ * Which of the overseer's messages in each group's conversation this device has shown: the group's
+ * chat button marks something new to read until the conversation is opened. Kept per device; a lost
+ * store only shows a message as new again.
  */
-// v2: message ids became one sequence across lanes, epics and escalations (server schema 24), so
-// markers kept by id before then mean nothing now; a device starts again from what it holds.
-const KEY = 'lanesignal.seenLaneMessages.v2';
+// v3: groups' conversations, in place of lanes' and epics' (whose markers mean nothing now).
+const KEY = 'lanesignal.seenGroupMessages';
 try {
   localStorage.removeItem('lanesignal.seenLaneMessages');
+  localStorage.removeItem('lanesignal.seenLaneMessages.v2');
 } catch {
   /* storage blocked: nothing to tidy */
 }
@@ -32,24 +33,23 @@ function write(all: Record<string, number>) {
   }
 }
 
-/** Something with an agent's messages: a lane, or an epic's board (id "~epic-<n>", see epicSeenKey). */
-type Board = Pick<Lane, 'project' | 'id' | 'lastAgentMessageId'>;
-const keyOf = (lane: Pick<Lane, 'project' | 'id'>) => `${lane.project}/${lane.id}`;
+type Board = Pick<Group, 'project' | 'id' | 'lastAgentMessageId'>;
+const keyOf = (group: Pick<Group, 'project' | 'id'>) => `${group.project}/${group.id}`;
 
 /**
- * The agent wrote on the lane since this device last opened it. A device that has never tracked this
- * (a new install, or the upgrade that turned earlier notices into messages) marks nothing.
+ * The overseer wrote in the group's conversation since this device last opened it. A device that has
+ * never tracked this (a new install, or the upgrade to groups' conversations) marks nothing.
  */
-export function hasNewMessage(lane: Board): boolean {
+export function hasNewMessage(group: Board): boolean {
   const all = read();
-  return all !== null && lane.lastAgentMessageId != null && lane.lastAgentMessageId > (all[keyOf(lane)] ?? 0);
+  return all !== null && group.lastAgentMessageId != null && group.lastAgentMessageId > (all[keyOf(group)] ?? 0);
 }
 
-/** On a device that has never tracked messages: what the lanes hold now counts as read. */
-export function baselineSeen(lanes: Iterable<Board>) {
+/** On a device that has never tracked messages: what the groups hold now counts as read. */
+export function baselineSeen(groups: Iterable<Board>) {
   if (read() !== null) return;
-  const list = [...lanes];
-  // A server from before lane conversations doesn't say: baseline once it does, or its notices would all be new.
+  const list = [...groups];
+  // A server from before groups' conversations doesn't say: baseline once it does, or everything would be new.
   if (list.some((l) => l.lastAgentMessageId === undefined)) return;
   const all: Record<string, number> = {};
   for (const l of list) if (l.lastAgentMessageId !== null) all[keyOf(l)] = l.lastAgentMessageId;
@@ -57,18 +57,18 @@ export function baselineSeen(lanes: Iterable<Board>) {
   window.dispatchEvent(new Event(EVENT));
 }
 
-/** Marks the lane's messages up to `id` as read here. */
-export function markMessagesSeen(lane: Pick<Lane, 'project' | 'id'>, id: number | null) {
-  // Before the baseline (a lane opened from a push on a cold start), the baseline records it.
+/** Marks the group's messages up to `id` as read here. */
+export function markMessagesSeen(group: Pick<Group, 'project' | 'id'>, id: number | null) {
+  // Before the baseline (a conversation opened from a push on a cold start), the baseline records it.
   const all = read();
   if (id == null || all === null) return;
-  if ((all[keyOf(lane)] ?? 0) >= id) return;
-  all[keyOf(lane)] = id;
+  if ((all[keyOf(group)] ?? 0) >= id) return;
+  all[keyOf(group)] = id;
   write(all);
   window.dispatchEvent(new Event(EVENT));
 }
 
-/** Re-renders when a lane's messages are marked read (here or in another tab). */
+/** Re-renders when a group's messages are marked read (here or in another tab). */
 export function useSeenVersion(): number {
   const [version, setVersion] = useState(0);
   useEffect(() => {

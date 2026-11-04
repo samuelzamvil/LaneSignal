@@ -13,6 +13,7 @@ const NAMES: Record<string, string> = {
   lane: 'Lane',
   ticket: 'Ticket',
   epic: 'Epic',
+  group: 'Group',
   esc: 'Escalation',
   reqs: 'Requirements',
   history: 'History',
@@ -50,8 +51,8 @@ export function trackEntry() {
   current = { hash: location.hash, ...(history.state as Entry) };
 }
 
-/** Whether an escalation, lane, ticket or epic is open (a sheet, or the right pane on desktop). */
-const sheetOpen = () => /^#\/(esc|lane|ticket|epic)\//.test(location.hash) || /^#\/history\/[^/]+/.test(location.hash);
+/** Whether an escalation, lane, ticket, epic or group's conversation is open (a sheet, or the right pane on desktop). */
+const sheetOpen = () => /^#\/(esc|lane|ticket|epic|group)\//.test(location.hash) || /^#\/history\/[^/]+/.test(location.hash);
 
 /**
  * Opens an escalation or lane. With one already open (picking another from the list beside it on

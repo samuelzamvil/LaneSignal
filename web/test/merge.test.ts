@@ -32,7 +32,7 @@ test('removing a lane drops it and its escalations', () => {
 });
 
 test('group events add and remove groups', () => {
-  const group = { id: 'g', project: 'p', name: 'G', ticket: null, ticketUrl: null, links: [], products: [], agent: null, overseer: null, overseerSince: null, createdAt: 'x', updatedAt: 'x' };
+  const group = { id: 'g', project: 'p', name: 'G', ticket: null, ticketUrl: null, links: [], products: [], agent: null, overseer: null, overseerSince: null, lastMessageId: null, lastAgentMessageId: null, createdAt: 'x', updatedAt: 'x' };
   let s = applyEvent(empty(), { type: 'group', group });
   assert.ok(s.groups.has('p/g'));
   s = applyEvent(s, { type: 'group_deleted', id: 'g', project: 'p' });

@@ -152,14 +152,10 @@ export interface WaitScope {
   /** Who is waiting: their own withdrawals aren't reported back to them. */
   viewer?: string;
   /**
-   * `digest`: ready only when there's something to handle; with `since`, the owner's notes are those
-   * written since then (whether or not handed over), so a crashed wait that repeats its `since` loses
-   * nothing. `full`: the older behaviour, ready at once when nothing is open, notes handed over once.
-   * Left out (get_updates): unread notes, plus any since `since`.
+   * `digest`: ready only when there's something to handle. `full`: the older behaviour, ready at once
+   * when nothing is open. Left out: get_updates.
    */
   mode?: 'digest' | 'full';
-  /** Set by waitForDecisions: whether `since` came from the agent (false when it defaulted to now). */
-  givenSince?: boolean;
 }
 
 export interface WaitResult {
@@ -181,12 +177,8 @@ export interface WaitResult {
   open: { id: string; ref: string; laneId: string | null; epicName?: string; question: string }[];
   /** Lanes in scope that someone else took off the dashboard since `since`: stop work on them. */
   removedLanes: { laneId: string; removedBy: string | null; at: string }[];
-  /** The owner wrote on lanes in scope (not about an escalation): their messages the agent hasn't seen. */
-  laneMessages: { laneId: string; messages: LaneMessage[] }[];
   /** Digest only: tickets from lanes in scope that a lane outside it took since `since` (another overseer, usually). */
   movedTickets: { ticket: string; ticketId: number; laneId: string; by: string | null; at: string }[];
-  /** A group's wait: people's notes on its epics' boards the overseer hasn't seen (and, in a digest, any since `since`). */
-  boardMessages: { project: string; epicId: number; epic: string; messages: LaneMessage[] }[];
   /**
    * A group's wait: people's messages written to the group that its overseer hasn't acknowledged,
    * oldest first. They come back on every wait until acknowledged (`ack` with the last id handled).
@@ -1347,6 +1339,12 @@ export class Store {
         ? (((this.db.prepare('SELECT at FROM group_overseers WHERE group_id = ? ORDER BY id DESC LIMIT 1').get(r.id as string) as Row | undefined)
             ?.at as string | undefined) ?? null)
         : null,
+      ...(() => {
+        const m = this.db
+          .prepare("SELECT MAX(id) AS last, MAX(CASE WHEN author_kind = 'agent' THEN id END) AS agent FROM group_messages WHERE group_id = ?")
+          .get(r.id as string) as Row;
+        return { lastMessageId: m.last == null ? null : Number(m.last), lastAgentMessageId: m.agent == null ? null : Number(m.agent) };
+      })(),
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
     };
@@ -1549,9 +1547,6 @@ export class Store {
       openEscalations: Number(r.open_escalations ?? 0),
       blockingEscalations: Number(r.open_blocking ?? 0),
       agentWaiting: (this.waiting.get(r.id as string) ?? 0) > 0,
-      lastMessageId: r.last_message_id == null ? null : Number(r.last_message_id),
-      lastAgentMessageId: r.last_agent_message_id == null ? null : Number(r.last_agent_message_id),
-      unreadByAgent: Number(r.unread_by_agent ?? 0),
     };
   }
 
@@ -1563,10 +1558,7 @@ export class Store {
       (SELECT t.waiting_on FROM tickets t WHERE t.num = l.ticket_id) AS ticket_waiting_on,
       (SELECT t.display_ref FROM tickets t WHERE t.num = l.ticket_id) AS ticket_ref,
       (SELECT t.ref FROM tickets t WHERE t.num = l.ticket_id) AS ticket_canonical,
-      (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived,
-      (SELECT MAX(m.id) FROM group_messages m WHERE m.lane_id = l.id) AS last_message_id,
-      (SELECT MAX(m.id) FROM group_messages m WHERE m.lane_id = l.id AND m.author_kind = 'agent') AS last_agent_message_id,
-      (SELECT COUNT(*) FROM group_messages m WHERE m.lane_id = l.id AND m.author_kind = 'owner' AND m.id > l.agent_read_id) AS unread_by_agent
+      (SELECT g.archived_at IS NOT NULL FROM groups g WHERE g.id = l.group_id) AS group_archived
     FROM lanes l`;
 
   /** Active lanes (archived ones are kept for export but hidden; epics' internal lanes are never listed). */
@@ -1998,13 +1990,6 @@ export class Store {
         `SELECT COUNT(*) AS open, SUM(blocking = 1 AND turn = 'owner') AS blocking FROM escalations WHERE epic_id = ? AND state = 'open'`,
       )
       .get(num) as Row;
-    const msgs = this.db
-      .prepare(
-        `SELECT (SELECT MAX(id) FROM group_messages WHERE epic_id = ?) AS last,
-           (SELECT MAX(id) FROM group_messages WHERE epic_id = ? AND author_kind = 'agent') AS last_agent,
-           (SELECT COUNT(*) FROM group_messages WHERE epic_id = ? AND author_kind = 'owner' AND id > ?) AS unread`,
-      )
-      .get(num, num, num, Number(r.agent_read_id)) as Row;
     const ref = (r.ref as string | null) ?? null;
     return {
       id: num,
@@ -2023,9 +2008,6 @@ export class Store {
       closeRequestedBy: (r.close_requested_by as string | null) ?? null,
       openEscalations: Number(counts.open ?? 0),
       blockingEscalations: Number(counts.blocking ?? 0),
-      lastMessageId: msgs.last == null ? null : Number(msgs.last),
-      lastAgentMessageId: msgs.last_agent == null ? null : Number(msgs.last_agent),
-      unreadByAgent: Number(msgs.unread ?? 0),
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
       closedAt: (r.closed_at as string | null) ?? null,
@@ -2262,106 +2244,10 @@ export class Store {
   }
 
   /** Sends an epic's current state to clients; returns it. */
-  private emitEpic(num: number, messaged?: 'owner' | 'agent'): Epic | null {
+  private emitEpic(num: number): Epic | null {
     const epic = this.getEpic(num);
-    if (epic) this.events.emit('change', { type: 'epic', epic, ...(messaged ? { messaged } : {}) });
+    if (epic) this.events.emit('change', { type: 'epic', epic });
     return epic;
-  }
-
-  // ---- epic message boards ---------------------------------------------------
-
-  private epicReadId(num: number): number {
-    return Number((this.db.prepare('SELECT agent_read_id FROM epics WHERE num = ?').get(num) as Row | undefined)?.agent_read_id ?? 0);
-  }
-
-  /** An epic's board, oldest first: its latest `limit` messages. */
-  epicMessages(num: number, limit = 100): LaneMessage[] {
-    const readId = this.epicReadId(num);
-    return (this.db.prepare('SELECT * FROM group_messages WHERE epic_id = ? ORDER BY id DESC LIMIT ?').all(num, limit) as Row[])
-      .reverse()
-      .map((r) => this.laneMessageFromRow(r, readId));
-  }
-
-  /** People's notes on an epic's board its overseer hasn't been handed, plus (with `since`) those written at or after it. */
-  private unreadEpicByAgent(num: number, since?: string, onlySince = false): LaneMessage[] {
-    return (
-      this.db
-        .prepare(
-          `SELECT m.* FROM group_messages m JOIN epics e ON e.num = m.epic_id
-           WHERE m.epic_id = ? AND m.author_kind = 'owner' AND ((? = 0 AND m.id > e.agent_read_id) OR m.created_at >= ?) ORDER BY m.id`,
-        )
-        .all(num, onlySince ? 1 : 0, since ?? '\uffff') as Row[]
-    ).map((r) => this.laneMessageFromRow(r, undefined));
-  }
-
-  /** Hands people's unread notes on an epic's board to its overseer: returns them and marks them seen. */
-  takeUnreadEpicForAgent(num: number): LaneMessage[] {
-    const unread = this.unreadEpicByAgent(num);
-    if (unread.length) {
-      const upTo = unread.at(-1)!.id;
-      if (this.db.prepare('UPDATE epics SET agent_read_id = ? WHERE num = ? AND agent_read_id < ?').run(upTo, num, upTo).changes > 0) {
-        this.emitEpic(num);
-      }
-    }
-    return unread;
-  }
-
-  /**
-   * Writes on an epic's board, with the same rules as a lane's conversation: the overseer's post is
-   * pushed quietly, one per epic per minute; a person's note waits for the overseer. Not on closed epics.
-   * A retry (same author, same text, within the minute) returns the message already sent.
-   */
-  postEpicMessage(
-    num: number,
-    message: { from: 'owner' | 'agent'; author: string; body: string; attachments?: string[] },
-    owner: string,
-  ): LaneMessage {
-    const max = message.from === 'agent' ? AGENT_MESSAGE_MAX : OWNER_MESSAGE_MAX;
-    const body = message.body.trim();
-    if (!body) throw new ValidationError('The message is empty');
-    if (body.length > max) {
-      throw new ValidationError(
-        message.from === 'agent'
-          ? `Keep messages under ${max} characters: attach a file (upload_attachment) for anything longer`
-          : `Messages are limited to ${max} characters`,
-      );
-    }
-    const epic = this.epicRow(num);
-    if (epic.state === 'closed') throw new ConflictError(`Epic ${(epic.display_ref as string | null) ?? epic.name} is closed: its board is read-only`);
-    const at = this.now();
-    const { posted, duplicate } = this.tx(() => {
-      const recent = this.db
-        .prepare('SELECT * FROM group_messages WHERE epic_id = ? AND author_kind = ? ORDER BY id DESC LIMIT 1')
-        .get(num, message.from) as Row | undefined;
-      const fresh = recent && at.getTime() - Date.parse(recent.created_at as string) < 60_000;
-      const retry =
-        fresh &&
-        recent.author === message.author &&
-        recent.body === body &&
-        (message.from === 'agent' || Number(recent.id) > this.epicReadId(num));
-      if (retry) return { posted: this.laneMessageFromRow(recent, this.epicReadId(num)), duplicate: true };
-      if (message.from === 'agent' && fresh) throw new ConflictError('One message per epic per minute: put everything in one message');
-      const groupId = (this.db.prepare('SELECT group_id FROM epics WHERE num = ?').get(num) as Row).group_id as string;
-      const id = this.insertGroupMessage({ groupId, epicId: num, from: message.from, author: message.author, body, at: at.toISOString() });
-      if (message.attachments?.length) this.linkMessageAttachments(id, message.attachments, owner);
-      if (message.from === 'agent') this.db.prepare('UPDATE epics SET updated_at = ? WHERE num = ?').run(at.toISOString(), num);
-      const row = this.db.prepare('SELECT * FROM group_messages WHERE id = ?').get(id) as Row;
-      return { posted: this.laneMessageFromRow(row, this.epicReadId(num)), duplicate: false };
-    });
-    if (duplicate) return posted;
-    this.emitEpic(num, message.from);
-    if (message.from === 'agent') {
-      const project = epic.project_id as string;
-      this.events.emit('notice', {
-        project,
-        laneId: Store.epicLaneId(project, num),
-        epicId: num,
-        message: body,
-        by: message.author,
-        attachments: posted.attachments,
-      });
-    }
-    return posted;
   }
 
   // ---- tickets -------------------------------------------------------------
@@ -2796,6 +2682,7 @@ export class Store {
       id: r.id as string,
       ref: (r.code as string | null) ?? (r.letter_index == null ? String(r.ref) : `${letterOf(Number(r.letter_index))}${Number(r.seq)}`),
       ticketId: r.ticket_id == null ? null : Number(r.ticket_id),
+      group: (r.group_id as string | null) ?? null,
       ticketRef:
         r.ticket_id == null
           ? null
@@ -3205,10 +3092,17 @@ export class Store {
    */
   getAttachment(
     id: string,
-  ): (AttachmentMeta & { data: Uint8Array; escalationId: string | null; laneId: string | null; epicId: number | null; owner: string }) | null {
+  ): (AttachmentMeta & {
+    data: Uint8Array;
+    escalationId: string | null;
+    laneId: string | null;
+    epicId: number | null;
+    groupId: string | null;
+    owner: string;
+  }) | null {
     const r = this.db
       .prepare(
-        `SELECT a.*, m.lane_id AS message_lane_id, m.epic_id AS message_epic_id FROM attachments a
+        `SELECT a.*, m.lane_id AS message_lane_id, m.epic_id AS message_epic_id, m.group_id AS message_group_id FROM attachments a
          LEFT JOIN group_messages m ON m.id = a.group_message_id WHERE a.id = ?`,
       )
       .get(id) as Row | undefined;
@@ -3222,6 +3116,7 @@ export class Store {
       escalationId: (r.escalation_id as string | null) ?? null,
       laneId: (r.message_lane_id as string | null) ?? null,
       epicId: r.message_epic_id == null ? null : Number(r.message_epic_id),
+      groupId: (r.message_group_id as string | null) ?? null,
       owner: r.owner as string,
     };
   }
@@ -3507,128 +3402,6 @@ export class Store {
     };
   }
 
-  private agentReadId(laneId: string): number {
-    return Number((this.db.prepare('SELECT agent_read_id FROM lanes WHERE id = ?').get(laneId) as Row | undefined)?.agent_read_id ?? 0);
-  }
-
-  /** A lane's conversation, oldest first: its latest `limit` messages. */
-  laneMessages(laneId: string, limit = 100): LaneMessage[] {
-    const readId = this.agentReadId(laneId);
-    return (
-      this.db.prepare('SELECT * FROM group_messages WHERE lane_id = ? ORDER BY id DESC LIMIT ?').all(laneId, limit) as Row[]
-    )
-      .reverse()
-      .map((r) => this.laneMessageFromRow(r, readId));
-  }
-
-  /**
-   * The owner's messages on a lane that its agent hasn't been handed yet, oldest first, plus (with
-   * `since`) those written at or after it, handed over or not. `onlySince`: just those since `since`
-   * (a wait's digest, which depends on `since` alone).
-   */
-  private unreadByAgent(laneId: string, since?: string, onlySince = false): LaneMessage[] {
-    return (
-      this.db
-        .prepare(
-          `SELECT m.* FROM group_messages m JOIN lanes l ON l.id = m.lane_id
-           WHERE m.lane_id = ? AND m.author_kind = 'owner' AND ((? = 0 AND m.id > l.agent_read_id) OR m.created_at >= ?) ORDER BY m.id`,
-        )
-        .all(laneId, onlySince ? 1 : 0, since ?? '\uffff') as Row[]
-    ).map((r) => this.laneMessageFromRow(r));
-  }
-
-  /**
-   * Hands the owner's unread messages on a lane to its agent: returns them and marks them seen.
-   * Called wherever an agent hears back (publishing the lane, writing on it, a wait that returns).
-   */
-  takeUnreadForAgent(laneId: string): LaneMessage[] {
-    const unread = this.unreadByAgent(laneId);
-    if (unread.length) this.markSeenByAgent(laneId, unread.at(-1)!.id);
-    return unread;
-  }
-
-  private markSeenByAgent(laneId: string, upTo: number) {
-    const res = this.db.prepare('UPDATE lanes SET agent_read_id = ? WHERE id = ? AND agent_read_id < ?').run(upTo, laneId, upTo);
-    if (res.changes > 0) {
-      const lane = this.getLane(laneId);
-      if (lane) this.emit({ type: 'lane', lane });
-    }
-  }
-
-  /**
-   * Writes in a lane's conversation. Nothing here blocks the lane or changes its status.
-   * - The agent's message (a milestone, with any files) is kept in the lane's history and pushed
-   *   quietly; one per lane per minute, so a looping agent can't flood a phone.
-   * - The owner's waits for the agent, which gets it the next time it publishes the lane, writes on
-   *   it, or waits on it. Not on removed lanes.
-   * A retry (same author, same text, within the minute) returns the message already sent.
-   */
-  postLaneMessage(
-    laneId: string,
-    message: { from: 'owner' | 'agent'; author: string; body: string; attachments?: string[] },
-    owner: string,
-  ): LaneMessage {
-    const max = message.from === 'agent' ? AGENT_MESSAGE_MAX : OWNER_MESSAGE_MAX;
-    const body = message.body.trim();
-    if (!body) throw new ValidationError('The message is empty');
-    if (body.length > max) {
-      throw new ValidationError(
-        message.from === 'agent'
-          ? `Keep messages under ${max} characters: attach a file (upload_attachment) for anything longer`
-          : `Messages are limited to ${max} characters`,
-      );
-    }
-    const found = Store.isEpicLane(laneId) ? null : this.laneIncludingArchived(laneId);
-    if (!found) throw new NotFoundError(`Lane "${localId(laneId)}" not found: publish it first (update_lane with its group)`);
-    if (message.from === 'owner' && found.archived) {
-      throw new ConflictError(`Lane "${localId(laneId)}" was removed from the dashboard: its conversation is closed`);
-    }
-    const at = this.now();
-    const { posted, duplicate } = this.tx(() => {
-      const recent = this.db
-        .prepare('SELECT * FROM group_messages WHERE lane_id = ? AND author_kind = ? ORDER BY id DESC LIMIT 1')
-        .get(laneId, message.from) as Row | undefined;
-      const fresh = recent && at.getTime() - Date.parse(recent.created_at as string) < 60_000;
-      // A retry returns the message already sent; the owner saying the same again after the agent read it is new.
-      const retry =
-        fresh &&
-        recent.author === message.author &&
-        recent.body === body &&
-        (message.from === 'agent' || Number(recent.id) > this.agentReadId(laneId));
-      if (retry) return { posted: this.laneMessageFromRow(recent, this.agentReadId(laneId)), duplicate: true };
-      if (message.from === 'agent' && fresh) {
-        throw new ConflictError('One message per lane per minute: put everything in one message');
-      }
-      const id = this.insertGroupMessage({
-        groupId: this.messageGroupOfLane(laneId, at.toISOString()),
-        laneId,
-        from: message.from,
-        author: message.author,
-        body,
-        at: at.toISOString(),
-      });
-      if (message.attachments?.length) this.linkMessageAttachments(id, message.attachments, owner);
-      this.addEvent(laneId, at.toISOString(), message.from === 'agent' ? 'notice' : 'message', body, message.author);
-      // The agent writing is the agent being alive; the owner's note says nothing about the lane's freshness.
-      if (message.from === 'agent') this.db.prepare('UPDATE lanes SET updated_at = ? WHERE id = ?').run(at.toISOString(), laneId);
-      const row = this.db.prepare('SELECT * FROM group_messages WHERE id = ?').get(id) as Row;
-      return { posted: this.laneMessageFromRow(row, this.agentReadId(laneId)), duplicate: false };
-    });
-    if (duplicate) return posted;
-    const lane = this.getLane(laneId);
-    if (lane) this.emit({ type: 'lane', lane, messaged: message.from });
-    if (message.from === 'agent') {
-      this.events.emit('notice', {
-        project: projectOf(laneId),
-        laneId,
-        message: body,
-        by: message.author,
-        attachments: posted.attachments,
-      });
-    }
-    return posted;
-  }
-
   // ---- group conversations --------------------------------------------
 
   private groupMessageFromRow(r: Row, readId?: number): GroupMessage {
@@ -3724,6 +3497,8 @@ export class Store {
     groupId: string,
     message: { from: 'owner' | 'agent'; author: string; body: string; attachments?: string[]; clientKey?: string },
     owner: string,
+    /** The lane an agent's milestone is about, for its push's title (notify_owner). */
+    about: { laneId?: string } = {},
   ): GroupMessage & { duplicate?: boolean } {
     const max = message.from === 'agent' ? AGENT_MESSAGE_MAX : OWNER_MESSAGE_MAX;
     const body = message.body.trim();
@@ -3784,6 +3559,20 @@ export class Store {
     });
     if (duplicate) return { ...posted, duplicate: true };
     this.events.emit('change', { type: 'group_message', group: groupId, project: projectOf(groupId), message: posted });
+    // Clients learn the group has something new to read (its latest message ids).
+    const group = this.getGroup(groupId);
+    if (group) this.emit({ type: 'group', group });
+    if (message.from === 'agent') {
+      // The overseer's messages are pushed quietly, as its milestones always were.
+      this.events.emit('notice', {
+        project: projectOf(groupId),
+        groupId,
+        ...(about.laneId ? { laneId: about.laneId } : {}),
+        message: posted.body,
+        by: message.author,
+        attachments: posted.attachments,
+      });
+    }
     return posted;
   }
 
@@ -3816,9 +3605,24 @@ export class Store {
     return this.overseerReadId(groupId);
   }
 
-  /** The agent's message on a lane, as notify_owner sends it. */
+  /**
+   * The agent's milestone on a lane, as notify_owner sends it: a message in the lane's group's
+   * conversation (lanes have no conversation of their own), pushed quietly, and a line in the lane's history.
+   */
   postNotice(laneId: string, message: string, actor: string, attachments: string[] = [], owner = actor): { laneId: string; message: string; at: string } {
-    const m = this.postLaneMessage(laneId, { from: 'agent', author: actor, body: message, attachments }, owner);
+    const found = Store.isEpicLane(laneId) ? null : this.laneIncludingArchived(laneId);
+    if (!found) throw new NotFoundError(`Lane "${localId(laneId)}" not found: publish it first (update_lane with its group)`);
+    const groupId = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(laneId) as Row).group_id as string;
+    const m = this.postGroupMessage(groupId, { from: 'agent', author: actor, body: message, attachments }, owner, { laneId });
+    if (!m.duplicate) {
+      this.tx(() => {
+        this.addEvent(laneId, m.at, 'notice', m.body, actor);
+        // The agent writing is the agent being alive.
+        this.db.prepare('UPDATE lanes SET updated_at = ? WHERE id = ?').run(m.at, laneId);
+      });
+      const lane = this.getLane(laneId);
+      if (lane) this.emit({ type: 'lane', lane });
+    }
     return { laneId, message: m.body, at: m.at };
   }
 
@@ -4168,8 +3972,6 @@ export class Store {
     this.floorMs = Math.max(this.floorMs, checkedMs);
     const checkedAt = new Date(checkedMs).toISOString();
     const digest = scope.mode !== 'full';
-    // A wait's digest depends on `since` alone; get_updates (no mode) also hands over what the agent hasn't had.
-    const onlySince = scope.mode === 'digest' && !!scope.since && scope.givenSince !== false;
     const named = (scope.ids ?? []).map((id) => this.requireEscalation(id));
     const byId = new Map<string, StoredEscalation>(named.map((e) => [e.id, e]));
     const laneIds = new Set<string>();
@@ -4196,12 +3998,6 @@ export class Store {
       closedById.set(e.id, e);
     }
     const removedLanes: WaitResult['removedLanes'] = [];
-    // The owner's notes on every lane in scope, the lanes of escalations named in `ids` included.
-    const laneMessages: WaitResult['laneMessages'] = [];
-    for (const laneId of new Set([...laneIds, ...named.map((e) => e.laneId)])) {
-      const unread = this.unreadByAgent(laneId, digest ? scope.since : undefined, onlySince);
-      if (unread.length && this.getLane(laneId)) laneMessages.push({ laneId, messages: unread });
-    }
     for (const laneId of laneIds) {
       if (scope.since) {
         // Covers lanes removed with nothing open on them, which leave no withdrawn escalation behind.
@@ -4248,8 +4044,7 @@ export class Store {
         for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
       }
     }
-    // A group's epics: their questions, and people's notes on their boards.
-    const boardMessages: WaitResult['boardMessages'] = [];
+    // A group's epics: their questions.
     if (scope.groupId) {
       for (const r of this.db.prepare('SELECT * FROM epics WHERE group_id = ? ORDER BY num').all(scope.groupId) as Row[]) {
         const epicId = Number(r.num);
@@ -4262,11 +4057,6 @@ export class Store {
             )
             .all(epicId, scope.since, scope.viewer ?? '') as Row[];
           for (const row of rows) closedById.set(row.id as string, this.escalationFromRow(row));
-        }
-        const unread = this.unreadEpicByAgent(epicId, digest ? scope.since : undefined, onlySince);
-        if (unread.length) {
-          // Named as tools take it: its ref, or the group's id for a stand-in.
-          boardMessages.push({ project: r.project_id as string, epicId, epic: (r.display_ref as string | null) ?? localId(r.group_id as string), messages: unread });
         }
       }
     }
@@ -4327,8 +4117,7 @@ export class Store {
       ready:
         decided.length > 0 ||
         replies.length > 0 ||
-        laneMessages.length > 0 ||
-        boardMessages.length > 0 ||
+
         groupMessages.length > 0 ||
         closed.length > 0 ||
         removedLanes.length > 0 ||
@@ -4340,30 +4129,10 @@ export class Store {
       closed,
       open,
       removedLanes,
-      laneMessages,
       movedTickets,
-      boardMessages,
       groupMessages,
       checkedAt,
     };
-  }
-
-  /**
-   * Marks the lane messages in a wait result as handed to the agent. Callers do this only once the
-   * result is going back to it (credential still valid), and only for the projects it still sees.
-   */
-  handOver(w: WaitResult, projects?: string[]): WaitResult {
-    for (const l of w.laneMessages) {
-      if (!projects || projects.includes(projectOf(l.laneId))) this.markSeenByAgent(l.laneId, l.messages.at(-1)!.id);
-    }
-    for (const b of w.boardMessages) {
-      if (projects && !projects.includes(b.project)) continue;
-      const upTo = b.messages.at(-1)!.id;
-      if (this.db.prepare('UPDATE epics SET agent_read_id = ? WHERE num = ? AND agent_read_id < ?').run(upTo, b.epicId, upTo).changes > 0) {
-        this.emitEpic(b.epicId);
-      }
-    }
-    return w;
   }
 
   /**
@@ -4376,7 +4145,7 @@ export class Store {
    */
   waitForDecisions(scope: WaitScope, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
     // Without a `since` of its own, the wait still hands over notes the agent hasn't had.
-    scope = { ...scope, since: scope.since ?? this.now().toISOString(), givenSince: scope.givenSince ?? !!scope.since };
+    scope = { ...scope, since: scope.since ?? this.now().toISOString() };
     const first = this.decisionsFor(scope);
     if (first.ready || timeoutMs <= 0 || signal?.aborted) return Promise.resolve(first);
     const held = new Set<string>();
@@ -4401,9 +4170,7 @@ export class Store {
         }
       };
       const onChange = (e: StreamEvent) => {
-        const note =
-          ((e.type === 'lane' || e.type === 'epic') && e.messaged === 'owner') ||
-          (e.type === 'group_message' && e.message.from === 'owner' && e.group === scope.groupId);
+        const note = e.type === 'group_message' && e.message.from === 'owner' && e.group === scope.groupId;
         if (e.type !== 'escalation' && e.type !== 'lane_deleted' && e.type !== 'ticket' && !note) return;
         try {
           const now = this.decisionsFor(scope);

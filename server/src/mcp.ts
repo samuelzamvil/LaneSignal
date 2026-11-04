@@ -16,7 +16,6 @@ import {
   briefWait,
   digestWait,
   briefEpic,
-  briefMessages,
   escalationTarget,
   updateEpicFor,
   compact,
@@ -533,7 +532,7 @@ function buildServer(
         description:
           'Wait for what needs you in your group, some lanes or escalations; it waits even when nothing is open. Returns ' +
           '`items`: `{code, kind, text}` for an escalation, `{kind, id, text}` for a lane, ticket or epic (the owner\'s words, or what happened). Kinds: `decided` (answered), `reply` (the owner answered Other), ' +
-          '`closed`, `lane_removed`, `lane_note`, `board_note`, `ticket_moved`, `group_note` (a person wrote to your group; `id` is the ' +
+          '`closed`, `lane_removed`, `ticket_moved`, `group_note` (a person wrote to your group; `id` is the ' +
           'message\'s: pass the last one you handled as `ack`). `decided`, `reply` and `group_note` repeat until handled; ' +
           'the rest come once per `since`. `counts` (left out when all zero): `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
           'it timed out: call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
@@ -558,8 +557,6 @@ function buildServer(
           );
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
           const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
-          // A cancelled call never reaches the agent: its notes stay unread.
-          if (!extra.signal.aborted) store.handOver(value, visible);
           const result = pub.wait(value, timeout ? visible : undefined);
           return json(format === 'full' ? briefWait(result) : digestWait(result, a.projects.length > 1));
         } catch (err) {
@@ -572,9 +569,8 @@ function buildServer(
       'get_updates',
       {
         description:
-          'Everything in scope that involves you, without waiting: `decided`, `replies`, `open`, unread `laneMessages` and ' +
-          '`boardMessages`, your group\'s unacknowledged `groupMessages` (pass the last id handled as `ack`), and with `since`, ' +
-          'what was withdrawn or removed since.',
+          'Everything in scope that involves you, without waiting: `decided`, `replies`, `open`, your group\'s ' +
+          'unacknowledged `groupMessages` (pass the last id handled as `ack`), and with `since`, what was withdrawn or removed since.',
         inputSchema: waitInput,
       },
       async ({ group_id, group, lane_ids, ids, since, ack, project }) => {
@@ -584,7 +580,6 @@ function buildServer(
           if (ack !== undefined && scope.groupId && who.role === 'agent') store.ackGroupMessages(scope.groupId, ack);
           // Digest rules (notes since `since` included), the full shape.
           const value = store.decisionsFor(scope);
-          store.handOver(value, a.projects);
           const { ready: _ready, ...all } = briefWait(pub.wait(value));
           return json(all);
         } catch (err) {
@@ -958,7 +953,6 @@ function buildServer(
       lane: ReturnType<typeof store.upsertLane>,
       call: { activity?: string | null; before: number | null; epicCleared?: boolean; previous?: string; reason?: string | null },
     ) => {
-      const unread = store.takeUnreadForAgent(laneId);
       const pubLane = pub.lane(lane);
       const ticketEpic = store.ticketEpic(lane.ticketId, lane.group);
       // Worked out only when the ticket changed: this is the most frequent call.
@@ -993,8 +987,6 @@ function buildServer(
           epic: ticketEpic.name ?? undefined,
           blockingEscalations: pubLane.blockingEscalations || undefined,
           warning: [kept, lane.warning, ...advice].filter(Boolean).join(' ') || undefined,
-          // The owner wrote on the lane since you last heard: read and act on it (reply with notify_owner).
-          ownerMessages: unread.length ? briefMessages(unread) : undefined,
         }),
       );
     };
@@ -1101,7 +1093,7 @@ function buildServer(
       {
         description:
           'Set an epic\'s `status_line` (one line on its card, e.g. "3 of 5 lanes busy; next up #966"), name, ref or ' +
-          'links. A ref no epic has yet, with `group`, adds that epic to the group (the group\'s earlier epic questions and board move to it). Returns `ownerMessages` from its board.',
+          'links. A ref no epic has yet, with `group`, adds that epic to the group (the group\'s earlier epic questions move to it).',
         inputSchema: {
           epic: EPIC,
           group: s.groupId.optional().describe('To add a new epic: the group it belongs to.'),
@@ -1115,8 +1107,7 @@ function buildServer(
       async ({ epic, group, name, ref, links, status_line, project }) => {
         try {
           const e = updateEpicFor(store, a, { epic, group, name, ref, links, statusLine: status_line }, project, who.name);
-          const unread = store.takeUnreadEpicForAgent(e.id);
-          return json(compact({ ...briefEpic(pub.epic(store.getEpic(e.id)!)), ownerMessages: unread.length ? briefMessages(unread) : undefined }));
+          return json(briefEpic(pub.epic(store.getEpic(e.id)!)));
         } catch (err) {
           return fail(err);
         }
@@ -1192,32 +1183,6 @@ function buildServer(
     );
 
     server.registerTool(
-      'notify_epic',
-      {
-        description:
-          'Write on an epic\'s board (direction, scope, which tickets next), with a quiet push. One per epic per minute. ' +
-          'Returns `ownerMessages`: notes on the board you hadn\'t seen.',
-        inputSchema: {
-          epic: EPIC,
-          message: s.notice.shape.message,
-          attachments: s.notice.shape.attachments.describe('Ids from upload_attachment.'),
-          ...PROJECT_WRITE,
-        },
-      },
-      async ({ epic, message, attachments, project }) => {
-        try {
-          const e = a.epic(epic, project);
-          if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
-          const m = store.postEpicMessage(e.id, { from: 'agent', author: who.name, body: message, attachments }, ownerOf(who));
-          const unread = store.takeUnreadEpicForAgent(e.id);
-          return json(compact({ epic: e.displayRef ?? localId(e.group), at: m.at, ownerMessages: unread.length ? briefMessages(unread) : undefined }));
-        } catch (err) {
-          return fail(err);
-        }
-      },
-    );
-
-    server.registerTool(
       'request_epic_close',
       {
         description:
@@ -1240,9 +1205,8 @@ function buildServer(
       'notify_owner',
       {
         description:
-          'Write to the owner in the lane\'s conversation, with a quiet phone notification that opens the lane, e.g. ' +
-          '"Merged PR #311". One per lane per minute. It asks nothing: questions are escalations.' +
-          (features.decisions ? ' May return `ownerMessages`, as update_lane does.' : ''),
+          'Tell the owner about a milestone on a lane, e.g. "Merged PR #311": a message in your group\'s conversation, ' +
+          'with a quiet phone notification. One per group per minute (post_to_group shares it). It asks nothing: questions are escalations.',
         inputSchema: {
           lane_id: s.laneId,
           message: s.notice.shape.message,
@@ -1254,8 +1218,7 @@ function buildServer(
         try {
           const laneId = q(a.pick(project, { lane: lane_id }), lane_id);
           const r = store.postNotice(laneId, message.trim(), who.name, attachments, ownerOf(who));
-          const unread = store.takeUnreadForAgent(laneId);
-          return json(compact({ laneId: localId(r.laneId), at: r.at, ownerMessages: unread.length ? briefMessages(unread) : undefined }));
+          return json({ laneId: localId(r.laneId), at: r.at });
         } catch (err) {
           return fail(err);
         }

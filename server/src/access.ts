@@ -287,7 +287,7 @@ export const pub = {
   groupMessage: <M extends GroupMessage>(m: M): M => ({ ...m, laneId: m.laneId && localId(m.laneId) }),
   lane: (l: Lane): Lane => ({ ...l, id: localId(l.id), group: l.group && localId(l.group) }),
   // An epic's own question has no lane a client knows: its internal lane is never shown.
-  escalation: <E extends Escalation>(e: E): E => ({ ...e, laneId: pubLaneId(e.laneId) }),
+  escalation: <E extends Escalation>(e: E): E => ({ ...e, laneId: pubLaneId(e.laneId), group: e.group && localId(e.group) }),
   requirement: (r: Requirement): Requirement => ({ ...r, group: r.group && localId(r.group) }),
   epic: (e: Epic): Epic => ({ ...e, group: localId(e.group) }),
   ticket: (t: Ticket): Ticket => ({
@@ -309,9 +309,7 @@ export const pub = {
       replies: w.replies.filter((r) => keep(r.laneId)).map((r) => ({ ...r, laneId: pubLaneId(r.laneId) })),
       open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: pubLaneId(o.laneId) })),
       removedLanes: w.removedLanes.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
-      laneMessages: w.laneMessages.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
       movedTickets: w.movedTickets.filter((m) => keep(m.laneId)).map((m) => ({ ...m, laneId: localId(m.laneId) })),
-      boardMessages: w.boardMessages.filter((b) => !projects || projects.includes(b.project)),
       groupMessages: w.groupMessages
         .filter((g) => !projects || projects.includes(projectOf(g.group)))
         .map((g) => ({ group: localId(g.group), messages: g.messages.map(pub.groupMessage) })),
@@ -471,7 +469,6 @@ export const briefEpic = (e: Epic) =>
     closeReason: e.closeReason,
     openEscalations: e.openEscalations || undefined,
     blockingEscalations: e.blockingEscalations || undefined,
-    unreadNotes: e.unreadByAgent || undefined,
     updatedAt: e.updatedAt,
   });
 
@@ -533,9 +530,7 @@ export const digestWait = (w: WaitResult, keyed = false) => {
     ...w.replies.map((r) => ({ code: code(r), kind: 'reply', text: ownerWords(r.messages) })),
     ...w.closed.map((e) => ({ code: code(e), kind: 'closed', text: e.resolution ?? e.state })),
     ...w.removedLanes.map((l) => ({ kind: 'lane_removed', id: l.laneId, text: l.removedBy ? `Removed by ${l.removedBy}` : 'Removed' })),
-    ...w.laneMessages.map((l) => ({ kind: 'lane_note', id: l.laneId, text: ownerWords(l.messages) })),
     ...w.movedTickets.map((m) => ({ kind: 'ticket_moved', id: m.ticket, text: `Taken into lane ${m.laneId}${m.by ? ` by ${m.by}` : ''}` })),
-    ...w.boardMessages.map((b) => ({ kind: 'board_note', id: b.epic, text: ownerWords(b.messages) })),
     // One item each, with its id: acknowledge the last one handled (`ack`), or they come back.
     ...w.groupMessages.flatMap((g) =>
       g.messages.map((m) => ({ kind: 'group_note', id: String(m.id), text: ownerWords([m]), by: m.author })),
@@ -559,10 +554,6 @@ export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
   replies: w.replies.map(({ projectKey: _key, ...r }) => ({ ...r, messages: briefMessages(r.messages) })),
   closed: w.closed.map(brief),
   // Only when there are some: the wait is the call agents make most.
-  laneMessages: w.laneMessages.length ? w.laneMessages.map((l) => ({ ...l, messages: briefMessages(l.messages) })) : undefined,
-  boardMessages: w.boardMessages.length
-    ? w.boardMessages.map(({ project: _project, ...b }) => ({ ...b, messages: briefMessages(b.messages) }))
-    : undefined,
   groupMessages: w.groupMessages.length
     ? w.groupMessages.map((g) => ({
         group: g.group,
@@ -613,6 +604,8 @@ export function readableAttachment(store: Store, a: Access, id: string, project?
   } else if (file.epicId !== null) {
     const epic = store.getEpic(file.epicId);
     if (!epic || !projects.includes(epic.project)) throw notFound;
+  } else if (file.groupId) {
+    if (!projects.includes(projectOf(file.groupId))) throw notFound;
   } else if (file.owner !== ownerOf(a.principal)) throw notFound;
   return file;
 }

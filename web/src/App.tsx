@@ -18,6 +18,7 @@ import {
 import { Chips, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout, useStored } from './components.tsx';
 import { onActiveTicket, ParkedRow, TicketDetail, TicketsContext } from './ticket-views.tsx';
 import { EpicCard, EpicDetail, EpicsContext, epicRoute, GroupHeader, hasLane, laneKeyOf, QuietLanes } from './epic-views.tsx';
+import { groupRoute, GroupView } from './group-view.tsx';
 import { epicShows, epicsOnScreen, groupLayout } from './epics.ts';
 import { TicketLinksContext } from './linked-text.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
@@ -31,7 +32,7 @@ import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { HistoryPane } from './history.tsx';
 import { RequirementsPane } from './requirements.tsx';
-import { baselineSeen, hasNewMessage, useSeenVersion } from './seen.ts';
+import { baselineSeen, useSeenVersion } from './seen.ts';
 import { Toaster } from './toast.tsx';
 import { ProductsSection } from './products-panel.tsx';
 import { groupTitles, productGroups } from './products.ts';
@@ -51,6 +52,9 @@ interface Route {
   ticketRef?: string;
   /** An epic's sheet: its number. */
   epicId?: number;
+  /** A group's conversation: its project and id. */
+  groupProject?: string;
+  groupId?: string;
 }
 
 /** A URL path segment decoded, or null when it's malformed (e.g. "%E0" from a crafted link). */
@@ -71,6 +75,7 @@ function parseRoute(hash: string): Route {
   if (a === 'esc' && b) return { view: 'inbox', escId: b };
   if (a === 'ticket' && lb && lc) return { view: 'lanes', ticketProject: lb, ticketRef: lc };
   if (a === 'epic' && lb && lc && /^\d{1,12}$/.test(lc)) return { view: 'lanes', epicId: Number(lc) };
+  if (a === 'group' && lb && lc) return { view: 'lanes', groupProject: lb, groupId: lc };
   // A closed escalation opened from History: closing it goes back there.
   if (a === 'history' && b) return { view: 'history', escId: b };
   if (a === 'lanes' || a === 'reqs' || a === 'history' || a === 'settings') return { view: a };
@@ -223,17 +228,11 @@ function Dashboard({
   // History refreshes when an escalation closes (leaves the live set), not on every update.
   const unresolvedIds = useMemo(() => [...live.escalations.keys()].sort().join(','), [live.escalations]);
   const now = useNow();
-  // Lane cards mark new agent messages until the lane is opened.
+  // Groups' chat buttons mark the overseer's new messages until the conversation is opened.
   useSeenVersion();
   useEffect(() => {
-    if (live.syncedAt !== null) {
-      baselineSeen([
-        ...live.lanes.values(),
-        // Epic boards, keyed as the epic card reads them.
-        ...[...live.epics.values()].map((e) => ({ project: e.project, id: `~epic-${e.id}`, lastAgentMessageId: e.lastAgentMessageId })),
-      ]);
-    }
-  }, [live.syncedAt, live.lanes, live.epics]);
+    if (live.syncedAt !== null) baselineSeen(live.groups.values());
+  }, [live.syncedAt, live.groups]);
   const [route, navigate] = useRoute();
   const [filters, setFilters] = useFilters();
 
@@ -295,7 +294,7 @@ function Dashboard({
       if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select')) return;
       const r = parseRoute(location.hash);
       if (r.escId) closeTo(escFallback(r));
-      else if (r.laneId || r.ticketRef || r.epicId) closeTo('#/lanes');
+      else if (r.laneId || r.ticketRef || r.epicId || r.groupId) closeTo('#/lanes');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -323,7 +322,7 @@ function Dashboard({
       if (closeOverlay()) return;
       const r = parseRoute(location.hash);
       if (r.escId) closeTo(escFallback(r));
-      else if (r.laneId || r.ticketRef || r.epicId) closeTo('#/lanes');
+      else if (r.laneId || r.ticketRef || r.epicId || r.groupId) closeTo('#/lanes');
       else if (location.hash && location.hash !== '#/') history.back();
       else void CapApp.minimizeApp();
     });
@@ -387,8 +386,6 @@ function Dashboard({
   const laneVersion = routeLaneKey
     ? [
         live.lanes.get(routeLaneKey)?.updatedAt,
-        live.lanes.get(routeLaneKey)?.lastMessageId,
-        live.lanes.get(routeLaneKey)?.unreadByAgent,
         // Raised on the lane, or on the ticket it holds (wherever that was raised).
         ...[...live.escalations.values()]
           .filter(
@@ -404,8 +401,6 @@ function Dashboard({
     const ep = live.epics.get(String(id));
     return [
       ep?.updatedAt,
-      ep?.lastMessageId,
-      ep?.unreadByAgent,
       ep?.openEscalations,
       ...[...live.escalations.values()].filter((e) => e.epicId === id).map((e) => e.id + e.state + e.updatedAt),
       ...[...live.lanes.values()].filter((l) => ep && l.project === ep.project && l.group === ep.group).map((l) => l.updatedAt),
@@ -796,7 +791,7 @@ function Dashboard({
         // filter is picking lanes, nothing folds away and epics with no matching lanes stay out.
         const layout = groupLayout(sec.lanes, epics, live.tickets, {
           showEmptyEpics: epicCardsIn(sec),
-          isQuiet: (l) => !activeStatuses.length && l.status === 'idle' && l.openEscalations === 0 && !hasNewMessage(l),
+          isQuiet: (l) => !activeStatuses.length && l.status === 'idle' && l.openEscalations === 0,
         });
         const standIn = epics.find((e) => e.standIn);
         const hasRealEpics = epics.length > 0 && !standIn;
@@ -812,6 +807,7 @@ function Dashboard({
               standIn={standIn}
               showTicket={!hasRealEpics}
               onOpen={standIn && (() => navigate(epicRoute(standIn.project, standIn.id)))}
+              onChat={group && (() => navigate(groupRoute(group.project, group.id)))}
             />
             {layout.epics.map(({ epic: e, lanes: under }) => (
               <div key={e.id} className="epic-block">
@@ -1065,9 +1061,30 @@ function Dashboard({
               return ep ? namedGroups.get(keyOf(ep.project, ep.group)) : undefined;
             })()}
             groupLabel={config.groupLabel}
-            canWrite={me?.role === 'human' && config.decisions}
             canApprove={me?.role === 'human' && !me.personalKey}
             laneName={(project, id) => live.lanes.get(keyOf(project, id))?.name ?? null}
+            onClose={() => closeTo('#/lanes')}
+            backTo={backLabel('#/lanes')}
+          />
+        )}
+        {route.groupId && route.groupProject && (
+          <GroupView
+            key={`${route.groupProject}/${route.groupId}`}
+            project={route.groupProject}
+            groupId={route.groupId}
+            group={namedGroups.get(keyOf(route.groupProject, route.groupId))}
+            name={namedGroups.get(keyOf(route.groupProject, route.groupId))?.name ?? route.groupId}
+            client={client}
+            version={[
+              live.groups.get(keyOf(route.groupProject, route.groupId))?.lastMessageId,
+              // A question raised in the group, or one of its threads moving on.
+              ...[...live.escalations.values()]
+                .filter((e) => e.project === route.groupProject && e.group === route.groupId)
+                .map((e) => e.id + e.state + e.updatedAt),
+            ].join('|')}
+            escalations={live.escalations}
+            now={now}
+            canWrite={me?.role === 'human' && config.decisions}
             onClose={() => closeTo('#/lanes')}
             backTo={backLabel('#/lanes')}
           />
@@ -1093,7 +1110,6 @@ function Dashboard({
             version={laneVersion}
             now={now}
             canDelete={me?.role === 'human'}
-            canWrite={me?.role === 'human' && config.decisions}
             group={groupOfLane(live.lanes.get(routeLaneKey))}
             groupLabel={config.groupLabel}
             onClose={() => closeTo('#/lanes')}

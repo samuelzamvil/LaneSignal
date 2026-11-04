@@ -12,7 +12,8 @@ after(() => srv.close());
 const wait = async (group: string, opts: Record<string, unknown> = {}) =>
   (await srv.tool(AGENT, 'wait_for_decisions', { group_id: group, wait_seconds: 0, ...opts })).value;
 const ask = async (lane: string, question: string) => (await srv.tool(AGENT, 'create_escalation', { lane_id: lane, question })).value;
-const note = (lane: string, body: string) => srv.call('POST', `/api/lanes/${lane}/messages`, ALICE, { body });
+const note = (group: string, body: string, extra: Record<string, unknown> = {}) =>
+  srv.call('POST', `/api/groups/${group}/messages`, ALICE, { body, ...extra });
 const kinds = (w: any) => w.items.map((i: any) => [i.kind, i.code ?? i.id]);
 
 describe('wait digest', () => {
@@ -25,17 +26,17 @@ describe('wait digest', () => {
     assert.ok(now.checkedAt);
     // The full format still returns at once when nothing is open.
     assert.equal((await wait('digest-idle', { format: 'full' })).ready, true);
-    // A long wait with nothing open returns when the owner writes on a lane.
+    // A long wait with nothing open returns when the owner writes to the group.
     const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'digest-idle', since: now.checkedAt, wait_seconds: 10 });
     await new Promise((r) => setTimeout(r, 100));
-    await note('d-idle', 'Pick up #966 next');
+    const m = (await note('digest-idle', 'Pick up #966 next')).body;
     const woke = (await waiting).value;
     assert.equal(woke.ready, true);
-    // Items are {code, kind, id, text}: a note has no code; its id is the lane, its text the owner's words.
-    assert.deepEqual(woke.items, [{ kind: 'lane_note', id: 'd-idle', text: 'Pick up #966 next' }]);
-    // Repeating the same `since` (a wait that crashed before acting) returns the note again; the next `since` doesn't.
-    assert.deepEqual(kinds(await wait('digest-idle', { since: now.checkedAt })), [['lane_note', 'd-idle']]);
-    assert.deepEqual((await wait('digest-idle', { since: woke.checkedAt })).items, []);
+    // Items are {code, kind, id, text}: a message has no code; its id is the message's, its text the owner's words.
+    assert.deepEqual(woke.items, [{ kind: 'group_note', id: String(m.id), text: 'Pick up #966 next', by: 'alice' }]);
+    // It comes back, whatever the `since`, until acknowledged.
+    assert.deepEqual(kinds(await wait('digest-idle', { since: woke.checkedAt })), [['group_note', String(m.id)]]);
+    assert.deepEqual((await wait('digest-idle', { since: woke.checkedAt, ack: m.id })).items, []);
   });
 
   test('decisions and replies repeat until handled; counts cover the rest', async () => {
@@ -125,52 +126,47 @@ describe('wait digest', () => {
     const open = await ask('d-all', 'Open one?');
     const done = await ask('d-all', 'Decided one?');
     await srv.call('POST', `/api/escalations/${done.id}/decide`, ALICE, { decision: 'Accept' });
-    await note('d-all', 'FYI: freeze on Friday');
+    await note('digest-all', 'FYI: freeze on Friday');
     const all = (await srv.tool(AGENT, 'get_updates', { group_id: 'digest-all' })).value;
     assert.equal(all.ready, undefined);
     assert.deepEqual(all.open.map((x: any) => x.ref), [open.ref]);
     assert.deepEqual(all.decided.map((x: any) => x.ref), [done.ref]);
-    assert.deepEqual(all.laneMessages.map((l: any) => l.messages.map((m: any) => m.body)), [['FYI: freeze on Friday']]);
+    assert.deepEqual(all.groupMessages.map((g: any) => g.messages.map((m: any) => m.body)), [['FYI: freeze on Friday']]);
     const http = (await srv.call('GET', '/api/updates?group=digest-all', AGENT)).body;
     assert.deepEqual(http.open.map((x: any) => x.ref), [open.ref]);
     assert.equal((await srv.tool(AGENT, 'get_updates', {})).isError, true);
   });
 });
 
-test('a note in the same millisecond as a wait is returned once, and later ones still are', async () => {
+test('a message in the same millisecond as a wait still comes back until acknowledged', async () => {
   const { Store } = await import('../src/store.ts');
   // The clock never moves: everything happens in one millisecond.
   const frozen = new Date('2026-10-25T00:00:00.000Z');
   const store = new Store({ path: ':memory:', resolveTicketUrl: () => null, now: () => frozen });
   try {
     store.upsertGroup('default/g', {}, 'bot');
-    store.upsertLane('default/l', { group: 'default/g' }, 'bot');
-    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'First' }, 'alice');
-    const first = store.decisionsFor({ groupId: 'default/g' });
-    assert.deepEqual(first.laneMessages.map((l) => l.messages.map((m) => m.body)), [['First']]);
-    store.handOver(first);
-    const again = store.decisionsFor({ groupId: 'default/g', since: first.checkedAt });
-    assert.deepEqual(again.laneMessages, [], 'not repeated from its own checkedAt');
-    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'Second' }, 'alice');
-    const next = store.decisionsFor({ groupId: 'default/g', since: again.checkedAt });
-    assert.deepEqual(next.laneMessages.map((l) => l.messages.map((m) => m.body)), [['Second']]);
-    // Repeating an older since still brings back what came after it.
-    store.handOver(next);
-    const crashed = store.decisionsFor({ groupId: 'default/g', since: again.checkedAt });
-    assert.deepEqual(crashed.laneMessages.map((l) => l.messages.map((m) => m.body)), [['Second']]);
+    const first = store.postGroupMessage('default/g', { from: 'owner', author: 'alice', body: 'First' }, 'alice');
+    const one = store.decisionsFor({ groupId: 'default/g' });
+    assert.deepEqual(one.groupMessages.map((g) => g.messages.map((m) => m.body)), [['First']]);
+    // A wait from its own checkedAt still has it: only acknowledging ends it.
+    assert.deepEqual(store.decisionsFor({ groupId: 'default/g', since: one.checkedAt }).groupMessages.length, 1);
+    store.ackGroupMessages('default/g', first.id);
+    store.postGroupMessage('default/g', { from: 'owner', author: 'alice', body: 'Second' }, 'alice');
+    const two = store.decisionsFor({ groupId: 'default/g', since: one.checkedAt });
+    assert.deepEqual(two.groupMessages.map((g) => g.messages.map((m) => m.body)), [['Second']]);
   } finally {
     store.close();
   }
 });
 
-test("a note's files are named in the digest with their ids", async () => {
+test("a message's files are named in the digest with their ids", async () => {
   await srv.publish('d-files', { group: 'digest-files' });
   const start = await wait('digest-files');
   const form = new FormData();
   form.append('file', new Blob(['# Plan'], { type: 'text/markdown' }), 'plan.md');
   const up = await fetch(`${srv.base}/api/attachments`, { method: 'POST', headers: { authorization: `Bearer ${ALICE}` }, body: form });
   const file = await up.json();
-  await srv.call('POST', '/api/lanes/d-files/messages', ALICE, { body: 'Read this first', attachments: [file.id] });
+  const m = (await note('digest-files', 'Read this first', { attachments: [file.id] })).body;
   const w = await wait('digest-files', { since: start.checkedAt });
-  assert.deepEqual(w.items, [{ kind: 'lane_note', id: 'd-files', text: `Read this first [attached: plan.md (id ${file.id})]` }]);
+  assert.deepEqual(w.items, [{ kind: 'group_note', id: String(m.id), text: `Read this first [attached: plan.md (id ${file.id})]`, by: 'alice' }]);
 });

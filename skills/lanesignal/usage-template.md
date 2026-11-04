@@ -28,7 +28,7 @@ Replace each TODO with how your agents should work; each example is the default 
 - **Replying:** TODO (e.g. "only to ask back or object; updates while they decide only when something changed")
 - **Moot escalations:** TODO (e.g. "dismiss them, saying why")
 - **Other lanes' questions:** TODO (e.g. "`add_position` when one affects your work")
-- **The owner's notes:** TODO (e.g. "instructions: act on them, answering with `notify_owner` or `notify_epic` if useful")
+- **The owner's notes:** TODO (e.g. "instructions: act on them, answering with `post_to_group` if useful, then acknowledge them")
 
 ### Acting on answers (when the owner answers in the session)
 

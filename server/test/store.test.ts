@@ -724,11 +724,13 @@ test('upgrading to lane conversations keeps earlier notices as the agent\'s mess
     `);
     db.close();
     store = new Store({ path: file, resolveTicketUrl });
+    // Then into the group's conversation, marked with the lane it was written on.
     assert.deepEqual(
-      store.laneMessages('default/ship').map((m) => [m.from, m.author, m.body]),
-      [['agent', 'bot', 'Merged PR #311']],
+      store
+        .groupConversation('default/main')
+        .items.map((m) => (m.type === 'message' ? [m.from, m.author, m.body, m.laneId] : [])),
+      [['agent', 'bot', 'Merged PR #311', 'default/ship']],
     );
-    assert.equal(store.getLane('default/ship')?.unreadByAgent, 0);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

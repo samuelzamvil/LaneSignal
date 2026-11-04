@@ -1,6 +1,6 @@
 ## When the owner answers
 
-The owner answers on the dashboard with Accept, Reject or Other, quoting codes when they write ("967A: drop it"). A `decided` escalation, or a `reply` (Other), closes with `acknowledge_escalation`, which returns the final `decision` and `decisionNote`. One answered in this session instead closes with `dismiss_escalation`, saying what was decided and where. The owner's notes also come back as `ownerMessages` from `update_lane`, `notify_owner`, `update_epic` and `notify_epic`.
+The owner answers on the dashboard with Accept, Reject or Other, quoting codes when they write ("967A: drop it"). A `decided` escalation, or a `reply` (Other), closes with `acknowledge_escalation`, which returns the final `decision` and `decisionNote`. One answered in this session instead closes with `dismiss_escalation`, saying what was decided and where. The owner's messages to your group come back in your group wait as `group_note` until you acknowledge them.
 
 <!-- usage -->
 ### Usage: acting on answers
@@ -10,7 +10,7 @@ The owner answers on the dashboard with Accept, Reject or Other, quoting codes w
 3. **On Other, acknowledge to act on what they wrote.** Every reply pages the owner: reply only to ask back or object, and send an update while they decide only when something changed.
 4. **Dismiss** moot escalations too, saying why.
 5. **Another lane's open question** that affects your work: `add_position`.
-6. **The owner's notes** (`ownerMessages`, `lane_note`, `board_note`) are instructions: act on them, answering with `notify_owner` or `notify_epic` if useful.
+6. **The owner's messages to your group** (`group_note`) are instructions: act on them, answering with `post_to_group` if useful, then acknowledge them (`ack`).
 <!-- /usage -->
 
 ## Waiting for answers
@@ -21,7 +21,6 @@ The owner answers on the dashboard with Accept, Reject or Other, quoting codes w
 - `closed`: someone else withdrew it.
 - `lane_removed`: someone took the lane off the dashboard; publishing to it brings it back.
 - `ticket_moved`: another group's lane took one of your tickets; it's now that lane's.
-- `lane_note`, `board_note`: the owner wrote on a lane or an epic's board.
 - `group_note`: someone wrote to your group; its `id` is the message's. It comes back on every wait until you acknowledge it: once handled, pass the last id as `ack` (to `wait_for_decisions` or `get_updates`).
 - A file the owner attached reads "[attached: plan.md (id …)]": read it with `get_attachment`.
 
@@ -55,6 +54,6 @@ It prints the same JSON as `wait_for_decisions` when something needs you, and gi
 ## After a restart
 
 1. `update_group` (a group must exist before its lanes are published).
-2. `get_updates` with your `group_id` and the saved `.claude/lanesignal-since` as `since`. Handle `decided`, `replies`, `laneMessages` and `boardMessages`, then save its `checkedAt`. Dismiss `open` ones whose answer you can see in this conversation; never raise the rest again.
+2. `get_updates` with your `group_id` and the saved `.claude/lanesignal-since` as `since`. Handle `decided`, `replies` and `groupMessages` (acknowledging those with `ack`), then save its `checkedAt`. Dismiss `open` ones whose answer you can see in this conversation; never raise the rest again.
 3. `list_lanes` with your `group_id`: a lane you ran that's missing was removed; stop work on it.
 4. `list_tickets` with your `group_id`: a ticket still `in_lane` that nobody is working was left by the crash; pick it up or `fill_lane` its lane with what's next.

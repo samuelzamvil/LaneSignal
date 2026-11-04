@@ -404,8 +404,8 @@ export class TrmnlPusher {
       if (!setup?.includeNotifications) return;
       this.store.setTrmnlCard(n.project, {
         kind: 'notice',
-        laneId: n.laneId,
-        title: where(this.store, n.laneId),
+        laneId: n.laneId ?? '',
+        title: n.laneId ? where(this.store, n.laneId) : (this.store.getGroup(n.groupId)?.name ?? localId(n.groupId)),
         body: n.message,
         at: this.now().toISOString(),
         files: n.attachments?.length || undefined,

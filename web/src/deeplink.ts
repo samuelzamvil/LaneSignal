@@ -1,5 +1,5 @@
 /**
- * The app's own links, lanesignal://esc/<id>, lanesignal://lane/<project>/<id> or lanesignal://epic/<project>/<n>, as the hash
+ * The app's own links, lanesignal://esc/<id>, lanesignal://lane/<project>/<id>, lanesignal://epic/<project>/<n> or lanesignal://group/<project>/<id>, as the hash
  * route they open; null for anything else.
  */
 export function routeFromAppLink(url: string): string | null {
@@ -9,7 +9,7 @@ export function routeFromAppLink(url: string): string | null {
   // Cloudflare Access and OIDC sign-ins return here; the sign-in screen handles them.
   if (/^(oauth|oidc)\/callback\/?$/.test(path)) return null;
   // Any app or web page can open these links: pass on only known screens with plain, decodable segments.
-  const known = /^(esc|lane|epic|lanes|reqs|history|settings)(\/|$)/.test(path) && /^[A-Za-z0-9._~%/-]*$/.test(path);
+  const known = /^(esc|lane|epic|group|lanes|reqs|history|settings)(\/|$)/.test(path) && /^[A-Za-z0-9._~%/-]*$/.test(path);
   const decodable = path.split('/').every((part) => {
     try {
       decodeURIComponent(part);

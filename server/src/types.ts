@@ -41,6 +41,10 @@ export interface Group {
   overseer: string | null;
   /** When the current overseer took control. */
   overseerSince: string | null;
+  /** The latest message in the group's conversation (anyone's), for clients to see it changed. */
+  lastMessageId: number | null;
+  /** The overseer's latest message in the group's conversation, for marking the group as having something new to read. */
+  lastAgentMessageId: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -84,12 +88,6 @@ export interface Lane {
   blockingEscalations: number;
   /** An agent is waiting on this lane's escalations right now, so an answer reaches it at once. */
   agentWaiting: boolean;
-  /** The latest message in the lane's conversation (either side), for spotting new ones. */
-  lastMessageId: number | null;
-  /** The agent's latest message, for marking the lane as having something new to read. */
-  lastAgentMessageId: number | null;
-  /** The owner's messages the agent hasn't been handed yet. */
-  unreadByAgent: number;
 }
 
 /**
@@ -166,10 +164,6 @@ export interface Epic {
   /** Its questions waiting on a person, and of those how many block (it shows "Waiting on you"). */
   openEscalations: number;
   blockingEscalations: number;
-  /** Its message board: the latest message ids, and people's notes the overseer hasn't had yet. */
-  lastMessageId: number | null;
-  lastAgentMessageId: number | null;
-  unreadByAgent: number;
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
@@ -201,6 +195,8 @@ export interface Escalation {
   ref: string;
   /** The ticket it belongs to; null for an epic's. */
   ticketId: number | null;
+  /** The group it was raised in: its thread is in that group's conversation. */
+  group: string | null;
   /** That ticket's short ref ("967", "gh:632"); null without one. */
   ticketRef: string | null;
   /** The epic it belongs to (raised on an epic, or on a lane holding no ticket); null for a ticket's. */
@@ -538,9 +534,10 @@ export interface TrmnlPushResult {
 /** The agent's message on a lane (a milestone, with any files): a quiet push that opens the lane. */
 export interface Notice {
   project: string;
-  laneId: string;
-  /** Set when it's a post on an epic's board (its internal lane is `laneId`). */
-  epicId?: number;
+  /** The group whose conversation it's in. */
+  groupId: string;
+  /** The lane it's about (notify_owner), for its title. */
+  laneId?: string;
   message: string;
   by: string;
   attachments?: AttachmentMeta[];
@@ -549,12 +546,9 @@ export interface Notice {
 export type StreamEvent =
   | { type: 'group'; group: Group }
   | { type: 'group_deleted'; id: string; project: string }
-  /**
-   * `statusChanged` is set when this event is the lane's status transition (drives notifications);
-   * `messaged` when someone wrote in the lane's conversation.
-   */
+  /** `statusChanged` is set when this event is the lane's status transition (drives notifications). */
   /** `completed`: the lane was published completed and let its ticket go (it shows idle now). */
-  | { type: 'lane'; lane: Lane; statusChanged?: boolean; messaged?: 'owner' | 'agent'; completed?: boolean }
+  | { type: 'lane'; lane: Lane; statusChanged?: boolean; completed?: boolean }
   | { type: 'lane_deleted'; id: string; project: string }
   /** `raised`: an FYI that now needs the owner, notified like a new question. `replied`: the agent answered the owner's Other (`reply`) or posted an update while they decide. */
   | { type: 'escalation'; escalation: Escalation; raised?: boolean; replied?: 'reply' | 'update' }
@@ -562,8 +556,8 @@ export type StreamEvent =
   | { type: 'group_message'; group: string; project: string; message: GroupMessage }
   /** A ticket filled into a lane, parked, done or dropped, or what it waits on changed. */
   | { type: 'ticket'; ticket: Ticket }
-  /** An epic changed: details, close request, its questions' counts, or its board (`messaged`). */
-  | { type: 'epic'; epic: Epic; messaged?: 'owner' | 'agent' }
+  /** An epic changed: details, close request, or its questions' counts. */
+  | { type: 'epic'; epic: Epic }
   /** `previousProject`: set when a person moved it out of that project (null: out of global), so those who saw it there learn it's gone. */
   | { type: 'requirement'; requirement: Requirement; previousProject?: string | null }
   /** A product was added, renamed, recoloured, locked or unlocked, or archived. */
