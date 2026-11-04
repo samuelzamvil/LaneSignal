@@ -93,6 +93,39 @@ describe('group conversations', () => {
     assert.equal((await say('gone', { body: 'Back' })).status, 201);
   });
 
+  test('saying the same again after the overseer acknowledged it is a new message', async () => {
+    await srv.call('PUT', '/api/groups/again', AGENT, {});
+    const first = (await say('again', { body: 'Yes' })).body;
+    await srv.call('POST', '/api/groups/again/ack', AGENT, { upTo: first.id });
+    const second = await say('again', { body: 'Yes' });
+    assert.equal(second.status, 201);
+    assert.notEqual(second.body.id, first.id);
+    assert.deepEqual((await notes('again')).map((n) => n.id), [String(second.body.id)]);
+    // Something written in between makes it new too.
+    const third = (await say('again', { body: 'Sure' })).body;
+    await srv.tool(AGENT, 'post_to_group', { group_id: 'again', message: 'Also staging?' });
+    assert.notEqual((await say('again', { body: 'Sure' })).body.id, third.id);
+  });
+
+  test('a key names one message: reused with other words, it is refused', async () => {
+    await srv.call('PUT', '/api/groups/keys', AGENT, {});
+    await say('keys', { body: 'First', clientKey: 'same' });
+    const clash = await say('keys', { body: 'Second', clientKey: 'same' });
+    assert.equal(clash.status, 409);
+    assert.match(clash.body.error, /already used/);
+  });
+
+  test('only the overseer acknowledges: a person\'s ack is ignored', async () => {
+    await srv.call('PUT', '/api/groups/owned', AGENT, {});
+    const m = (await say('owned', { body: 'For the overseer' })).body;
+    await srv.call('GET', `/api/updates?group=owned&ack=${m.id}`, ALICE);
+    assert.equal((await srv.call('POST', '/api/groups/owned/ack', ALICE, { upTo: m.id })).status, 403);
+    assert.deepEqual((await notes('owned')).map((n) => n.id), [String(m.id)]);
+    // The full shape lists them too, with their ids.
+    const full = (await srv.call('GET', '/api/wait?group=owned&timeout=0&format=full', AGENT)).body;
+    assert.deepEqual(full.groupMessages, [{ group: 'owned', messages: [{ id: m.id, body: 'For the overseer', by: 'alice', at: m.at }] }]);
+  });
+
   test('wait_for_decisions acknowledges with `ack`', async () => {
     await srv.call('PUT', '/api/groups/mcp-ack', AGENT, {});
     const m = (await say('mcp-ack', { body: 'Ping' })).body;
@@ -128,6 +161,18 @@ describe('a group\'s conversation, page by page', () => {
     } while (before);
     assert.deepEqual(paged, all);
     assert.throws(() => store.groupConversation('default/g', { before: 'nonsense' }), /previous page/);
+    store.close();
+  });
+
+  test('an escalation\'s thread stays in the group it was raised in when its lane moves', () => {
+    const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
+    publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
+    const e = store.createEscalation({ laneId: 'default/l', question: 'Before the move?' }, 'bot');
+    publishLane(store, 'default/l', { group: 'default/h' }, 'bot');
+    store.postMessage(e.id, { from: 'owner', author: 'alice', body: 'Reply after the move' }, 'user:a');
+    const in_ = (g: string) => store.groupConversation(g).items.map((i) => (i.type === 'message' ? i.body : `? ${i.question}`));
+    assert.deepEqual(in_('default/g'), ['Reply after the move', '? Before the move?']);
+    assert.deepEqual(in_('default/h'), []);
     store.close();
   });
 

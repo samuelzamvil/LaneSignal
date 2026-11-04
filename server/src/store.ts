@@ -3073,8 +3073,12 @@ export class Store {
         throw new ConflictError('One update a minute while the owner decides: put everything in one message');
       }
       const turn = message.from === 'owner' ? 'agent' : 'owner';
+      // The thread stays in the conversation of the group the question was raised in, wherever its lane went.
+      const groupId =
+        ((this.db.prepare('SELECT group_id FROM escalations WHERE id = ?').get(current.id) as Row).group_id as string | null) ??
+        this.messageGroupOfLane(current.laneId, at);
       const messageId = this.insertGroupMessage({
-        groupId: this.messageGroupOfLane(current.laneId, at),
+        groupId,
         escalationId: current.id,
         from: message.from,
         author: message.author,
@@ -3739,22 +3743,39 @@ export class Store {
         const same = this.db
           .prepare('SELECT * FROM group_messages WHERE group_id = ? AND author = ? AND client_key = ?')
           .get(groupId, message.author, clientKey) as Row | undefined;
-        if (same) return { posted: this.groupMessageFromRow(same, this.overseerReadId(groupId)), duplicate: true };
+        if (same) {
+          // A key names one message: the same key with other words is a client mistake, not a retry.
+          if (same.body !== body) throw new ConflictError(`clientKey "${clientKey}" was already used for another message`);
+          return { posted: this.groupMessageFromRow(same, this.overseerReadId(groupId)), duplicate: true };
+        }
       }
       if (g.archived_at) {
         throw new ConflictError(`Group "${localId(groupId)}" was removed: its conversation is read-only until the group is registered again`);
       }
-      const recent = this.db
-        .prepare(
-          `SELECT * FROM group_messages WHERE group_id = ? AND author_kind = ? AND escalation_id IS NULL AND lane_id IS NULL AND epic_id IS NULL
-           ORDER BY id DESC LIMIT 1`,
-        )
-        .get(groupId, message.from) as Row | undefined;
-      const fresh = recent && at.getTime() - Date.parse(recent.created_at as string) < 60_000;
-      if (!clientKey && fresh && recent.author === message.author && recent.body === body) {
-        return { posted: this.groupMessageFromRow(recent, this.overseerReadId(groupId)), duplicate: true };
+      const direct = 'escalation_id IS NULL AND lane_id IS NULL AND epic_id IS NULL';
+      const isFresh = (r: Row | undefined): r is Row => !!r && at.getTime() - Date.parse(r.created_at as string) < 60_000;
+      // A retry without a key: the same words from the same author just now, nothing written since, no
+      // files, and (from a person) not yet acknowledged by the overseer. Saying the same again later is new.
+      const latest = this.db.prepare(`SELECT * FROM group_messages WHERE group_id = ? AND ${direct} ORDER BY id DESC LIMIT 1`).get(groupId) as
+        | Row
+        | undefined;
+      if (
+        !clientKey &&
+        isFresh(latest) &&
+        latest.author_kind === message.from &&
+        latest.author === message.author &&
+        latest.body === body &&
+        !message.attachments?.length &&
+        (message.from === 'agent' || Number(latest.id) > this.overseerReadId(groupId))
+      ) {
+        return { posted: this.groupMessageFromRow(latest, this.overseerReadId(groupId)), duplicate: true };
       }
-      if (message.from === 'agent' && fresh) throw new ConflictError('One message per group per minute: put everything in one message');
+      const lastAgent = this.db
+        .prepare(`SELECT created_at FROM group_messages WHERE group_id = ? AND author_kind = 'agent' AND ${direct} ORDER BY id DESC LIMIT 1`)
+        .get(groupId) as Row | undefined;
+      if (message.from === 'agent' && isFresh(lastAgent)) {
+        throw new ConflictError('One message per group per minute: put everything in one message');
+      }
       const id = this.insertGroupMessage({ groupId, from: message.from, author: message.author, body, at: at.toISOString() });
       if (clientKey) this.db.prepare('UPDATE group_messages SET client_key = ? WHERE id = ?').run(clientKey, id);
       if (message.attachments?.length) this.linkMessageAttachments(id, message.attachments, owner);

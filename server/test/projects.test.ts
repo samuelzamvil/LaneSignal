@@ -145,6 +145,12 @@ describe('several projects', () => {
     assert.equal((await srv.call('PUT', '/api/lanes/cart?project=default', key, { group: 'main', status: 'active' })).status, 404);
     const tools = await srv.tool(key, 'list_lanes', {});
     assert.ok(tools.value.length > 0 && tools.value.every((l: any) => l.project === undefined), 'one project: lanes leave it out');
+    // A group's conversation is its project's: another project's key neither reads nor writes it.
+    await srv.call('PUT', '/api/groups/private-talk?project=default', AGENT, {});
+    await srv.call('POST', '/api/groups/private-talk/messages?project=default', AGENT, { body: 'Default only' });
+    assert.equal((await srv.call('GET', '/api/groups/private-talk/conversation?project=default', key)).status, 404);
+    assert.equal((await srv.call('GET', '/api/groups/private-talk/conversation', key)).status, 404);
+    assert.equal((await srv.call('POST', '/api/groups/private-talk/messages', key, { body: 'Hello?' })).status, 404);
   });
 
   test('requirements: ids are global; all-projects ones are seen everywhere, project ones only there', async () => {

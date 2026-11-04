@@ -543,7 +543,6 @@ function buildServer(
           wait_seconds: z.number().int().min(0).max(3600).optional(),
           format: z.enum(['digest', 'full']).optional().describe('Default `digest`. `full` is kept for older agents.'),
         },
-        annotations: { readOnlyHint: true },
       },
       async ({ group_id, group, lane_ids, ids, wait_seconds, since, ack, format, project }, extra) => {
         try {
@@ -551,7 +550,8 @@ function buildServer(
             ...waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project),
             mode: format ?? 'digest',
           };
-          if (ack !== undefined && scope.groupId) store.ackGroupMessages(scope.groupId, ack);
+          // Only the overseer acknowledges what's meant for it.
+          if (ack !== undefined && scope.groupId && who.role === 'agent') store.ackGroupMessages(scope.groupId, ack);
           const timeout = wait_seconds ?? 300;
           const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
             store.waitForDecisions(scope, timeout * 1000, signal),
@@ -576,12 +576,12 @@ function buildServer(
           '`boardMessages`, your group\'s unacknowledged `groupMessages` (pass the last id handled as `ack`), and with `since`, ' +
           'what was withdrawn or removed since.',
         inputSchema: waitInput,
-        annotations: { readOnlyHint: true },
       },
       async ({ group_id, group, lane_ids, ids, since, ack, project }) => {
         try {
           const scope = waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project);
-          if (ack !== undefined && scope.groupId) store.ackGroupMessages(scope.groupId, ack);
+          // Only the overseer acknowledges what's meant for it.
+          if (ack !== undefined && scope.groupId && who.role === 'agent') store.ackGroupMessages(scope.groupId, ack);
           // Digest rules (notes since `since` included), the full shape.
           const value = store.decisionsFor(scope);
           store.handOver(value, a.projects);

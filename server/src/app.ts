@@ -896,11 +896,6 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.send(Buffer.from(file.data));
   });
 
-  /**
-   * A message in a lane's conversation. From the agent, a milestone with any files (a quiet push);
-   * from a person, a note the agent gets the next time it publishes, writes on or waits on the lane.
-   * The reply carries the owner's messages the agent hadn't seen.
-   */
   // ---- group conversations ----
 
   /** The group's conversation, newest first: its messages and escalations (`next` pages back). Removed groups' stay readable. */
@@ -940,6 +935,11 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json({ acknowledgedUpTo: store.ackGroupMessages(q(project, String(req.params.id)), body.upTo) });
   });
 
+  /**
+   * A message in a lane's conversation. From the agent, a milestone with any files (a quiet push);
+   * from a person, a note the agent gets the next time it publishes, writes on or waits on the lane.
+   * The reply carries the owner's messages the agent hadn't seen.
+   */
   app.post('/api/lanes/:id/messages', any, (req, res) => {
     const body = parse(s.message, req.body ?? {});
     const p = principalOf(res);
@@ -1023,7 +1023,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       parse(s.waitScope, { ids: query.ids, laneIds: query.lane, groupId: query.group, since: query.since }),
       query.project,
     );
-    if (query.ack !== undefined && scope.groupId) store.ackGroupMessages(scope.groupId, query.ack);
+    // Only the overseer acknowledges what's meant for it.
+    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
     const { ready: _ready, ...all } = briefWait(pub.wait(store.handOver(store.decisionsFor(scope), acc(res).projects)));
     res.json(all);
   });
@@ -1049,7 +1050,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         mode: query.format ?? 'digest',
       };
       const shape = (w: WaitResult) => (query.format === 'full' ? briefWait(w) : digestWait(w, acc(res).projects.length > 1));
-      if (query.ack !== undefined && scope.groupId) store.ackGroupMessages(scope.groupId, query.ack);
+      // Only the overseer acknowledges what's meant for it.
+    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
