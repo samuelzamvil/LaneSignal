@@ -147,6 +147,8 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 
 `id`, `requirement`, `kind` (`scope`), `actor`, `from_scope`, `from_project`, `from_products`, `to_scope`, `to_project`, `to_products`, `at`. Changes to the requirements the export includes; `from`/`to` filter by `at`.
 
+All messages (on escalations, lanes and epics' boards) live in one table, each in the group it was written in, so `messages`, `lane_messages` and `epic_messages` share one sequence of `id`s: an id names one message across the three. Exports from before this change numbered each dataset separately.
+
 ### `messages.csv` (conversations)
 
 `id`, `escalation_id`, `escalation_ref`, `project`, `lane_id` (empty for a question raised on an epic directly), `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message, oldest first.

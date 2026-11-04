@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { Store } from '../src/store.ts';
 import { ticketRefs } from '../src/tickets.ts';
 import { esc as escalate, lane as publishLane } from './publish.ts';
+import { UNDO_V24 } from './undo.ts';
 
 const resolveTicketUrl = (t: string) => `https://tickets.example/${t.replace(/^gh:/, '')}`;
 
@@ -15,6 +16,7 @@ const resolveTicketUrl = (t: string) => `https://tickets.example/${t.replace(/^g
  * "Ungrouped" groups lanes without a group were put in.
  */
 const UNDO_V18 = `
+  ${UNDO_V24}
   DELETE FROM lane_events WHERE lane_id LIKE '%/~epic-%';
   DELETE FROM escalations WHERE lane_id LIKE '%/~epic-%';
   DELETE FROM lanes WHERE id LIKE '%/~epic-%';
@@ -713,7 +715,7 @@ test('upgrading to lane conversations keeps earlier notices as the agent\'s mess
     store.postNotice('default/ship', 'Merged PR #311', 'bot');
     store.close();
     const db = new DatabaseSync(file);
-    db.exec(`
+    db.exec(`${UNDO_V24}
       DROP TABLE lane_messages;
       DROP INDEX attachments_lane_message;
       ALTER TABLE attachments DROP COLUMN lane_message_id;
