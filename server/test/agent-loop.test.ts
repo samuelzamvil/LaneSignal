@@ -54,12 +54,12 @@ describe('escalation codes', () => {
       assert.equal(res.isError, false, res.text);
       assert.equal((await srv.call('GET', `/api/lanes/${lane}`, ALICE)).status, 404);
     }
-    // The parked ticket keeps its question; the ticketless lane's went to its group's epic.
+    // The parked ticket keeps its question; the ticketless lane's is its group's.
     assert.equal((await srv.call('GET', `/api/escalations/${e.id}`, ALICE)).body.state, 'open');
     assert.equal((await srv.call('GET', '/api/tickets/777', ALICE)).body.ticket.state, 'parked');
     const epicQuestion = (await srv.call('GET', `/api/escalations/${loose.id}`, ALICE)).body;
     assert.equal(epicQuestion.state, 'open');
-    assert.notEqual(epicQuestion.epicId, null);
+    assert.equal(epicQuestion.group, 'main');
     assert.equal((await srv.call('DELETE', '/api/lanes/nope', AGENT)).status, 404);
   });
 });

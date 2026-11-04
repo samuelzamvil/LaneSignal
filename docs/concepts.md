@@ -88,15 +88,15 @@ Each active lane also gets a letter, shown on its card: A, B, … Z, then AA, AB
 
 ## Epics
 
-An epic is a long-lived ticket a group steers its work by: the direction, scope and next tickets, rather than code worked in a lane. It has a card on the Lanes page, its own questions and a message board.
+An epic is a long-lived ticket a group steers its work by: the direction, scope and next tickets, rather than code worked in a lane. It has a card on the Lanes page and its own questions.
 
-- **Every group has an epic.** Until it has one of its own, the group stands in as its epic (the *stand-in*): named after the group, and named by the group's id in agents' tools.
-- **Real epics** are named by their ticket's ref (`680`, `redmine:680`, its URL: one epic). A group can have several. The overseer adds one with `update_epic` (a ref no epic has yet, plus the group). The first one retires the stand-in: its questions, board and status line move to the new epic, keeping their codes. Closing the group's last real epic brings the stand-in back.
+- **Epics are optional.** A group can hold questions of its own, without any epic: a single overseer orchestrating subagents needs nothing more. Its own questions are coded with the group's id (`searchA`), or its ticket from before epics.
+- **Real epics** are named by their ticket's ref (`680`, `redmine:680`, its URL: one epic). A group can have several. The overseer adds one with `update_epic` (a ref no epic has yet, plus the group). Adding one leaves the group's own questions on the group.
 - **Tickets name their epic** when a lane is filled with them (`fill_lane` with `epic`). It's optional.
 - **On the Lanes page each lane is listed once:** under its ticket's epic's card, or, when its ticket names no epic or it holds none, directly in the group's box (under **No epic** when the group has epics of its own). A quiet idle lane folds into the box's **Idle** row.
-- **Status line:** one line the overseer sets on the card (`update_epic`), e.g. "3 of 5 lanes busy; next up #966". Use it instead of placeholder lanes.
-- **Questions:** the overseer raises the durable ones on the epic: direction, scope, which tickets to file (`create_escalation` with `epic`). Questions from a lane holding no ticket go to the group's epic too. They're in your inbox like any other and can block, but block no lane: a blocking one shows **Waiting on you** on the card and counts in "Needs you".
-- **Closing:** the overseer asks with `request_epic_close` and a reason; the card and sheet show **Close requested**, and a signed-in person approves or declines (a personal key can't). A close is refused while the epic has open questions, or answered ones its agent hasn't acknowledged, so a live decision is never withdrawn. Tickets that name a closed epic keep the link. A group's stand-in isn't closed: it steps aside when a real epic is added.
+- **Status line:** one line the overseer sets on an epic's card (`update_epic`), or on the group's box (`update_group` with `status_line`), e.g. "3 of 5 lanes busy; next up #966". Use it instead of placeholder lanes.
+- **Questions:** the overseer raises the durable ones on an epic (`create_escalation` with `epic`) or on the group itself (`group_id`, no lane or epic): direction, scope, which tickets to file. A question from a lane holding no ticket goes to the group's epic when it has exactly one (`epic` says which when it has several), otherwise to the group. They're in your inbox like any other and can block, but block no lane: a blocking one shows **Waiting on you** on the epic's card or the group's box and counts in "Needs you". A group's own questions are threads in its conversation like any other.
+- **Closing:** the overseer asks with `request_epic_close` and a reason; the card and sheet show **Close requested**, and a signed-in person approves or declines (a personal key can't). A close is refused while the epic has open questions, or answered ones its agent hasn't acknowledged, so a live decision is never withdrawn. Tickets that name a closed epic keep the link.
 - **Requirements** stay separate from epics.
 
 **In the app:**

@@ -7,12 +7,12 @@ description: How to use LaneSignal through its MCP tools (the `lanesignal` serve
 
 LaneSignal is the owner's dashboard for agent work: you publish what your lanes are doing and raise an *escalation* when you need the owner (how they answer is below). The tool descriptions say what each tool does and takes; this skill covers how they fit together. The **Usage** sections say when and why to use them on this server; the owner's policy (usually in `CLAUDE.md`) overrides them.
 
-Vocabulary: a **group** is your epic or train (one overseer per group). A **lane** is a slot work goes through, one ticket at a time. A **ticket** is what a lane works on; it owns its escalations and moves between lanes (*parked* when set aside). An **epic** is a long-lived ticket the group steers by, with its own questions; until you add one, the group stands in as its epic. An **escalation** is a question for the owner, or something they must know.
+Vocabulary: a **group** is your epic or train (one overseer per group). A **lane** is a slot work goes through, one ticket at a time. A **ticket** is what a lane works on; it owns its escalations and moves between lanes (*parked* when set aside). An **epic** is a long-lived ticket the group steers by, with its own questions; it's optional: without one, questions about the whole group go on the group itself. An **escalation** is a question for the owner, or something they must know.
 
 ## Publishing state
 
 - **Your group:** `update_group` with the `group_id` your owner's policy gives you, your Remote Control session in `links`, and the `products` you work on when this server has them (`list_products`), the narrowest that cover your work; the dashboard titles your group from them. A group must exist before lanes are published in it. Every lane is in a group: publishing one without its group fails. Registering a group takes control of it: you become its overseer, replacing any earlier one (the change is recorded).
-- **Your epic:** the ticket the owner gave you goes to `update_epic` (its ref as `epic`, plus `group`), once. Its `status_line` is one line on the epic's card.
+- **Your epic,** if the owner gave you one: its ticket goes to `update_epic` (its ref as `epic`, plus `group`), once. Its `status_line` is one line on the epic's card; without an epic, `update_group` with `status_line` puts one on the group's box.
 - **Lanes:** a lane holds one ticket at a time, and a ticket is in one lane at a time. `fill_lane` changes tickets, parking (with a reason) the one it held; a parked ticket's questions stay open. When your group has epics, name the ticket's with `epic`, so its lane sits under that epic's card on the dashboard.
 - A lane holding no ticket shows `idle`, and one with an open blocking escalation shows `blocked_human`, whatever you publish.
 - **Ticket refs:** in any text, `#1234` links to the default ticket system and `redmine:1234` to that one; in `ticket` fields use `system:id`.
@@ -45,9 +45,9 @@ Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalat
 - **Lanes are slots:** stable ids (`slot-1` … `slot-5`), not one per ticket. `remove_lane` a slot you no longer need.
 - **Only the overseer writes to LaneSignal.** Workers (subagents you start) never publish lanes, status, messages, notices or escalations: they report to you, and you publish.
 - **Finished tickets are `done`,** not parked: parked ones wait on the dashboard to be picked up again.
-- **Publish changes, not heartbeats.** Use the epic's `status_line` for what's queued or waiting; never publish placeholder lanes. Keep `activity` to one line, written for a phone.
+- **Publish changes, not heartbeats.** Use the epic's or group's `status_line` for what's queued or waiting; never publish placeholder lanes. Keep `activity` to one line, written for a phone.
 - **Parking:** dismiss a parked ticket's questions that no longer matter.
-- **One decision per escalation:** four questions in a plan are four escalations. Questions that steer the whole group (direction, scope, which tickets to file) go on the epic (`epic`, no `lane_id`). Attach a plan or preview instead of pasting it into `context`.
+- **One decision per escalation:** four questions in a plan are four escalations. Questions that steer the whole group (direction, scope, which tickets to file) go on its epic (`epic`, no `lane_id`), or on the group itself when it has none (`group_id` alone). Attach a plan or preview instead of pasting it into `context`.
 - **`notify_owner` for milestones only:** a PR merged, a ticket started. Never routine progress, never questions. Put several things in one message.
 
 ## When the owner answers

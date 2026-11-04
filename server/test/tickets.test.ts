@@ -187,7 +187,9 @@ describe('tickets', () => {
     await srv.call('DELETE', '/api/lanes/slot-u', AGENT);
     const kept = (await srv.call('GET', `/api/escalations/${own.id}`, ALICE)).body;
     assert.equal(kept.state, 'open');
-    assert.notEqual(kept.epicId, null);
+    // Raised from a lane holding no ticket in a group with no epic: the group's own question.
+    assert.equal(kept.epicId, null);
+    assert.equal(kept.group, 'train');
   });
 
   test('waiting_on names another ticket and clears once that one is done', async () => {
@@ -218,17 +220,18 @@ describe('tickets', () => {
     assert.equal(ack.isError, false, ack.text);
   });
 
-  test("a lane holding no ticket raises its questions on its group's epic, coded with the group's id", async () => {
+  test("a lane holding no ticket, in a group with no epic, raises its questions on the group, coded with the group's id", async () => {
     await fill({ lane_id: 'slot-m', group: 'train' });
     assert.equal((await lane('slot-m')).status, 'idle');
     const q = await ask('slot-m', 'What next?');
     assert.match(q.ref, /^train[A-Z]+$/);
-    assert.equal(q.epic, 'Train');
+    assert.equal(q.epic, undefined);
     // Filling the lane later doesn't move that question onto the ticket.
     await fill({ lane_id: 'slot-m', ticket: '660' });
     const after = (await srv.call('GET', `/api/escalations/${q.id}`, ALICE)).body;
     assert.equal(after.ticketId, null);
-    assert.notEqual(after.epicId, null);
+    assert.equal(after.epicId, null);
+    assert.equal(after.group, 'train');
     assert.equal((await ticket('660')).escalations.length, 0);
   });
 
@@ -253,7 +256,7 @@ describe('tickets', () => {
     assert.equal((await srv.tool(AGENT, 'acknowledge_escalation', { id: q.ref })).isError, false);
   });
 
-  test("a ticketless lane's blocking question is the epic's: it blocks no lane, before or after the lane takes a ticket", async () => {
+  test("a ticketless lane's blocking question is the group's: it blocks the group, not the lane, before or after the lane takes a ticket", async () => {
     await fill({ lane_id: 'slot-o', group: 'train' });
     await ask('slot-o', 'Which ticket next?');
     assert.equal((await lane('slot-o')).status, 'idle');
@@ -261,8 +264,8 @@ describe('tickets', () => {
     const o = await lane('slot-o');
     assert.equal(o.status, 'active');
     assert.equal(o.blockingEscalations, 0);
-    const epic = (await srv.tool(AGENT, 'list_epics', { group: 'train' })).value[0];
-    assert.ok(epic.blockingEscalations >= 1);
+    const group = (await srv.call('GET', '/api/groups', ALICE)).body.find((g: any) => g.id === 'train');
+    assert.ok(group.blockingEscalations >= 1);
   });
 
   test('a removed lane published again comes back without its ticket, which stays parked', async () => {

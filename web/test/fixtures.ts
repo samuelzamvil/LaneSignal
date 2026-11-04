@@ -105,7 +105,6 @@ export const epic = (over: Partial<Epic> = {}): Epic => ({
   links: [],
   statusLine: null,
   state: 'open',
-  standIn: false,
   closeReason: null,
   closeRequestedBy: null,
   openEscalations: 0,

@@ -1,18 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { routeFromAppLink } from '../src/deeplink.ts';
-import { epicShows, epicsOnScreen, groupLayout, laneEpic } from '../src/epics.ts';
+import { epicsOnScreen, groupLayout, laneEpic } from '../src/epics.ts';
 import { labelFor, nextEntry } from '../src/nav.ts';
 import { epic, lane, ticket } from './fixtures.ts';
 
-const standIn = epic({ id: 1, ref: null, displayRef: null, code: 'g1', name: 'Group 1', standIn: true });
-
-test("a group shows its stand-in until it has epics of its own, then those (oldest first)", () => {
-  assert.deepEqual(epicsOnScreen('p/g1', [standIn]).map((e) => e.id), [1]);
+test("a group shows its epics, oldest first, or none", () => {
+  assert.deepEqual(epicsOnScreen('p/g1', []), []);
   const real = [epic({ id: 9 }), epic({ id: 7 })];
-  assert.deepEqual(epicsOnScreen('p/g1', [standIn, ...real]).map((e) => e.id), [7, 9]);
-  assert.deepEqual(epicsOnScreen('p/other', [standIn, ...real]), []);
-  assert.deepEqual(epicsOnScreen(null, [standIn]), []);
+  assert.deepEqual(epicsOnScreen('p/g1', real).map((e) => e.id), [7, 9]);
+  assert.deepEqual(epicsOnScreen('p/other', real), []);
+  assert.deepEqual(epicsOnScreen(null, real), []);
 });
 
 test("each lane is listed once: under its ticket's epic, or under the group", () => {
@@ -27,15 +25,6 @@ test("each lane is listed once: under its ticket's epic, or under the group", ()
   assert.equal(laneEpic(lane({ ticketId: 2 }), onScreen, tickets), undefined);
   assert.equal(laneEpic(lane({ ticketId: 3 }), onScreen, tickets), undefined);
   assert.equal(laneEpic(lane({ ticketId: null }), onScreen, tickets), undefined);
-  // A stand-in's card holds the whole group; no lane is placed under it by ticket.
-  assert.equal(laneEpic(lane({ ticketId: 1 }), [epic({ id: 7, standIn: true })], tickets), undefined);
-});
-
-test('an epic card shows without lanes when it has something to say', () => {
-  assert.equal(epicShows(epic()), true);
-  assert.equal(epicShows(standIn), false);
-  assert.equal(epicShows({ ...standIn, statusLine: '2 of 3 lanes busy' }), true);
-  assert.equal(epicShows({ ...standIn, openEscalations: 1 }), true);
 });
 
 test('epic links open its sheet, and closing it goes back to Lanes', () => {
@@ -75,9 +64,9 @@ test('a filter picking lanes leaves out epics with none of them', () => {
   assert.deepEqual(layout.epics.map((e) => e.epic.id), [7]);
 });
 
-test('a stand-in holds no lanes of its own: they sit directly in the box', () => {
-  const tickets = new Map([['1', ticket({ id: 1, epicId: 1 })]]);
-  const layout = groupLayout([lane({ ticketId: 1 })], [standIn], tickets, { showEmptyEpics: true, isQuiet: () => false });
+test('a group with no epics holds its lanes directly in the box', () => {
+  const tickets = new Map([['1', ticket({ id: 1, epicId: null })]]);
+  const layout = groupLayout([lane({ ticketId: 1 })], [], tickets, { showEmptyEpics: true, isQuiet: () => false });
   assert.deepEqual(layout.epics, []);
   assert.equal(layout.noEpic.length, 1);
 });
