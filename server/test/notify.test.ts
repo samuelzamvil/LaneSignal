@@ -171,7 +171,8 @@ test('an FYI raised again as blocking notifies like a new question; notices go o
     ],
   );
   assert.equal(sink.received[2].body.message, 'Merged PR #311');
-  assert.equal(sink.received[2].body.click, 'lanesignal://lane/default/lane-1');
+  // It opens the group's conversation, where it was written.
+  assert.equal(sink.received[2].body.click, 'lanesignal://group/default/main');
   sink.close();
   store.close();
 });

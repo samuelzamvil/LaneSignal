@@ -5,6 +5,9 @@ import type {
   Epic,
   Escalation,
   Group,
+  GroupConversationPage,
+  GroupFeedItem,
+  GroupMessage,
   Lane,
   LaneEvent,
   LaneMessage,
@@ -30,6 +33,9 @@ export type {
   Epic,
   Escalation,
   Group,
+  GroupConversationPage,
+  GroupFeedItem,
+  GroupMessage,
   Lane,
   LaneEvent,
   LaneMessage,
@@ -215,13 +221,19 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
         '/api/snapshot',
       ),
     laneDetail: (project: string, id: string) =>
-      request<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[]; messages: LaneMessage[] }>(
+      request<{ lane: Lane; escalations: Escalation[]; events: LaneEvent[] }>(
         'GET',
         `/api/lanes/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`,
       ),
-    /** A note to the lane's agent: it gets it the next time it publishes, writes on or waits on the lane. */
-    laneMessage: (project: string, id: string, body: string) =>
-      request<LaneMessage>('POST', `/api/lanes/${encodeURIComponent(id)}/messages?project=${encodeURIComponent(project)}`, { body }),
+    /** A group's conversation, newest first; `before` is the previous page's `next`. */
+    groupConversation: (project: string, group: string, before?: string) =>
+      request<GroupConversationPage>(
+        'GET',
+        `/api/groups/${encodeURIComponent(group)}/conversation?project=${encodeURIComponent(project)}${before ? `&before=${encodeURIComponent(before)}` : ''}`,
+      ),
+    /** A message to the group's overseer. `clientKey` makes a retry return the first instead of posting twice. */
+    groupMessage: (project: string, group: string, body: string, clientKey: string) =>
+      request<GroupMessage>('POST', `/api/groups/${encodeURIComponent(group)}/messages?project=${encodeURIComponent(project)}`, { body, clientKey }),
     escalation: (id: string) => request<Escalation>('GET', `/api/escalations/${encodeURIComponent(id)}`),
     /** A ticket by its canonical ref, with its escalations, history and the lanes it passed through. */
     ticketDetail: (project: string, ref: string) =>
@@ -231,9 +243,7 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
       ),
     /** An epic with its questions, its message board, its lanes and their combined feed. */
     epicDetail: (id: number) =>
-      request<{ epic: Epic; escalations: Escalation[]; messages: LaneMessage[]; lanes: string[]; feed: LaneEvent[] }>('GET', `/api/epics/${id}`),
-    /** A note on an epic's board: the overseer gets it on its next wait on the group. */
-    epicMessage: (id: number, body: string) => request<LaneMessage>('POST', `/api/epics/${id}/messages`, { body }),
+      request<{ epic: Epic; escalations: Escalation[]; lanes: string[]; feed: LaneEvent[] }>('GET', `/api/epics/${id}`),
     /** Approve or decline the overseer's request to close an epic. */
     decideEpicClose: (id: number, approve: boolean) => request<Epic>('POST', `/api/epics/${id}/close`, { approve }),
     /** Closed escalations, latest first. `before` is the previous page's `next`. */

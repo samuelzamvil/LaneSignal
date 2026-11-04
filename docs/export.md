@@ -5,7 +5,7 @@ LaneSignal keeps everything needed for analysis:
 - every escalation, including decided, acknowledged and withdrawn ones
 - every requirement, including superseded and retired ones, and rejected ones in exports made by a signed-in person (never with an agent or personal key)
 - every agent position
-- every conversation, on escalations, on lanes and on epics' boards
+- every group's conversation, its escalations' threads included (and what was written on lanes and epics' boards before those moved to groups)
 - every lane, group and epic, including ones that were removed from the dashboard or closed (they're archived, not deleted)
 - each lane's full status and escalation history
 
@@ -133,7 +133,7 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 
 ### `epic_messages.csv` (epics' boards)
 
-`id`, `project`, `epic_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message on an epic's board (the overseer's posts and people's notes), oldest first. A stand-in's board moves with it to the group's first real epic.
+`id`, `project`, `epic_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message written on an epic's board before boards were retired (the overseer's posts and people's notes), oldest first.
 
 ### `requirements.csv` (the owner's product decisions)
 
@@ -155,7 +155,7 @@ All messages (on escalations, lanes and epics' boards) live in one table, each i
 
 ### `lane_messages.csv` (lane conversations)
 
-`id`, `project`, `lane_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message in a lane's conversation (the agent's notices and the owner's notes), oldest first.
+`id`, `project`, `lane_id`, `from` (`owner` or `agent`), `author`, `body`, `attachments` (names, types and sizes), `at`. One row per message written in a lane's conversation before lanes' conversations were retired, oldest first. Milestones since (`notify_owner`) are in the group's conversation, and in `events.csv` as `notice`.
 
 ### `events.csv` (lane history)
 
@@ -164,8 +164,8 @@ All messages (on escalations, lanes and epics' boards) live in one table, each i
 - **`status`:** every status change, plus lane created, removed and restored
 - **`escalation`:** asked, positions, decided, acknowledged, withdrawn
 - **`activity`:** the agent's activity lines, only the most recent ones per lane
-- **`notice`:** the agent's messages in the lane's conversation (`notify_owner`, "Merged PR #311")
-- **`message`:** the owner's notes in the lane's conversation
+- **`notice`:** the agent's milestones on the lane (`notify_owner`, "Merged PR #311"), also in its group's conversation
+- **`message`:** the owner's notes on the lane, from before lanes' conversations moved to groups
 - **`ticket`:** a lane filled with a ticket, parking or letting one go ("Parked 500: waiting on the vendor"), and what a ticket waits on
 
 To rebuild blocked time per lane over a period, pair the status changes in `status` rows.

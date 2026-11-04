@@ -2672,3 +2672,155 @@ a.button.primary {
 .lane-row-when {
   font-size: 0.8rem;
 }
+
+/* ---- a group's conversation: one transcript, escalations as bounded threads ---- */
+
+.group-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.group-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.chat-button {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--tap);
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chat-button:hover {
+  border-color: var(--accent);
+}
+/* The overseer wrote since this device last opened the conversation. */
+.chat-new {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.sheet.sheet-group {
+  --kind: var(--accent);
+  display: flex;
+  flex-direction: column;
+}
+.sheet-group .sheet-head {
+  background: color-mix(in srgb, var(--kind) 9%, var(--bg));
+  border-top: 3px solid var(--kind);
+}
+.sheet-group .convo {
+  flex: 1 0 auto;
+}
+.convo-older {
+  text-align: center;
+}
+
+.convo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 8px 0 16px;
+  padding: 0;
+  list-style: none;
+}
+.convo-msg .rich {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+}
+/* Your words in a tinted block, the overseer's plain, as in a coding agent's session. */
+.convo-msg.from-owner {
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+.convo-msg .attachments {
+  margin-top: 6px;
+}
+
+.esc-thread {
+  border: 1px solid color-mix(in srgb, var(--text) 18%, var(--border));
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.esc-thread.needs-human {
+  border: 2px solid var(--danger);
+}
+.esc-thread-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.esc-thread.needs-human .esc-thread-head {
+  background: var(--danger-bg);
+  border-bottom-color: var(--danger-border);
+}
+.esc-thread-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.esc-thread .convo-list.nested {
+  margin: 0;
+  padding: 12px 14px;
+  gap: 12px;
+}
+.esc-thread-question {
+  margin: 2px 0 0;
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+.esc-thread-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 60%, var(--surface));
+  font-size: 0.9rem;
+}
+
+.group-composer {
+  position: sticky;
+  bottom: 0;
+  padding: 10px 16px calc(12px + var(--safe-bottom));
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+.group-composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.group-composer textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--tap);
+  resize: vertical;
+}
+.group-composer .primary {
+  min-height: var(--tap);
+}

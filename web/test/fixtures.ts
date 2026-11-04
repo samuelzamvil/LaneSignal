@@ -22,9 +22,6 @@ export const lane = (over: Partial<Lane> = {}): Lane => ({
   openEscalations: 0,
   blockingEscalations: 0,
   agentWaiting: false,
-  lastMessageId: null,
-  lastAgentMessageId: null,
-  unreadByAgent: 0,
   ...over,
 });
 
@@ -32,6 +29,7 @@ export const escalation = (over: Partial<Escalation> = {}): Escalation => ({
   id: 'e1',
   ref: 'A1',
   ticketId: null,
+  group: null,
   ticketRef: null,
   epicId: null,
   epicName: null,
@@ -112,9 +110,6 @@ export const epic = (over: Partial<Epic> = {}): Epic => ({
   closeRequestedBy: null,
   openEscalations: 0,
   blockingEscalations: 0,
-  lastMessageId: null,
-  lastAgentMessageId: null,
-  unreadByAgent: 0,
   createdAt: '2026-10-01T00:00:00.000Z',
   updatedAt: '2026-10-01T00:00:00.000Z',
   closedAt: null,

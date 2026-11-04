@@ -96,8 +96,7 @@ An epic is a long-lived ticket a group steers its work by: the direction, scope 
 - **On the Lanes page each lane is listed once:** under its ticket's epic's card, or, when its ticket names no epic or it holds none, directly in the group's box (under **No epic** when the group has epics of its own). A quiet idle lane folds into the box's **Idle** row.
 - **Status line:** one line the overseer sets on the card (`update_epic`), e.g. "3 of 5 lanes busy; next up #966". Use it instead of placeholder lanes.
 - **Questions:** the overseer raises the durable ones on the epic: direction, scope, which tickets to file (`create_escalation` with `epic`). Questions from a lane holding no ticket go to the group's epic too. They're in your inbox like any other and can block, but block no lane: a blocking one shows **Waiting on you** on the card and counts in "Needs you".
-- **Message board:** the conversation that steers the epic, with the same rules as a [lane's conversation](#lane-conversations): the overseer posts with `notify_epic` (at most 500 characters, files allowed, one post per epic per minute, a quiet push that opens the epic); you write back from the epic's sheet (2,000 characters), and your note reaches the group's overseer on its next wait on the group. The card shows 💬 while there's a post you haven't read.
-- **Closing:** the overseer asks with `request_epic_close` and a reason; the card and sheet show **Close requested**, and a signed-in person approves or declines (a personal key can't). A close is refused while the epic has open questions, or answered ones its agent hasn't acknowledged, so a live decision is never withdrawn. A closed epic's board is read-only, and tickets that name it keep the link. A group's stand-in isn't closed: it steps aside when a real epic is added.
+- **Closing:** the overseer asks with `request_epic_close` and a reason; the card and sheet show **Close requested**, and a signed-in person approves or declines (a personal key can't). A close is refused while the epic has open questions, or answered ones its agent hasn't acknowledged, so a live decision is never withdrawn. Tickets that name a closed epic keep the link. A group's stand-in isn't closed: it steps aside when a real epic is added.
 - **Requirements** stay separate from epics.
 
 **In the app:**
@@ -151,14 +150,14 @@ A tap asks you to confirm, with a box for instructions to the agent: optional fo
 - Agent messages are short by design: at most 500 characters (yours, 2,000). Anything longer comes as an attachment, which messages can carry too. While you decide, an agent may post a one-line update when something changes; every agent message notifies your phone.
 - Conversations are kept with the escalation and exported in `messages.csv`.
 
-### Lane conversations
+### A group's conversation
 
-Each lane has a conversation of its own, outside any escalation, in the lane's sheet:
+Each group has one conversation, opened with **Chat** at the right of the group's box on the Lanes screen. It's only what was said, like a coding agent's session: messages written to the group, and each escalation as a bordered thread (its question, the replies, and how it ended, with a link to open it in full), where it was raised. Lanes, epics and tickets keep their own sheets for everything else; they have no conversations of their own.
 
-- **The agent's milestones** ("Merged PR #311", "Starting gh:42") arrive with `notify_owner`, optionally with files (a screenshot, release notes). Each sends a quiet push that opens the lane, and the lane's card shows **💬 new message** (a 💬 in the list view) until you open it on that device with its Conversation showing (a device counts from the first time it opens the app, so older messages aren't marked).
-- **You can write back** from the sheet (with answering in LaneSignal on). Nothing blocks and the lane's status doesn't change: the agent gets your note the next time it publishes the lane, writes on it or waits on it, and the note then reads *seen by the agent*. Each note goes to one agent, whichever reports in first: an overseer waiting on its whole group picks up notes on all its lanes.
-- Use an escalation instead when the agent needs a decision from you.
-- Agent messages are at most 500 characters (yours, 2,000), one per lane per minute. Conversations stay with the lane and are exported in `lane_messages.csv`.
+- **The overseer's messages** (`post_to_group`, and milestones on a lane with `notify_owner`: "Merged PR #311", "Starting gh:42") can carry files, and each sends a quiet push that opens the conversation. The Chat button shows a dot until you open the conversation on that device (a device counts from the first time it opens the app, so older messages aren't marked).
+- **You write to the overseer** from the conversation (with answering in LaneSignal on). Nothing blocks and no status changes: your message comes back in the overseer's group wait until it acknowledges it, so nothing is lost if it restarts.
+- Use an escalation instead when the overseer needs a decision from you.
+- Agent messages are at most 500 characters (yours, 2,000), one per group per minute. Older pages load on request, 50 at a time. Messages written on lanes and epics' boards before conversations moved to groups are in it too, marked with where they were written, and exported in `lane_messages.csv` and `epic_messages.csv`.
 
 ### Attachments
 
@@ -251,4 +250,4 @@ LaneSignal links to tickets but never syncs or edits them.
 
 ## Notifications
 
-By default, push notifications go out when an escalation is **created**: urgent for blocking questions (regular, if an instance admin turned on [quiet alerts](android.md#quiet-alerts)), quiet for FYIs. The title carries its code (`Needs you A12 · …`). An FYI the agent raises again as blocking notifies like a new question. Overseers can also send a **notice** about a milestone ("Merged PR #311", "Starting gh:42") with `notify_owner`: quiet, at most one per lane per minute, kept in the [lane's conversation](#lane-conversations), and tapping it opens the lane. Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).
+By default, push notifications go out when an escalation is **created**: urgent for blocking questions (regular, if an instance admin turned on [quiet alerts](android.md#quiet-alerts)), quiet for FYIs. The title carries its code (`Needs you A12 · …`). An FYI the agent raises again as blocking notifies like a new question. Overseers can also send a **notice** about a milestone ("Merged PR #311", "Starting gh:42") with `notify_owner`: quiet, at most one agent message per group per minute, kept in the [group's conversation](#a-groups-conversation), and tapping it opens the conversation. Agreements, decisions and routine lane updates never page anyone. Add `blocked` or `completed` to `LANESIGNAL_NOTIFY_ON` to also be told when a lane becomes blocked without an escalation, or when it completes. See [Android and push](android.md).

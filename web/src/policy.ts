@@ -12,7 +12,7 @@ Project: \`<project-id>\` (pass it as \`project\` on every LaneSignal call; dele
 - Publish when a lane's situation changes, not on a timer.
 - Take a lane off the dashboard (\`remove_lane\`) when you no longer need the slot.
 - Notify me (\`notify_owner\`) when a PR merges or you start a new ticket. Nothing else.
-- When I write on a lane or an epic's board, act on it; answer with \`notify_owner\` (or \`notify_epic\`) if I asked something or you change course.
+- When I write in our group's conversation, act on it; answer with \`post_to_group\` if I asked something or you change course.
 
 **Escalate to me** (I answer in LaneSignal, or here in this session):
 - destructive or irreversible changes (data deletion, migrations without a rollback, force pushes)
