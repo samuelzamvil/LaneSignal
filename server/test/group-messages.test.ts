@@ -135,3 +135,46 @@ test('upgrading to v24 moves every message, its files and what the agent has rea
     );
   });
 });
+
+test('upgrading to v24 keeps what the agent has read when the clock went back between messages', () => {
+  fileStore((file) => {
+    let now = Date.parse('2026-11-04T10:00:10Z');
+    let store = new Store({ path: file, resolveTicketUrl, now: () => new Date(now) });
+    publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
+    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'Read' }, 'user:a');
+    assert.deepEqual(store.takeUnreadForAgent('default/l').map((m) => m.body), ['Read']);
+    store.close();
+    // Restarted with the clock five seconds behind: the next note is stamped earlier than the one read.
+    now = Date.parse('2026-11-04T10:00:05Z');
+    store = new Store({ path: file, resolveTicketUrl, now: () => new Date(now) });
+    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'Unread' }, 'user:a');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(UNDO_V24);
+    db.close();
+
+    store = new Store({ path: file, resolveTicketUrl });
+    assert.deepEqual(store.laneMessages('default/l').map((m) => [m.body, m.seen]), [
+      ['Read', true],
+      ['Unread', false],
+    ]);
+    assert.deepEqual(store.takeUnreadForAgent('default/l').map((m) => m.body), ['Unread']);
+    store.close();
+  });
+});
+
+test('upgrading to v24: a message on a lane in no group goes to its project\'s Ungrouped group', () => {
+  fileStore((file) => {
+    let store = new Store({ path: file, resolveTicketUrl });
+    publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
+    store.postLaneMessage('default/l', { from: 'agent', author: 'bot', body: 'Old notice' }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`${UNDO_V24} UPDATE lanes SET group_id = NULL WHERE id = 'default/l';`);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl });
+    assert.deepEqual(store.laneMessages('default/l').map((m) => m.body), ['Old notice']);
+    store.close();
+    assert.deepEqual(rows(file, 'SELECT group_id FROM group_messages').map((r) => r.group_id), ['default/ungrouped']);
+  });
+});

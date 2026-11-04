@@ -669,24 +669,38 @@ export class Store {
   private migrateV24() {
     this.createGroupMessages();
     const tableExists = (name: string) => !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
-    // Already moved (a database brought back to an earlier version number with its tables as they are).
-    if (!tableExists('messages') || !tableExists('lane_messages') || !tableExists('epic_messages')) return;
+    // Each old table that's still there moves (none: a database brought back to an earlier version number as it is).
+    const sources = [
+      {
+        table: 'messages',
+        column: 'message_id',
+        select: `SELECT 0 AS src, m.id, m.escalation_id, NULL AS lane_id, NULL AS epic_id, m.author_kind, m.author, m.body, m.created_at,
+                   COALESCE(l.group_id, ep.group_id, t.group_id) AS group_id, e.lane_id AS home
+                 FROM messages m JOIN escalations e ON e.id = m.escalation_id LEFT JOIN lanes l ON l.id = e.lane_id
+                 LEFT JOIN epics ep ON ep.num = e.epic_id LEFT JOIN tickets t ON t.num = e.ticket_id`,
+      },
+      {
+        table: 'lane_messages',
+        column: 'lane_message_id',
+        select: `SELECT 1, m.id, NULL, m.lane_id, NULL, m.author_kind, m.author, m.body, m.created_at, l.group_id, m.lane_id
+                 FROM lane_messages m LEFT JOIN lanes l ON l.id = m.lane_id`,
+      },
+      {
+        table: 'epic_messages',
+        column: 'epic_message_id',
+        select: `SELECT 2, m.id, NULL, NULL, m.epic_id, m.author_kind, m.author, m.body, m.created_at, ep.group_id, ep.project_id || '/'
+                 FROM epic_messages m JOIN epics ep ON ep.num = m.epic_id`,
+      },
+    ].filter((src) => tableExists(src.table));
+    if (!sources.length) return;
     const at = this.now().toISOString();
-    // Oldest first across all three, so the group's conversation reads in order; ties keep each table's order.
+    // Oldest first across the tables, so a group's conversation reads in order. Each table keeps its own
+    // order (what an agent has read is counted in it): a message is placed by the latest time written up
+    // to it in its table, so a clock that went back can't put it before one written earlier.
     const rows = this.db
       .prepare(
-        `SELECT * FROM (
-           SELECT 0 AS src, m.id, m.escalation_id, NULL AS lane_id, NULL AS epic_id, m.author_kind, m.author, m.body, m.created_at,
-                  COALESCE(l.group_id, ep.group_id, t.group_id) AS group_id, e.lane_id AS home
-             FROM messages m JOIN escalations e ON e.id = m.escalation_id LEFT JOIN lanes l ON l.id = e.lane_id
-             LEFT JOIN epics ep ON ep.num = e.epic_id LEFT JOIN tickets t ON t.num = e.ticket_id
-           UNION ALL
-           SELECT 1, m.id, NULL, m.lane_id, NULL, m.author_kind, m.author, m.body, m.created_at, l.group_id, m.lane_id
-             FROM lane_messages m LEFT JOIN lanes l ON l.id = m.lane_id
-           UNION ALL
-           SELECT 2, m.id, NULL, NULL, m.epic_id, m.author_kind, m.author, m.body, m.created_at, ep.group_id, ep.project_id || '/'
-             FROM epic_messages m JOIN epics ep ON ep.num = m.epic_id
-         ) ORDER BY created_at, src, id`,
+        `SELECT *, MAX(created_at) OVER (PARTITION BY src ORDER BY id ROWS UNBOUNDED PRECEDING) AS placed
+         FROM (${sources.map((src) => src.select).join(' UNION ALL ')}) ORDER BY placed, src, id`,
       )
       .all() as Row[];
     const insert = this.db.prepare(
@@ -710,29 +724,30 @@ export class Store {
         Number(r.id),
       );
     }
+    // Files follow their messages (through a temporary index: one lookup per file).
+    this.db.exec('CREATE INDEX group_messages_legacy ON group_messages(legacy_table, legacy_id)');
+    for (const { table, column } of [
+      { table: 'messages', column: 'message_id' },
+      { table: 'lane_messages', column: 'lane_message_id' },
+      { table: 'epic_messages', column: 'epic_message_id' },
+    ]) {
+      if (!this.hasColumn('attachments', column)) continue;
+      this.db.exec(`
+        UPDATE attachments SET group_message_id = (SELECT g.id FROM group_messages g WHERE g.legacy_table = '${table}' AND g.legacy_id = attachments.${column})
+          WHERE ${column} IS NOT NULL;
+        DROP INDEX IF EXISTS attachments_${column.replace(/_id$/, '')};
+        ALTER TABLE attachments DROP COLUMN ${column};
+      `);
+    }
     this.db.exec(`
-      UPDATE attachments SET group_message_id = (SELECT g.id FROM group_messages g WHERE g.legacy_table = 'messages' AND g.legacy_id = attachments.message_id)
-        WHERE message_id IS NOT NULL;
-      UPDATE attachments SET group_message_id = (SELECT g.id FROM group_messages g WHERE g.legacy_table = 'lane_messages' AND g.legacy_id = attachments.lane_message_id)
-        WHERE lane_message_id IS NOT NULL;
-      UPDATE attachments SET group_message_id = (SELECT g.id FROM group_messages g WHERE g.legacy_table = 'epic_messages' AND g.legacy_id = attachments.epic_message_id)
-        WHERE epic_message_id IS NOT NULL;
-      DROP INDEX IF EXISTS attachments_message;
-      DROP INDEX IF EXISTS attachments_lane_message;
-      DROP INDEX IF EXISTS attachments_epic_message;
-      ALTER TABLE attachments DROP COLUMN message_id;
-      ALTER TABLE attachments DROP COLUMN lane_message_id;
-      ALTER TABLE attachments DROP COLUMN epic_message_id;
-      CREATE INDEX IF NOT EXISTS attachments_group_message ON attachments(group_message_id) WHERE group_message_id IS NOT NULL;
       -- How far each agent has read: the same messages, by their new ids.
       UPDATE lanes SET agent_read_id = COALESCE((SELECT MAX(g.id) FROM group_messages g
         WHERE g.legacy_table = 'lane_messages' AND g.lane_id = lanes.id AND g.legacy_id <= lanes.agent_read_id), 0);
       UPDATE epics SET agent_read_id = COALESCE((SELECT MAX(g.id) FROM group_messages g
         WHERE g.legacy_table = 'epic_messages' AND g.epic_id = epics.num AND g.legacy_id <= epics.agent_read_id), 0);
-      DROP TABLE messages;
-      DROP TABLE lane_messages;
-      DROP TABLE epic_messages;
+      DROP INDEX group_messages_legacy;
     `);
+    for (const { table } of sources) this.db.exec(`DROP TABLE ${table}`);
   }
 
   /**
@@ -4449,7 +4464,8 @@ export class Store {
       const w = where('m.id', 'e.lane_id', 'm.created_at', "substr(e.lane_id, 1, instr(e.lane_id, '/') - 1)");
       const raw = this.db
         .prepare(
-          `SELECT m.id AS _rid, m.*, e.lane_id, e.ref, e.letter_index, e.seq, e.code FROM group_messages m JOIN escalations e ON e.id = m.escalation_id ${w.sql}`,
+          `SELECT m.id AS _rid, m.id, m.escalation_id, m.author_kind, m.author, m.body, m.created_at, e.lane_id, e.ref, e.letter_index, e.seq, e.code
+           FROM group_messages m JOIN escalations e ON e.id = m.escalation_id ${w.sql}`,
         )
         .all(...w.params) as Row[];
       return page(raw, (r) => {
