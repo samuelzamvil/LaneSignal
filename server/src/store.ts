@@ -173,6 +173,11 @@ export interface WaitScope {
   /** Who is waiting: their own withdrawals aren't reported back to them. */
   viewer?: string;
   /**
+   * The waiting key ("user:<account>:<key name>" or "token:<name>"): group notes count as ones it had
+   * only when they were handed to this key.
+   */
+  viewerKey?: string;
+  /**
    * `digest`: ready only when there's something to handle. `full`: the older behaviour, ready at once
    * when nothing is open. Left out: get_updates.
    */
@@ -343,7 +348,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 26;
+const SCHEMA_VERSION = 27;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -680,6 +685,7 @@ export class Store {
       if (version < 24) this.migrateV24();
       if (version < 25) this.migrateV25();
       if (version < 26) this.migrateV26();
+      if (version < 27) this.migrateV27();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -690,6 +696,11 @@ export class Store {
    * v26: how far the group's overseer has been handed the group's messages (its waits and
    * get_updates), so a note it never received is never treated as one it had already.
    */
+  /** v27: whose key the group's messages were handed to (overseer_delivered_id is that key's). */
+  private migrateV27() {
+    if (!this.hasColumn('groups', 'overseer_delivered_by')) this.db.exec('ALTER TABLE groups ADD COLUMN overseer_delivered_by TEXT');
+  }
+
   private migrateV26() {
     if (!this.hasColumn('groups', 'overseer_delivered_id')) {
       this.db.exec('ALTER TABLE groups ADD COLUMN overseer_delivered_id INTEGER NOT NULL DEFAULT 0');
@@ -3225,11 +3236,11 @@ export class Store {
         ? ((this.db.prepare('SELECT group_id FROM epics WHERE num = ?').get(home.epicId) as Row | undefined)?.group_id as string | undefined)
         : ((this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row | undefined)?.group_id as string | undefined);
     // The same question again (ignoring spacing, case and closing punctuation) from the same raiser is a
-    // retry: on the same ticket or epic, or, raised from a lane, an FYI on its group's epic (an agent
-    // moves between a lane and its group's epic). Never another lane's ticket. The same ticket or epic
-    // is preferred.
+    // retry: on the same ticket or epic. Asked as blocking from a lane, an FYI of its group's epic counts
+    // too (an agent moves between a lane and its group's epic): it moves to the lane's ticket and blocks
+    // that lane. Never another lane's ticket. The same ticket or epic is preferred.
     const sameHome = (r: Row) => (home.ticketId !== null ? Number(r.ticket_id) === home.ticketId : Number(r.epic_id) === home.epicId);
-    const groupEpic = home.ticketId !== null && groupOfCall;
+    const groupEpic = home.ticketId !== null && input.blocking !== false && groupOfCall;
     const existing = (
       this.db
         .prepare(
@@ -3247,6 +3258,8 @@ export class Store {
       // Raising an open FYI again as blocking (the default) makes it need the owner now (same code),
       // even during the agent's turn: it goes back to the owner.
       if (input.blocking !== false && !this.requireEscalation(id).blocking) {
+        // An FYI of the group's epic, asked again from a lane: it's the lane's ticket's question now.
+        if (home.ticketId !== null && !sameHome(existing)) this.moveToTicket(id, home.ticketId, input.laneId, actor);
         return { ...this.makeBlocking(id, input, actor, owner), duplicate: true, upgraded: true };
       }
       if (this.requireEscalation(id).turn === 'agent') {
@@ -3344,22 +3357,44 @@ export class Store {
   }
 
   /**
+   * An epic's question becomes a ticket's, raised in `laneId` (it keeps its code and its thread, which
+   * stays in the group's conversation): the lane holding the ticket is the one it blocks.
+   */
+  private moveToTicket(id: string, ticketId: number, laneId: string, actor: string) {
+    const before = this.requireEscalation(id);
+    this.tx(() => {
+      const at = this.now().toISOString();
+      this.db.prepare('UPDATE escalations SET ticket_id = ?, epic_id = NULL, lane_id = ?, updated_at = ? WHERE id = ?').run(ticketId, laneId, at, id);
+      this.db.prepare('UPDATE tickets SET updated_at = ? WHERE num = ?').run(at, ticketId);
+      this.addEvent(laneId, at, 'escalation', `${before.ref} moved here from the epic: ${before.question}`, actor, ticketId);
+    });
+    if (before.epicId !== null) this.emitEpic(before.epicId);
+    this.emitTicket(ticketId);
+  }
+
+  /**
    * Codes of the open FYI questions in the group now (on its tickets, wherever they were raised, or its
    * epics), oldest first, but `except`: those the caller can upgrade, all of them for the group's
    * overseer, otherwise its own. `raiser` is its key (`byKey`) or, for a config token, its name.
    */
   private openFyisIn(groupId: string | null, except: string, raiser: string, byKey: boolean): string[] {
     if (!groupId) return [];
-    const overseer = (this.db.prepare('SELECT owner FROM groups WHERE id = ?').get(groupId) as Row | undefined)?.owner === raiser && byKey;
+    // As requireRaiser decides: the group's overseer (while the group is live) may upgrade any of them.
+    const overseer =
+      byKey &&
+      (this.db.prepare('SELECT owner FROM groups WHERE id = ? AND archived_at IS NULL').get(groupId) as Row | undefined)?.owner === raiser;
+    // Older rows recorded the account alone ("user:<id>"): those are the same key's too.
+    const account = /^user:[^:]+/.exec(raiser)?.[0];
+    const mine = byKey ? `AND (raised_by_owner = ?${account ? ' OR raised_by_owner = ?' : ''})` : 'AND created_by = ?';
     return (
       this.db
         .prepare(
           `SELECT id FROM escalations WHERE state = 'open' AND blocking = 0 AND id <> ?
              AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?) OR epic_id IN (SELECT num FROM epics WHERE group_id = ?))
-             ${overseer ? '' : byKey ? 'AND raised_by_owner = ?' : 'AND created_by = ?'}
+             ${overseer ? '' : mine}
            ORDER BY created_at, ref LIMIT 20`,
         )
-        .all(except, groupId, groupId, ...(overseer ? [] : [raiser])) as Row[]
+        .all(except, groupId, groupId, ...(overseer ? [] : [raiser, ...(byKey && account ? [account] : [])])) as Row[]
     ).map((r) => this.requireEscalation(r.id as string).ref);
   }
 
@@ -3389,7 +3424,11 @@ export class Store {
       }
       return { ...this.requireEscalation(id), duplicate: true };
     }
-    return { ...this.makeBlocking(id, { ...input, laneId: e.laneId!, question: input.question ?? e.question }, actor, owner), duplicate: true, upgraded: true };
+    return {
+      ...this.makeBlocking(id, { ...input, laneId: e.laneId!, question: input.question ?? e.question }, actor, owner, input.question !== undefined),
+      duplicate: true,
+      upgraded: true,
+    };
   }
 
   /**
@@ -3438,7 +3477,8 @@ export class Store {
    * Fields given again (context, recommendation, options, ...) replace the FYI's, so the owner has
    * what they need to answer.
    */
-  private makeBlocking(id: string, input: EscalationInput, actor: string, owner: string | null): Escalation {
+  /** `newQuestion`: `input.question` replaces the FYI's (an explicit upgrade); a retry keeps its words. */
+  private makeBlocking(id: string, input: EscalationInput, actor: string, owner: string | null, newQuestion = false): Escalation {
     let loose = false;
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
@@ -3459,7 +3499,7 @@ export class Store {
         )
         .run(
           at,
-          input.question.trim() ? input.question : before.question,
+          newQuestion && input.question.trim() ? input.question : before.question,
           given(input.context) as string | null,
           given(input.recommendation) as string | null,
           given(input.cost) as string | null,
@@ -3478,7 +3518,7 @@ export class Store {
       // Reject withdrawn: what it meant no longer applies.
       if (input.allowReject === false) this.db.prepare('UPDATE escalations SET reject_means = NULL WHERE id = ?').run(id);
       this.linkAttachments(id, input.attachments ?? [], owner ?? actor);
-      this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${input.question.trim() ? input.question : before.question}`, actor, before.ticketId);
+      this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${newQuestion && input.question.trim() ? input.question : before.question}`, actor, before.ticketId);
       // It blocks the lane holding its ticket (or, with no ticket, the lane it was raised in); none while parked.
       const holder = this.holderOf(before);
       const lane = holder ? this.getLane(holder) : null;
@@ -3526,8 +3566,11 @@ export class Store {
   }
 
   /** How far the group's overseer has been handed the group's messages (0: none yet). */
-  private overseerDeliveredId(groupId: string): number {
-    return Number((this.db.prepare('SELECT overseer_delivered_id FROM groups WHERE id = ?').get(groupId) as Row | undefined)?.overseer_delivered_id ?? 0);
+  /** How far the group's messages were handed to `key` (0: never, or last handed to another key). */
+  private deliveredTo(groupId: string, key: string | undefined): number {
+    if (!key) return 0;
+    const r = this.db.prepare('SELECT overseer_delivered_id, overseer_delivered_by FROM groups WHERE id = ?').get(groupId) as Row | undefined;
+    return r && r.overseer_delivered_by === key ? Number(r.overseer_delivered_id) : 0;
   }
 
   /**
@@ -3545,7 +3588,9 @@ export class Store {
 
   /**
    * The overseer was handed the group's messages up to `upTo` (a wait or get_updates result that
-   * listed them). Never moves back; anyone but the overseer changes nothing.
+   * listed them), recorded with its key: another key (a new overseer, or another agent while the group
+   * has none) starts again from there. Never moves back for the same key; anyone who can't acknowledge
+   * changes nothing.
    */
   markGroupMessagesDelivered(groupId: string, upTo: number, by: { key: string; agent: boolean }): void {
     const g = this.db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Row | undefined;
@@ -3555,7 +3600,12 @@ export class Store {
     } catch {
       return;
     }
-    this.db.prepare('UPDATE groups SET overseer_delivered_id = ? WHERE id = ? AND overseer_delivered_id < ?').run(upTo, groupId, upTo);
+    this.db
+      .prepare(
+        `UPDATE groups SET overseer_delivered_id = ?1, overseer_delivered_by = ?2
+         WHERE id = ?3 AND (overseer_delivered_by IS NOT ?2 OR overseer_delivered_id < ?1)`,
+      )
+      .run(upTo, by.key, groupId);
   }
 
   /** How far the group's overseer has acknowledged the group's messages (0: none yet). */
@@ -4239,7 +4289,7 @@ export class Store {
     let newNotes = 0;
     if (scope.groupId) {
       const notesSince = scope.notesSince === undefined ? scope.since : scope.notesSince;
-      const delivered = this.overseerDeliveredId(scope.groupId);
+      const delivered = this.deliveredTo(scope.groupId, scope.viewerKey);
       const unacknowledged = this.unacknowledgedGroupMessages(scope.groupId).map((m) =>
         notesSince && m.at < notesSince && m.id <= delivered ? { ...m, repeat: true as const } : m,
       );

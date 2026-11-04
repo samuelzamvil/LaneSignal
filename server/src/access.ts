@@ -221,6 +221,7 @@ export function waitScopeFor(
     groupId: raw.groupId ? qualify(pr!, raw.groupId) : undefined,
     since: raw.since,
     viewer: a.principal.name,
+    viewerKey: ownerOf(a.principal),
   };
 }
 
@@ -653,7 +654,7 @@ export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'ack
 
 /**
  * `upgrade` on create_escalation: the open FYI named by `code` becomes blocking, taking `fields`.
- * Only its raiser, or the overseer of the group its ticket or epic is in, may (people always may).
+ * Only its raiser, or the overseer of the group its ticket or epic is in, may.
  */
 export function upgradeFor(
   store: Store,

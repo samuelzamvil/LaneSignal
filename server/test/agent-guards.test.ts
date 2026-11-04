@@ -221,15 +221,26 @@ describe('an FYI that now needs the owner', () => {
     assert.notEqual((await tool({ lane_id: 'fyi-punct', question: 'Is a < b?', blocking: false })).value.id, b.id);
   });
 
-  test("raised from a lane, an FYI on the group's epic is upgraded; another lane's never is", async () => {
+  test("asked as blocking from a lane, an FYI on the group's epic moves to the lane and blocks it; another lane's never is", async () => {
     await srv.publish('fyi-move', { group: 'fyi-g2' });
     await srv.publish('fyi-move-2', { group: 'fyi-g2' });
     const onEpic = (await tool({ epic: 'fyi-g2', question: 'Freeze the schema?', blocking: false })).value;
-    const fromLane = (await tool({ lane_id: 'fyi-move', question: 'Freeze the schema?' })).value;
+    // Asked again as an FYI from a lane, it's the lane's own.
+    assert.notEqual((await tool({ lane_id: 'fyi-move-2', question: 'Freeze the schema?', blocking: false })).value.id, onEpic.id);
+    const fromLane = (await tool({ lane_id: 'fyi-move', question: 'Freeze the schema.' })).value;
     assert.equal(fromLane.id, onEpic.id);
     assert.equal(fromLane.upgraded, true);
-    // It stays on the epic: no lane blocks for it.
-    assert.equal((await srv.call('GET', '/api/lanes/fyi-move', ALICE)).body.lane.status, 'active');
+    // Same code, now the lane's ticket's: the lane blocks, and a wait on the lane hears the answer.
+    assert.equal(fromLane.ref, onEpic.ref);
+    assert.equal(fromLane.laneId, 'fyi-move');
+    assert.equal(fromLane.epic, undefined);
+    // A retry keeps the question's words.
+    assert.equal(fromLane.question, 'Freeze the schema?');
+    assert.equal((await srv.call('GET', '/api/lanes/fyi-move', ALICE)).body.lane.status, 'blocked_human');
+    await srv.call('POST', `/api/escalations/${onEpic.id}/decide`, ALICE, { decision: 'Accept' });
+    const heard = (await srv.tool(AGENT, 'wait_for_decisions', { lane_ids: ['fyi-move'], wait_seconds: 0 })).value;
+    assert.deepEqual(heard.items.map((i: { code: string; kind: string }) => [i.code, i.kind]), [[onEpic.ref, 'decided']]);
+    await srv.tool(AGENT, 'acknowledge_escalation', { id: onEpic.ref });
     // The same short question on two lanes is two questions: each lane's own blocks.
     const onOther = (await tool({ lane_id: 'fyi-move-2', question: 'OK to merge?', blocking: false })).value;
     const here = (await tool({ lane_id: 'fyi-move', question: 'OK to merge?' })).value;

@@ -566,7 +566,8 @@ function buildServer(
           );
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
           const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
-          markNotesDelivered(store, value, who);
+          // Only what reaches the caller counts as handed over: not a call it cancelled.
+          if (!extra.signal.aborted) markNotesDelivered(store, value, who);
           const result = pub.wait(value, timeout ? visible : undefined);
           return json({ ...(format === 'full' ? briefWait(result) : digestWait(result, a.projects.length > 1)), ...(acked !== undefined ? { acked } : {}) });
         } catch (err) {
@@ -1244,7 +1245,7 @@ function buildServer(
           'group\'s epic\'s if it holds none; `epic` with no `lane_id` raises it on the epic (blocks no lane). ' +
           'Returns its code (`ref`, e.g. "967A"). The same open question again returns the first (`duplicate: true`); ' +
           'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give (attachments are added). ' +
-          '"The same" ignores spacing, case and closing punctuation; raised from a lane, an FYI of yours on its group\'s epic counts too. ' +
+          '"The same" ignores spacing, case and closing punctuation; asked as blocking from a lane, an FYI of yours on its group\'s epic counts too and moves to the lane\'s ticket. ' +
           'To make an FYI blocking whatever its words, pass its code as `upgrade` (question optional: given, it replaces the FYI\'s; leave out lane_id, epic, blocking and positions). ' +
           'A new blocking question lists the open FYIs in its group you can upgrade as `openFyis`: upgrade or dismiss any it repeats.',
         inputSchema: {

@@ -1042,7 +1042,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;
-        if (!revoked) markNotesDelivered(store, result, principalOf(res));
+        // Only what reaches the caller counts as handed over: not a wait it hung up on.
+        if (!revoked && !abort.signal.aborted) markNotesDelivered(store, result, principalOf(res));
         res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : withAck(shape(pub.wait(result, visible)))));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));
