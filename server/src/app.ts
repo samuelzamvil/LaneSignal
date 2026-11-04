@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
-import { accessFor, approvesRequirements, productsKeptWarning, briefMessages, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, approvesRequirements, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { checkAttachment, readUpload } from './attachments.ts';
 import { CLIENT_IP_HEADER, FAILOVER_KEY_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, SESSION_HEADER, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
@@ -708,8 +708,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       ]
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
         .map(pub.escalation),
-      events: store.laneEvents(lane.id, 100, false).map((e) => ({ ...e, laneId: localId(e.laneId) })),
-      messages: store.laneMessages(lane.id),
+      // Milestones (notify_owner) are part of the lane's history.
+      events: store.laneEvents(lane.id, 100, true).map((e) => ({ ...e, laneId: localId(e.laneId) })),
     });
   });
 
@@ -726,13 +726,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       epic = found.id;
     }
     const patch = { ...rest, group: rest.group ? q(project, rest.group) : rest.group, ...(strict ? { ticket: rest.ticket ?? null } : {}) };
-    // The dashboard's message bookkeeping is no use to the agent publishing.
-    const { lastMessageId, lastAgentMessageId, unreadByAgent, ...lane } = pub.lane(
-      store.upsertLane(q(project, id), patch, principalOf(res).name, { previous, reason, waitingOn, epic, strict }),
-    );
-    // The owner's notes on the lane reach a working agent the next time it publishes.
-    const unread = store.takeUnreadForAgent(q(project, id));
-    res.json(unread.length ? { ...lane, ownerMessages: briefMessages(unread) } : lane);
+    res.json(pub.lane(store.upsertLane(q(project, id), patch, principalOf(res).name, { previous, reason, waitingOn, epic, strict })));
   };
   app.put('/api/lanes/:id', agent, (req, res) => publishLane(req, res, false));
   app.put('/api/lanes/:id/fill', agent, (req, res) => publishLane(req, res, true));
@@ -766,13 +760,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json(epics.map(pub.epic));
   });
 
-  /** One epic with its questions, its message board, and the combined feed of its lanes. */
+  /** One epic with its questions and the combined feed of its lanes. */
   app.get('/api/epics/:id', any, (req, res) => {
     const epic = epicOf(req, res);
     res.json({
       epic: pub.epic(epic),
       escalations: store.listEscalations({ epicId: epic.id, states: ['open', 'decided', 'acknowledged', 'withdrawn'], limit: 200 }).map(pub.escalation),
-      messages: store.epicMessages(epic.id),
       lanes: store.epicLanes(epic.id).map(localId),
       feed: store.epicFeed(epic.id).map((e) => ({ ...e, laneId: localId(e.laneId) })),
     });
@@ -794,28 +787,14 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       epic.standIn && body.ref?.trim()
         ? store.upsertEpic(epic.project, { groupId: epic.group, ...body }, principalOf(res).name)
         : store.upsertEpic(epic.project, { epic: epic.id, ...body }, principalOf(res).name);
-    const unread = store.takeUnreadEpicForAgent(updated.id);
-    const out = pub.epic(store.getEpic(updated.id)!);
-    res.json(unread.length ? { ...out, ownerMessages: briefMessages(unread) } : out);
+    res.json(pub.epic(store.getEpic(updated.id)!));
   });
 
-  /** A message on the board: from the overseer, a quiet push; from a person, a note the overseer's group wait hands over. */
-  app.post('/api/epics/:id/messages', any, (req, res) => {
-    const body = parse(s.message, req.body ?? {});
-    const p = principalOf(res);
-    if (p.role !== 'agent' && !config.decisions) {
-      throw new NotFoundError("Writing to agents in LaneSignal is off on this server (LANESIGNAL_DECISIONS): write in the agent's session");
-    }
-    const epic = epicOf(req, res);
-    const from = p.role === 'agent' ? 'agent' : 'owner';
-    const message = store.postEpicMessage(epic.id, { from, author: p.name, body: body.body, attachments: body.attachments }, ownerOf(p));
-    if (from === 'owner') {
-      res.status(201).json(message);
-      return;
-    }
-    const unread = store.takeUnreadEpicForAgent(epic.id);
-    res.status(201).json({ id: message.id, at: message.at, ...(unread.length ? { ownerMessages: briefMessages(unread) } : {}) });
-  });
+  // Epics' boards and lanes' conversations are retired: everything is said in the group's conversation.
+  const retired = (where: string) => (_req: Request, res: Response) => {
+    res.status(410).json({ error: `${where} no longer take messages: write in the group's conversation (POST /api/groups/:id/messages)` });
+  };
+  app.post('/api/epics/:id/messages', any, retired("Epics' boards"));
 
   app.post('/api/epics/:id/close-request', agent, (req, res) => {
     const epic = epicOf(req, res);
@@ -935,39 +914,16 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json({ acknowledgedUpTo: store.ackGroupMessages(q(project, String(req.params.id)), body.upTo) });
   });
 
-  /**
-   * A message in a lane's conversation. From the agent, a milestone with any files (a quiet push);
-   * from a person, a note the agent gets the next time it publishes, writes on or waits on the lane.
-   * The reply carries the owner's messages the agent hadn't seen.
-   */
-  app.post('/api/lanes/:id/messages', any, (req, res) => {
-    const body = parse(s.message, req.body ?? {});
-    const p = principalOf(res);
-    if (p.role !== 'agent' && !config.decisions) {
-      throw new NotFoundError("Writing to agents in LaneSignal is off on this server (LANESIGNAL_DECISIONS): write in the agent's session");
-    }
-    const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
-    const laneId = q(project, String(req.params.id));
-    const from = p.role === 'agent' ? 'agent' : 'owner';
-    const message = store.postLaneMessage(laneId, { from, author: p.name, body: body.body, attachments: body.attachments }, ownerOf(p));
-    if (from === 'owner') {
-      res.status(201).json(message);
-      return;
-    }
-    // Agents get what they need back, as from notify_owner.
-    const unread = store.takeUnreadForAgent(laneId);
-    res.status(201).json({ id: message.id, at: message.at, ...(unread.length ? { ownerMessages: briefMessages(unread) } : {}) });
-  });
+  app.post('/api/lanes/:id/messages', any, retired("Lanes' conversations"));
 
-  // The agent's message on a lane, as notify_owner sends it: `message` and any `attachments`.
+  // The agent's milestone on a lane, as notify_owner sends it (`message`, any `attachments`): a message in its group's conversation.
   app.post('/api/lanes/:id/notices', agent, (req, res) => {
     const body = parse(s.notice, req.body ?? {});
     const p = principalOf(res);
     const project = acc(res).pick(projectQuery(req), { lane: String(req.params.id) });
     const laneId = q(project, String(req.params.id));
     const r = store.postNotice(laneId, body.message, p.name, body.attachments, ownerOf(p));
-    const unread = store.takeUnreadForAgent(laneId);
-    res.status(201).json({ ...r, laneId: localId(r.laneId), ...(unread.length ? { ownerMessages: briefMessages(unread) } : {}) });
+    res.status(201).json({ ...r, laneId: localId(r.laneId) });
   });
 
   // ---- escalations ----
@@ -1025,7 +981,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     );
     // Only the overseer acknowledges what's meant for it.
     if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
-    const { ready: _ready, ...all } = briefWait(pub.wait(store.handOver(store.decisionsFor(scope), acc(res).projects)));
+    const { ready: _ready, ...all } = briefWait(pub.wait(store.decisionsFor(scope)));
     res.json(all);
   });
 
@@ -1055,7 +1011,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
-        res.json(shape(pub.wait(store.handOver(now, acc(res).projects))));
+        res.json(shape(pub.wait(now)));
         return;
       }
       const abort = new AbortController();
@@ -1075,8 +1031,6 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;
-        // Notes are handed over only when they're actually sent: not to a revoked key or a client that left.
-        if (!revoked && !abort.signal.aborted) store.handOver(result, visible);
         res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : shape(pub.wait(result, visible))));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));

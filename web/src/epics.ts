@@ -49,5 +49,5 @@ export function groupLayout<L extends Pick<Lane, 'ticketId'>>(
   };
 }
 
-/** Something on an epic's card worth seeing with no lanes under it: a real epic, or a stand-in's status line, questions, board or close request. */
-export const epicShows = (e: Epic) => !e.standIn || !!e.statusLine || e.openEscalations > 0 || e.lastMessageId !== null || e.state !== 'open';
+/** Something on an epic's card worth seeing with no lanes under it: a real epic, or a stand-in's status line, questions or close request. */
+export const epicShows = (e: Epic) => !e.standIn || !!e.statusLine || e.openEscalations > 0 || e.state !== 'open';

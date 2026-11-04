@@ -36,7 +36,6 @@ test('an epic card shows without lanes when it has something to say', () => {
   assert.equal(epicShows(standIn), false);
   assert.equal(epicShows({ ...standIn, statusLine: '2 of 3 lanes busy' }), true);
   assert.equal(epicShows({ ...standIn, openEscalations: 1 }), true);
-  assert.equal(epicShows({ ...standIn, lastMessageId: 4 }), true);
 });
 
 test('epic links open its sheet, and closing it goes back to Lanes', () => {

@@ -181,7 +181,9 @@ export function buildPayload(store: Store, setup: TrmnlSetup, now: Date): TrmnlP
       type: stored.kind,
       label,
       code: null,
-      ...laneAndGroup(store, stored.laneId),
+      ...(stored.laneId || !stored.groupId
+        ? laneAndGroup(store, stored.laneId)
+        : { lane: '', group: clip(store.getGroup(stored.groupId)?.name ?? localId(stored.groupId), 30) }),
       title: clip(stored.body, 200) ?? '',
       context: null,
       message: null,
@@ -404,8 +406,9 @@ export class TrmnlPusher {
       if (!setup?.includeNotifications) return;
       this.store.setTrmnlCard(n.project, {
         kind: 'notice',
-        laneId: n.laneId,
-        title: where(this.store, n.laneId),
+        laneId: n.laneId ?? '',
+        groupId: n.groupId,
+        title: n.laneId ? where(this.store, n.laneId) : (this.store.getGroup(n.groupId)?.name ?? localId(n.groupId)),
         body: n.message,
         at: this.now().toISOString(),
         files: n.attachments?.length || undefined,

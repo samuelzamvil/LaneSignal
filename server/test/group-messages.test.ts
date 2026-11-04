@@ -30,6 +30,15 @@ const rows = (file: string, sql: string) => {
   }
 };
 
+const exec = (file: string, sql: string) => {
+  const db = new DatabaseSync(file);
+  try {
+    db.exec(sql);
+  } finally {
+    db.close();
+  }
+};
+
 test('every message is in one table, in its group, and each view reads the same rows', () => {
   fileStore((file) => {
     let now = Date.parse('2026-11-04T10:00:00Z');
@@ -37,9 +46,8 @@ test('every message is in one table, in its group, and each view reads the same 
     publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
     const e = escalate(store, { laneId: 'default/l', question: 'Q?' }, 'bot');
     store.postMessage(e.id, { from: 'owner', author: 'alice', body: 'Other: wait' }, 'user:a');
-    store.postLaneMessage('default/l', { from: 'agent', author: 'bot', body: 'Merged' }, 'bot');
-    const epic = store.listEpics({ groupId: 'default/g' })[0];
-    store.postEpicMessage(epic.id, { from: 'owner', author: 'alice', body: 'Scope?' }, 'user:a');
+    store.postNotice('default/l', 'Merged', 'bot');
+    store.postGroupMessage('default/g', { from: 'owner', author: 'alice', body: 'Next?' }, 'user:a');
     store.close();
 
     const all = rows(file, 'SELECT group_id, escalation_id, lane_id, epic_id, body FROM group_messages ORDER BY id');
@@ -47,8 +55,9 @@ test('every message is in one table, in its group, and each view reads the same 
       all.map((r) => [r.group_id, r.escalation_id ? 'esc' : r.lane_id ? 'lane' : r.epic_id ? 'epic' : 'group', r.body]),
       [
         ['default/g', 'esc', 'Other: wait'],
+        // A milestone records the lane it's about.
         ['default/g', 'lane', 'Merged'],
-        ['default/g', 'epic', 'Scope?'],
+        ['default/g', 'group', 'Next?'],
       ],
     );
     assert.deepEqual(
@@ -57,8 +66,10 @@ test('every message is in one table, in its group, and each view reads the same 
     );
     const reopened = new Store({ path: file, resolveTicketUrl });
     assert.deepEqual(reopened.messagesOf(e.id).map((m) => m.body), ['Other: wait']);
-    assert.deepEqual(reopened.laneMessages('default/l').map((m) => m.body), ['Merged']);
-    assert.deepEqual(reopened.epicMessages(epic.id).map((m) => m.body), ['Scope?']);
+    assert.deepEqual(
+      reopened.groupConversation('default/g').items.map((i) => (i.type === 'message' ? i.body : `? ${i.question}`)),
+      ['Next?', 'Merged', 'Other: wait', '? Q?'],
+    );
     reopened.close();
   });
 });
@@ -67,9 +78,9 @@ test('a message stays in the group it was written in when its lane moves', () =>
   fileStore((file) => {
     const store = new Store({ path: file, resolveTicketUrl });
     publishLane(store, 'default/l', { group: 'default/a' }, 'bot');
-    store.postLaneMessage('default/l', { from: 'agent', author: 'bot', body: 'In A' }, 'bot');
+    store.postNotice('default/l', 'In A', 'bot');
     publishLane(store, 'default/l', { group: 'default/b' }, 'bot');
-    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'In B' }, 'user:a');
+    store.postNotice('default/l', 'In B', 'bot');
     store.close();
     assert.deepEqual(
       rows(file, 'SELECT group_id, body FROM group_messages ORDER BY id').map((r) => [r.group_id, r.body]),
@@ -81,100 +92,92 @@ test('a message stays in the group it was written in when its lane moves', () =>
   });
 });
 
-test('upgrading to v24 moves every message, its files and what the agent has read, in time order', () => {
+/**
+ * A v23 database with lane and epic conversations, as lanes and epics had them then: each table numbering
+ * its own messages, files linked by those numbers.
+ */
+function seedV23(file: string) {
+  let now = Date.parse('2026-11-04T10:00:00Z');
+  const store = new Store({ path: file, resolveTicketUrl, now: () => new Date((now += 1000)) });
+  publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
+  const e = escalate(store, { laneId: 'default/l', question: 'Q?' }, 'bot');
+  const escFile = store.addAttachment(png, 'user:a', 'alice');
+  store.postMessage(e.id, { from: 'owner', author: 'alice', body: 'Other: see the shot', attachments: [escFile.id] }, 'user:a');
+  const laneFile = store.addAttachment(png, 'bot', 'bot');
+  const epic = store.listEpics({ groupId: 'default/g' })[0];
+  store.close();
+  exec(
+    file,
+    `${UNDO_V24}
+     INSERT INTO lane_messages (id, lane_id, author_kind, author, body, created_at) VALUES
+       (1001, 'default/l', 'agent', 'bot', 'Merged', '2026-11-04T10:01:00.000Z'),
+       (1002, 'default/l', 'owner', 'alice', 'Thanks', '2026-11-04T10:02:00.000Z');
+     UPDATE attachments SET lane_message_id = 1001, position = 0 WHERE id = '${laneFile.id}';
+     INSERT INTO epic_messages (id, epic_id, author_kind, author, body, created_at) VALUES
+       (2001, ${epic.id}, 'owner', 'alice', 'Scope?', '2026-11-04T10:03:00.000Z');`,
+  );
+  return { escalationId: e.id, escFile: escFile.id, laneFile: laneFile.id, epicId: epic.id };
+}
+
+test('upgrading to v24 moves every message and its files into the group\'s conversation, in time order', () => {
   fileStore((file) => {
-    let now = Date.parse('2026-11-04T10:00:00Z');
-    let store = new Store({ path: file, resolveTicketUrl, now: () => new Date((now += 1000)) });
-    publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
-    const e = escalate(store, { laneId: 'default/l', question: 'Q?' }, 'bot');
-    const escFile = store.addAttachment(png, 'user:a', 'alice');
-    store.postMessage(e.id, { from: 'owner', author: 'alice', body: 'Other: see the shot', attachments: [escFile.id] }, 'user:a');
-    const laneFile = store.addAttachment(png, 'bot', 'bot');
-    store.postLaneMessage('default/l', { from: 'agent', author: 'bot', body: 'Merged', attachments: [laneFile.id] }, 'bot');
-    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'Read this one' }, 'user:a');
-    store.takeUnreadForAgent('default/l');
-    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'Not this one' }, 'user:a');
-    const epic = store.listEpics({ groupId: 'default/g' })[0];
-    store.postEpicMessage(epic.id, { from: 'owner', author: 'alice', body: 'Scope?' }, 'user:a');
-    const times = [...store.messagesOf(e.id), ...store.laneMessages('default/l'), ...store.epicMessages(epic.id)].map((m) => m.at);
-    store.close();
+    const seeded = seedV23(file);
+    const before = rows(file, 'SELECT created_at FROM lane_messages UNION ALL SELECT created_at FROM epic_messages');
 
-    // Back to v23, with each table numbering its own messages (as they did), so ids change on the way up.
-    const db = new DatabaseSync(file);
-    db.exec(`${UNDO_V24}
-      UPDATE lane_messages SET id = id + 1000;
-      UPDATE attachments SET lane_message_id = lane_message_id + 1000 WHERE lane_message_id IS NOT NULL;
-      UPDATE lanes SET agent_read_id = agent_read_id + 1000 WHERE agent_read_id > 0;
-      UPDATE epic_messages SET id = id + 2000;
-    `);
-    db.close();
-
-    store = new Store({ path: file, resolveTicketUrl });
-    const thread = store.messagesOf(e.id);
+    const store = new Store({ path: file, resolveTicketUrl });
+    const thread = store.messagesOf(seeded.escalationId);
     assert.deepEqual(thread.map((m) => [m.from, m.author, m.body, m.attachments.map((f) => f.name)]), [
       ['owner', 'alice', 'Other: see the shot', ['shot.png']],
     ]);
-    const lane = store.laneMessages('default/l');
-    assert.deepEqual(lane.map((m) => [m.body, m.attachments.length, m.seen]), [
-      ['Merged', 1, undefined],
-      ['Read this one', 0, true],
-      ['Not this one', 0, false],
+    const messages = store
+      .groupConversation('default/g')
+      .items.filter((i) => i.type === 'message')
+      .map((i) => (i.type === 'message' ? [i.body, i.laneId, i.epicId, i.attachments.length] : []));
+    assert.deepEqual(messages, [
+      ['Scope?', null, seeded.epicId, 0],
+      ['Thanks', 'default/l', null, 0],
+      ['Merged', 'default/l', null, 1],
+      ['Other: see the shot', null, null, 1],
     ]);
-    assert.deepEqual(store.takeUnreadForAgent('default/l').map((m) => m.body), ['Not this one']);
-    assert.deepEqual(store.epicMessages(epic.id).map((m) => m.body), ['Scope?']);
-    assert.deepEqual([...thread, ...lane, ...store.epicMessages(epic.id)].map((m) => m.at), times);
     // Files still resolve to where they're attached.
-    assert.equal(store.getAttachment(laneFile.id)?.laneId, 'default/l');
-    assert.equal(store.getAttachment(escFile.id)?.escalationId, e.id);
+    assert.equal(store.getAttachment(seeded.laneFile)?.laneId, 'default/l');
+    assert.equal(store.getAttachment(seeded.escFile)?.escalationId, seeded.escalationId);
     store.close();
-
-    // One table, in time order across escalation, lane and epic messages.
-    assert.deepEqual(
-      rows(file, 'SELECT body FROM group_messages ORDER BY id').map((r) => r.body),
-      ['Other: see the shot', 'Merged', 'Read this one', 'Not this one', 'Scope?'],
-    );
+    const after = rows(file, "SELECT created_at FROM group_messages WHERE lane_id IS NOT NULL OR epic_id IS NOT NULL ORDER BY id");
+    assert.deepEqual(after.map((r) => r.created_at), before.map((r) => r.created_at));
   });
 });
 
-test('upgrading to v24 keeps what the agent has read when the clock went back between messages', () => {
+test('upgrading to v24 keeps each table\'s order when the clock went back between messages', () => {
   fileStore((file) => {
-    let now = Date.parse('2026-11-04T10:00:10Z');
-    let store = new Store({ path: file, resolveTicketUrl, now: () => new Date(now) });
+    const store = new Store({ path: file, resolveTicketUrl });
     publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
-    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'Read' }, 'user:a');
-    assert.deepEqual(store.takeUnreadForAgent('default/l').map((m) => m.body), ['Read']);
     store.close();
-    // Restarted with the clock five seconds behind: the next note is stamped earlier than the one read.
-    now = Date.parse('2026-11-04T10:00:05Z');
-    store = new Store({ path: file, resolveTicketUrl, now: () => new Date(now) });
-    store.postLaneMessage('default/l', { from: 'owner', author: 'alice', body: 'Unread' }, 'user:a');
-    store.close();
-    const db = new DatabaseSync(file);
-    db.exec(UNDO_V24);
-    db.close();
-
-    store = new Store({ path: file, resolveTicketUrl });
-    assert.deepEqual(store.laneMessages('default/l').map((m) => [m.body, m.seen]), [
-      ['Read', true],
-      ['Unread', false],
-    ]);
-    assert.deepEqual(store.takeUnreadForAgent('default/l').map((m) => m.body), ['Unread']);
-    store.close();
+    // The second note was stamped earlier than the first (a restart with the clock behind).
+    exec(
+      file,
+      `${UNDO_V24}
+       INSERT INTO lane_messages (id, lane_id, author_kind, author, body, created_at) VALUES
+         (1, 'default/l', 'owner', 'alice', 'First', '2026-11-04T10:00:10.000Z'),
+         (2, 'default/l', 'owner', 'alice', 'Second', '2026-11-04T10:00:05.000Z');`,
+    );
+    new Store({ path: file, resolveTicketUrl }).close();
+    assert.deepEqual(rows(file, 'SELECT body FROM group_messages ORDER BY id').map((r) => r.body), ['First', 'Second']);
   });
 });
 
 test('upgrading to v24: a message on a lane in no group goes to its project\'s Ungrouped group', () => {
   fileStore((file) => {
-    let store = new Store({ path: file, resolveTicketUrl });
+    const store = new Store({ path: file, resolveTicketUrl });
     publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
-    store.postLaneMessage('default/l', { from: 'agent', author: 'bot', body: 'Old notice' }, 'bot');
     store.close();
-    const db = new DatabaseSync(file);
-    db.exec(`${UNDO_V24} UPDATE lanes SET group_id = NULL WHERE id = 'default/l';`);
-    db.close();
-    store = new Store({ path: file, resolveTicketUrl });
-    assert.deepEqual(store.laneMessages('default/l').map((m) => m.body), ['Old notice']);
-    store.close();
+    exec(
+      file,
+      `${UNDO_V24}
+       INSERT INTO lane_messages (lane_id, author_kind, author, body, created_at) VALUES ('default/l', 'agent', 'bot', 'Old notice', '2026-11-04T10:00:00.000Z');
+       UPDATE lanes SET group_id = NULL WHERE id = 'default/l';`,
+    );
+    new Store({ path: file, resolveTicketUrl }).close();
     assert.deepEqual(rows(file, 'SELECT group_id FROM group_messages').map((r) => r.group_id), ['default/ungrouped']);
   });
 });

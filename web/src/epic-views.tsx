@@ -1,9 +1,8 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import type { Client, Epic, Escalation, Group, LaneEvent, LaneMessage } from './api.ts';
-import { AttachmentList } from './attachments.tsx';
-import { FOLD, LaneComposer, Links, RichText, SheetSection, TicketLink, useStored, type Fold } from './components.tsx';
+import type { Client, Epic, Escalation, Group, LaneEvent } from './api.ts';
+import { FOLD, Links, SheetSection, TicketLink, useStored, type Fold } from './components.tsx';
 import { absolute, ago } from './format.ts';
-import { hasNewMessage, markMessagesSeen } from './seen.ts';
+import { hasNewMessage } from './seen.ts';
 import { toast } from './toast.tsx';
 
 /** Open epics (and ones waiting for close approval), by number. */
@@ -22,8 +21,6 @@ export const hasLane = (laneId: string | null): laneId is string => laneId !== n
 export const laneKeyOf = (e: Pick<Escalation, 'project' | 'laneId' | 'epicId'>) =>
   `${e.project}/${hasLane(e.laneId) ? e.laneId : `~epic-${e.epicId}`}`;
 
-/** An epic's board, as the per-device "new message" marker keys it. */
-const board = (e: Epic) => ({ project: e.project, id: `~epic-${e.id}`, lastAgentMessageId: e.lastAgentMessageId });
 
 /** The overseer's Remote Control session, from its group's links. */
 const sessionLink = (group: Group | undefined) => group?.links.find((l) => l.kind === 'session');
@@ -115,6 +112,7 @@ export function GroupHeader({
   standIn,
   showTicket,
   onOpen,
+  onChat,
 }: {
   group: Group | undefined;
   name: string;
@@ -126,6 +124,8 @@ export function GroupHeader({
   /** The group's own ticket from before epics: not shown once its epics carry theirs. */
   showTicket: boolean;
   onOpen?: () => void;
+  /** Opens the group's conversation. */
+  onChat?: () => void;
 }) {
   const session = sessionLink(group);
   const others = group?.links.filter((l) => l !== session) ?? [];
@@ -133,17 +133,13 @@ export function GroupHeader({
   const open = standIn && onOpen;
   return (
     <header className={`group-head${open ? ' opens' : ''}${blocked ? ' needs-human' : ''}`} onClick={open ? onOpen : undefined}>
+      <div className="group-head-main">
       <div className="group-title">
         <h3>{open ? <TitleButton name={name} onOpen={onOpen} /> : name}</h3>
         <span className="count">{lanes}</span>
         {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
         {blocked && <span className="pill tone-danger">Waiting on you</span>}
         {showTicket && (standIn ? <EpicTicket epic={standIn} group={group} /> : group && <TicketLink lane={group} />)}
-        {standIn && hasNewMessage(board(standIn)) && (
-          <span className="new-message" title="The overseer wrote on this group's board: open it to read">
-            💬
-          </span>
-        )}
         {session && (
           <a className="session-link" href={session.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
             💬 {session.label}
@@ -155,6 +151,23 @@ export function GroupHeader({
         <div onClick={(e) => e.stopPropagation()}>
           <Links links={others} />
         </div>
+      )}
+      </div>
+      {group && onChat && (
+        <button
+          className="chat-button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onChat();
+          }}
+          aria-label={`Chat with ${name}'s overseer${hasNewMessage(group) ? ' (new messages)' : ''}`}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" />
+          </svg>
+          Chat
+          {hasNewMessage(group) && <span className="chat-new" aria-hidden="true" />}
+        </button>
       )}
     </header>
   );
@@ -222,11 +235,6 @@ export function EpicCard({
         {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
         {epic.blockingEscalations > 0 && <span className="pill tone-danger">Waiting on you</span>}
         <EpicTicket epic={epic} group={group} />
-        {hasNewMessage(board(epic)) && (
-          <span className="new-message" title="The overseer wrote on this epic's board: open it to read">
-            💬
-          </span>
-        )}
       </div>
       {epic.statusLine && <p className="status-line">{epic.statusLine}</p>}
       <CloseRequest epic={epic} client={client} canApprove={canApprove} />
@@ -242,7 +250,6 @@ export function EpicDetail({
   now,
   group,
   groupLabel,
-  canWrite,
   canApprove,
   laneName,
   onClose,
@@ -255,8 +262,6 @@ export function EpicDetail({
   now: number;
   group: Group | undefined;
   groupLabel: string;
-  /** May write on the board (a person, with answering in LaneSignal on). */
-  canWrite: boolean;
   canApprove: boolean;
   /** A lane's name from its id in the epic's project; null for one the client doesn't have. */
   laneName: (project: string, laneId: string) => string | null;
@@ -264,13 +269,9 @@ export function EpicDetail({
   backTo: string;
 }) {
   const live = useContext(EpicsContext).get(String(id));
-  const [data, setData] = useState<{ epic: Epic; escalations: Escalation[]; messages: LaneMessage[]; lanes: string[]; feed: LaneEvent[] } | null>(
-    null,
-  );
+  const [data, setData] = useState<{ epic: Epic; escalations: Escalation[]; lanes: string[]; feed: LaneEvent[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(0);
   const [escFold, setEscFold] = useStored<Fold>('lanesignal.epic.escalations', FOLD, 'open');
-  const [boardFold, setBoardFold] = useStored<Fold>('lanesignal.epic.board', FOLD, 'open');
   const [feedFold, setFeedFold] = useStored<Fold>('lanesignal.epic.feed', FOLD, 'open');
 
   useEffect(() => {
@@ -286,14 +287,10 @@ export function EpicDetail({
     return () => {
       cancelled = true;
     };
-  }, [client, id, version, sent]);
+  }, [client, id, version]);
 
   // The live copy is newer than the fetched one between refetches.
   const epic = live ?? data?.epic;
-  // The overseer's posts are read once the board is showing, not while it's folded away.
-  useEffect(() => {
-    if (epic && boardFold === 'open') markMessagesSeen(board(epic), epic.lastAgentMessageId);
-  }, [epic, boardFold]);
 
   const lane = (laneId: string): ReactNode => {
     const name = epic ? laneName(epic.project, laneId) : null;
@@ -365,49 +362,6 @@ export function EpicDetail({
                   </li>
                 ))}
               </ul>
-            </SheetSection>
-
-            <SheetSection
-              title="Board"
-              count={data.messages.length}
-              badge={
-                boardFold === 'folded' &&
-                hasNewMessage(board(epic)) && (
-                  <span className="new-message" title="The overseer wrote on the board">
-                    💬 new
-                  </span>
-                )
-              }
-              open={boardFold === 'open'}
-              onToggle={() => setBoardFold(boardFold === 'open' ? 'folded' : 'open')}
-            >
-              {data.messages.length > 0 ? (
-                <ol className="thread">
-                  {data.messages.map((m) => (
-                    <li key={m.id} className={`msg from-${m.from}`}>
-                      <div className="msg-meta">
-                        {m.author} <span title={absolute(m.at)}>· {ago(m.at, now)}</span>
-                        {m.from === 'owner' && <span className="msg-seen">{m.seen ? ' · seen by the overseer' : ' · not seen yet'}</span>}
-                      </div>
-                      <RichText text={m.body} />
-                      {m.attachments.length > 0 && <AttachmentList client={client} files={m.attachments} />}
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <p className="hint">The longer conversation that steers this epic: direction, scope, which tickets come next.</p>
-              )}
-              {canWrite && !closed && (
-                <LaneComposer
-                  key={epic.id}
-                  placeholder="Write to the overseer (it reads this on its next wait)"
-                  onSend={async (body) => {
-                    await client.epicMessage(epic.id, body);
-                    toast({ text: `Posted on ${epic.name}` });
-                    setSent((n) => n + 1);
-                  }}
-                />
-              )}
             </SheetSection>
 
             <SheetSection

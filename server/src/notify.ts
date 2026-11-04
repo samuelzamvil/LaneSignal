@@ -121,25 +121,15 @@ function whereOf(store: Store, laneId: string | null) {
 }
 
 export function noticeNotification(store: Store, n: Notice): Notification {
-  const epic = n.epicId !== undefined ? store.getEpic(n.epicId) : null;
-  if (epic) {
-    const files = n.attachments?.length ?? 0;
-    return {
-      title: [...new Set([store.getGroup(epic.group)?.name, epic.name].filter(Boolean))].join(' / '),
-      body: files ? `${n.message}\n📎 ${files === 1 ? n.attachments![0].name : `${files} files`}` : n.message,
-      data: { epicId: String(epic.id), project: n.project },
-      route: `#/epic/${encodeURIComponent(n.project)}/${epic.id}`,
-      urgent: false,
-      project: n.project,
-    };
-  }
-  const where = whereOf(store, n.laneId);
+  // A milestone on a lane names the lane; anything else the overseer wrote, its group.
+  const title = n.laneId ? whereOf(store, n.laneId) : (store.getGroup(n.groupId)?.name ?? localId(n.groupId));
   const files = n.attachments?.length ?? 0;
   return {
-    title: where,
+    title,
     body: files ? `${n.message}\n📎 ${files === 1 ? n.attachments![0].name : `${files} files`}` : n.message,
-    data: { laneId: localId(n.laneId), project: n.project },
-    route: `#/lane/${encodeURIComponent(n.project)}/${encodeURIComponent(localId(n.laneId))}`,
+    data: { groupId: localId(n.groupId), project: n.project },
+    // It opens the group's conversation, where it was written.
+    route: `#/group/${encodeURIComponent(n.project)}/${encodeURIComponent(localId(n.groupId))}`,
     urgent: false,
     project: n.project,
   };
