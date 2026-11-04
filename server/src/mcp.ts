@@ -22,6 +22,7 @@ import {
   ownerOf,
   ackerOf,
   markNotesDelivered,
+  upgradeFor,
   pub,
   q,
   readableAttachment,
@@ -1242,11 +1243,15 @@ function buildServer(
           '(`blocking: false` for an FYI). Raised on a lane (published first), it\'s the lane\'s ticket\'s, or its ' +
           'group\'s epic\'s if it holds none; `epic` with no `lane_id` raises it on the epic (blocks no lane). ' +
           'Returns its code (`ref`, e.g. "967A"). The same open question again returns the first (`duplicate: true`); ' +
-          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give (attachments are added).',
+          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give (attachments are added). ' +
+          '"The same" ignores spacing, case and punctuation, and an FYI of yours on your group\'s epic or one of its lanes counts too. ' +
+          'To make an FYI blocking whatever its words, pass its code as `upgrade` (question optional: given, it replaces the FYI\'s). ' +
+          'A new blocking question lists the group\'s open FYIs as `openFyis`: upgrade or dismiss any it repeats.',
         inputSchema: {
           lane_id: s.laneId.optional().describe('The lane it\'s raised in; leave out to raise it on `epic`.'),
           epic: s.epicName.optional().describe('The epic it\'s for: its ref, or the group\'s id.'),
-          question: s.escalationFields.question,
+          question: s.escalationFields.question.optional().describe('Required, unless `upgrade` names the FYI.'),
+          upgrade: z.string().optional().describe('An open FYI\'s code ("967A"): make it blocking instead of raising a new question.'),
           context: s.escalationFields.context,
           recommendation: s.escalationFields.recommendation,
           cost: s.escalationFields.cost,
@@ -1266,8 +1271,19 @@ function buildServer(
           ...PROJECT_WRITE,
         },
       },
-      async ({ lane_id, accept_means, reject_means, allow_reject, project, ...rest }) => {
+      async ({ lane_id, accept_means, reject_means, allow_reject, project, upgrade, ...rest }) => {
         try {
+          if (upgrade !== undefined) {
+            const { epic: _epic, blocking: _blocking, ...fields } = rest;
+            const { upgrade: code, ...input } = s.escalationUpgrade.parse({
+              upgrade,
+              acceptMeans: accept_means,
+              rejectMeans: reject_means,
+              allowReject: allow_reject,
+              ...fields,
+            });
+            return json(brief(pub.escalation(upgradeFor(store, a, code, input, project, who))));
+          }
           const { epic, ...input } = s.escalationInput.parse({
             laneId: lane_id,
             acceptMeans: accept_means,

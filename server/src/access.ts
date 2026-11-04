@@ -346,7 +346,7 @@ export const pub = {
  * An escalation as agents need it after asking: what was decided, not the whole question echoed
  * back (context can run to pages). get_escalation and GET /api/escalations/:id return everything.
  */
-export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean }) =>
+export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean; openFyis?: string[] }) =>
   compact({
     id: e.id,
     ref: e.ref,
@@ -366,6 +366,8 @@ export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean 
     resolution: e.resolution,
     positions: e.positions.length ? e.positions : undefined,
     createdBy: e.createdBy,
+    // Open FYIs in the group, named when a new blocking question is raised beside them.
+    openFyis: e.openFyis,
   });
 
 /** Drops null and undefined fields, which an agent would pay for and learn nothing from. */
@@ -632,7 +634,7 @@ export function readableAttachment(store: Store, a: Access, id: string, project?
  * Only the agent that raised an escalation acknowledges or dismisses it (or a person, on its behalf):
  * codes repeat across groups, and another overseer closing it by mistake would swallow the decision.
  */
-export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss' | 'reply to') {
+export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss' | 'reply to' | 'upgrade') {
   if (a.principal.role !== 'agent') return;
   const owner = store.escalationOwner(e.id);
   // Older rows recorded the account alone ("user:<id>"); those match any key of that account.
@@ -647,4 +649,21 @@ export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'ack
       `${e.ref} was raised by ${e.createdBy}; only that agent, the overseer of the group its ${e.epicId !== null ? 'epic' : 'ticket'} is in, or a person can ${verb} it`,
     );
   }
+}
+
+/**
+ * `upgrade` on create_escalation: the open FYI named by `code` becomes blocking, taking `fields`.
+ * Only its raiser, or the overseer of the group its ticket or epic is in, may (people always may).
+ */
+export function upgradeFor(
+  store: Store,
+  a: Access,
+  code: string,
+  fields: Parameters<Store['upgradeEscalation']>[1],
+  project: string | null | undefined,
+  p: Principal,
+) {
+  const e = a.escalation(code, project);
+  requireRaiser(store, a, e, 'upgrade');
+  return store.upgradeEscalation(e.id, fields, p.name, ownerOf(p));
 }

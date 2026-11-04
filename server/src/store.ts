@@ -135,6 +135,13 @@ export const projectOf = (qualified: string) => {
 /** How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker. */
 const WAIT_GRACE_MS = 30_000;
 
+/** The same question in other spacing, case or punctuation ("Ship it?" and "ship it"). */
+export const sameQuestion = (a: string, b: string) => {
+  const norm = (t: string) => t.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const x = norm(a);
+  return x !== '' ? x === norm(b) : a.trim().toLowerCase() === b.trim().toLowerCase();
+};
+
 /** What `waitForDecisions` watches: explicit escalations, whole lanes, and/or a group's lanes. */
 /** An escalation as the store holds it: always the lane it was raised in (an epic's internal lane for one raised on the epic). */
 export type StoredEscalation = Escalation & { laneId: string };
@@ -3195,7 +3202,7 @@ export class Store {
     input: EscalationInput,
     actor: string,
     owner: string | null = null,
-  ): Escalation & { duplicate?: boolean; upgraded?: boolean } {
+  ): Escalation & { duplicate?: boolean; upgraded?: boolean; openFyis?: string[] } {
     projectOf(input.laneId);
     // A typo would otherwise create a new lane outside the group, which the overseer's wait never sees.
     if (!this.laneExists(input.laneId)) {
@@ -3204,16 +3211,26 @@ export class Store {
       );
     }
     const home = this.homeOf(input.laneId, input.epic);
-    // The same question again (ignoring spacing and case) on the same ticket or epic is a retry.
-    const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
+    // The group the question is raised in: its epic's, or its lane's.
+    const groupOfCall =
+      home.epicId !== null
+        ? ((this.db.prepare('SELECT group_id FROM epics WHERE num = ?').get(home.epicId) as Row | undefined)?.group_id as string | undefined)
+        : ((this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row | undefined)?.group_id as string | undefined);
+    // The same question again (ignoring spacing, case and punctuation) from the same raiser is a retry:
+    // on the same ticket or epic, or an FYI anywhere in the same group (an agent moves between a lane
+    // and its group's epic). The same ticket or epic is preferred.
+    const sameHome = (r: Row) => (home.ticketId !== null ? Number(r.ticket_id) === home.ticketId : Number(r.epic_id) === home.epicId);
     const existing = (
       this.db
         .prepare(
-          `SELECT id, question FROM escalations WHERE state = 'open' AND ${home.ticketId !== null ? 'ticket_id' : 'epic_id'} = ?
+          `SELECT id, question, ticket_id, epic_id FROM escalations WHERE state = 'open'
+             AND (${home.ticketId !== null ? 'ticket_id' : 'epic_id'} = ? OR (blocking = 0 AND group_id = ?))
              AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`,
         )
-        .all(home.ticketId ?? home.epicId!, owner ?? actor) as Row[]
-    ).find((r) => norm(r.question as string) === norm(input.question));
+        .all(home.ticketId ?? home.epicId!, groupOfCall ?? '', owner ?? actor) as Row[]
+    )
+      .filter((r) => sameQuestion(r.question as string, input.question))
+      .sort((a, b) => Number(sameHome(b)) - Number(sameHome(a)))[0];
     if (existing) {
       const id = existing.id as string;
       // Raising an open FYI again as blocking (the default) makes it need the owner now (same code).
@@ -3305,7 +3322,44 @@ export class Store {
     }
     this.emit({ type: 'escalation', escalation });
     if (lane) this.emit({ type: 'lane', lane, statusChanged: blocks });
+    // A new blocking question while FYIs are open in its group: name them, so a question raised
+    // again in other words can be upgraded (`upgrade`) or the FYI dismissed rather than left open twice.
+    if (escalation.blocking) {
+      const fyis = this.openFyisIn(groupOfCall ?? null, escalation.id);
+      if (fyis.length) return { ...escalation, openFyis: fyis };
+    }
     return escalation;
+  }
+
+  /** Codes of the group's open FYI questions, oldest first, but `except`. */
+  private openFyisIn(groupId: string | null, except: string): string[] {
+    if (!groupId) return [];
+    return (
+      this.db
+        .prepare("SELECT id FROM escalations WHERE state = 'open' AND blocking = 0 AND group_id = ? AND id <> ? ORDER BY created_at, ref LIMIT 20")
+        .all(groupId, except) as Row[]
+    ).map((r) => this.requireEscalation(r.id as string).ref);
+  }
+
+  /**
+   * An open FYI named by the agent becomes blocking (`upgrade` on create_escalation): as for the same
+   * question raised again, without having to word it the same. The fields given replace the FYI's,
+   * its question too; attachments are added. One already blocking comes back as is (`duplicate`).
+   * Who may is checked by the caller (the raiser, or its group's overseer).
+   */
+  upgradeEscalation(
+    id: string,
+    input: Partial<Omit<EscalationInput, 'laneId' | 'epic' | 'blocking'>>,
+    actor: string,
+    owner: string | null,
+  ): Escalation & { duplicate: true; upgraded?: true } {
+    const e = this.requireEscalation(id);
+    if (e.state !== 'open') throw new ConflictError(`${e.ref} is ${e.state}: raise a new question instead`);
+    if (e.blocking) {
+      if (input.attachments?.length) this.tx(() => this.linkAttachments(id, input.attachments!, owner ?? actor));
+      return { ...this.requireEscalation(id), duplicate: true };
+    }
+    return { ...this.makeBlocking(id, { ...input, laneId: e.laneId!, question: input.question ?? e.question }, actor, owner), duplicate: true, upgraded: true };
   }
 
   /**
@@ -3365,7 +3419,7 @@ export class Store {
       const newOptions = given(input.options) !== null;
       this.db
         .prepare(
-          `UPDATE escalations SET blocking = 1, turn = 'owner', updated_at = ?,
+          `UPDATE escalations SET blocking = 1, turn = 'owner', updated_at = ?, question = ?,
              context = COALESCE(?, context), recommendation = COALESCE(?, recommendation), cost = COALESCE(?, cost),
              ticket = COALESCE(?, ticket), alternatives = COALESCE(?, alternatives), links = COALESCE(?, links),
              options = COALESCE(?, options), recommended_option = CASE WHEN ? THEN ? ELSE COALESCE(?, recommended_option) END,
@@ -3375,6 +3429,7 @@ export class Store {
         )
         .run(
           at,
+          input.question.trim() ? input.question : before.question,
           given(input.context) as string | null,
           given(input.recommendation) as string | null,
           given(input.cost) as string | null,
@@ -3393,7 +3448,7 @@ export class Store {
       // Reject withdrawn: what it meant no longer applies.
       if (input.allowReject === false) this.db.prepare('UPDATE escalations SET reject_means = NULL WHERE id = ?').run(id);
       this.linkAttachments(id, input.attachments ?? [], owner ?? actor);
-      this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${before.question}`, actor, before.ticketId);
+      this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${input.question.trim() ? input.question : before.question}`, actor, before.ticketId);
       // It blocks the lane holding its ticket (or, with no ticket, the lane it was raised in); none while parked.
       const holder = this.holderOf(before);
       const lane = holder ? this.getLane(holder) : null;
