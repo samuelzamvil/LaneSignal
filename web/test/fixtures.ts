@@ -108,6 +108,7 @@ export const epic = (over: Partial<Epic> = {}): Epic => ({
   standIn: false,
   closeReason: null,
   closeRequestedBy: null,
+  reopenRequest: null,
   openEscalations: 0,
   blockingEscalations: 0,
   createdAt: '2026-10-01T00:00:00.000Z',

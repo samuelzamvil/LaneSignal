@@ -97,6 +97,13 @@ export interface Lane {
  * finished or not. Nothing here claims anything about the ticket's real status in its tracker.
  */
 export const TICKET_STATES = ['in_lane', 'parked', 'done', 'dropped'] as const;
+
+/** An overseer asks to reopen a closed epic; it waits for a signed-in person. */
+export interface ReopenRequest {
+  reason: string;
+  by: string;
+  at: string;
+}
 export type TicketState = (typeof TICKET_STATES)[number];
 
 /** A ticket worked in lanes: owns its escalations and status history, and moves between lanes. */
@@ -163,6 +170,8 @@ export interface Epic {
   /** Why the overseer asked to close it, while waiting for a person. */
   closeReason: string | null;
   closeRequestedBy: string | null;
+  /** A closed epic its overseer asked to reopen, waiting for a person's approval. */
+  reopenRequest: ReopenRequest | null;
   /** Its questions waiting on a person, and of those how many block (it shows "Waiting on you"). */
   openEscalations: number;
   blockingEscalations: number;

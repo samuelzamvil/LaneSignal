@@ -543,7 +543,8 @@ function buildServer(
         description:
           'Wait for what needs you in your group, some lanes or escalations; it waits even when nothing is open. Returns ' +
           '`items`: `{code, kind, text}` for an escalation, `{kind, id, text}` for a lane, ticket or epic (the owner\'s words, or what happened). Kinds: `decided` (answered), `reply` (the owner answered Other), ' +
-          '`closed`, `lane_removed`, `ticket_moved`, `group_note` (a person wrote to your group; `id` is the ' +
+          '`closed`, `lane_removed`, `ticket_moved`, `reopen_approved` / `reopen_declined` (a person reopened one of ' +
+          'your group\'s closed epics, or declined your request_epic_reopen; `id` is the epic), `group_note` (a person wrote to your group; `id` is the ' +
           'message\'s: pass the last one you handled as `ack`; `since` doesn\'t clear them). `decided`, `reply` and `group_note` repeat until handled ' +
           '(a `group_note` you had before `since` comes back with `seen: true` and doesn\'t end the wait); the rest come once per `since`. `counts` (left out when all zero): `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
           'it timed out (any `items` are notes you had already): call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
@@ -1218,6 +1219,25 @@ function buildServer(
           const e = a.epic(epic, project);
           if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
           return json(briefEpic(pub.epic(store.requestEpicClose(e.id, reason, who.name))));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'request_epic_reopen',
+      {
+        description:
+          'Ask a person to reopen a closed epic (its work came back); they approve or decline in the app, and your group ' +
+          'wait reports it (`reopen_approved` / `reopen_declined`). Reopened, it takes over from the group\'s stand-in, if that is back.',
+        inputSchema: { epic: EPIC, reason: s.reopenRequest.shape.reason, ...PROJECT_WRITE },
+      },
+      async ({ epic, reason, project }) => {
+        try {
+          const e = a.epic(epic, project);
+          if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
+          return json(briefEpic(pub.epic(store.requestEpicReopen(e.id, reason, who.name))));
         } catch (err) {
           return fail(err);
         }

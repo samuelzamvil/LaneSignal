@@ -17,6 +17,7 @@ import {
 } from './api.ts';
 import { Chips, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout, useStored } from './components.tsx';
 import { onActiveTicket, ParkedRow, TicketDetail, TicketsContext } from './ticket-views.tsx';
+import { ReopenRow } from './reopen.tsx';
 import { EpicCard, EpicDetail, EpicsContext, epicRoute, GroupHeader, hasLane, laneKeyOf, QuietLanes } from './epic-views.tsx';
 import { groupRoute, GroupView } from './group-view.tsx';
 import { epicShows, epicsOnScreen, groupLayout } from './epics.ts';
@@ -540,6 +541,12 @@ function Dashboard({
     .filter((t) => !activeGroups.length || (t.group !== null && activeGroups.includes(keyOf(t.project, t.group))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const parkedIn = (groupId: string | null) => parkedAll.filter((t) => (t.group ? keyOf(t.project, t.group) : null) === groupId);
+  // Closed epics their overseer asked to reopen: under their group, whatever the status filter, since they wait on a person.
+  const canApprove = me?.role === 'human' && !me.personalKey;
+  const reopenEpicsAll = [...live.epics.values()].filter(
+    (e) => e.state === 'closed' && e.reopenRequest && inScope(e.project) && (!activeGroups.length || activeGroups.includes(keyOf(e.project, e.group))),
+  );
+  const reopenEpicsIn = (groupId: string | null) => reopenEpicsAll.filter((e) => keyOf(e.project, e.group) === groupId);
   const leftLane = (t: Ticket) =>
     t.lastLane ? (live.lanes.get(keyOf(t.project, t.lastLane))?.name ?? `${t.lastLane} (removed)`) : null;
   const epicsOf = (groupId: string | null) => epicsOnScreen(groupId, live.epics.values());
@@ -726,7 +733,10 @@ function Dashboard({
   const epicCardsIn = (sec: Section) => !activeStatuses.length && (!activeGroups.length || (!!sec.groupId && activeGroups.includes(sec.groupId)));
   const sectionShows = (sec: Section) =>
     sec.lanes.length > 0 ||
-    (sec.groupId !== undefined && (parkedIn(sec.groupId).length > 0 || (epicCardsIn(sec) && epicsOf(sec.groupId).some(epicShows))));
+    (sec.groupId !== undefined &&
+      (parkedIn(sec.groupId).length > 0 ||
+        reopenEpicsIn(sec.groupId).length > 0 ||
+        (epicCardsIn(sec) && epicsOf(sec.groupId).some(epicShows))));
 
   const lanePane = (
     <section className="pane lanes" aria-label="Lanes">
@@ -858,10 +868,16 @@ function Dashboard({
             )}
             {laneList(layout.noEpic)}
             <QuietLanes count={layout.quiet.length}>{laneList(layout.quiet)}</QuietLanes>
+            <ReopenRow epics={reopenEpicsIn(sec.groupId)} client={client} canApprove={canApprove} now={now} />
             <ParkedRow tickets={parkedIn(sec.groupId)} now={now} laneName={leftLane} />
           </div>
         );
       })}
+      {filters.arrange !== 'group' && reopenEpicsAll.length > 0 && (
+        <div className="group">
+          <ReopenRow epics={reopenEpicsAll} client={client} canApprove={canApprove} now={now} />
+        </div>
+      )}
       {filters.arrange !== 'group' && parkedAll.length > 0 && (
         <div className="group">
           <ParkedRow tickets={parkedAll} now={now} laneName={leftLane} />

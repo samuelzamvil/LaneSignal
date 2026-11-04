@@ -9,7 +9,7 @@ export interface Entities {
   escalations: Map<string, Escalation>;
   /** Keyed by the ticket's number (unique across projects). */
   tickets: Map<string, Ticket>;
-  /** Open epics (and ones waiting for close approval), keyed by number (unique across projects). */
+  /** Open epics (and ones waiting for close or reopen approval), keyed by number (unique across projects). */
   epics: Map<string, Epic>;
 }
 
@@ -49,7 +49,8 @@ export function applyEvent(s: Entities, e: StreamEvent): Entities {
   }
   if (e.type === 'ticket' && newer(tickets, String(e.ticket.id), e.ticket)) tickets.set(String(e.ticket.id), e.ticket);
   if (e.type === 'epic' && newer(epics, String(e.epic.id), e.epic)) {
-    if (e.epic.state === 'closed') epics.delete(String(e.epic.id));
+    // A closed epic stays only while an overseer's request to reopen it waits for a person.
+    if (e.epic.state === 'closed' && !e.epic.reopenRequest) epics.delete(String(e.epic.id));
     else epics.set(String(e.epic.id), e.epic);
   }
   return { groups, lanes, escalations, tickets, epics };

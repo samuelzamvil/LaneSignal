@@ -18,6 +18,7 @@ import type {
   ProjectRole,
   PublicConfig,
   Product,
+  ReopenRequest,
   Requirement,
   RequirementChange,
   RequirementScope,
@@ -46,6 +47,7 @@ export type {
   ProjectRole,
   PublicConfig,
   Product,
+  ReopenRequest,
   Requirement,
   RequirementChange,
   RequirementScope,
@@ -249,6 +251,8 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
       request<{ epic: Epic; escalations: Escalation[]; lanes: string[]; feed: LaneEvent[] }>('GET', `/api/epics/${id}`),
     /** Approve or decline the overseer's request to close an epic. */
     decideEpicClose: (id: number, approve: boolean) => request<Epic>('POST', `/api/epics/${id}/close`, { approve }),
+    /** Approve or decline an overseer's request to reopen a closed epic, or (approve, none waiting) reopen it. */
+    decideEpicReopen: (id: number, approve: boolean) => request<Epic>('POST', `/api/epics/${id}/reopen`, { approve }),
     /** Closed escalations, latest first. `before` is the previous page's `next`. */
     history: (f: {
       q?: string;

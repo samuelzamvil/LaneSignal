@@ -33,6 +33,7 @@ import {
   type Epic,
   type EpicState,
   type Ticket,
+  type ReopenRequest,
   type TicketState,
 } from './types.ts';
 import { ticketRefs, type TicketRefs } from './tickets.ts';
@@ -207,6 +208,8 @@ export interface WaitResult {
   removedLanes: { laneId: string; removedBy: string | null; at: string }[];
   /** Digest only: tickets from lanes in scope that a lane outside it took since `since` (another overseer, usually). */
   movedTickets: { ticket: string; ticketId: number; laneId: string; by: string | null; at: string }[];
+  /** Digest only, on a group's wait: the group's epics a person reopened, or declined to reopen, since `since`. */
+  reopenDecisions: { group: string; epic: string; approved: boolean; by: string | null; at: string }[];
   /**
    * A group's wait: people's messages written to the group that its overseer hasn't acknowledged,
    * oldest first. They come back on every wait until acknowledged (`ack` with the last id handled);
@@ -350,7 +353,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 27;
+const SCHEMA_VERSION = 28;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -362,6 +365,10 @@ const UNREFERENCED_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_PENDING_UPLOADS = 20;
 
 type Row = Record<string, unknown>;
+
+/** A reopen request waiting on an epic row, or none. */
+const reopenRequestOf = (r: Row): ReopenRequest | null =>
+  r.reopen_requested_at ? { reason: r.reopen_reason as string, by: r.reopen_requested_by as string, at: r.reopen_requested_at as string } : null;
 
 /** What a ticket switch changed besides the lane itself, for events once the transaction commits. */
 interface Touched {
@@ -688,6 +695,7 @@ export class Store {
       if (version < 25) this.migrateV25();
       if (version < 26) this.migrateV26();
       if (version < 27) this.migrateV27();
+      if (version < 28) this.migrateV28();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -706,6 +714,16 @@ export class Store {
       up_to INTEGER NOT NULL,
       PRIMARY KEY (group_id, key)
     )`);
+  }
+
+  /**
+   * v28: an overseer asks to reopen a closed epic, and a person decides. The request waits in
+   * reopen_*; the decision stays (reopen_decision, by, at) so the overseer's wait hears of it.
+   */
+  private migrateV28() {
+    for (const column of ['reopen_reason', 'reopen_requested_by', 'reopen_requested_at', 'reopen_decision', 'reopen_decided_by', 'reopen_decided_at']) {
+      if (!this.hasColumn('epics', column)) this.db.exec(`ALTER TABLE epics ADD COLUMN ${column} TEXT`);
+    }
   }
 
   /** v26: how far the group's overseer was handed the group's messages (no longer read since v27). */
@@ -2064,6 +2082,7 @@ export class Store {
       standIn: Number(r.stand_in) === 1,
       closeReason: (r.close_reason as string | null) ?? null,
       closeRequestedBy: (r.close_requested_by as string | null) ?? null,
+      reopenRequest: reopenRequestOf(r),
       openEscalations: Number(counts.open ?? 0),
       blockingEscalations: Number(counts.blocking ?? 0),
       createdAt: r.created_at as string,
@@ -2084,9 +2103,12 @@ export class Store {
   }
 
   /** Epics in some projects (or a group): open and close-requested ones by default, in groups that aren't removed. */
-  listEpics(filter: { projects?: string[]; groupId?: string; states?: EpicState[] } = {}): Epic[] {
+  listEpics(filter: { projects?: string[]; groupId?: string; states?: EpicState[]; reopenRequests?: boolean } = {}): Epic[] {
     const states = filter.states?.length ? filter.states : (['open', 'close_requested'] as EpicState[]);
-    const where = [`e.state IN (${states.map(() => '?').join(',')})`];
+    // `reopenRequests`: closed epics an overseer asked to reopen come too, for the people who decide (the app's snapshot).
+    const where = [
+      `(e.state IN (${states.map(() => '?').join(',')})${filter.reopenRequests ? " OR (e.state = 'closed' AND e.reopen_requested_at IS NOT NULL)" : ''})`,
+    ];
     const params: string[] = [...states];
     if (filter.groupId) {
       where.push('e.group_id = ?');
@@ -2160,15 +2182,9 @@ export class Store {
             at,
           });
           if (standIn) {
-            // The first real epic retires the stand-in: its questions and board move here, codes and all.
-            const from = Number(standIn.num);
-            moved.push(...unresolved(from));
-            this.db.prepare('UPDATE escalations SET epic_id = ? WHERE epic_id = ?').run(num, from);
-            this.db.prepare('UPDATE group_messages SET epic_id = ? WHERE epic_id = ?').run(num, from);
-            this.db.prepare('UPDATE epics SET agent_read_id = ? WHERE num = ?').run(Number(standIn.agent_read_id), num);
-            this.db.prepare('UPDATE epics SET status_line = ? WHERE num = ?').run((standIn.status_line as string | null) ?? null, num);
-            this.db.prepare("UPDATE epics SET state = 'closed', closed_at = ?, updated_at = ? WHERE num = ?").run(at, at, from);
-            touched.push(from);
+            moved.push(...unresolved(Number(standIn.num)));
+            this.retireStandIn(standIn, num, at);
+            touched.push(Number(standIn.num));
           }
           if (input.statusLine !== undefined) {
             this.db.prepare('UPDATE epics SET status_line = ? WHERE num = ?').run(input.statusLine?.trim() || null, num);
@@ -2247,6 +2263,90 @@ export class Store {
     });
     if (back !== null) this.emitEpic(back);
     void by;
+    return this.emitEpic(num)!;
+  }
+
+  /**
+   * Must run inside a transaction. A real epic opens in the group: its stand-in steps aside, and its
+   * questions, board and status line (when it has one) move to `into`, codes and all.
+   */
+  private retireStandIn(standIn: Row, into: number, at: string) {
+    const from = Number(standIn.num);
+    this.db.prepare('UPDATE escalations SET epic_id = ? WHERE epic_id = ?').run(into, from);
+    this.db.prepare('UPDATE group_messages SET epic_id = ? WHERE epic_id = ?').run(into, from);
+    this.db
+      .prepare('UPDATE epics SET agent_read_id = MAX(agent_read_id, ?), status_line = COALESCE(?, status_line) WHERE num = ?')
+      .run(Number(standIn.agent_read_id), (standIn.status_line as string | null) ?? null, into);
+    this.db.prepare("UPDATE epics SET state = 'closed', closed_at = ?, updated_at = ? WHERE num = ?").run(at, at, from);
+  }
+
+  /**
+   * An overseer asks to reopen a closed epic; a person approves or declines. Asking again while one
+   * waits replaces its reason.
+   */
+  requestEpicReopen(num: number, reason: string, actor: string): Epic {
+    this.tx(() => {
+      const r = this.epicRow(num);
+      if (Number(r.stand_in) === 1) throw new ValidationError("A group's stand-in epic isn't reopened: it comes back by itself when the group's last real epic closes");
+      if (r.state !== 'closed') throw new ConflictError('This epic is open: only a closed epic is reopened');
+      if (!this.getGroup(r.group_id as string)) throw new ConflictError(`Group "${localId(r.group_id as string)}" was removed: register it again (update_group) first`);
+      const at = this.now().toISOString();
+      this.db
+        .prepare('UPDATE epics SET reopen_reason = ?, reopen_requested_by = ?, reopen_requested_at = ?, updated_at = ? WHERE num = ?')
+        .run(reason.trim(), actor, at, at, num);
+    });
+    return this.emitEpic(num)!;
+  }
+
+  /**
+   * A person's answer to a reopen request, or a person reopening a closed epic directly (`approve`
+   * with no request waiting). Reopening retires the group's stand-in, if it's back: its questions move here.
+   */
+  decideEpicReopen(num: number, approve: boolean, by: string): Epic {
+    const moved: string[] = [];
+    let standInNum: number | null = null;
+    this.tx(() => {
+      const r = this.epicRow(num);
+      const waiting = r.reopen_requested_at != null;
+      if (!waiting && !approve) throw new ConflictError('Nobody has asked to reopen this epic');
+      if (Number(r.stand_in) === 1) throw new ValidationError("A group's stand-in epic isn't reopened: it comes back by itself when the group's last real epic closes");
+      if (r.state !== 'closed') throw new ConflictError('This epic is open already');
+      const at = this.now().toISOString();
+      const decide = (decision: 'approved' | 'declined') =>
+        this.db
+          .prepare(
+            `UPDATE epics SET reopen_reason = NULL, reopen_requested_by = NULL, reopen_requested_at = NULL,
+               reopen_decision = ?, reopen_decided_by = ?, reopen_decided_at = ?, updated_at = ? WHERE num = ?`,
+          )
+          .run(decision, by, at, at, num);
+      if (!approve) {
+        decide('declined');
+        return;
+      }
+      if (!this.getGroup(r.group_id as string)) throw new ConflictError(`Group "${localId(r.group_id as string)}" was removed: it has to be registered again first`);
+      const standIn = this.openEpicsOf(r.group_id as string).find((e) => Number(e.stand_in) === 1);
+      this.db
+        .prepare("UPDATE epics SET state = 'open', closed_at = NULL, close_reason = NULL, close_requested_by = NULL WHERE num = ?")
+        .run(num);
+      if (standIn) {
+        standInNum = Number(standIn.num);
+        moved.push(
+          ...(this.db.prepare("SELECT id FROM escalations WHERE epic_id = ? AND state IN ('open', 'decided')").all(standInNum) as Row[]).map(
+            (e) => e.id as string,
+          ),
+        );
+        this.retireStandIn(standIn, num, at);
+      }
+      decide('approved');
+    });
+    if (standInNum !== null) this.emitEpic(standInNum);
+    // Stamped as changed, so clients take the new copy (and it doesn't read as a new question).
+    const stamp = this.now().toISOString();
+    for (const id of moved) {
+      this.db.prepare('UPDATE escalations SET updated_at = ? WHERE id = ?').run(stamp, id);
+      const e = this.getEscalation(id);
+      if (e) this.events.emit('change', { type: 'escalation', escalation: e });
+    }
     return this.emitEpic(num)!;
   }
 
@@ -4332,6 +4432,22 @@ export class Store {
         });
       }
     }
+    // The group's epics a person reopened (or declined to) since `since`.
+    const reopenDecisions: WaitResult['reopenDecisions'] = [];
+    if (digest && scope.since && scope.groupId) {
+      const rows = this.db
+        .prepare('SELECT * FROM epics WHERE group_id = ? AND reopen_decided_at >= ? ORDER BY reopen_decided_at')
+        .all(scope.groupId, scope.since) as Row[];
+      for (const r of rows) {
+        reopenDecisions.push({
+          group: r.group_id as string,
+          epic: (r.display_ref as string | null) ?? (r.name as string),
+          approved: r.reopen_decision === 'approved',
+          by: (r.reopen_decided_by as string | null) ?? null,
+          at: r.reopen_decided_at as string,
+        });
+      }
+    }
     // Creation order; the internal global number breaks ties within a millisecond.
     const seqOf = (e: Escalation) => Number((this.db.prepare('SELECT ref FROM escalations WHERE id = ?').get(e.id) as Row).ref);
     const byAge = (a: Escalation, b: Escalation) => a.createdAt.localeCompare(b.createdAt) || seqOf(a) - seqOf(b);
@@ -4365,6 +4481,7 @@ export class Store {
         closed.length > 0 ||
         removedLanes.length > 0 ||
         movedTickets.length > 0 ||
+        reopenDecisions.length > 0 ||
         // The full format also returns when nothing is left to wait for; a digest waits for a change.
         (!digest && open.length === 0),
       decided,
@@ -4373,6 +4490,7 @@ export class Store {
       open,
       removedLanes,
       movedTickets,
+      reopenDecisions,
       groupMessages,
       checkedAt,
     };
@@ -4415,7 +4533,8 @@ export class Store {
       };
       const onChange = (e: StreamEvent) => {
         const note = e.type === 'group_message' && e.message.from === 'owner' && e.group === scope.groupId;
-        if (e.type !== 'escalation' && e.type !== 'lane_deleted' && e.type !== 'ticket' && !note) return;
+        const epicHere = e.type === 'epic' && e.epic.group === scope.groupId;
+        if (e.type !== 'escalation' && e.type !== 'lane_deleted' && e.type !== 'ticket' && !epicHere && !note) return;
         try {
           const now = this.decisionsFor(scope);
           if (now.ready) finish();

@@ -478,7 +478,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       lanes: store.listLanes(projects).map(pub.lane),
       escalations: store.listEscalations({ projects }).map(pub.escalation),
       tickets: store.snapshotTickets(projects).map(pub.ticket),
-      epics: store.listEpics({ projects }).map(pub.epic),
+      epics: store.listEpics({ projects, reopenRequests: true }).map(pub.epic),
       serverTime: new Date().toISOString(),
     });
   });
@@ -818,6 +818,19 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     if (!approvesRequirements(principalOf(res))) throw new ForbiddenError('Approve closing an epic signed in, not with a personal key');
     const epic = epicOf(req, res);
     res.json(pub.epic(store.decideEpicClose(epic.id, parse(s.closeDecision, req.body ?? {}).approve, principalOf(res).name)));
+  });
+
+  /** An overseer asks a person to reopen a closed epic. */
+  app.post('/api/epics/:id/reopen-request', agent, (req, res) => {
+    const epic = epicOf(req, res);
+    res.json(pub.epic(store.requestEpicReopen(epic.id, parse(s.reopenRequest, req.body ?? {}).reason, principalOf(res).name)));
+  });
+
+  /** A person approves or declines a reopen request, or (`approve: true` with none waiting) reopens the epic directly. */
+  app.post('/api/epics/:id/reopen', human, (req, res) => {
+    if (!approvesRequirements(principalOf(res))) throw new ForbiddenError('Reopen an epic signed in, not with a personal key');
+    const epic = epicOf(req, res);
+    res.json(pub.epic(store.decideEpicReopen(epic.id, parse(s.reopenDecision, req.body ?? {}).approve, principalOf(res).name)));
   });
 
   // ---- tickets: held by lanes, parked, done ----

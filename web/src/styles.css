@@ -450,6 +450,17 @@ textarea {
 .parked-main .muted {
   font-size: 0.8rem;
 }
+/* Reopen requests: each item and its Approve / Decline read as one row. */
+.reopen-item {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.reopen-item .parked-item {
+  border-bottom: none;
+}
+.reopen-item .close-request {
+  margin-top: 0;
+}
 
 .sheet.sheet-ticket {
   --kind: var(--accent);
