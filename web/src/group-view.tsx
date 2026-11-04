@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, GroupFeedItem } from './api.ts';
 import { AttachmentList } from './attachments.tsx';
 import { RichText } from './components.tsx';
-import { absolute, ago } from './format.ts';
+import { absolute, ago, seenByOverseer } from './format.ts';
 import { markMessagesSeen } from './seen.ts';
 
 /** A group's conversation: its sheet's route. */
@@ -65,6 +65,10 @@ export function GroupView({
   const bottom = useRef<HTMLDivElement>(null);
   // Follows new messages while you're at the newest one, like a chat; reading back stays put.
   const atBottom = useRef(true);
+  // How far the overseer has acknowledged, never moving back: a stale copy of the group arriving
+  // after a newer one mustn't turn "seen" back into "not seen yet".
+  const readId = useRef(0);
+  readId.current = Math.max(readId.current, group?.overseerReadId ?? 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -167,6 +171,10 @@ export function GroupView({
                     {i.author} <span title={absolute(i.at)}>· {ago(i.at, now)}</span>
                     {i.laneId && <span> · on lane {i.laneId}</span>}
                     {i.epicId !== null && <span> · on an epic's board</span>}
+                    {(() => {
+                      const seen = seenByOverseer(i, readId.current);
+                      return seen === null ? null : <span className="msg-seen">{seen ? ' · seen by the overseer' : ' · not seen yet'}</span>;
+                    })()}
                   </div>
                   <RichText text={i.body} />
                   {i.attachments.length > 0 && <AttachmentList client={client} files={i.attachments} />}

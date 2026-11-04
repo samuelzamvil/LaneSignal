@@ -21,7 +21,7 @@ The owner answers on the dashboard with Accept, Reject or Other, quoting codes w
 - `closed`: someone else withdrew it.
 - `lane_removed`: someone took the lane off the dashboard; publishing to it brings it back.
 - `ticket_moved`: another group's lane took one of your tickets; it's now that lane's.
-- `group_note`: someone wrote to your group; its `id` is the message's. It comes back on every wait until you acknowledge it: once handled, pass the last id as `ack` (to `wait_for_decisions` or `get_updates`).
+- `group_note`: someone wrote to your group; its `id` is the message's. It comes back on every wait until you acknowledge it: once handled, pass the last id as `ack` (to `wait_for_decisions` or `get_updates`); the result's `acked` confirms it. `since` doesn't clear notes: one you had before `since` comes back with `seen: true` and doesn't end the wait on its own. `seen: true` doesn't mean handled: act on it and acknowledge it like any other. Only the group's overseer can acknowledge; another key's `ack` is refused.
 - A file the owner attached reads "[attached: plan.md (id …)]": read it with `get_attachment`.
 
 **Keeping your place:** once you've handled a result's items, save its `checkedAt` to `.claude/lanesignal-since` (overwrite it), so a restart starts there; save only after handling. If `counts` show something you can't find (e.g. after a compaction), `get_updates` returns everything in scope. A failed call is safe to repeat.

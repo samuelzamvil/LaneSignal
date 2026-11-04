@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
-import { accessFor, approvesRequirements, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, ackerOf, approvesRequirements, markNotesDelivered, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { checkAttachment, readUpload } from './attachments.ts';
 import { CLIENT_IP_HEADER, FAILOVER_KEY_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, SESSION_HEADER, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
@@ -911,7 +911,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.post('/api/groups/:id/ack', agent, (req, res) => {
     const body = parse(s.groupAck, req.body ?? {});
     const project = acc(res).pick(projectQuery(req), { group: String(req.params.id) });
-    res.json({ acknowledgedUpTo: store.ackGroupMessages(q(project, String(req.params.id)), body.upTo) });
+    res.json({ acknowledgedUpTo: store.ackGroupMessages(q(project, String(req.params.id)), body.upTo, ackerOf(principalOf(res))) });
   });
 
   app.post('/api/lanes/:id/messages', any, retired("Lanes' conversations"));
@@ -979,10 +979,12 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       parse(s.waitScope, { ids: query.ids, laneIds: query.lane, groupId: query.group, since: query.since }),
       query.project,
     );
-    // Only the overseer acknowledges what's meant for it.
-    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
-    const { ready: _ready, ...all } = briefWait(pub.wait(store.decisionsFor(scope)));
-    res.json(all);
+    // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+    const acked = query.ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, query.ack, ackerOf(principalOf(res))) : undefined;
+    const value = store.decisionsFor(scope);
+    markNotesDelivered(store, value, principalOf(res));
+    const { ready: _ready, ...all } = briefWait(pub.wait(value));
+    res.json(acked !== undefined ? { ...all, acked } : all);
   });
 
   /**
@@ -1006,12 +1008,14 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         mode: query.format ?? 'digest',
       };
       const shape = (w: WaitResult) => (query.format === 'full' ? briefWait(w) : digestWait(w, acc(res).projects.length > 1));
-      // Only the overseer acknowledges what's meant for it.
-    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
+      // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+      const acked = query.ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, query.ack, ackerOf(principalOf(res))) : undefined;
+      const withAck = <T extends object>(body: T) => (acked !== undefined ? { ...body, acked } : body);
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
-        res.json(shape(pub.wait(now)));
+        markNotesDelivered(store, now, principalOf(res));
+        res.json(withAck(shape(pub.wait(now))));
         return;
       }
       const abort = new AbortController();
@@ -1031,7 +1035,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;
-        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : shape(pub.wait(result, visible))));
+        if (!revoked) markNotesDelivered(store, result, principalOf(res));
+        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : withAck(shape(pub.wait(result, visible)))));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));
       } finally {

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, before, describe, test } from 'node:test';
 import { Store } from '../src/store.ts';
-import { AGENT, ALICE, startServer } from './helpers.ts';
+import { AGENT, ALICE, REVIEWER, startServer } from './helpers.ts';
 import { lane as publishLane } from './publish.ts';
 
 let srv: Awaited<ReturnType<typeof startServer>>;
@@ -115,11 +115,20 @@ describe('group conversations', () => {
     assert.match(clash.body.error, /already used/);
   });
 
-  test('only the overseer acknowledges: a person\'s ack is ignored', async () => {
+  test('only the overseer acknowledges: a person\'s or another key\'s ack is refused', async () => {
     await srv.call('PUT', '/api/groups/owned', AGENT, {});
     const m = (await say('owned', { body: 'For the overseer' })).body;
-    await srv.call('GET', `/api/updates?group=owned&ack=${m.id}`, ALICE);
+    assert.equal((await srv.call('GET', `/api/updates?group=owned&ack=${m.id}`, ALICE)).status, 403);
     assert.equal((await srv.call('POST', '/api/groups/owned/ack', ALICE, { upTo: m.id })).status, 403);
+    // A worker (any key but the one that registered the group) is refused too, saying who oversees it.
+    const worker = await srv.call('GET', `/api/wait?group=owned&timeout=0&ack=${m.id}`, REVIEWER);
+    assert.equal(worker.status, 403);
+    assert.match(worker.body.error, /Only the group's overseer \(overseer\) acknowledges its messages: this ack wasn't recorded/);
+    assert.equal((await srv.call('POST', '/api/groups/owned/ack', REVIEWER, { upTo: m.id })).status, 403);
+    const viaMcp = await srv.tool(REVIEWER, 'wait_for_decisions', { group_id: 'owned', wait_seconds: 0, ack: m.id });
+    assert.ok(viaMcp.isError);
+    assert.match(viaMcp.text, /Only the group's overseer/);
+    assert.ok((await srv.tool(REVIEWER, 'get_updates', { group_id: 'owned', ack: m.id })).isError);
     assert.deepEqual((await notes('owned')).map((n) => n.id), [String(m.id)]);
     // The full shape lists them too, with their ids.
     const full = (await srv.call('GET', '/api/wait?group=owned&timeout=0&format=full', AGENT)).body;
@@ -133,6 +142,86 @@ describe('group conversations', () => {
     assert.deepEqual(first.value.items.map((i: { kind: string; id: string }) => [i.kind, i.id]), [['group_note', String(m.id)]]);
     const second = await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'mcp-ack', wait_seconds: 0, ack: m.id });
     assert.ok(!second.value.items.some((i: { kind: string }) => i.kind === 'group_note'));
+    // The result says how far it has acknowledged, so the agent sees it worked; get_updates too.
+    assert.equal(second.value.acked, m.id);
+    assert.equal((await srv.tool(AGENT, 'get_updates', { group_id: 'mcp-ack', ack: m.id })).value.acked, m.id);
+    assert.equal((await srv.call('GET', `/api/wait?group=mcp-ack&timeout=0&ack=${m.id}`, AGENT)).body.acked, m.id);
+    // Without `ack`, nothing about it.
+    assert.equal((await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'mcp-ack', wait_seconds: 0 })).value.acked, undefined);
+  });
+
+  test('a loop on `since` without `ack` waits for something new instead of spinning', async () => {
+    await srv.call('PUT', '/api/groups/spin', AGENT, {});
+    const a = (await say('spin', { body: 'One' })).body;
+    const b = (await say('spin', { body: 'Two' })).body;
+    const first = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'spin', wait_seconds: 0 })).value;
+    assert.equal(first.ready, true);
+    assert.deepEqual(first.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(a.id), undefined], [String(b.id), undefined]]);
+    // From its checkedAt, the same two come back as seen, and don't end the wait: it times out.
+    const started = Date.now();
+    const again = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'spin', wait_seconds: 1, since: first.checkedAt })).value;
+    assert.ok(Date.now() - started >= 900, 'it waited');
+    assert.equal(again.ready, false);
+    assert.deepEqual(again.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(a.id), true], [String(b.id), true]]);
+    // A third, written during the wait, ends it; only it is new.
+    const waiting = srv.tool(AGENT, 'wait_for_decisions', { group_id: 'spin', wait_seconds: 10, since: again.checkedAt });
+    await new Promise((r) => setTimeout(r, 100));
+    const c = (await say('spin', { body: 'Three' })).body;
+    const third = (await waiting).value;
+    assert.equal(third.ready, true);
+    assert.deepEqual(third.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [
+      [String(a.id), true],
+      [String(b.id), true],
+      [String(c.id), undefined],
+    ]);
+    // The full shape and the HTTP wait mark them the same way.
+    const full = (await srv.call('GET', `/api/wait?group=spin&timeout=0&format=full&since=${encodeURIComponent(third.checkedAt)}`, AGENT)).body;
+    assert.deepEqual(full.groupMessages[0].messages.map((m: { seen?: boolean }) => m.seen), [true, true, true]);
+    // Without a `since`, every unacknowledged note is new: a restart loses none.
+    const fresh = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'spin', wait_seconds: 0 })).value;
+    assert.equal(fresh.ready, true);
+    assert.ok(fresh.items.every((i: { seen?: boolean }) => i.seen === undefined));
+    // Acknowledging is what clears them.
+    const done = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'spin', wait_seconds: 0, ack: c.id })).value;
+    assert.deepEqual(done.items, []);
+  });
+
+  test('a note the overseer was never handed is new, whatever `since` it passes', async () => {
+    await srv.publish('never-lane', { group: 'never' });
+    const m = (await say('never', { body: 'Missed?' })).body;
+    // A `since` from a wait that didn't cover the group (lanes only) is past the note, but the note never reached it.
+    const lanesOnly = (await srv.call('GET', '/api/wait?lane=never-lane&timeout=0', AGENT)).body;
+    const w = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'never', wait_seconds: 5, since: lanesOnly.checkedAt })).value;
+    assert.equal(w.ready, true);
+    assert.deepEqual(w.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(m.id), undefined]]);
+    // Handed over now: from this result's checkedAt it's one it had.
+    const again = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'never', wait_seconds: 0, since: w.checkedAt })).value;
+    assert.deepEqual(again.items.map((i: { seen?: boolean }) => i.seen), [true]);
+    // A worker reading the group doesn't count as handing it to the overseer.
+    const n = (await say('never', { body: 'Second' })).body;
+    const worker = (await srv.tool(REVIEWER, 'get_updates', { group_id: 'never' })).value;
+    assert.ok(worker.groupMessages[0].messages.some((x: { id: number }) => x.id === n.id));
+    const overseer = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'never', wait_seconds: 5, since: worker.checkedAt })).value;
+    assert.equal(overseer.ready, true);
+    assert.deepEqual(overseer.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(m.id), true], [String(n.id), undefined]]);
+  });
+
+  test('acknowledging tells clients once, so people see their messages marked seen', async () => {
+    await srv.call('PUT', '/api/groups/seen', AGENT, {});
+    const m = (await say('seen', { body: 'Read me' })).body;
+    const group = async () => (await srv.call('GET', '/api/groups', ALICE)).body.find((g: { id: string }) => g.id === 'seen');
+    assert.equal((await group()).overseerReadId, 0);
+    const events: { group: { id: string; overseerReadId: number } }[] = [];
+    const listen = (e: any) => e.type === 'group' && e.group.id === 'default/seen' && events.push(e);
+    srv.store.events.on('change', listen);
+    try {
+      await srv.call('POST', '/api/groups/seen/ack', AGENT, { upTo: m.id });
+      await srv.call('POST', '/api/groups/seen/ack', AGENT, { upTo: m.id });
+    } finally {
+      srv.store.events.off('change', listen);
+    }
+    assert.deepEqual(events.map((e) => e.group.overseerReadId), [m.id]);
+    assert.equal((await group()).overseerReadId, m.id);
   });
 });
 
@@ -174,6 +263,18 @@ describe('a group\'s conversation, page by page', () => {
     assert.deepEqual(in_('default/g'), ['Reply after the move', '? Before the move?']);
     assert.deepEqual(in_('default/h'), []);
     store.close();
+  });
+
+  test('a group with no overseer recorded is acknowledged by any agent, never by a person', () => {
+    const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
+    try {
+      store.upsertGroup('default/old', {}, 'bot');
+      const m = store.postGroupMessage('default/old', { from: 'owner', author: 'alice', body: 'Hi' }, 'alice');
+      assert.throws(() => store.ackGroupMessages('default/old', m.id, { key: 'user:1:alice', agent: false }), /Only the group's overseer acknowledges/);
+      assert.equal(store.ackGroupMessages('default/old', m.id, { key: 'token:any', agent: true }), m.id);
+    } finally {
+      store.close();
+    }
   });
 
   test('unacknowledged messages survive a restart, and acknowledging is idempotent', () => {

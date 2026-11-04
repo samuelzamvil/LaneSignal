@@ -531,15 +531,17 @@ export const digestWait = (w: WaitResult, keyed = false) => {
     ...w.closed.map((e) => ({ code: code(e), kind: 'closed', text: e.resolution ?? e.state })),
     ...w.removedLanes.map((l) => ({ kind: 'lane_removed', id: l.laneId, text: l.removedBy ? `Removed by ${l.removedBy}` : 'Removed' })),
     ...w.movedTickets.map((m) => ({ kind: 'ticket_moved', id: m.ticket, text: `Taken into lane ${m.laneId}${m.by ? ` by ${m.by}` : ''}` })),
-    // One item each, with its id: acknowledge the last one handled (`ack`), or they come back.
+    // One item each, with its id: acknowledge the last one handled (`ack`), or they come back
+    // (`seen: true` once the caller's `since` is past them: it had them already).
     ...w.groupMessages.flatMap((g) =>
-      g.messages.map((m) => ({ kind: 'group_note', id: String(m.id), text: ownerWords([m]), by: m.author })),
+      g.messages.map((m) => ({ kind: 'group_note', id: String(m.id), text: ownerWords([m]), by: m.author, ...(m.repeat ? { seen: true } : {}) })),
     ),
   ];
   const counts = { open: w.open.length, decidedUnacknowledged: w.decided.length, waitingOnYou: w.replies.length };
   return {
-    // From the items themselves: `pub.wait` may have dropped some the caller no longer sees.
-    ready: items.length > 0,
+    // From the items themselves: `pub.wait` may have dropped some the caller no longer sees. Notes
+    // it already had don't make it ready on their own.
+    ready: items.some((i) => !('seen' in i)),
     items,
     // Left out when all zero: an idle wait returning on its timeout is the call agents repeat most.
     counts: counts.open || counts.decidedUnacknowledged || counts.waitingOnYou ? counts : undefined,
@@ -557,7 +559,9 @@ export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
   groupMessages: w.groupMessages.length
     ? w.groupMessages.map((g) => ({
         group: g.group,
-        messages: g.messages.map((m) => compact({ id: m.id, body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined })),
+        messages: g.messages.map((m) =>
+          compact({ id: m.id, body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined, seen: m.repeat }),
+        ),
       }))
     : undefined,
 });
@@ -581,6 +585,20 @@ export function productsKeptWarning(group: { products: string[] }, asked: string
 export const approvesRequirements = (p: Principal) => p.role === 'human' && !p.personalKey;
 
 export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);
+
+/** The caller as acknowledging a group's messages needs it: its key, and whether it's an agent. */
+export const ackerOf = (p: Principal) => ({ key: ownerOf(p), agent: p.role === 'agent' });
+
+/**
+ * Records that the caller was handed the group notes in this result (only the overseer's count), so
+ * the next wait treats them as had already once its `since` is past them. Call it with what was returned.
+ */
+export function markNotesDelivered(store: Store, w: WaitResult, p: Principal) {
+  for (const g of w.groupMessages) {
+    const last = g.messages.at(-1);
+    if (last) store.markGroupMessagesDelivered(g.group, last.id, ackerOf(p));
+  }
+}
 
 /**
  * An attachment the caller may read: one on an escalation, lane message or epic message in a

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { blockedMs, compareLanes, duration, isStale, needsHuman } from '../src/format.ts';
+import { blockedMs, compareLanes, duration, isStale, needsHuman, seenByOverseer } from '../src/format.ts';
 import { lane } from './fixtures.ts';
 
 test('duration reads naturally from seconds to days', () => {
@@ -41,4 +41,19 @@ test('working lanes go stale after the threshold; idle and blocked lanes do not'
   assert.equal(isStale(lane({ status: 'idle' }), now, 30), false);
   assert.equal(isStale(lane({ status: 'active' }), now, 0), false);
   assert.equal(isStale(lane({ status: 'awaiting_agent', agentWaiting: true }), now, 30), false, 'its agent is waiting');
+});
+
+test("a person's message to the group is seen once the overseer acknowledges up to it", () => {
+  const msg = (extra: Partial<Parameters<typeof seenByOverseer>[0]> = {}) => ({
+    id: 5, from: 'owner' as const, escalationId: null, laneId: null, epicId: null, ...extra,
+  });
+  assert.equal(seenByOverseer(msg({ seen: false }), 4), false);
+  assert.equal(seenByOverseer(msg({ seen: false }), 5), true, 'the live group moved past it after the page was read');
+  assert.equal(seenByOverseer(msg({ seen: true }), undefined), true);
+  assert.equal(seenByOverseer(msg(), undefined), false);
+  // Never acknowledged, so never labelled: the overseer's own, and messages on a lane, epic or escalation.
+  assert.equal(seenByOverseer(msg({ from: 'agent' }), 9), null);
+  assert.equal(seenByOverseer(msg({ laneId: 'l1' }), 9), null);
+  assert.equal(seenByOverseer(msg({ epicId: 3 }), 9), null);
+  assert.equal(seenByOverseer(msg({ escalationId: 'e' }), 9), null);
 });
