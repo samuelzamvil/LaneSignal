@@ -541,13 +541,11 @@ function Dashboard({
     .filter((t) => !activeGroups.length || (t.group !== null && activeGroups.includes(keyOf(t.project, t.group))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const parkedIn = (groupId: string | null) => parkedAll.filter((t) => (t.group ? keyOf(t.project, t.group) : null) === groupId);
-  // Tickets and epics an agent asked to reopen: under their group, whatever the status filter, since they wait on a person.
+  // Closed epics their overseer asked to reopen: under their group, whatever the status filter, since they wait on a person.
   const canApprove = me?.role === 'human' && !me.personalKey;
-  const inGroups = (project: string, group: string | null) =>
-    inScope(project) && (!activeGroups.length || (group !== null && activeGroups.includes(keyOf(project, group))));
-  const reopenTicketsAll = [...live.tickets.values()].filter((t) => t.reopenRequest && inGroups(t.project, t.group));
-  const reopenEpicsAll = [...live.epics.values()].filter((e) => e.state === 'closed' && e.reopenRequest && inGroups(e.project, e.group));
-  const reopenTicketsIn = (groupId: string | null) => reopenTicketsAll.filter((t) => (t.group ? keyOf(t.project, t.group) : null) === groupId);
+  const reopenEpicsAll = [...live.epics.values()].filter(
+    (e) => e.state === 'closed' && e.reopenRequest && inScope(e.project) && (!activeGroups.length || activeGroups.includes(keyOf(e.project, e.group))),
+  );
   const reopenEpicsIn = (groupId: string | null) => reopenEpicsAll.filter((e) => keyOf(e.project, e.group) === groupId);
   const leftLane = (t: Ticket) =>
     t.lastLane ? (live.lanes.get(keyOf(t.project, t.lastLane))?.name ?? `${t.lastLane} (removed)`) : null;
@@ -737,7 +735,6 @@ function Dashboard({
     sec.lanes.length > 0 ||
     (sec.groupId !== undefined &&
       (parkedIn(sec.groupId).length > 0 ||
-        reopenTicketsIn(sec.groupId).length > 0 ||
         reopenEpicsIn(sec.groupId).length > 0 ||
         (epicCardsIn(sec) && epicsOf(sec.groupId).some(epicShows))));
 
@@ -871,20 +868,14 @@ function Dashboard({
             )}
             {laneList(layout.noEpic)}
             <QuietLanes count={layout.quiet.length}>{laneList(layout.quiet)}</QuietLanes>
-            <ReopenRow
-              tickets={reopenTicketsIn(sec.groupId)}
-              epics={reopenEpicsIn(sec.groupId)}
-              client={client}
-              canApprove={canApprove}
-              now={now}
-            />
+            <ReopenRow epics={reopenEpicsIn(sec.groupId)} client={client} canApprove={canApprove} now={now} />
             <ParkedRow tickets={parkedIn(sec.groupId)} now={now} laneName={leftLane} />
           </div>
         );
       })}
-      {filters.arrange !== 'group' && (reopenTicketsAll.length > 0 || reopenEpicsAll.length > 0) && (
+      {filters.arrange !== 'group' && reopenEpicsAll.length > 0 && (
         <div className="group">
-          <ReopenRow tickets={reopenTicketsAll} epics={reopenEpicsAll} client={client} canApprove={canApprove} now={now} />
+          <ReopenRow epics={reopenEpicsAll} client={client} canApprove={canApprove} now={now} />
         </div>
       )}
       {filters.arrange !== 'group' && parkedAll.length > 0 && (
@@ -1150,7 +1141,6 @@ function Dashboard({
             client={client}
             stamp={ticketStamp}
             now={now}
-            canApprove={canApprove}
             laneName={(id) => live.lanes.get(keyOf(route.ticketProject!, id))?.name ?? null}
             onClose={() => closeTo('#/lanes')}
             backTo={backLabel('#/lanes')}

@@ -87,7 +87,6 @@ export const ticket = (over: Partial<Ticket> = {}): Ticket => ({
   blockedSince: null,
   blockedTotalMs: 0,
   openEscalations: 0,
-  reopenRequest: null,
   createdAt: '2026-10-01T00:00:00.000Z',
   updatedAt: '2026-10-01T00:00:00.000Z',
   closedAt: null,

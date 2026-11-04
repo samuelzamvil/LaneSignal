@@ -55,8 +55,7 @@ A ticket is what a lane works on. It owns its escalations and its status history
 The rules:
 
 - **One record per ticket:** `967`, `#967`, `redmine:967` and the Redmine URL are the same ticket (refs are put into one form, using the default ticket system). A ticket is created the first time a lane is filled with it.
-- **One lane at a time:** filling a lane with a ticket another lane holds is refused. Any lane can take a parked ticket.
-- **Reopening takes a person:** a done or dropped ticket doesn't come back just because an agent fills a lane with it: that's refused, before the lane lets go of what it holds. The agent asks with `request_ticket_reopen` and a reason; the ticket shows **Reopen requested** under its group on the Lanes page and on its sheet, and a signed-in person approves or declines (a personal key can't). Approved, it's **parked** ("Reopened: <reason>"), with its questions and history, and the overseer fills a lane with it; its group wait says so (`reopen_approved`, or `reopen_declined`). A person can also reopen a done or dropped ticket from its sheet (**Reopen**) without being asked. Repeating the call that finished it (`completed` with its ticket) changes nothing.
+- **One lane at a time:** filling a lane with a ticket another lane holds is refused. Any lane can take a parked ticket, and filling a lane with a done or dropped one reopens it.
 - **Questions keep their lane:** an escalation stays recorded on the lane it was raised in (for history and export), and counts, blocks and is waited on where its ticket is now.
 - **Letting go:** a lane lets its ticket go as **parked** (to pick up again, with a reason), **done**, or **dropped** (unfinished). Whatever happens to a ticket, its open questions stay open and in your inbox, answered as ever; they block only the lane holding it. A lane published as `completed` marks its ticket done and empties (`idle`), ready for the next.
 - **Not a tracker:** a ticket's state here only says whether a lane holds it and how the last one let it go. Its real status lives in Redmine, GitHub or wherever it's tracked; LaneSignal never syncs it.
@@ -68,12 +67,11 @@ The rules:
 
 **In the app:**
 
-- **Reopen requested:** under each group on the Lanes page, the tickets and epics its overseer asked to reopen, with the reason, who asked, and **Approve** / **Decline**. It isn't folded, and shows whatever status filter is on.
 - **Parked tickets:** under each group on the Lanes page, a **Parked** row (folded by default) lists the group's parked tickets with why, how many questions are open on each, and the lane each left.
 - **A ticket's sheet** opens from a lane's ticket, a parked ticket, or the ticket on a question. It shows where the ticket is, its questions, its history across lanes, and the lanes it passed through.
 - **A lane's sheet** marks each switch in its activity: "Parked 500: waiting on the vendor API key · filled with 501". Questions on it name their ticket, so one parked with an earlier ticket reads "500 · parked".
 
-Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)"). Otherwise their publishes follow the same rules as `fill_lane`: a ticket another lane holds is refused, and so is a done or dropped one until a person approves reopening it.
+Agents that don't know about tickets still work: publishing a lane with a different ticket parks the old one ("switched (legacy call)"). Otherwise their publishes follow the same rules as `fill_lane`: a ticket another lane holds is refused, and a done one reopens.
 
 ### Escalation codes and lane letters
 
@@ -99,7 +97,7 @@ An epic is a long-lived ticket a group steers its work by: the direction, scope 
 - **Status line:** one line the overseer sets on the card (`update_epic`), e.g. "3 of 5 lanes busy; next up #966". Use it instead of placeholder lanes.
 - **Questions:** the overseer raises the durable ones on the epic: direction, scope, which tickets to file (`create_escalation` with `epic`). Questions from a lane holding no ticket go to the group's epic too. They're in your inbox like any other and can block, but block no lane: a blocking one shows **Waiting on you** on the card and counts in "Needs you".
 - **Closing:** the overseer asks with `request_epic_close` and a reason; the card and sheet show **Close requested**, and a signed-in person approves or declines (a personal key can't). A close is refused while the epic has open questions, or answered ones its agent hasn't acknowledged, so a live decision is never withdrawn. Tickets that name a closed epic keep the link. A group's stand-in isn't closed: it steps aside when a real epic is added.
-- **Reopening:** the overseer asks with `request_epic_reopen` and a reason; the epic shows in its group's **Reopen requested** row (it has no card while closed) and on its sheet, and a signed-in person approves or declines. A person can also reopen a closed epic from its sheet without being asked. Reopened, it keeps its codes, questions and history, tickets can name it again, and if the group's stand-in had come back, it steps aside again: its questions, board and status line move to the reopened epic. The overseer's group wait reports the decision (`reopen_approved` / `reopen_declined`).
+- **Reopening:** the overseer asks with `request_epic_reopen` and a reason; the epic shows in its group's **Reopen requested** row on the Lanes page (it has no card while closed) and on its sheet, with the reason and who asked, and a signed-in person approves or declines (a personal key can't). A person can also reopen a closed epic from its sheet (**Reopen**) without being asked. Reopened, it keeps its codes, questions and history, tickets can name it again, and if the group's stand-in had come back, it steps aside again: its questions, board and status line move to the reopened epic. The overseer's group wait reports the decision (`reopen_approved` / `reopen_declined`). Tickets need no approval: filling a lane with a done or dropped one reopens it.
 - **Requirements** stay separate from epics.
 
 **In the app:**

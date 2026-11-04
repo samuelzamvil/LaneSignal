@@ -3,7 +3,6 @@ import { TicketLinksContext } from './linked-text.tsx';
 import type { Client, Escalation, LaneEvent, Ticket } from './api.ts';
 import { FOLD, SheetSection, StatusPill, useStored, type Fold } from './components.tsx';
 import { absolute, ago, duration } from './format.ts';
-import { ReopenControls } from './reopen.tsx';
 
 /** The tickets the client keeps (held and parked ones, and any an open question belongs to), by number. */
 export const TicketsContext = createContext<Map<string, Ticket>>(new Map());
@@ -118,7 +117,6 @@ export function TicketDetail({
   client,
   stamp,
   now,
-  canApprove,
   laneName,
   onClose,
   backTo,
@@ -129,8 +127,6 @@ export function TicketDetail({
   /** For a ticket's number: changes when something about it changed, to refetch. */
   stamp: (ticketId: number) => string;
   now: number;
-  /** A signed-in person: approves reopening it, or reopens it. */
-  canApprove: boolean;
   /** A lane's name from its id; null for a lane the client doesn't have (removed). */
   laneName: (laneId: string) => string | null;
   onClose: () => void;
@@ -218,13 +214,6 @@ export function TicketDetail({
               <dt>Updated</dt>
               <dd title={absolute(t.updatedAt)}>{ago(t.updatedAt, now)}</dd>
             </dl>
-            <ReopenControls
-              name={`ticket ${t.displayRef}`}
-              request={t.reopenRequest}
-              closed={t.state === 'done' || t.state === 'dropped'}
-              canApprove={canApprove}
-              decide={(approve) => client.decideTicketReopen(project, t.ref, approve)}
-            />
             <p className="hint">Not a tracker: this is where the ticket is in LaneSignal, not its status in its ticket system.</p>
 
             {data.lanes.length > 0 && (

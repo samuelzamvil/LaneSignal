@@ -208,11 +208,8 @@ export interface WaitResult {
   removedLanes: { laneId: string; removedBy: string | null; at: string }[];
   /** Digest only: tickets from lanes in scope that a lane outside it took since `since` (another overseer, usually). */
   movedTickets: { ticket: string; ticketId: number; laneId: string; by: string | null; at: string }[];
-  /**
-   * Digest only, on a group's wait: the group's tickets and epics a person reopened, or declined to
-   * reopen, since `since`. A reopened ticket is parked, for fill_lane to take.
-   */
-  reopenDecisions: { kind: 'ticket' | 'epic'; name: string; approved: boolean; by: string | null; at: string }[];
+  /** Digest only, on a group's wait: the group's epics a person reopened, or declined to reopen, since `since`. */
+  reopenDecisions: { epic: string; approved: boolean; by: string | null; at: string }[];
   /**
    * A group's wait: people's messages written to the group that its overseer hasn't acknowledged,
    * oldest first. They come back on every wait until acknowledged (`ack` with the last id handled);
@@ -315,11 +312,6 @@ export interface LaneFill {
    * agents) the ticket is parked.
    */
   strict?: boolean;
-  /**
-   * A signed-in person is filling the lane: a done or dropped ticket reopens straight away. Without it
-   * (agents, personal keys) reopening one takes a person's approval (request_ticket_reopen).
-   */
-  reopen?: boolean;
 }
 
 export interface EscalationInput {
@@ -374,7 +366,7 @@ const MAX_PENDING_UPLOADS = 20;
 
 type Row = Record<string, unknown>;
 
-/** A reopen request waiting on a ticket or epic row, or none. */
+/** A reopen request waiting on an epic row, or none. */
 const reopenRequestOf = (r: Row): ReopenRequest | null =>
   r.reopen_requested_at ? { reason: r.reopen_reason as string, by: r.reopen_requested_by as string, at: r.reopen_requested_at as string } : null;
 
@@ -725,14 +717,12 @@ export class Store {
   }
 
   /**
-   * v28: an agent asks to reopen a closed epic or a done or dropped ticket, and a person decides. The
-   * request waits in reopen_*; the decision stays (reopen_decision, by, at) so the overseer's wait hears of it.
+   * v28: an overseer asks to reopen a closed epic, and a person decides. The request waits in
+   * reopen_*; the decision stays (reopen_decision, by, at) so the overseer's wait hears of it.
    */
   private migrateV28() {
-    for (const table of ['tickets', 'epics']) {
-      for (const column of ['reopen_reason', 'reopen_requested_by', 'reopen_requested_at', 'reopen_decision', 'reopen_decided_by', 'reopen_decided_at']) {
-        if (!this.hasColumn(table, column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
-      }
+    for (const column of ['reopen_reason', 'reopen_requested_by', 'reopen_requested_at', 'reopen_decision', 'reopen_decided_by', 'reopen_decided_at']) {
+      if (!this.hasColumn('epics', column)) this.db.exec(`ALTER TABLE epics ADD COLUMN ${column} TEXT`);
     }
   }
 
@@ -2525,7 +2515,6 @@ export class Store {
       openEscalations: Number(
         (this.db.prepare("SELECT COUNT(*) AS n FROM escalations WHERE ticket_id = ? AND state = 'open'").get(Number(r.num)) as Row).n,
       ),
-      reopenRequest: reopenRequestOf(r),
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
       closedAt: (r.closed_at as string | null) ?? null,
@@ -2561,7 +2550,7 @@ export class Store {
     return (
       this.db
         .prepare(
-          `SELECT * FROM tickets WHERE (state IN ('in_lane', 'parked') OR reopen_requested_at IS NOT NULL
+          `SELECT * FROM tickets WHERE (state IN ('in_lane', 'parked')
              OR num IN (SELECT ticket_id FROM escalations WHERE state IN ('open', 'decided') AND ticket_id IS NOT NULL))${p.sql}
            ORDER BY num`,
         )
@@ -2626,16 +2615,6 @@ export class Store {
         `${this.ticketName(target)} is in lane "${localId(target.lane_id as string)}"; a ticket is in one lane at a time (a worker and a reviewer share one)`,
       );
     }
-    // Reopening a ticket that's over takes a person: checked before the held ticket is let go.
-    if (target && (target.state === 'done' || target.state === 'dropped') && !fill.reopen) {
-      // A retry of the call that finished it ("completed" with its ticket) changes nothing.
-      if (!held && status === 'completed') return undefined;
-      const name = this.ticketName(target);
-      throw new ConflictError(
-        `${name} is ${target.state as string}: reopening it takes a person's approval. Ask with request_ticket_reopen ` +
-          `(ticket "${name}", and why); once a person approves, it's parked and fill_lane takes it.`,
-      );
-    }
     let how = fill.previous;
     let reason = fill.reason?.trim() || null;
     let warning: string | undefined;
@@ -2676,73 +2655,6 @@ export class Store {
     }
     this.takeTicket(this.requireLane(lane.id), target, written!, fresh, actor, at, touched);
     return warning;
-  }
-
-  /**
-   * An agent asks to reopen a done or dropped ticket; a person approves (it's parked, for fill_lane to
-   * take) or declines. Asking again while one waits replaces its reason.
-   */
-  requestTicketReopen(ticketId: number, reason: string, actor: string): Ticket {
-    this.tx(() => {
-      const t = this.ticketRow(ticketId);
-      if (t.state !== 'done' && t.state !== 'dropped') {
-        throw new ConflictError(
-          t.state === 'parked'
-            ? `${this.ticketName(t)} is parked: any lane can take it (fill_lane), no approval needed`
-            : `${this.ticketName(t)} is in lane "${localId(t.lane_id as string)}": it isn't over`,
-        );
-      }
-      const at = this.now().toISOString();
-      this.db
-        .prepare('UPDATE tickets SET reopen_reason = ?, reopen_requested_by = ?, reopen_requested_at = ?, updated_at = ? WHERE num = ?')
-        .run(reason.trim(), actor, at, at, ticketId);
-      const lane = this.ticketLastLane(ticketId);
-      if (lane) this.addEvent(lane, at, 'ticket', `Asked to reopen ${this.ticketName(t)}: ${reason.trim()}`, actor, ticketId);
-    });
-    this.emitTicket(ticketId);
-    return this.ticketFromRow(this.ticketRow(ticketId));
-  }
-
-  /**
-   * A person's answer to a reopen request, or a person reopening a done or dropped ticket directly
-   * (`approve` with no request waiting). Approved, it's parked with the request's reason, so any
-   * lane can take it, with its questions and history.
-   */
-  decideTicketReopen(ticketId: number, approve: boolean, by: string): Ticket {
-    this.tx(() => {
-      const t = this.ticketRow(ticketId);
-      const waiting = t.reopen_requested_at != null;
-      if (!waiting && !approve) throw new ConflictError(`Nobody has asked to reopen ${this.ticketName(t)}`);
-      if (t.state !== 'done' && t.state !== 'dropped') throw new ConflictError(`${this.ticketName(t)} isn't done or dropped: it's ${t.state as string}`);
-      const at = this.now().toISOString();
-      const name = this.ticketName(t);
-      const why = (t.reopen_reason as string | null) ?? null;
-      this.db
-        .prepare(
-          `UPDATE tickets SET reopen_reason = NULL, reopen_requested_by = NULL, reopen_requested_at = NULL,
-             reopen_decision = ?, reopen_decided_by = ?, reopen_decided_at = ?, updated_at = ? WHERE num = ?`,
-        )
-        .run(approve ? 'approved' : 'declined', by, at, at, ticketId);
-      if (approve) {
-        this.db
-          .prepare("UPDATE tickets SET state = 'parked', park_reason = ?, closed_at = NULL WHERE num = ?")
-          .run(why ? `Reopened: ${why}` : 'Reopened', ticketId);
-      }
-      const lane = this.ticketLastLane(ticketId);
-      if (lane) {
-        this.addEvent(lane, at, 'ticket', approve ? `Reopened ${name} (parked)` : `Kept ${name} ${t.state as string}: reopen declined`, by, ticketId);
-      }
-    });
-    this.emitTicket(ticketId);
-    return this.ticketFromRow(this.ticketRow(ticketId));
-  }
-
-  /** The lane a ticket was last in, for its history; null if it never was in one. */
-  private ticketLastLane(ticketId: number): string | null {
-    const r = this.db
-      .prepare("SELECT lane_id FROM lane_events WHERE ticket_id = ? AND kind = 'ticket' ORDER BY id DESC LIMIT 1")
-      .get(ticketId) as Row | undefined;
-    return (r?.lane_id as string | null) ?? null;
   }
 
   /** Must run inside a transaction. The lane lets its ticket go: parked with its status kept, or done or dropped. */
@@ -2806,15 +2718,6 @@ export class Store {
             ? 'active'
             : was;
     const reopened = t.state === 'done' || t.state === 'dropped';
-    // A person filling a lane with it is the approval of any reopen request waiting on it.
-    if (reopened && t.reopen_requested_at != null) {
-      this.db
-        .prepare(
-          `UPDATE tickets SET reopen_reason = NULL, reopen_requested_by = NULL, reopen_requested_at = NULL,
-             reopen_decision = 'approved', reopen_decided_by = ?, reopen_decided_at = ? WHERE num = ?`,
-        )
-        .run(actor, at, num);
-    }
     this.db
       .prepare(
         `UPDATE tickets SET lane_id = ?, state = 'in_lane', park_reason = NULL, closed_at = NULL, group_id = ?, updated_at = ? WHERE num = ?`,
@@ -4529,26 +4432,15 @@ export class Store {
         });
       }
     }
-    // The group's tickets and epics a person reopened (or declined to) since `since`.
+    // The group's epics a person reopened (or declined to) since `since`.
     const reopenDecisions: WaitResult['reopenDecisions'] = [];
     if (digest && scope.since && scope.groupId) {
-      const decided = (table: 'tickets' | 'epics') =>
-        this.db
-          .prepare(`SELECT * FROM ${table} WHERE group_id = ? AND reopen_decided_at >= ? ORDER BY reopen_decided_at`)
-          .all(scope.groupId!, scope.since!) as Row[];
-      for (const r of decided('tickets')) {
+      const rows = this.db
+        .prepare('SELECT * FROM epics WHERE group_id = ? AND reopen_decided_at >= ? ORDER BY reopen_decided_at')
+        .all(scope.groupId, scope.since) as Row[];
+      for (const r of rows) {
         reopenDecisions.push({
-          kind: 'ticket',
-          name: this.ticketName(r),
-          approved: r.reopen_decision === 'approved',
-          by: (r.reopen_decided_by as string | null) ?? null,
-          at: r.reopen_decided_at as string,
-        });
-      }
-      for (const r of decided('epics')) {
-        reopenDecisions.push({
-          kind: 'epic',
-          name: (r.display_ref as string | null) ?? (r.name as string),
+          epic: (r.display_ref as string | null) ?? (r.name as string),
           approved: r.reopen_decision === 'approved',
           by: (r.reopen_decided_by as string | null) ?? null,
           at: r.reopen_decided_at as string,

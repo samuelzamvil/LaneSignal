@@ -253,9 +253,6 @@ export function createClient(conn: Connection, bearer?: BearerSource) {
     decideEpicClose: (id: number, approve: boolean) => request<Epic>('POST', `/api/epics/${id}/close`, { approve }),
     /** Approve or decline an overseer's request to reopen a closed epic, or (approve, none waiting) reopen it. */
     decideEpicReopen: (id: number, approve: boolean) => request<Epic>('POST', `/api/epics/${id}/reopen`, { approve }),
-    /** Approve or decline an agent's request to reopen a done or dropped ticket, or (approve, none waiting) reopen it: it's parked. */
-    decideTicketReopen: (project: string, ref: string, approve: boolean) =>
-      request<Ticket>('POST', `/api/tickets/${encodeURIComponent(ref)}/reopen?project=${encodeURIComponent(project)}`, { approve }),
     /** Closed escalations, latest first. `before` is the previous page's `next`. */
     history: (f: {
       q?: string;

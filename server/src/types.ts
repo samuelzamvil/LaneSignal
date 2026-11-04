@@ -98,7 +98,7 @@ export interface Lane {
  */
 export const TICKET_STATES = ['in_lane', 'parked', 'done', 'dropped'] as const;
 
-/** An agent asks to reopen a closed epic or a done or dropped ticket; it waits for a signed-in person. */
+/** An overseer asks to reopen a closed epic; it waits for a signed-in person. */
 export interface ReopenRequest {
   reason: string;
   by: string;
@@ -137,8 +137,6 @@ export interface Ticket {
   blockedTotalMs: number;
   /** Escalations still waiting on a human. */
   openEscalations: number;
-  /** A done or dropped ticket an agent asked to reopen, waiting for a person's approval. */
-  reopenRequest: ReopenRequest | null;
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;

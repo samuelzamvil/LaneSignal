@@ -459,7 +459,6 @@ export const briefTicket = (t: Ticket) =>
     status: t.status,
     parkReason: t.parkReason,
     waitingOn: t.waitingOn,
-    reopenRequested: t.reopenRequest?.reason,
     openEscalations: t.openEscalations || undefined,
     updatedAt: t.updatedAt,
   });
@@ -543,10 +542,8 @@ export const digestWait = (w: WaitResult, keyed = false) => {
     ...w.movedTickets.map((m) => ({ kind: 'ticket_moved', id: m.ticket, text: `Taken into lane ${m.laneId}${m.by ? ` by ${m.by}` : ''}` })),
     ...w.reopenDecisions.map((d) => ({
       kind: d.approved ? 'reopen_approved' : 'reopen_declined',
-      id: d.name,
-      text: d.approved
-        ? `${d.kind === 'ticket' ? 'Ticket' : 'Epic'} reopened${d.by ? ` by ${d.by}` : ''}${d.kind === 'ticket' ? ': it is parked, take it with fill_lane' : ''}`
-        : `${d.kind === 'ticket' ? 'Ticket' : 'Epic'} stays closed: ${d.by ?? 'a person'} declined to reopen it`,
+      id: d.epic,
+      text: d.approved ? `Epic reopened${d.by ? ` by ${d.by}` : ''}` : `Epic stays closed: ${d.by ?? 'a person'} declined to reopen it`,
     })),
     // One item each, with its id: acknowledge the last one handled (`ack`), or they come back
     // (`seen: true` once the caller's `since` is past them: it had them already).

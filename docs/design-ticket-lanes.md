@@ -63,7 +63,7 @@ Rules:
 - **`waiting_on` clears itself** when the ticket it names becomes `done` or `dropped`.
 - **At most one lane per ticket.** Filling a lane with a ticket another lane holds is refused with `409`, naming that lane. Lanes are slots, not seats: a worker and a reviewer on the same ticket share one lane.
 - **Any lane can take a parked ticket.** The ticket keeps its escalations and status history when it moves.
-- **Closed tickets can come back.** Filling a lane with a `done` or `dropped` ticket reopens it, history intact. (Since changed: reopening now takes a person's approval, see [Tickets](concepts.md#tickets).)
+- **Closed tickets can come back.** Filling a lane with a `done` or `dropped` ticket reopens it, history intact.
 - **Status history goes to the ticket.** Status changes and escalation steps are recorded against the ticket, and the lane's feed shows a one-line copy.
 
 ## Lanes
