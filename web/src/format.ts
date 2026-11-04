@@ -52,3 +52,17 @@ export const isStale = (l: Lane, now: number, staleMinutes: number) =>
 
 export const absolute = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+/**
+ * Whether the group's overseer has seen a person's message to the group: null for anything it never
+ * acknowledges (its own messages, and ones on a lane, an epic or an escalation). Seen once its
+ * acknowledged position (the live group's `overseerReadId`) reaches the message, or as the server
+ * said when the page was read; acknowledging never moves back.
+ */
+export const seenByOverseer = (
+  m: { id: number; from: 'owner' | 'agent'; escalationId: string | null; laneId: string | null; epicId: number | null; seen?: boolean },
+  overseerReadId: number | undefined,
+): boolean | null => {
+  if (m.from !== 'owner' || m.escalationId !== null || m.laneId !== null || m.epicId !== null) return null;
+  return !!m.seen || (overseerReadId !== undefined && m.id <= overseerReadId);
+};

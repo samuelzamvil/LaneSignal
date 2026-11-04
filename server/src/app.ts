@@ -911,7 +911,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.post('/api/groups/:id/ack', agent, (req, res) => {
     const body = parse(s.groupAck, req.body ?? {});
     const project = acc(res).pick(projectQuery(req), { group: String(req.params.id) });
-    res.json({ acknowledgedUpTo: store.ackGroupMessages(q(project, String(req.params.id)), body.upTo) });
+    res.json({ acknowledgedUpTo: store.ackGroupMessages(q(project, String(req.params.id)), body.upTo, ownerOf(principalOf(res))) });
   });
 
   app.post('/api/lanes/:id/messages', any, retired("Lanes' conversations"));
@@ -979,10 +979,10 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       parse(s.waitScope, { ids: query.ids, laneIds: query.lane, groupId: query.group, since: query.since }),
       query.project,
     );
-    // Only the overseer acknowledges what's meant for it.
-    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
+    // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+    const acked = query.ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, query.ack, ownerOf(principalOf(res))) : undefined;
     const { ready: _ready, ...all } = briefWait(pub.wait(store.decisionsFor(scope)));
-    res.json(all);
+    res.json(acked !== undefined ? { ...all, acked } : all);
   });
 
   /**
@@ -1006,12 +1006,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         mode: query.format ?? 'digest',
       };
       const shape = (w: WaitResult) => (query.format === 'full' ? briefWait(w) : digestWait(w, acc(res).projects.length > 1));
-      // Only the overseer acknowledges what's meant for it.
-    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
+      // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+      const acked = query.ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, query.ack, ownerOf(principalOf(res))) : undefined;
+      const withAck = <T extends object>(body: T) => (acked !== undefined ? { ...body, acked } : body);
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
-        res.json(shape(pub.wait(now)));
+        res.json(withAck(shape(pub.wait(now))));
         return;
       }
       const abort = new AbortController();
@@ -1031,7 +1032,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;
-        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : shape(pub.wait(result, visible))));
+        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : withAck(shape(pub.wait(result, visible)))));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));
       } finally {

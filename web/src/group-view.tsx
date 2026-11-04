@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, GroupFeedItem } from './api.ts';
 import { AttachmentList } from './attachments.tsx';
 import { RichText } from './components.tsx';
-import { absolute, ago } from './format.ts';
+import { absolute, ago, seenByOverseer } from './format.ts';
 import { markMessagesSeen } from './seen.ts';
 
 /** A group's conversation: its sheet's route. */
@@ -167,6 +167,10 @@ export function GroupView({
                     {i.author} <span title={absolute(i.at)}>· {ago(i.at, now)}</span>
                     {i.laneId && <span> · on lane {i.laneId}</span>}
                     {i.epicId !== null && <span> · on an epic's board</span>}
+                    {(() => {
+                      const seen = seenByOverseer(i, group?.overseerReadId);
+                      return seen === null ? null : <span className="msg-seen">{seen ? ' · seen by the overseer' : ' · not seen yet'}</span>;
+                    })()}
                   </div>
                   <RichText text={i.body} />
                   {i.attachments.length > 0 && <AttachmentList client={client} files={i.attachments} />}
