@@ -206,6 +206,38 @@ describe('group conversations', () => {
     assert.deepEqual(overseer.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(m.id), true], [String(n.id), undefined]]);
   });
 
+  test("a new overseer's notes are new to it, whatever the last one was handed", async () => {
+    await srv.publish('handover-lane', { group: 'handover' });
+    const m = (await say('handover', { body: 'For whoever runs this' })).body;
+    // The first overseer is handed it, and doesn't acknowledge it.
+    await srv.tool(AGENT, 'get_updates', { group_id: 'handover' });
+    // Another key takes the group over and waits from a `since` that didn't cover the group.
+    await srv.call('PUT', '/api/groups/handover', REVIEWER, {});
+    const lanesOnly = (await srv.call('GET', '/api/wait?lane=handover-lane&timeout=0', REVIEWER)).body;
+    const w = (await srv.tool(REVIEWER, 'wait_for_decisions', { group_id: 'handover', wait_seconds: 5, since: lanesOnly.checkedAt })).value;
+    assert.equal(w.ready, true);
+    assert.deepEqual(w.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(m.id), undefined]]);
+    // Handed to it now: from here it's one it had.
+    const again = (await srv.tool(REVIEWER, 'wait_for_decisions', { group_id: 'handover', wait_seconds: 0, since: w.checkedAt })).value;
+    assert.deepEqual(again.items.map((i: { seen?: boolean }) => i.seen), [true]);
+  });
+
+  test("anyone waiting on the group has the notes it was handed, not someone else's", async () => {
+    await srv.call('PUT', '/api/groups/watchers', AGENT, {});
+    const m = (await say('watchers', { body: 'For the overseer' })).body;
+    await srv.tool(AGENT, 'get_updates', { group_id: 'watchers' });
+    // A worker and a person loop on their own `since`: each is handed it once, then waits.
+    for (const token of [REVIEWER, ALICE]) {
+      const first = (await srv.tool(token, 'wait_for_decisions', { group_id: 'watchers', wait_seconds: 0 })).value;
+      assert.deepEqual(first.items.map((i: { id: string; seen?: boolean }) => [i.id, i.seen]), [[String(m.id), undefined]]);
+      const started = Date.now();
+      const next = (await srv.tool(token, 'wait_for_decisions', { group_id: 'watchers', wait_seconds: 1, since: first.checkedAt })).value;
+      assert.ok(Date.now() - started >= 900, 'it waited');
+      assert.equal(next.ready, false);
+      assert.deepEqual(next.items.map((i: { seen?: boolean }) => i.seen), [true]);
+    }
+  });
+
   test('acknowledging tells clients once, so people see their messages marked seen', async () => {
     await srv.call('PUT', '/api/groups/seen', AGENT, {});
     const m = (await say('seen', { body: 'Read me' })).body;

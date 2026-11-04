@@ -31,6 +31,8 @@ The owner reads it from a phone notification and the dashboard:
 | `attachments` | A plan or notes (`.md`, `.txt`) or a screenshot (PNG, JPEG, WebP, GIF) the owner should see |
 | `ticket` | What it's about (e.g. the PR), if not the lane's ticket |
 
+**An FYI that now needs the owner:** pass its code as `upgrade` (with any fields to replace, the question too) rather than asking again in new words. When you raise a blocking question, `openFyis` lists the open FYIs in your group you can upgrade: upgrade or dismiss any it repeats.
+
 ### Attachments
 
 Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalation or message. Attach an upload once, from the key that uploaded it; unattached uploads are deleted after a day.

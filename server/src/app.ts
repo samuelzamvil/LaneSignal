@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
-import { accessFor, ackerOf, approvesRequirements, markNotesDelivered, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, ackerOf, approvesRequirements, markNotesDelivered, upgradeFor, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { checkAttachment, readUpload } from './attachments.ts';
 import { CLIENT_IP_HEADER, FAILOVER_KEY_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, SESSION_HEADER, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
@@ -965,6 +965,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   /** 201 when created; 200 with `duplicate: true` when the same open question already exists (a retry). */
   app.post('/api/escalations', agent, (req, res) => {
+    // `upgrade`: an open FYI's code, made blocking instead of raising a new question.
+    if (req.body && typeof req.body === 'object' && 'upgrade' in req.body) {
+      const { upgrade, ...fields } = parse(s.escalationUpgrade, req.body);
+      const upgraded = upgradeFor(store, acc(res), upgrade, fields, projectQuery(req), principalOf(res));
+      res.status(200).json(pub.escalation(upgraded));
+      return;
+    }
     const { epic, ...input } = parse(s.escalationInput, req.body);
     const target = escalationTarget(store, acc(res), { laneId: input.laneId, epic }, projectQuery(req));
     const escalation = store.createEscalation({ ...input, ...target }, principalOf(res).name, ownerOf(principalOf(res)));
@@ -1035,7 +1042,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;
-        if (!revoked) markNotesDelivered(store, result, principalOf(res));
+        // Only what reaches the caller counts as handed over: not a wait it hung up on.
+        if (!revoked && !abort.signal.aborted) markNotesDelivered(store, result, principalOf(res), visible);
         res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : withAck(shape(pub.wait(result, visible)))));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));

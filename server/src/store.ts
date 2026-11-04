@@ -135,6 +135,21 @@ export const projectOf = (qualified: string) => {
 /** How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker. */
 const WAIT_GRACE_MS = 30_000;
 
+/**
+ * The same question in other spacing, case or closing punctuation ("Ship it?" and "ship  it"). Only
+ * what ends it is ignored: punctuation inside it ("a > b", "foo-bar", "C++") can change what it asks.
+ */
+export const sameQuestion = (a: string, b: string) => {
+  const norm = (t: string) =>
+    t
+      .normalize('NFKC')
+      .toLowerCase()
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .replace(/[\s?!.…。？！]+$/u, '');
+  return norm(a) === norm(b);
+};
+
 /** What `waitForDecisions` watches: explicit escalations, whole lanes, and/or a group's lanes. */
 /** An escalation as the store holds it: always the lane it was raised in (an epic's internal lane for one raised on the epic). */
 export type StoredEscalation = Escalation & { laneId: string };
@@ -157,6 +172,11 @@ export interface WaitScope {
   notesSince?: string | null;
   /** Who is waiting: their own withdrawals aren't reported back to them. */
   viewer?: string;
+  /**
+   * The waiting key ("user:<account>:<key name>" or "token:<name>"): group notes count as ones it had
+   * only when they were handed to this key.
+   */
+  viewerKey?: string;
   /**
    * `digest`: ready only when there's something to handle. `full`: the older behaviour, ready at once
    * when nothing is open. Left out: get_updates.
@@ -328,7 +348,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 26;
+const SCHEMA_VERSION = 27;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -665,6 +685,7 @@ export class Store {
       if (version < 24) this.migrateV24();
       if (version < 25) this.migrateV25();
       if (version < 26) this.migrateV26();
+      if (version < 27) this.migrateV27();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -672,9 +693,20 @@ export class Store {
   }
 
   /**
-   * v26: how far the group's overseer has been handed the group's messages (its waits and
-   * get_updates), so a note it never received is never treated as one it had already.
+   * v27: how far each key was handed each group's messages (its waits and get_updates), so a note
+   * counts as one a caller had only when it was handed to that caller. Replaces v26's single
+   * groups.overseer_delivered_id, which is no longer read.
    */
+  private migrateV27() {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS group_note_deliveries (
+      group_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      up_to INTEGER NOT NULL,
+      PRIMARY KEY (group_id, key)
+    )`);
+  }
+
+  /** v26: how far the group's overseer was handed the group's messages (no longer read since v27). */
   private migrateV26() {
     if (!this.hasColumn('groups', 'overseer_delivered_id')) {
       this.db.exec('ALTER TABLE groups ADD COLUMN overseer_delivered_id INTEGER NOT NULL DEFAULT 0');
@@ -3195,7 +3227,7 @@ export class Store {
     input: EscalationInput,
     actor: string,
     owner: string | null = null,
-  ): Escalation & { duplicate?: boolean; upgraded?: boolean } {
+  ): Escalation & { duplicate?: boolean; upgraded?: boolean; openFyis?: string[] } {
     projectOf(input.laneId);
     // A typo would otherwise create a new lane outside the group, which the overseer's wait never sees.
     if (!this.laneExists(input.laneId)) {
@@ -3204,21 +3236,40 @@ export class Store {
       );
     }
     const home = this.homeOf(input.laneId, input.epic);
-    // The same question again (ignoring spacing and case) on the same ticket or epic is a retry.
-    const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
+    // The group the question is raised in: its epic's, or its lane's.
+    const groupOfCall =
+      home.epicId !== null
+        ? ((this.db.prepare('SELECT group_id FROM epics WHERE num = ?').get(home.epicId) as Row | undefined)?.group_id as string | undefined)
+        : ((this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row | undefined)?.group_id as string | undefined);
+    // The same question again (ignoring spacing, case and closing punctuation) from the same raiser is a
+    // retry: on the same ticket or epic. Asked as blocking from a lane, an FYI of its group's epic counts
+    // too (an agent moves between a lane and its group's epic): it moves to the lane's ticket and blocks
+    // that lane. Never another lane's ticket. The same ticket or epic is preferred.
+    const sameHome = (r: Row) => (home.ticketId !== null ? Number(r.ticket_id) === home.ticketId : Number(r.epic_id) === home.epicId);
+    const groupEpic = home.ticketId !== null && input.blocking !== false && groupOfCall;
     const existing = (
       this.db
         .prepare(
-          `SELECT id, question FROM escalations WHERE state = 'open' AND ${home.ticketId !== null ? 'ticket_id' : 'epic_id'} = ?
+          `SELECT id, question, ticket_id, epic_id, lane_id FROM escalations WHERE state = 'open'
+             AND (${home.ticketId !== null ? 'ticket_id' : 'epic_id'} = ?
+               ${groupEpic ? "OR (blocking = 0 AND epic_id IN (SELECT num FROM epics WHERE group_id = ? AND state <> 'closed'))" : ''})
              AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`,
         )
-        .all(home.ticketId ?? home.epicId!, owner ?? actor) as Row[]
-    ).find((r) => norm(r.question as string) === norm(input.question));
+        .all(home.ticketId ?? home.epicId!, ...(groupEpic ? [groupOfCall] : []), owner ?? actor) as Row[]
+    )
+      .filter((r) => sameQuestion(r.question as string, input.question))
+      // An epic's FYI moves only when it was raised on the epic itself or from this lane: one raised
+      // from another lane (an agent's key often serves several) stays that lane's business.
+      .filter((r) => sameHome(r) || Store.isEpicLane(r.lane_id as string) || r.lane_id === input.laneId)
+      .sort((a, b) => Number(sameHome(b)) - Number(sameHome(a)))[0];
     if (existing) {
       const id = existing.id as string;
-      // Raising an open FYI again as blocking (the default) makes it need the owner now (same code).
+      // Raising an open FYI again as blocking (the default) makes it need the owner now (same code),
+      // even during the agent's turn: it goes back to the owner.
       if (input.blocking !== false && !this.requireEscalation(id).blocking) {
-        return { ...this.makeBlocking(id, input, actor, owner), duplicate: true, upgraded: true };
+        // An FYI of the group's epic, asked again from a lane: it's the lane's ticket's question now.
+        const moveTo = home.ticketId !== null && !sameHome(existing) ? { ticketId: home.ticketId, laneId: input.laneId } : undefined;
+        return { ...this.makeBlocking(id, input, actor, owner, false, moveTo), duplicate: true, upgraded: true };
       }
       if (this.requireEscalation(id).turn === 'agent') {
         throw new ConflictError(
@@ -3305,7 +3356,72 @@ export class Store {
     }
     this.emit({ type: 'escalation', escalation });
     if (lane) this.emit({ type: 'lane', lane, statusChanged: blocks });
+    // A new blocking question while FYIs are open in its group: name them, so a question raised
+    // again in other words can be upgraded (`upgrade`) or the FYI dismissed rather than left open twice.
+    if (escalation.blocking) {
+      const fyis = this.openFyisIn(groupOfCall ?? null, escalation.id, owner ?? actor, !!owner);
+      if (fyis.length) return { ...escalation, openFyis: fyis };
+    }
     return escalation;
+  }
+
+  /**
+   * Codes of the open FYI questions in the group now (on its tickets, wherever they were raised, or its
+   * epics), oldest first, but `except`: those the caller can upgrade, all of them for the group's
+   * overseer, otherwise its own. `raiser` is its key (`byKey`) or, for a config token, its name.
+   */
+  private openFyisIn(groupId: string | null, except: string, raiser: string, byKey: boolean): string[] {
+    if (!groupId) return [];
+    // As requireRaiser decides: the group's overseer (while the group is live) may upgrade any of them.
+    const overseer =
+      byKey &&
+      (this.db.prepare('SELECT owner FROM groups WHERE id = ? AND archived_at IS NULL').get(groupId) as Row | undefined)?.owner === raiser;
+    // Older rows recorded the account alone ("user:<id>"): those are the same key's too.
+    const account = /^user:[^:]+/.exec(raiser)?.[0];
+    const mine = byKey ? `AND (raised_by_owner = ?${account ? ' OR raised_by_owner = ?' : ''})` : 'AND created_by = ?';
+    return (
+      this.db
+        .prepare(
+          `SELECT id FROM escalations WHERE state = 'open' AND blocking = 0 AND id <> ?
+             AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?) OR epic_id IN (SELECT num FROM epics WHERE group_id = ?))
+             ${overseer ? '' : mine}
+           ORDER BY created_at, ref LIMIT 20`,
+        )
+        .all(except, groupId, groupId, ...(overseer ? [] : [raiser, ...(byKey && account ? [account] : [])])) as Row[]
+    ).map((r) => this.requireEscalation(r.id as string).ref);
+  }
+
+  /**
+   * An open FYI named by the agent becomes blocking (`upgrade` on create_escalation): as for the same
+   * question raised again, without having to word it the same. The fields given replace the FYI's,
+   * its question too; attachments are added. One already blocking comes back as is (`duplicate`).
+   * Who may is checked by the caller (the raiser, or its group's overseer).
+   */
+  upgradeEscalation(
+    id: string,
+    input: Partial<Omit<EscalationInput, 'laneId' | 'epic' | 'blocking'>>,
+    actor: string,
+    owner: string | null,
+  ): Escalation & { duplicate: true; upgraded?: true } {
+    const e = this.requireEscalation(id);
+    if (e.state !== 'open') throw new ConflictError(`${e.ref} is ${e.state}: raise a new question instead`);
+    // A recommended option alone must be one of the FYI's own options.
+    if (input.recommendedOption && !input.options?.length && !e.options.includes(input.recommendedOption)) {
+      throw new ValidationError(`recommendedOption must be one of ${e.ref}'s options (${e.options.join(', ') || 'it has none'}), or give options too`);
+    }
+    if (e.blocking) {
+      if (input.attachments?.length) {
+        const before = this.attachmentsOf(id).length;
+        this.tx(() => this.linkAttachments(id, input.attachments!, owner ?? actor));
+        if (this.attachmentsOf(id).length !== before) this.emit({ type: 'escalation', escalation: this.requireEscalation(id) });
+      }
+      return { ...this.requireEscalation(id), duplicate: true };
+    }
+    return {
+      ...this.makeBlocking(id, { ...input, laneId: e.laneId!, question: input.question ?? e.question }, actor, owner, input.question !== undefined),
+      duplicate: true,
+      upgraded: true,
+    };
   }
 
   /**
@@ -3354,10 +3470,31 @@ export class Store {
    * Fields given again (context, recommendation, options, ...) replace the FYI's, so the owner has
    * what they need to answer.
    */
-  private makeBlocking(id: string, input: EscalationInput, actor: string, owner: string | null): Escalation {
+  /**
+   * `newQuestion`: `input.question` replaces the FYI's (an explicit upgrade); a retry keeps its words.
+   * `moveTo`: an epic's FYI asked again from a lane becomes that lane's ticket's question first (it
+   * keeps its code and its thread, in the same group's conversation), in the same transaction.
+   */
+  private makeBlocking(
+    id: string,
+    input: EscalationInput,
+    actor: string,
+    owner: string | null,
+    newQuestion = false,
+    moveTo?: { ticketId: number; laneId: string },
+  ): Escalation {
     let loose = false;
+    const fromEpic = moveTo ? this.requireEscalation(id).epicId : null;
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
+      if (moveTo) {
+        const was = this.requireEscalation(id);
+        this.db
+          .prepare('UPDATE escalations SET ticket_id = ?, epic_id = NULL, lane_id = ?, updated_at = ? WHERE id = ?')
+          .run(moveTo.ticketId, moveTo.laneId, at, id);
+        this.db.prepare('UPDATE tickets SET updated_at = ? WHERE num = ?').run(at, moveTo.ticketId);
+        this.addEvent(moveTo.laneId, at, 'escalation', `${was.ref} moved here from the epic: ${was.question}`, actor, moveTo.ticketId);
+      }
       const before = this.requireEscalation(id);
       const given = (v: unknown) => (v === undefined || v === null || (Array.isArray(v) && v.length === 0) ? null : v);
       const list = (v: unknown[] | undefined) => (given(v) ? JSON.stringify(v) : null);
@@ -3365,7 +3502,7 @@ export class Store {
       const newOptions = given(input.options) !== null;
       this.db
         .prepare(
-          `UPDATE escalations SET blocking = 1, turn = 'owner', updated_at = ?,
+          `UPDATE escalations SET blocking = 1, turn = 'owner', updated_at = ?, question = ?,
              context = COALESCE(?, context), recommendation = COALESCE(?, recommendation), cost = COALESCE(?, cost),
              ticket = COALESCE(?, ticket), alternatives = COALESCE(?, alternatives), links = COALESCE(?, links),
              options = COALESCE(?, options), recommended_option = CASE WHEN ? THEN ? ELSE COALESCE(?, recommended_option) END,
@@ -3375,6 +3512,7 @@ export class Store {
         )
         .run(
           at,
+          newQuestion && input.question.trim() ? input.question : before.question,
           given(input.context) as string | null,
           given(input.recommendation) as string | null,
           given(input.cost) as string | null,
@@ -3393,7 +3531,7 @@ export class Store {
       // Reject withdrawn: what it meant no longer applies.
       if (input.allowReject === false) this.db.prepare('UPDATE escalations SET reject_means = NULL WHERE id = ?').run(id);
       this.linkAttachments(id, input.attachments ?? [], owner ?? actor);
-      this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${before.question}`, actor, before.ticketId);
+      this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${newQuestion && input.question.trim() ? input.question : before.question}`, actor, before.ticketId);
       // It blocks the lane holding its ticket (or, with no ticket, the lane it was raised in); none while parked.
       const holder = this.holderOf(before);
       const lane = holder ? this.getLane(holder) : null;
@@ -3406,6 +3544,8 @@ export class Store {
       return { escalation: this.requireEscalation(id), lane: lane ? this.requireLane(lane.id) : null, blocks };
     });
     this.emit({ type: 'escalation', escalation, raised: true });
+    if (fromEpic !== null) this.emitEpic(fromEpic);
+    if (moveTo && !loose) this.emitTicket(moveTo.ticketId);
     if (loose) this.emitTicket(escalation.ticketId);
     if (lane) this.emit({ type: 'lane', lane, statusChanged: blocks });
     return escalation;
@@ -3440,9 +3580,14 @@ export class Store {
     };
   }
 
-  /** How far the group's overseer has been handed the group's messages (0: none yet). */
-  private overseerDeliveredId(groupId: string): number {
-    return Number((this.db.prepare('SELECT overseer_delivered_id FROM groups WHERE id = ?').get(groupId) as Row | undefined)?.overseer_delivered_id ?? 0);
+  /**
+   * How far the group's messages were handed to `key` (0: never). Per key, not per session: sessions
+   * sharing a key share what they were handed.
+   */
+  private deliveredTo(groupId: string, key: string | undefined): number {
+    if (!key) return 0;
+    const r = this.db.prepare('SELECT up_to FROM group_note_deliveries WHERE group_id = ? AND key = ?').get(groupId, key) as Row | undefined;
+    return r ? Number(r.up_to) : 0;
   }
 
   /**
@@ -3459,18 +3604,16 @@ export class Store {
   }
 
   /**
-   * The overseer was handed the group's messages up to `upTo` (a wait or get_updates result that
-   * listed them). Never moves back; anyone but the overseer changes nothing.
+   * `key` was handed the group's messages up to `upTo` (a wait or get_updates result that listed
+   * them). Recorded for every caller, overseer or not; never moves back.
    */
-  markGroupMessagesDelivered(groupId: string, upTo: number, by: { key: string; agent: boolean }): void {
-    const g = this.db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Row | undefined;
-    if (!g) return;
-    try {
-      this.requireGroupOverseer(g, by);
-    } catch {
-      return;
-    }
-    this.db.prepare('UPDATE groups SET overseer_delivered_id = ? WHERE id = ? AND overseer_delivered_id < ?').run(upTo, groupId, upTo);
+  markGroupMessagesDelivered(groupId: string, upTo: number, key: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO group_note_deliveries (group_id, key, up_to) VALUES (?1, ?2, ?3)
+         ON CONFLICT (group_id, key) DO UPDATE SET up_to = MAX(up_to, excluded.up_to)`,
+      )
+      .run(groupId, key, upTo);
   }
 
   /** How far the group's overseer has acknowledged the group's messages (0: none yet). */
@@ -4154,7 +4297,7 @@ export class Store {
     let newNotes = 0;
     if (scope.groupId) {
       const notesSince = scope.notesSince === undefined ? scope.since : scope.notesSince;
-      const delivered = this.overseerDeliveredId(scope.groupId);
+      const delivered = this.deliveredTo(scope.groupId, scope.viewerKey);
       const unacknowledged = this.unacknowledgedGroupMessages(scope.groupId).map((m) =>
         notesSince && m.at < notesSince && m.id <= delivered ? { ...m, repeat: true as const } : m,
       );

@@ -124,6 +124,22 @@ export const escalationFields = {
   blocking: z.boolean().optional(),
 };
 
+/**
+ * An open FYI made blocking by its code (`upgrade`), with any fields to replace. Where it's raised
+ * stays as it was.
+ */
+export const escalationUpgrade = z
+  .object(escalationFields)
+  .omit({ laneId: true, epic: true, blocking: true, positions: true })
+  .partial()
+  .extend({ upgrade: z.string().trim().min(1).max(100) })
+  .strict()
+  // With options given, the recommended one is among them (else the store checks the FYI's own).
+  .refine((e) => !e.recommendedOption || !e.options?.length || e.options.includes(e.recommendedOption), {
+    message: 'recommendedOption must be one of options',
+    path: ['recommendedOption'],
+  });
+
 /** The agent's message on a lane: a quiet phone notification, with any files. */
 export const notice = z.object({
   message: z.string().trim().min(1).max(AGENT_MESSAGE_MAX),

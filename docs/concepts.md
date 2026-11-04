@@ -202,7 +202,7 @@ open ──(human decides)──► decided ──(agent acknowledges)──► 
 - You can still answer in the agent's own session (e.g. Remote Control), quoting the code ("A12: drop it"). The agent then dismisses the escalation with a justification ("Sam: drop it, in session"), which is the record on the dashboard and in exports. **Dismiss** on the dashboard closes a stale one whose session ended; the lane then shows as waiting on its agent (`awaiting_agent`) until the agent publishes again.
 - When a lane's last open blocking escalation is decided, the lane moves to `awaiting_agent`, which stops the blocked timer while the agent picks up the answer.
 - While an agent waits for answers on a lane, the lane shows **agent waiting**. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting.
-- Raising the same question again on the same ticket or epic while it's still open (ignoring spacing and case) returns the existing escalation, so agent retries don't create duplicates.
+- Raising the same question again on the same ticket or epic while it's still open (ignoring spacing, case and closing punctuation) returns the existing escalation, so agent retries don't create duplicates. An FYI raised again as blocking becomes blocking under its own code; asked from a lane, an FYI on the group's epic (raised on the epic, or from that lane) moves to that lane's ticket and blocks it. An agent can also make an FYI blocking by its code (`upgrade`), whatever the words.
 - A lane stays **blocked** while any of its ticket's blocking escalations is open, whatever status its agent publishes. A parked ticket's questions don't block the lane that parked it, and an epic's questions block no lane.
 
 ### Alerts only (optional)

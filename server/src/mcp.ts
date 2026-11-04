@@ -22,6 +22,7 @@ import {
   ownerOf,
   ackerOf,
   markNotesDelivered,
+  upgradeFor,
   pub,
   q,
   readableAttachment,
@@ -565,7 +566,8 @@ function buildServer(
           );
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
           const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
-          markNotesDelivered(store, value, who);
+          // Only what reaches the caller counts as handed over: not a call it cancelled.
+          if (!extra.signal.aborted) markNotesDelivered(store, value, who, timeout ? visible : undefined);
           const result = pub.wait(value, timeout ? visible : undefined);
           return json({ ...(format === 'full' ? briefWait(result) : digestWait(result, a.projects.length > 1)), ...(acked !== undefined ? { acked } : {}) });
         } catch (err) {
@@ -1242,11 +1244,15 @@ function buildServer(
           '(`blocking: false` for an FYI). Raised on a lane (published first), it\'s the lane\'s ticket\'s, or its ' +
           'group\'s epic\'s if it holds none; `epic` with no `lane_id` raises it on the epic (blocks no lane). ' +
           'Returns its code (`ref`, e.g. "967A"). The same open question again returns the first (`duplicate: true`); ' +
-          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give (attachments are added).',
+          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give (attachments are added). ' +
+          '"The same" ignores spacing, case and closing punctuation; asked as blocking from a lane, an FYI of yours on its group\'s epic counts too and moves to the lane\'s ticket. ' +
+          'To make an FYI blocking whatever its words, pass its code as `upgrade` (question optional: given, it replaces the FYI\'s; leave out lane_id, epic, blocking and positions). ' +
+          'A new blocking question lists the open FYIs in its group you can upgrade as `openFyis`: upgrade or dismiss any it repeats.',
         inputSchema: {
           lane_id: s.laneId.optional().describe('The lane it\'s raised in; leave out to raise it on `epic`.'),
           epic: s.epicName.optional().describe('The epic it\'s for: its ref, or the group\'s id.'),
-          question: s.escalationFields.question,
+          question: s.escalationFields.question.optional().describe('Required, unless `upgrade` names the FYI.'),
+          upgrade: z.string().optional().describe('An open FYI\'s code ("967A"): make it blocking instead of raising a new question.'),
           context: s.escalationFields.context,
           recommendation: s.escalationFields.recommendation,
           cost: s.escalationFields.cost,
@@ -1266,8 +1272,23 @@ function buildServer(
           ...PROJECT_WRITE,
         },
       },
-      async ({ lane_id, accept_means, reject_means, allow_reject, project, ...rest }) => {
+      async ({ lane_id, accept_means, reject_means, allow_reject, project, upgrade, ...rest }) => {
         try {
+          if (upgrade !== undefined) {
+            const { epic, blocking, positions, ...fields } = rest;
+            // Where it's raised stays as it was, and it becomes blocking: say so rather than drop them.
+            if (lane_id !== undefined || epic !== undefined || blocking !== undefined || positions !== undefined) {
+              throw new ValidationError('`upgrade` makes that FYI blocking where it is: leave out lane_id, epic, blocking and positions (add_position records one)');
+            }
+            const { upgrade: code, ...input } = s.escalationUpgrade.parse({
+              upgrade,
+              acceptMeans: accept_means,
+              rejectMeans: reject_means,
+              allowReject: allow_reject,
+              ...fields,
+            });
+            return json(brief(pub.escalation(upgradeFor(store, a, code, input, project, who))));
+          }
           const { epic, ...input } = s.escalationInput.parse({
             laneId: lane_id,
             acceptMeans: accept_means,

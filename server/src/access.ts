@@ -221,6 +221,7 @@ export function waitScopeFor(
     groupId: raw.groupId ? qualify(pr!, raw.groupId) : undefined,
     since: raw.since,
     viewer: a.principal.name,
+    viewerKey: ownerOf(a.principal),
   };
 }
 
@@ -346,7 +347,7 @@ export const pub = {
  * An escalation as agents need it after asking: what was decided, not the whole question echoed
  * back (context can run to pages). get_escalation and GET /api/escalations/:id return everything.
  */
-export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean }) =>
+export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean; openFyis?: string[] }) =>
   compact({
     id: e.id,
     ref: e.ref,
@@ -366,6 +367,8 @@ export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean 
     resolution: e.resolution,
     positions: e.positions.length ? e.positions : undefined,
     createdBy: e.createdBy,
+    // Open FYIs in the group, named when a new blocking question is raised beside them.
+    openFyis: e.openFyis,
   });
 
 /** Drops null and undefined fields, which an agent would pay for and learn nothing from. */
@@ -590,13 +593,15 @@ export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}
 export const ackerOf = (p: Principal) => ({ key: ownerOf(p), agent: p.role === 'agent' });
 
 /**
- * Records that the caller was handed the group notes in this result (only the overseer's count), so
+ * Records that the caller (its key) was handed the group notes in this result, so
  * the next wait treats them as had already once its `since` is past them. Call it with what was returned.
  */
-export function markNotesDelivered(store: Store, w: WaitResult, p: Principal) {
+export function markNotesDelivered(store: Store, w: WaitResult, p: Principal, projects?: string[]) {
   for (const g of w.groupMessages) {
+    // What the caller no longer sees isn't returned to it (pub.wait), so it isn't handed over either.
+    if (projects && !projects.includes(projectOf(g.group))) continue;
     const last = g.messages.at(-1);
-    if (last) store.markGroupMessagesDelivered(g.group, last.id, ackerOf(p));
+    if (last) store.markGroupMessagesDelivered(g.group, last.id, ownerOf(p));
   }
 }
 
@@ -632,7 +637,7 @@ export function readableAttachment(store: Store, a: Access, id: string, project?
  * Only the agent that raised an escalation acknowledges or dismisses it (or a person, on its behalf):
  * codes repeat across groups, and another overseer closing it by mistake would swallow the decision.
  */
-export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss' | 'reply to') {
+export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss' | 'reply to' | 'upgrade') {
   if (a.principal.role !== 'agent') return;
   const owner = store.escalationOwner(e.id);
   // Older rows recorded the account alone ("user:<id>"); those match any key of that account.
@@ -647,4 +652,21 @@ export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'ack
       `${e.ref} was raised by ${e.createdBy}; only that agent, the overseer of the group its ${e.epicId !== null ? 'epic' : 'ticket'} is in, or a person can ${verb} it`,
     );
   }
+}
+
+/**
+ * `upgrade` on create_escalation: the open FYI named by `code` becomes blocking, taking `fields`.
+ * Only its raiser, or the overseer of the group its ticket or epic is in, may.
+ */
+export function upgradeFor(
+  store: Store,
+  a: Access,
+  code: string,
+  fields: Parameters<Store['upgradeEscalation']>[1],
+  project: string | null | undefined,
+  p: Principal,
+) {
+  const e = a.escalation(code, project);
+  requireRaiser(store, a, e, 'upgrade');
+  return store.upgradeEscalation(e.id, fields, p.name, ownerOf(p));
 }
