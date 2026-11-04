@@ -593,13 +593,13 @@ export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}
 export const ackerOf = (p: Principal) => ({ key: ownerOf(p), agent: p.role === 'agent' });
 
 /**
- * Records that the caller was handed the group notes in this result (only the overseer's count), so
+ * Records that the caller (its key) was handed the group notes in this result, so
  * the next wait treats them as had already once its `since` is past them. Call it with what was returned.
  */
 export function markNotesDelivered(store: Store, w: WaitResult, p: Principal) {
   for (const g of w.groupMessages) {
     const last = g.messages.at(-1);
-    if (last) store.markGroupMessagesDelivered(g.group, last.id, ackerOf(p));
+    if (last) store.markGroupMessagesDelivered(g.group, last.id, ownerOf(p));
   }
 }
 

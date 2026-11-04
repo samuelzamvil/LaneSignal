@@ -241,6 +241,16 @@ describe('an FYI that now needs the owner', () => {
     const heard = (await srv.tool(AGENT, 'wait_for_decisions', { lane_ids: ['fyi-move'], wait_seconds: 0 })).value;
     assert.deepEqual(heard.items.map((i: { code: string; kind: string }) => [i.code, i.kind]), [[onEpic.ref, 'decided']]);
     await srv.tool(AGENT, 'acknowledge_escalation', { id: onEpic.ref });
+    // If the upgrade fails, nothing moved: the FYI stays on the epic.
+    const stays = (await tool({ epic: 'fyi-g2', question: 'Pin the versions?', blocking: false })).value;
+    const failed = await tool({ lane_id: 'fyi-move', question: 'Pin the versions?', attachments: ['no-such-file'] });
+    assert.ok(failed.isError);
+    const after = (await srv.call('GET', `/api/escalations/${stays.id}`, ALICE)).body;
+    assert.equal(after.laneId, null);
+    assert.equal(after.blocking, false);
+    // An epic FYI raised from another lane isn't this lane's to take.
+    const fromOther = (await tool({ epic: 'fyi-g2', lane_id: 'fyi-move-2', question: 'Bump the SDK?', blocking: false })).value;
+    assert.notEqual((await tool({ lane_id: 'fyi-move', question: 'Bump the SDK?' })).value.id, fromOther.id);
     // The same short question on two lanes is two questions: each lane's own blocks.
     const onOther = (await tool({ lane_id: 'fyi-move-2', question: 'OK to merge?', blocking: false })).value;
     const here = (await tool({ lane_id: 'fyi-move', question: 'OK to merge?' })).value;

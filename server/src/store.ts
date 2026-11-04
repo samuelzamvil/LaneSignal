@@ -696,9 +696,18 @@ export class Store {
    * v26: how far the group's overseer has been handed the group's messages (its waits and
    * get_updates), so a note it never received is never treated as one it had already.
    */
-  /** v27: whose key the group's messages were handed to (overseer_delivered_id is that key's). */
+  /**
+   * v27: how far each key was handed each group's messages (its waits and get_updates), so a note
+   * counts as one a caller had only when it was handed to that caller. Replaces v26's single
+   * groups.overseer_delivered_id, which is no longer read.
+   */
   private migrateV27() {
-    if (!this.hasColumn('groups', 'overseer_delivered_by')) this.db.exec('ALTER TABLE groups ADD COLUMN overseer_delivered_by TEXT');
+    this.db.exec(`CREATE TABLE IF NOT EXISTS group_note_deliveries (
+      group_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      up_to INTEGER NOT NULL,
+      PRIMARY KEY (group_id, key)
+    )`);
   }
 
   private migrateV26() {
@@ -3244,7 +3253,7 @@ export class Store {
     const existing = (
       this.db
         .prepare(
-          `SELECT id, question, ticket_id, epic_id FROM escalations WHERE state = 'open'
+          `SELECT id, question, ticket_id, epic_id, lane_id FROM escalations WHERE state = 'open'
              AND (${home.ticketId !== null ? 'ticket_id' : 'epic_id'} = ?
                ${groupEpic ? "OR (blocking = 0 AND epic_id IN (SELECT num FROM epics WHERE group_id = ? AND state <> 'closed'))" : ''})
              AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`,
@@ -3252,6 +3261,9 @@ export class Store {
         .all(home.ticketId ?? home.epicId!, ...(groupEpic ? [groupOfCall] : []), owner ?? actor) as Row[]
     )
       .filter((r) => sameQuestion(r.question as string, input.question))
+      // An epic's FYI moves only when it was raised on the epic itself or from this lane: one raised
+      // from another lane (an agent's key often serves several) stays that lane's business.
+      .filter((r) => sameHome(r) || Store.isEpicLane(r.lane_id as string) || r.lane_id === input.laneId)
       .sort((a, b) => Number(sameHome(b)) - Number(sameHome(a)))[0];
     if (existing) {
       const id = existing.id as string;
@@ -3259,8 +3271,8 @@ export class Store {
       // even during the agent's turn: it goes back to the owner.
       if (input.blocking !== false && !this.requireEscalation(id).blocking) {
         // An FYI of the group's epic, asked again from a lane: it's the lane's ticket's question now.
-        if (home.ticketId !== null && !sameHome(existing)) this.moveToTicket(id, home.ticketId, input.laneId, actor);
-        return { ...this.makeBlocking(id, input, actor, owner), duplicate: true, upgraded: true };
+        const moveTo = home.ticketId !== null && !sameHome(existing) ? { ticketId: home.ticketId, laneId: input.laneId } : undefined;
+        return { ...this.makeBlocking(id, input, actor, owner, false, moveTo), duplicate: true, upgraded: true };
       }
       if (this.requireEscalation(id).turn === 'agent') {
         throw new ConflictError(
@@ -3354,22 +3366,6 @@ export class Store {
       if (fyis.length) return { ...escalation, openFyis: fyis };
     }
     return escalation;
-  }
-
-  /**
-   * An epic's question becomes a ticket's, raised in `laneId` (it keeps its code and its thread, which
-   * stays in the group's conversation): the lane holding the ticket is the one it blocks.
-   */
-  private moveToTicket(id: string, ticketId: number, laneId: string, actor: string) {
-    const before = this.requireEscalation(id);
-    this.tx(() => {
-      const at = this.now().toISOString();
-      this.db.prepare('UPDATE escalations SET ticket_id = ?, epic_id = NULL, lane_id = ?, updated_at = ? WHERE id = ?').run(ticketId, laneId, at, id);
-      this.db.prepare('UPDATE tickets SET updated_at = ? WHERE num = ?').run(at, ticketId);
-      this.addEvent(laneId, at, 'escalation', `${before.ref} moved here from the epic: ${before.question}`, actor, ticketId);
-    });
-    if (before.epicId !== null) this.emitEpic(before.epicId);
-    this.emitTicket(ticketId);
   }
 
   /**
@@ -3477,11 +3473,31 @@ export class Store {
    * Fields given again (context, recommendation, options, ...) replace the FYI's, so the owner has
    * what they need to answer.
    */
-  /** `newQuestion`: `input.question` replaces the FYI's (an explicit upgrade); a retry keeps its words. */
-  private makeBlocking(id: string, input: EscalationInput, actor: string, owner: string | null, newQuestion = false): Escalation {
+  /**
+   * `newQuestion`: `input.question` replaces the FYI's (an explicit upgrade); a retry keeps its words.
+   * `moveTo`: an epic's FYI asked again from a lane becomes that lane's ticket's question first (it
+   * keeps its code and its thread, in the same group's conversation), in the same transaction.
+   */
+  private makeBlocking(
+    id: string,
+    input: EscalationInput,
+    actor: string,
+    owner: string | null,
+    newQuestion = false,
+    moveTo?: { ticketId: number; laneId: string },
+  ): Escalation {
     let loose = false;
+    const fromEpic = moveTo ? this.requireEscalation(id).epicId : null;
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
+      if (moveTo) {
+        const was = this.requireEscalation(id);
+        this.db
+          .prepare('UPDATE escalations SET ticket_id = ?, epic_id = NULL, lane_id = ?, updated_at = ? WHERE id = ?')
+          .run(moveTo.ticketId, moveTo.laneId, at, id);
+        this.db.prepare('UPDATE tickets SET updated_at = ? WHERE num = ?').run(at, moveTo.ticketId);
+        this.addEvent(moveTo.laneId, at, 'escalation', `${was.ref} moved here from the epic: ${was.question}`, actor, moveTo.ticketId);
+      }
       const before = this.requireEscalation(id);
       const given = (v: unknown) => (v === undefined || v === null || (Array.isArray(v) && v.length === 0) ? null : v);
       const list = (v: unknown[] | undefined) => (given(v) ? JSON.stringify(v) : null);
@@ -3531,6 +3547,8 @@ export class Store {
       return { escalation: this.requireEscalation(id), lane: lane ? this.requireLane(lane.id) : null, blocks };
     });
     this.emit({ type: 'escalation', escalation, raised: true });
+    if (fromEpic !== null) this.emitEpic(fromEpic);
+    if (moveTo && !loose) this.emitTicket(moveTo.ticketId);
     if (loose) this.emitTicket(escalation.ticketId);
     if (lane) this.emit({ type: 'lane', lane, statusChanged: blocks });
     return escalation;
@@ -3566,11 +3584,11 @@ export class Store {
   }
 
   /** How far the group's overseer has been handed the group's messages (0: none yet). */
-  /** How far the group's messages were handed to `key` (0: never, or last handed to another key). */
+  /** How far the group's messages were handed to `key` (0: never). */
   private deliveredTo(groupId: string, key: string | undefined): number {
     if (!key) return 0;
-    const r = this.db.prepare('SELECT overseer_delivered_id, overseer_delivered_by FROM groups WHERE id = ?').get(groupId) as Row | undefined;
-    return r && r.overseer_delivered_by === key ? Number(r.overseer_delivered_id) : 0;
+    const r = this.db.prepare('SELECT up_to FROM group_note_deliveries WHERE group_id = ? AND key = ?').get(groupId, key) as Row | undefined;
+    return r ? Number(r.up_to) : 0;
   }
 
   /**
@@ -3592,20 +3610,13 @@ export class Store {
    * has none) starts again from there. Never moves back for the same key; anyone who can't acknowledge
    * changes nothing.
    */
-  markGroupMessagesDelivered(groupId: string, upTo: number, by: { key: string; agent: boolean }): void {
-    const g = this.db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Row | undefined;
-    if (!g) return;
-    try {
-      this.requireGroupOverseer(g, by);
-    } catch {
-      return;
-    }
+  markGroupMessagesDelivered(groupId: string, upTo: number, key: string): void {
     this.db
       .prepare(
-        `UPDATE groups SET overseer_delivered_id = ?1, overseer_delivered_by = ?2
-         WHERE id = ?3 AND (overseer_delivered_by IS NOT ?2 OR overseer_delivered_id < ?1)`,
+        `INSERT INTO group_note_deliveries (group_id, key, up_to) VALUES (?1, ?2, ?3)
+         ON CONFLICT (group_id, key) DO UPDATE SET up_to = MAX(up_to, excluded.up_to)`,
       )
-      .run(upTo, by.key, groupId);
+      .run(groupId, key, upTo);
   }
 
   /** How far the group's overseer has acknowledged the group's messages (0: none yet). */
