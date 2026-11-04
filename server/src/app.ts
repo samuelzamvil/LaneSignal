@@ -896,6 +896,45 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.send(Buffer.from(file.data));
   });
 
+  // ---- group conversations ----
+
+  /** The group's conversation, newest first: its messages and escalations (`next` pages back). Removed groups' stay readable. */
+  app.get('/api/groups/:id/conversation', any, (req, res) => {
+    const query = parse(s.conversationQuery, req.query);
+    const project = acc(res).pick(query.project ?? null, { group: String(req.params.id) });
+    const page = store.groupConversation(q(project, String(req.params.id)), { before: query.before, limit: query.limit });
+    res.json({
+      ...page,
+      items: page.items.map((i) => (i.type === 'message' ? pub.groupMessage(i) : { ...i, laneId: i.laneId && localId(i.laneId) })),
+    });
+  });
+
+  /**
+   * A message to the group's conversation. From a person: it waits for the group's overseer until it
+   * acknowledges it. From the overseer: one a minute. `409` on a removed group (read-only).
+   */
+  app.post('/api/groups/:id/messages', any, (req, res) => {
+    const body = parse(s.groupMessage, req.body ?? {});
+    const p = principalOf(res);
+    if (p.role !== 'agent' && !config.decisions) {
+      throw new NotFoundError("Writing to agents in LaneSignal is off on this server (LANESIGNAL_DECISIONS): write in the agent's session");
+    }
+    const project = acc(res).pick(projectQuery(req), { group: String(req.params.id) });
+    const { duplicate, ...message } = store.postGroupMessage(
+      q(project, String(req.params.id)),
+      { from: p.role === 'agent' ? 'agent' : 'owner', author: p.name, body: body.body, attachments: body.attachments, clientKey: body.clientKey },
+      ownerOf(p),
+    );
+    res.status(duplicate ? 200 : 201).json(pub.groupMessage(message));
+  });
+
+  /** The overseer acknowledges the group's messages up to `upTo` (the last id it handled); they stop coming back. */
+  app.post('/api/groups/:id/ack', agent, (req, res) => {
+    const body = parse(s.groupAck, req.body ?? {});
+    const project = acc(res).pick(projectQuery(req), { group: String(req.params.id) });
+    res.json({ acknowledgedUpTo: store.ackGroupMessages(q(project, String(req.params.id)), body.upTo) });
+  });
+
   /**
    * A message in a lane's conversation. From the agent, a milestone with any files (a quiet push);
    * from a person, a note the agent gets the next time it publishes, writes on or waits on the lane.
@@ -984,6 +1023,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       parse(s.waitScope, { ids: query.ids, laneIds: query.lane, groupId: query.group, since: query.since }),
       query.project,
     );
+    // Only the overseer acknowledges what's meant for it.
+    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
     const { ready: _ready, ...all } = briefWait(pub.wait(store.handOver(store.decisionsFor(scope), acc(res).projects)));
     res.json(all);
   });
@@ -1009,6 +1050,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         mode: query.format ?? 'digest',
       };
       const shape = (w: WaitResult) => (query.format === 'full' ? briefWait(w) : digestWait(w, acc(res).projects.length > 1));
+      // Only the overseer acknowledges what's meant for it.
+    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
       const now = store.decisionsFor(scope);
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {

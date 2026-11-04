@@ -37,6 +37,8 @@ Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalat
 
 `notify_owner`'s first line is what the phone's notification shows.
 
+**Your group's conversation:** `post_to_group` writes in it (what changed, what you need that isn't a decision); `read_conversation` reads it back, newest first, with your group's escalations where their threads start.
+
 <!-- usage -->
 ## Usage: publishing and asking
 

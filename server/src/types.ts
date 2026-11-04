@@ -285,6 +285,42 @@ export interface LaneMessage extends Message {
   seen?: boolean;
 }
 
+/**
+ * A message in a group's conversation. Written to the group directly (`escalationId`, `laneId` and
+ * `epicId` all null), or on one of its escalations, lanes or epics (`laneId` and `epicId` only on
+ * messages from before lane and epic conversations were retired).
+ */
+export interface GroupMessage extends LaneMessage {
+  escalationId: string | null;
+  laneId: string | null;
+  epicId: number | null;
+}
+
+/** One entry in a group's conversation, newest first: a message, or an escalation (its thread starts here). */
+export type GroupFeedItem =
+  | ({ type: 'message' } & GroupMessage)
+  | {
+      type: 'escalation';
+      id: string;
+      ref: string;
+      question: string;
+      state: EscalationState;
+      turn: 'owner' | 'agent';
+      blocking: boolean;
+      decision: string | null;
+      decidedBy: string | null;
+      decidedAt: string | null;
+      resolution: string | null;
+      laneId: string | null;
+      at: string;
+    };
+
+/** A page of a group's conversation, newest first; `next` fetches the page before it (null at the start). */
+export interface GroupConversationPage {
+  items: GroupFeedItem[];
+  next: string | null;
+}
+
 /** A file on an escalation: Markdown or plain text, or a PNG, JPEG, WebP or GIF image. */
 export interface AttachmentMeta {
   id: string;
@@ -522,6 +558,8 @@ export type StreamEvent =
   | { type: 'lane_deleted'; id: string; project: string }
   /** `raised`: an FYI that now needs the owner, notified like a new question. `replied`: the agent answered the owner's Other (`reply`) or posted an update while they decide. */
   | { type: 'escalation'; escalation: Escalation; raised?: boolean; replied?: 'reply' | 'update' }
+  /** Someone wrote in a group's conversation directly. */
+  | { type: 'group_message'; group: string; project: string; message: GroupMessage }
   /** A ticket filled into a lane, parked, done or dropped, or what it waits on changed. */
   | { type: 'ticket'; ticket: Ticket }
   /** An epic changed: details, close request, its questions' counts, or its board (`messaged`). */

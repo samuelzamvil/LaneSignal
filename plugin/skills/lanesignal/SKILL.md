@@ -37,6 +37,8 @@ Markdown, text, PNG, JPEG, WebP or GIF only; at most 5 MB each and 5 per escalat
 
 `notify_owner`'s first line is what the phone's notification shows.
 
+**Your group's conversation:** `post_to_group` writes in it (what changed, what you need that isn't a decision); `read_conversation` reads it back, newest first, with your group's escalations where their threads start.
+
 ## Usage: publishing and asking
 
 - **Session start:** `update_group` once, before publishing lanes.
@@ -70,6 +72,7 @@ The owner answers on the dashboard with Accept, Reject or Other, quoting codes w
 - `lane_removed`: someone took the lane off the dashboard; publishing to it brings it back.
 - `ticket_moved`: another group's lane took one of your tickets; it's now that lane's.
 - `lane_note`, `board_note`: the owner wrote on a lane or an epic's board.
+- `group_note`: someone wrote to your group; its `id` is the message's. It comes back on every wait until you acknowledge it: once handled, pass the last id as `ack` (to `wait_for_decisions` or `get_updates`).
 - A file the owner attached reads "[attached: plan.md (id …)]": read it with `get_attachment`.
 
 **Keeping your place:** once you've handled a result's items, save its `checkedAt` to `.claude/lanesignal-since` (overwrite it), so a restart starts there; save only after handling. If `counts` show something you can't find (e.g. after a compaction), `get_updates` returns everything in scope. A failed call is safe to repeat.

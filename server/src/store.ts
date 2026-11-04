@@ -27,6 +27,9 @@ import {
   type TrmnlSetup,
   type Stance,
   type StreamEvent,
+  type GroupConversationPage,
+  type GroupFeedItem,
+  type GroupMessage,
   type Epic,
   type EpicState,
   type Ticket,
@@ -184,6 +187,11 @@ export interface WaitResult {
   movedTickets: { ticket: string; ticketId: number; laneId: string; by: string | null; at: string }[];
   /** A group's wait: people's notes on its epics' boards the overseer hasn't seen (and, in a digest, any since `since`). */
   boardMessages: { project: string; epicId: number; epic: string; messages: LaneMessage[] }[];
+  /**
+   * A group's wait: people's messages written to the group that its overseer hasn't acknowledged,
+   * oldest first. They come back on every wait until acknowledged (`ack` with the last id handled).
+   */
+  groupMessages: { group: string; messages: GroupMessage[] }[];
   /** Server time of this result; pass it as `since` on the next wait. */
   checkedAt: string;
 }
@@ -321,7 +329,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 24;
+const SCHEMA_VERSION = 25;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -654,10 +662,36 @@ export class Store {
       }
       if (version < 23) this.migrateV23();
       if (version < 24) this.migrateV24();
+      if (version < 25) this.migrateV25();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
     });
+  }
+
+  /**
+   * v25: each escalation records the group it was raised in (its thread sits in that group's
+   * conversation), and how far the group's overseer has acknowledged the group's messages.
+   */
+  private migrateV25() {
+    if (!this.hasColumn('escalations', 'group_id')) this.db.exec('ALTER TABLE escalations ADD COLUMN group_id TEXT');
+    if (!this.hasColumn('groups', 'overseer_read_id')) this.db.exec('ALTER TABLE groups ADD COLUMN overseer_read_id INTEGER NOT NULL DEFAULT 0');
+    const at = this.now().toISOString();
+    const rows = this.db
+      .prepare(
+        `SELECT e.id, e.lane_id, COALESCE(l.group_id, ep.group_id, t.group_id) AS group_id FROM escalations e
+         LEFT JOIN lanes l ON l.id = e.lane_id LEFT JOIN epics ep ON ep.num = e.epic_id LEFT JOIN tickets t ON t.num = e.ticket_id
+         WHERE e.group_id IS NULL`,
+      )
+      .all() as Row[];
+    for (const r of rows) {
+      const groupId = (r.group_id as string | null) ?? this.ungroupedGroup(projectOf(r.lane_id as string), at);
+      this.db.prepare('UPDATE escalations SET group_id = ? WHERE id = ?').run(groupId, r.id as string);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS escalations_group ON escalations(group_id, created_at);
+      CREATE INDEX IF NOT EXISTS group_messages_group_time ON group_messages(group_id, created_at);
+    `);
   }
 
   /**
@@ -3039,8 +3073,12 @@ export class Store {
         throw new ConflictError('One update a minute while the owner decides: put everything in one message');
       }
       const turn = message.from === 'owner' ? 'agent' : 'owner';
+      // The thread stays in the conversation of the group the question was raised in, wherever its lane went.
+      const groupId =
+        ((this.db.prepare('SELECT group_id FROM escalations WHERE id = ?').get(current.id) as Row).group_id as string | null) ??
+        this.messageGroupOfLane(current.laneId, at);
       const messageId = this.insertGroupMessage({
-        groupId: this.messageGroupOfLane(current.laneId, at),
+        groupId,
         escalationId: current.id,
         from: message.from,
         author: message.author,
@@ -3293,10 +3331,10 @@ export class Store {
       else this.db.prepare('UPDATE epics SET updated_at = ? WHERE num = ?').run(at, home.epicId);
       this.db
         .prepare(
-          `INSERT INTO escalations (id, ref, letter_index, seq, ticket_id, epic_id, code, lane_id, question, context, recommendation, recommended_option, cost,
+          `INSERT INTO escalations (id, ref, letter_index, seq, ticket_id, epic_id, code, lane_id, group_id, question, context, recommendation, recommended_option, cost,
              alternatives, ticket, positions, options, links, blocking, state, created_by, created_at, updated_at, raised_by_owner,
              accept_means, reject_means, allow_reject)
-           VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -3305,6 +3343,8 @@ export class Store {
           home.epicId,
           code,
           input.laneId,
+          // Its thread sits in the conversation of the group it's raised in.
+          this.messageGroupOfLane(input.laneId, at),
           input.question,
           input.context ?? null,
           input.recommendation ?? null,
@@ -3587,6 +3627,193 @@ export class Store {
       });
     }
     return posted;
+  }
+
+  // ---- group conversations --------------------------------------------
+
+  private groupMessageFromRow(r: Row, readId?: number): GroupMessage {
+    return {
+      ...this.laneMessageFromRow(r, readId),
+      escalationId: (r.escalation_id as string | null) ?? null,
+      laneId: (r.lane_id as string | null) ?? null,
+      epicId: r.epic_id == null ? null : Number(r.epic_id),
+    };
+  }
+
+  /** How far the group's overseer has acknowledged the group's messages (0: none yet). */
+  private overseerReadId(groupId: string): number {
+    return Number((this.db.prepare('SELECT overseer_read_id FROM groups WHERE id = ?').get(groupId) as Row | undefined)?.overseer_read_id ?? 0);
+  }
+
+  /** The group's row, archived or not; throws when there's no such group. */
+  private requireGroupRow(groupId: string): Row {
+    const r = this.db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Row | undefined;
+    if (!r) throw new NotFoundError(`Group "${localId(groupId)}" not found`);
+    return r;
+  }
+
+  /**
+   * A page of the group's conversation, newest first: its messages (written to the group, or on its
+   * escalations, lanes or epics) and its escalations, each where its thread starts. Ordered by time,
+   * then escalations before messages, then id, so the order never changes. `before` is the previous
+   * page's `next`. Archived groups' conversations stay readable.
+   */
+  groupConversation(groupId: string, opts: { before?: string; limit?: number } = {}): GroupConversationPage {
+    this.requireGroupRow(groupId);
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 100);
+    let cursor: { at: string; rank: number; k: number } | null = null;
+    if (opts.before) {
+      const m = /^(.+)\|([01])\|(\d+)$/.exec(opts.before);
+      if (!m) throw new ValidationError('`before` is the `next` of the previous page');
+      cursor = { at: m[1], rank: Number(m[2]), k: Number(m[3]) };
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM (
+           SELECT created_at AS at, 0 AS rank, ref AS k, id AS eid FROM escalations WHERE group_id = ?
+           UNION ALL
+           SELECT created_at, 1, id, NULL FROM group_messages WHERE group_id = ?
+         ) ${cursor ? 'WHERE at < ? OR (at = ? AND (rank < ? OR (rank = ? AND k < ?)))' : ''}
+         ORDER BY at DESC, rank DESC, k DESC LIMIT ?`,
+      )
+      .all(
+        groupId,
+        groupId,
+        ...(cursor ? [cursor.at, cursor.at, cursor.rank, cursor.rank, cursor.k] : []),
+        limit + 1,
+      ) as Row[];
+    const more = rows.length > limit;
+    const page = rows.slice(0, limit);
+    const readId = this.overseerReadId(groupId);
+    const items: GroupFeedItem[] = page.map((r) => {
+      if (Number(r.rank) === 1) {
+        const m = this.db.prepare('SELECT * FROM group_messages WHERE id = ?').get(Number(r.k)) as Row;
+        // Only messages written to the group directly wait on the overseer's acknowledgement.
+        const direct = m.escalation_id == null && m.lane_id == null && m.epic_id == null;
+        return { type: 'message', ...this.groupMessageFromRow(m, direct ? readId : undefined) };
+      }
+      const e = this.requireEscalation(r.eid as string);
+      return {
+        type: 'escalation',
+        id: e.id,
+        ref: e.ref,
+        question: e.question,
+        state: e.state,
+        turn: e.turn,
+        blocking: e.blocking,
+        decision: e.decision,
+        decidedBy: e.decidedBy,
+        decidedAt: e.decidedAt,
+        resolution: e.resolution,
+        laneId: Store.isEpicLane(e.laneId) ? null : e.laneId,
+        at: e.createdAt,
+      };
+    });
+    const last = page.at(-1);
+    return { items, next: more && last ? `${last.at as string}|${Number(last.rank)}|${Number(last.k)}` : null };
+  }
+
+  /**
+   * Writes to the group's conversation directly. A person's message waits for the group's overseer
+   * until it acknowledges it (ackGroupMessages); an agent's is one a minute per group. An archived
+   * group's conversation is read-only until the group is registered again. The same `clientKey` (per
+   * author) returns the message already written; so does a retry (same author and text within a
+   * minute) without one.
+   */
+  postGroupMessage(
+    groupId: string,
+    message: { from: 'owner' | 'agent'; author: string; body: string; attachments?: string[]; clientKey?: string },
+    owner: string,
+  ): GroupMessage & { duplicate?: boolean } {
+    const max = message.from === 'agent' ? AGENT_MESSAGE_MAX : OWNER_MESSAGE_MAX;
+    const body = message.body.trim();
+    if (!body) throw new ValidationError('The message is empty');
+    if (body.length > max) {
+      throw new ValidationError(
+        message.from === 'agent'
+          ? `Keep messages under ${max} characters: attach a file (upload_attachment) for anything longer`
+          : `Messages are limited to ${max} characters`,
+      );
+    }
+    const clientKey = message.clientKey?.trim() || null;
+    const at = this.now();
+    const { posted, duplicate } = this.tx(() => {
+      const g = this.requireGroupRow(groupId);
+      if (clientKey) {
+        const same = this.db
+          .prepare('SELECT * FROM group_messages WHERE group_id = ? AND author = ? AND client_key = ?')
+          .get(groupId, message.author, clientKey) as Row | undefined;
+        if (same) {
+          // A key names one message: the same key with other words is a client mistake, not a retry.
+          if (same.body !== body) throw new ConflictError(`clientKey "${clientKey}" was already used for another message`);
+          return { posted: this.groupMessageFromRow(same, this.overseerReadId(groupId)), duplicate: true };
+        }
+      }
+      if (g.archived_at) {
+        throw new ConflictError(`Group "${localId(groupId)}" was removed: its conversation is read-only until the group is registered again`);
+      }
+      const direct = 'escalation_id IS NULL AND lane_id IS NULL AND epic_id IS NULL';
+      const isFresh = (r: Row | undefined): r is Row => !!r && at.getTime() - Date.parse(r.created_at as string) < 60_000;
+      // A retry without a key: the same words from the same author just now, nothing written since, no
+      // files, and (from a person) not yet acknowledged by the overseer. Saying the same again later is new.
+      const latest = this.db.prepare(`SELECT * FROM group_messages WHERE group_id = ? AND ${direct} ORDER BY id DESC LIMIT 1`).get(groupId) as
+        | Row
+        | undefined;
+      if (
+        !clientKey &&
+        isFresh(latest) &&
+        latest.author_kind === message.from &&
+        latest.author === message.author &&
+        latest.body === body &&
+        !message.attachments?.length &&
+        (message.from === 'agent' || Number(latest.id) > this.overseerReadId(groupId))
+      ) {
+        return { posted: this.groupMessageFromRow(latest, this.overseerReadId(groupId)), duplicate: true };
+      }
+      const lastAgent = this.db
+        .prepare(`SELECT created_at FROM group_messages WHERE group_id = ? AND author_kind = 'agent' AND ${direct} ORDER BY id DESC LIMIT 1`)
+        .get(groupId) as Row | undefined;
+      if (message.from === 'agent' && isFresh(lastAgent)) {
+        throw new ConflictError('One message per group per minute: put everything in one message');
+      }
+      const id = this.insertGroupMessage({ groupId, from: message.from, author: message.author, body, at: at.toISOString() });
+      if (clientKey) this.db.prepare('UPDATE group_messages SET client_key = ? WHERE id = ?').run(clientKey, id);
+      if (message.attachments?.length) this.linkMessageAttachments(id, message.attachments, owner);
+      const row = this.db.prepare('SELECT * FROM group_messages WHERE id = ?').get(id) as Row;
+      return { posted: this.groupMessageFromRow(row, this.overseerReadId(groupId)), duplicate: false };
+    });
+    if (duplicate) return { ...posted, duplicate: true };
+    this.events.emit('change', { type: 'group_message', group: groupId, project: projectOf(groupId), message: posted });
+    return posted;
+  }
+
+  /**
+   * People's messages written to the group directly that its overseer hasn't acknowledged, oldest
+   * first. They stay here, wait after wait, until acknowledged: a restart loses none.
+   */
+  unacknowledgedGroupMessages(groupId: string): GroupMessage[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT m.* FROM group_messages m JOIN groups g ON g.id = m.group_id
+           WHERE m.group_id = ? AND m.author_kind = 'owner' AND m.escalation_id IS NULL AND m.lane_id IS NULL AND m.epic_id IS NULL
+             AND m.id > g.overseer_read_id ORDER BY m.id`,
+        )
+        .all(groupId) as Row[]
+    ).map((r) => this.groupMessageFromRow(r, 0));
+  }
+
+  /**
+   * The overseer acknowledges the group's messages up to `upTo` (the last id it handled). Never moves
+   * back, and never past the group's latest message, so repeating it changes nothing. Returns the
+   * position now.
+   */
+  ackGroupMessages(groupId: string, upTo: number): number {
+    this.requireGroupRow(groupId);
+    const latest = Number((this.db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM group_messages WHERE group_id = ?').get(groupId) as Row).n);
+    const to = Math.min(Math.max(0, Math.floor(upTo)), latest);
+    this.db.prepare('UPDATE groups SET overseer_read_id = ? WHERE id = ? AND overseer_read_id < ?').run(to, groupId, to);
+    return this.overseerReadId(groupId);
   }
 
   /** The agent's message on a lane, as notify_owner sends it. */
@@ -4043,6 +4270,11 @@ export class Store {
         }
       }
     }
+    const groupMessages: WaitResult['groupMessages'] = [];
+    if (scope.groupId) {
+      const unacknowledged = this.unacknowledgedGroupMessages(scope.groupId);
+      if (unacknowledged.length) groupMessages.push({ group: scope.groupId, messages: unacknowledged });
+    }
     // Tickets from these lanes that a lane outside them took since `since`.
     const movedTickets: WaitResult['movedTickets'] = [];
     if (digest && scope.since && laneIds.size) {
@@ -4097,6 +4329,7 @@ export class Store {
         replies.length > 0 ||
         laneMessages.length > 0 ||
         boardMessages.length > 0 ||
+        groupMessages.length > 0 ||
         closed.length > 0 ||
         removedLanes.length > 0 ||
         movedTickets.length > 0 ||
@@ -4110,6 +4343,7 @@ export class Store {
       laneMessages,
       movedTickets,
       boardMessages,
+      groupMessages,
       checkedAt,
     };
   }
@@ -4167,7 +4401,9 @@ export class Store {
         }
       };
       const onChange = (e: StreamEvent) => {
-        const note = (e.type === 'lane' || e.type === 'epic') && e.messaged === 'owner';
+        const note =
+          ((e.type === 'lane' || e.type === 'epic') && e.messaged === 'owner') ||
+          (e.type === 'group_message' && e.message.from === 'owner' && e.group === scope.groupId);
         if (e.type !== 'escalation' && e.type !== 'lane_deleted' && e.type !== 'ticket' && !note) return;
         try {
           const now = this.decisionsFor(scope);
