@@ -272,19 +272,16 @@ export interface Message {
   attachments: AttachmentMeta[];
 }
 
-/**
- * One message in a lane's conversation: the agent's updates (a milestone, with files) and the
- * owner's notes back. Nothing in it blocks the lane.
- */
+/** A message in a group's conversation (GroupMessage adds where it was written). Nothing in it blocks anything. */
 export interface LaneMessage extends Message {
-  /** Owner messages: whether the agent has been handed it yet. */
+  /** People's messages: whether the overseer has acknowledged it yet. */
   seen?: boolean;
 }
 
 /**
  * A message in a group's conversation. Written to the group directly (`escalationId`, `laneId` and
- * `epicId` all null), or on one of its escalations, lanes or epics (`laneId` and `epicId` only on
- * messages from before lane and epic conversations were retired).
+ * `epicId` all null), on one of its escalations, or as the overseer's milestone on a lane (`laneId`).
+ * `epicId`, and `laneId` on people's messages, come from before lanes' and epics' conversations were retired.
  */
 export interface GroupMessage extends LaneMessage {
   escalationId: string | null;
@@ -332,7 +329,7 @@ export interface LaneEvent {
   id: number;
   laneId: string;
   at: string;
-  /** `notice`: the agent's message in the lane's conversation; `message`: the owner's; `ticket`: a ticket filled, parked or let go. */
+  /** `notice`: the agent's milestone on the lane (in its group's conversation); `message`: an owner's note from before lanes' conversations were retired; `ticket`: a ticket filled, parked or let go. */
   kind: 'status' | 'activity' | 'escalation' | 'notice' | 'message' | 'ticket';
   message: string;
   actor: string | null;
@@ -500,7 +497,8 @@ export interface Requirement {
 export type TrmnlCard =
   | { kind: 'escalation'; id: string; at: string }
   /** `files`: how many the agent attached to a notice. */
-  | { kind: 'notice' | 'completed' | 'blocked'; laneId: string; title: string; body: string; at: string; files?: number };
+  /** `laneId` empty for a message to the whole group, whose `groupId` it names then. */
+  | { kind: 'notice' | 'completed' | 'blocked'; laneId: string; groupId?: string; title: string; body: string; at: string; files?: number };
 
 /** A project's TRMNL screen: a private plugin LaneSignal pushes to. */
 export interface TrmnlSetup {

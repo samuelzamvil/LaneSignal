@@ -10,6 +10,15 @@ export const groupRoute = (project: string, group: string) => `#/group/${encodeU
 
 type Item = GroupFeedItem;
 const keyOf = (i: Item) => `${i.type}:${i.id}`;
+/** Oldest first, as the server orders them: by time, a question before a message written at the same moment, then id. */
+const byTime = (a: Item, b: Item) =>
+  a.at.localeCompare(b.at) || (a.type === b.type ? (a.type === 'message' ? Number(a.id) - Number(b.id) : String(a.id).localeCompare(String(b.id))) : a.type === 'escalation' ? -1 : 1);
+
+/** A key for one message, so a retry never posts it twice. randomUUID needs a secure context; LAN servers on plain HTTP get random bytes. */
+const newKey = () => {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+};
 
 /**
  * A group's conversation, as one transcript: messages written to the group, and each escalation as a
@@ -44,15 +53,18 @@ export function GroupView({
   onClose: () => void;
   backTo: string;
 }) {
-  // Newest first, as pages arrive: the latest page is refetched on changes, older ones stay.
-  const [latest, setLatest] = useState<Item[] | null>(null);
-  const [older, setOlder] = useState<Item[]>([]);
+  // Everything loaded so far, by key: the newest page is fetched again on changes and merged in, so
+  // nothing already showing drops out; `next` stays where the oldest loaded page ended.
+  const [items, setItems] = useState<Map<string, Item> | null>(null);
   const [next, setNext] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(0);
+  const loaded = useRef<Map<string, Item> | null>(null);
+  const list = useRef<HTMLOListElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
-  const firstLoad = useRef(true);
+  // Follows new messages while you're at the newest one, like a chat; reading back stays put.
+  const atBottom = useRef(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,9 +72,18 @@ export function GroupView({
       .groupConversation(project, groupId)
       .then((page) => {
         if (cancelled) return;
-        setLatest(page.items);
-        // The first page decides where older pages start; later refetches keep what's loaded.
-        setNext((n) => (firstLoad.current ? page.next : n));
+        const prev = loaded.current;
+        let merged: Map<string, Item>;
+        if (prev && page.items.some((i) => prev.has(keyOf(i)))) {
+          merged = new Map(prev);
+          for (const i of page.items) merged.set(keyOf(i), i);
+        } else {
+          // First load, or more new than a page since: start again from the newest page.
+          merged = new Map(page.items.map((i) => [keyOf(i), i]));
+          setNext(page.next);
+        }
+        loaded.current = merged;
+        setItems(merged);
         setError(null);
       })
       .catch((e: Error) => !cancelled && setError(e.message));
@@ -76,20 +97,35 @@ export function GroupView({
     if (group) markMessagesSeen(group, group.lastAgentMessageId);
   }, [group]);
 
-  // Opens at the newest message, like a chat.
+  // Opens at the newest message, and stays there as threads fill in and messages arrive, unless you scrolled up.
   useLayoutEffect(() => {
-    if (latest && firstLoad.current) {
-      firstLoad.current = false;
-      bottom.current?.scrollIntoView({ block: 'end' });
-    }
-  }, [latest]);
+    const el = list.current;
+    const sheet = el?.closest('.convo');
+    if (!el || !sheet) return;
+    const onScroll = () => {
+      atBottom.current = sheet.scrollHeight - sheet.scrollTop - sheet.clientHeight < 80;
+    };
+    const follow = new ResizeObserver(() => {
+      if (atBottom.current) bottom.current?.scrollIntoView({ block: 'end' });
+    });
+    follow.observe(el);
+    sheet.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      follow.disconnect();
+      sheet.removeEventListener('scroll', onScroll);
+    };
+  }, [items !== null]);
 
   async function loadOlder() {
     if (!next) return;
     setLoadingOlder(true);
     try {
       const page = await client.groupConversation(project, groupId, next);
-      setOlder((o) => [...o, ...page.items]);
+      const merged = new Map(loaded.current ?? []);
+      for (const i of page.items) merged.set(keyOf(i), i);
+      loaded.current = merged;
+      atBottom.current = false;
+      setItems(merged);
       setNext(page.next);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -99,15 +135,7 @@ export function GroupView({
   }
 
   // Oldest first on screen. A message on an escalation shows in its thread, not on its own.
-  const seen = new Set<string>();
-  const items = [...(latest ?? []), ...older]
-    .filter((i) => {
-      const k = keyOf(i);
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return !(i.type === 'message' && i.escalationId);
-    })
-    .reverse();
+  const shown = [...(items?.values() ?? [])].filter((i) => !(i.type === 'message' && i.escalationId)).sort(byTime);
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
@@ -130,9 +158,9 @@ export function GroupView({
               </button>
             </p>
           )}
-          {latest && items.length === 0 && <p className="hint">Nothing said yet. What you write here reaches {name}'s overseer.</p>}
-          <ol className="convo-list">
-            {items.map((i) =>
+          {items && shown.length === 0 && <p className="hint">Nothing said yet. What you write here reaches {name}'s overseer.</p>}
+          <ol className="convo-list" ref={list}>
+            {shown.map((i) =>
               i.type === 'message' ? (
                 <li key={keyOf(i)} className={`convo-msg from-${i.from}`}>
                   <div className="msg-meta">
@@ -157,8 +185,8 @@ export function GroupView({
             name={name}
             onSend={async (body, clientKey) => {
               await client.groupMessage(project, groupId, body, clientKey);
+              atBottom.current = true;
               setSent((n) => n + 1);
-              requestAnimationFrame(() => bottom.current?.scrollIntoView({ block: 'end' }));
             }}
           />
         )}
@@ -260,7 +288,7 @@ function EscalationThread({
 /** Writes to the group's overseer. Each message gets its own key, so a retry after a dropped connection never posts twice. */
 function GroupComposer({ name, onSend }: { name: string; onSend: (body: string, clientKey: string) => Promise<void> }) {
   const [body, setBody] = useState('');
-  const [key, setKey] = useState(() => crypto.randomUUID());
+  const [key, setKey] = useState(newKey);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -268,9 +296,17 @@ function GroupComposer({ name, onSend }: { name: string; onSend: (body: string, 
     setBusy(true);
     setError(null);
     try {
-      await onSend(body.trim(), key);
+      try {
+        await onSend(body.trim(), key);
+      } catch (err) {
+        // An earlier send went through (its answer was lost) and the words changed since: this is a new message.
+        if (!(err instanceof Error && /already used/.test(err.message))) throw err;
+        const fresh = newKey();
+        setKey(fresh);
+        await onSend(body.trim(), fresh);
+      }
       setBody('');
-      setKey(crypto.randomUUID());
+      setKey(newKey());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

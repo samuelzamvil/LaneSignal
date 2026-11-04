@@ -55,7 +55,8 @@ test('every message is in one table, in its group, and each view reads the same 
       all.map((r) => [r.group_id, r.escalation_id ? 'esc' : r.lane_id ? 'lane' : r.epic_id ? 'epic' : 'group', r.body]),
       [
         ['default/g', 'esc', 'Other: wait'],
-        ['default/g', 'group', 'Merged'],
+        // A milestone records the lane it's about.
+        ['default/g', 'lane', 'Merged'],
         ['default/g', 'group', 'Next?'],
       ],
     );

@@ -152,7 +152,7 @@ describe('small results', () => {
 });
 
 describe('notices', () => {
-  test("an overseer tells the owner about a milestone; it's in the group's conversation and the lane's history, one a minute", async () => {
+  test("an overseer tells the owner about a milestone; it's in the group's conversation and the lane's history, one a minute per lane", async () => {
     const res = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Merged PR #311' });
     assert.equal(res.isError, false, res.text);
     const group = (await srv.call('GET', '/api/lanes/pay-1', ALICE)).body.lane.group;
@@ -160,11 +160,15 @@ describe('notices', () => {
     assert.ok(items.some((m: any) => m.from === 'agent' && m.body === 'Merged PR #311'));
     // Kept in the lane's history (exports) too.
     assert.ok(srv.store.laneEvents('default/pay-1').some((e) => e.kind === 'notice' && e.message === 'Merged PR #311'));
-    // One a minute for the whole group, from any of its lanes.
+    // One a minute per lane: another lane's milestone goes through.
     const again = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Starting gh:42' });
     assert.equal(again.isError, true);
-    assert.match(again.text, /One message per group per minute/);
-    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'Starting gh:42' })).status, 409);
+    assert.match(again.text, /One milestone per lane per minute/);
+    assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'Starting gh:42' })).status, 201);
+    // A retry is the same milestone, even after someone wrote in between.
+    await srv.call('POST', `/api/groups/${group}/messages`, ALICE, { body: 'Nice' });
+    const retry = await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-1', message: 'Merged PR #311' });
+    assert.equal(retry.isError, false, retry.text);
     assert.equal((await srv.call('POST', '/api/lanes/pay-2/notices', AGENT, { message: 'x'.repeat(501) })).status, 400);
     assert.equal((await srv.tool(AGENT, 'notify_owner', { lane_id: 'pay-l', message: 'typo' })).isError, true);
     assert.equal((await srv.call('POST', '/api/lanes/pay-1/notices', ALICE, { message: 'not an agent' })).status, 403);

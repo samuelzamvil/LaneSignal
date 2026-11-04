@@ -37,7 +37,7 @@ describe('milestones (notify_owner)', () => {
     const items = await conversation('chatty');
     assert.deepEqual(
       items.map((m: any) => [m.type, m.from, m.author, m.body, m.laneId, m.attachments.map((f: any) => f.name)]),
-      [['message', 'agent', 'overseer', 'Merged PR #311\nDeploy goes out tonight.', null, ['merged.png', 'notes.md']]],
+      [['message', 'agent', 'overseer', 'Merged PR #311\nDeploy goes out tonight.', 'talk-1', ['merged.png', 'notes.md']]],
     );
     const group = (await srv.call('GET', '/api/groups', ALICE)).body.find((g: any) => g.id === 'chatty');
     assert.equal(group.lastAgentMessageId, items[0].id);
@@ -47,9 +47,18 @@ describe('milestones (notify_owner)', () => {
     // People who see the group can open its files.
     const file = await fetch(`${srv.base}/api/attachments/${shot.body.id}`, { headers: { authorization: `Bearer ${ALICE}` } });
     assert.equal(file.status, 200);
-    // One a minute per group: put everything in one message.
-    const again = await srv.call('POST', '/api/lanes/talk-2/notices', AGENT, { message: 'And another' });
+    // One a minute per lane; a retry with the same files is the same milestone.
+    const again = await srv.call('POST', '/api/lanes/talk-1/notices', AGENT, { message: 'And another' });
     assert.equal(again.status, 409);
+    const retry = await srv.tool(AGENT, 'notify_owner', {
+      lane_id: 'talk-1',
+      message: 'Merged PR #311\nDeploy goes out tonight.',
+      attachments: [shot.body.id, notes.body.id],
+    });
+    assert.equal(retry.isError, false, retry.text);
+    assert.equal((await conversation('chatty')).length, 1);
+    // It's in the lane's history on its sheet too.
+    assert.ok((await srv.call('GET', '/api/lanes/talk-1', ALICE)).body.events.some((e: any) => e.kind === 'notice'));
   });
 
   test("the push says what's attached and opens the group's conversation", () => {

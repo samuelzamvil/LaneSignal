@@ -271,49 +271,6 @@ export function LaneCard({
  * Writing to a lane's agent (or on an epic's board, for its overseer). Nothing blocks: the agent gets
  * the note the next time it publishes the lane, writes on it or waits on it.
  */
-export function LaneComposer({
-  onSend,
-  placeholder = 'Write to the agent (it reads this next time it reports in)',
-}: {
-  onSend: (body: string) => Promise<void>;
-  placeholder?: string;
-}) {
-  const [body, setBody] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function send() {
-    setBusy(true);
-    setError(null);
-    try {
-      await onSend(body.trim());
-      setBody('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="lane-composer">
-      <textarea
-        placeholder={placeholder}
-        value={body}
-        maxLength={2000}
-        rows={2}
-        onChange={(e) => setBody(e.target.value)}
-      />
-      {error && <p className="error">{error}</p>}
-      <div className="actions">
-        <button className="primary" disabled={busy || !body.trim()} onClick={() => void send()}>
-          {busy ? 'Sending…' : 'Send'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export function Chips<T extends string>({
   options,
   selected,

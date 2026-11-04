@@ -708,7 +708,8 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       ]
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
         .map(pub.escalation),
-      events: store.laneEvents(lane.id, 100, false).map((e) => ({ ...e, laneId: localId(e.laneId) })),
+      // Milestones (notify_owner) are part of the lane's history.
+      events: store.laneEvents(lane.id, 100, true).map((e) => ({ ...e, laneId: localId(e.laneId) })),
     });
   });
 

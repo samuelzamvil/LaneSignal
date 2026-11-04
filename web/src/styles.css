@@ -1180,21 +1180,6 @@ textarea {
   color: var(--accent);
 }
 
-/* A lane's conversation: the agent's milestones and the owner's notes. */
-.lane-composer {
-  margin-top: 10px;
-}
-
-.msg-seen {
-  font-weight: 400;
-}
-
-.new-message {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--accent);
-}
-
 .settings .danger {
   margin-top: 16px;
 }
@@ -2719,13 +2704,18 @@ a.button.primary {
   --kind: var(--accent);
   display: flex;
   flex-direction: column;
+  /* The feed scrolls between the head and the composer, so nothing hides under either. */
+  overflow: hidden;
+  padding-bottom: 0;
 }
 .sheet-group .sheet-head {
   background: color-mix(in srgb, var(--kind) 9%, var(--bg));
   border-top: 3px solid var(--kind);
 }
 .sheet-group .convo {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 .convo-older {
   text-align: center;
@@ -2804,8 +2794,7 @@ a.button.primary {
 }
 
 .group-composer {
-  position: sticky;
-  bottom: 0;
+  flex: none;
   padding: 10px 16px calc(12px + var(--safe-bottom));
   background: var(--bg);
   border-top: 1px solid var(--border);

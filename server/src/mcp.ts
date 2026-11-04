@@ -330,8 +330,8 @@ function buildServer(
     'list_epics',
     {
       description:
-        'List epics: the long-lived tickets groups steer their work by, each with its status line, open questions and ' +
-        'notes people left on its board. Every group has one; a group with none of its own stands in as its epic ' +
+        'List epics: the long-lived tickets groups steer their work by, each with its status line and open questions. ' +
+        'Every group has one; a group with none of its own stands in as its epic ' +
         '(`standIn`, named by the group\'s id). `epic` is how to name one in other tools.',
       inputSchema: { group_id: GROUP_FILTER, group: GROUP_ALIAS, ...PROJECT },
       annotations: { readOnlyHint: true },
@@ -1003,8 +1003,7 @@ function buildServer(
         description:
           `Publish a lane's state. Creates it on first call (\`group_id\` required: every lane is in a group); omitted fields ` +
           `are unchanged. ${STATUS_HELP} \`completed\` finishes its ticket and empties the lane. To change tickets use fill_lane ` +
-          '(a different `ticket` here parks the one it held). PRs go in `links`, never `ticket`.' +
-          (features.decisions ? ' `ownerMessages`: the owner\'s notes on the lane.' : ''),
+          '(a different `ticket` here parks the one it held). PRs go in `links`, never `ticket`.',
         inputSchema: {
           lane_id: s.laneId,
           ...s.lanePatch.shape,

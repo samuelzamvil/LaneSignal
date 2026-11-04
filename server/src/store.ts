@@ -383,6 +383,8 @@ export class Store {
     this.attachmentsPerItem = opts.attachmentsPerItem ?? 5;
     this.events.setMaxListeners(0);
     this.migrate();
+    // Each group's latest messages, read with every group: added after v25, so made here for databases already there.
+    this.db.exec('CREATE INDEX IF NOT EXISTS group_messages_group_author ON group_messages(group_id, author_kind, id)');
     this.recanonicalizeTickets();
   }
 
@@ -1341,7 +1343,10 @@ export class Store {
         : null,
       ...(() => {
         const m = this.db
-          .prepare("SELECT MAX(id) AS last, MAX(CASE WHEN author_kind = 'agent' THEN id END) AS agent FROM group_messages WHERE group_id = ?")
+          .prepare(
+            `SELECT (SELECT MAX(id) FROM group_messages WHERE group_id = ?1) AS last,
+               (SELECT MAX(id) FROM group_messages WHERE group_id = ?1 AND author_kind = 'agent') AS agent`,
+          )
           .get(r.id as string) as Row;
         return { lastMessageId: m.last == null ? null : Number(m.last), lastAgentMessageId: m.agent == null ? null : Number(m.agent) };
       })(),
@@ -3012,6 +3017,9 @@ export class Store {
     this.emit({ type: 'escalation', escalation, ...(message.from === 'agent' ? { replied: reply ? 'reply' : 'update' } : {}) });
     if (loose) this.emitTicket(escalation.ticketId);
     if (lane) this.emit({ type: 'lane', lane, statusChanged });
+    // Its group's conversation has a new message (and maybe the overseer's latest).
+    const group = escalation.group ? this.getGroup(escalation.group) : null;
+    if (group) this.emit({ type: 'group', group });
     return escalation;
   }
 
@@ -3497,7 +3505,7 @@ export class Store {
     groupId: string,
     message: { from: 'owner' | 'agent'; author: string; body: string; attachments?: string[]; clientKey?: string },
     owner: string,
-    /** The lane an agent's milestone is about, for its push's title (notify_owner). */
+    /** The lane an agent's milestone is about (notify_owner): recorded on the message, and named in its push. */
     about: { laneId?: string } = {},
   ): GroupMessage & { duplicate?: boolean } {
     const max = message.from === 'agent' ? AGENT_MESSAGE_MAX : OWNER_MESSAGE_MAX;
@@ -3529,29 +3537,47 @@ export class Store {
       }
       const direct = 'escalation_id IS NULL AND lane_id IS NULL AND epic_id IS NULL';
       const isFresh = (r: Row | undefined): r is Row => !!r && at.getTime() - Date.parse(r.created_at as string) < 60_000;
-      // A retry without a key: the same words from the same author just now, nothing written since, no
-      // files, and (from a person) not yet acknowledged by the overseer. Saying the same again later is new.
-      const latest = this.db.prepare(`SELECT * FROM group_messages WHERE group_id = ? AND ${direct} ORDER BY id DESC LIMIT 1`).get(groupId) as
-        | Row
-        | undefined;
-      if (
-        !clientKey &&
-        isFresh(latest) &&
-        latest.author_kind === message.from &&
-        latest.author === message.author &&
-        latest.body === body &&
-        !message.attachments?.length &&
-        (message.from === 'agent' || Number(latest.id) > this.overseerReadId(groupId))
-      ) {
-        return { posted: this.groupMessageFromRow(latest, this.overseerReadId(groupId)), duplicate: true };
+      const sameFiles = (r: Row) =>
+        (this.db.prepare('SELECT id FROM attachments WHERE group_message_id = ? ORDER BY position').all(Number(r.id)) as Row[])
+          .map((a) => a.id as string)
+          .join() === [...new Set(message.attachments ?? [])].join();
+      const laneId = about.laneId ?? null;
+      if (message.from === 'agent') {
+        // The overseer's last message here (to the group, or the milestone's lane): the same words and
+        // files just now are a retry; anything else within the minute is one too many.
+        const mine = this.db
+          .prepare(
+            `SELECT * FROM group_messages WHERE group_id = ? AND author_kind = 'agent' AND author = ? AND escalation_id IS NULL AND epic_id IS NULL
+               AND lane_id IS ? ORDER BY id DESC LIMIT 1`,
+          )
+          .get(groupId, message.author, laneId) as Row | undefined;
+        if (isFresh(mine)) {
+          if (!clientKey && mine.body === body && sameFiles(mine)) {
+            return { posted: this.groupMessageFromRow(mine), duplicate: true };
+          }
+          throw new ConflictError(
+            laneId ? 'One milestone per lane per minute: put everything in one message' : 'One message per group per minute: put everything in one message',
+          );
+        }
+      } else {
+        // A person's retry without a key: the same words and files just now, nothing written since, and
+        // not yet acknowledged by the overseer. Saying the same again later is new.
+        const latest = this.db.prepare(`SELECT * FROM group_messages WHERE group_id = ? AND ${direct} ORDER BY id DESC LIMIT 1`).get(groupId) as
+          | Row
+          | undefined;
+        if (
+          !clientKey &&
+          isFresh(latest) &&
+          latest.author_kind === 'owner' &&
+          latest.author === message.author &&
+          latest.body === body &&
+          sameFiles(latest) &&
+          Number(latest.id) > this.overseerReadId(groupId)
+        ) {
+          return { posted: this.groupMessageFromRow(latest, this.overseerReadId(groupId)), duplicate: true };
+        }
       }
-      const lastAgent = this.db
-        .prepare(`SELECT created_at FROM group_messages WHERE group_id = ? AND author_kind = 'agent' AND ${direct} ORDER BY id DESC LIMIT 1`)
-        .get(groupId) as Row | undefined;
-      if (message.from === 'agent' && isFresh(lastAgent)) {
-        throw new ConflictError('One message per group per minute: put everything in one message');
-      }
-      const id = this.insertGroupMessage({ groupId, from: message.from, author: message.author, body, at: at.toISOString() });
+      const id = this.insertGroupMessage({ groupId, laneId, from: message.from, author: message.author, body, at: at.toISOString() });
       if (clientKey) this.db.prepare('UPDATE group_messages SET client_key = ? WHERE id = ?').run(clientKey, id);
       if (message.attachments?.length) this.linkMessageAttachments(id, message.attachments, owner);
       const row = this.db.prepare('SELECT * FROM group_messages WHERE id = ?').get(id) as Row;
@@ -3612,7 +3638,8 @@ export class Store {
   postNotice(laneId: string, message: string, actor: string, attachments: string[] = [], owner = actor): { laneId: string; message: string; at: string } {
     const found = Store.isEpicLane(laneId) ? null : this.laneIncludingArchived(laneId);
     if (!found) throw new NotFoundError(`Lane "${localId(laneId)}" not found: publish it first (update_lane with its group)`);
-    const groupId = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(laneId) as Row).group_id as string;
+    // A lane removed before every lane had a group: its project's catch-all group.
+    const groupId = this.tx(() => this.messageGroupOfLane(laneId, this.now().toISOString()));
     const m = this.postGroupMessage(groupId, { from: 'agent', author: actor, body: message, attachments }, owner, { laneId });
     if (!m.duplicate) {
       this.tx(() => {
