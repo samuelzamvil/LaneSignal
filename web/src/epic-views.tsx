@@ -109,6 +109,8 @@ export function GroupHeader({
   name,
   lanes,
   waiting,
+  fyi = 0,
+  latestEscalation = null,
   standIn,
   showTicket,
   onOpen,
@@ -120,6 +122,10 @@ export function GroupHeader({
   lanes: number;
   /** Lanes and epics in the box waiting on a person. */
   waiting: number;
+  /** Open FYI questions raised in the group, waiting on a person (they block nothing). */
+  fyi?: number;
+  /** When the newest escalation raised in the group was: the chat button marks it until the conversation is opened. */
+  latestEscalation?: string | null;
   standIn?: Epic;
   /** The group's own ticket from before epics: not shown once its epics carry theirs. */
   showTicket: boolean;
@@ -138,6 +144,7 @@ export function GroupHeader({
         <h3>{open ? <TitleButton name={name} onOpen={onOpen} /> : name}</h3>
         <span className="count">{lanes}</span>
         {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
+        {fyi > 0 && <span className="fyi-count">ⓘ {fyi} FYI</span>}
         {blocked && <span className="pill tone-danger">Waiting on you</span>}
         {showTicket && (standIn ? <EpicTicket epic={standIn} group={group} /> : group && <TicketLink lane={group} />)}
         {session && (
@@ -160,13 +167,13 @@ export function GroupHeader({
             e.stopPropagation();
             onChat();
           }}
-          aria-label={`Chat with ${name}'s overseer${hasNewMessage(group) ? ' (new messages)' : ''}`}
+          aria-label={`Chat with ${name}'s overseer${hasNewMessage(group, latestEscalation) ? ' (new messages)' : ''}`}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" />
           </svg>
           Chat
-          {hasNewMessage(group) && <span className="chat-new" aria-hidden="true" />}
+          {hasNewMessage(group, latestEscalation) && <span className="chat-new" aria-hidden="true" />}
         </button>
       )}
     </header>

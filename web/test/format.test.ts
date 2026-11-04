@@ -57,3 +57,11 @@ test("a person's message to the group is seen once the overseer acknowledges up 
   assert.equal(seenByOverseer(msg({ epicId: 3 }), 9), null);
   assert.equal(seenByOverseer(msg({ escalationId: 'e' }), 9), null);
 });
+
+test("a group's newest escalation is what its chat button compares with", async () => {
+  const { latestEscalationAt } = await import('../src/seen.ts');
+  const esc = (project: string, group: string | null, createdAt: string) => ({ project, group, createdAt });
+  const all = [esc('p', 'g', '2026-11-01T00:00:00Z'), esc('p', 'g', '2026-11-03T00:00:00Z'), esc('p', 'h', '2026-11-05T00:00:00Z'), esc('q', 'g', '2026-11-06T00:00:00Z')];
+  assert.equal(latestEscalationAt(all, { project: 'p', id: 'g' }), '2026-11-03T00:00:00Z');
+  assert.equal(latestEscalationAt(all, { project: 'p', id: 'none' }), null);
+});

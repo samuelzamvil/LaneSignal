@@ -2743,6 +2743,11 @@ a.button.primary {
   margin-top: 6px;
 }
 
+.convo-esc.focused .esc-thread {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .esc-thread {
   border: 1px solid color-mix(in srgb, var(--text) 18%, var(--border));
   border-radius: var(--radius);

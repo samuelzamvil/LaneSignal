@@ -13,6 +13,8 @@ test('History links open in the app, and closing goes back to History', () => {
 
 test("a group's conversation opens from push links, and closing it goes back to Lanes", () => {
   assert.equal(routeFromAppLink('lanesignal://group/default/payments'), '#/group/default/payments');
+  // A push about an escalation opens its thread there.
+  assert.equal(routeFromAppLink('lanesignal://group/default/payments/esc/e-1'), '#/group/default/payments/esc/e-1');
   const opened = nextEntry({ hash: '#/lanes', inApp: true, from: '#/' }, false);
   assert.equal(labelFor(opened, '#/lanes'), 'Lanes');
 });
