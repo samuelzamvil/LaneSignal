@@ -171,6 +171,8 @@ export function GroupView({
       atBottom.current = false;
       setItems(merged);
       setNext(page.next);
+      // A page that loads clears an earlier failure, and lets paging toward a pushed thread go on.
+      setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
