@@ -45,6 +45,8 @@ export interface Group {
   lastMessageId: number | null;
   /** The overseer's latest message in the group's conversation, for marking the group as having something new to read. */
   lastAgentMessageId: number | null;
+  /** How far its overseer has acknowledged people's messages to the group (0: none yet): those up to it are seen. */
+  overseerReadId: number;
   createdAt: string;
   updatedAt: string;
 }

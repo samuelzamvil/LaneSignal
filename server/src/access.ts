@@ -531,20 +531,34 @@ export const digestWait = (w: WaitResult, keyed = false) => {
     ...w.closed.map((e) => ({ code: code(e), kind: 'closed', text: e.resolution ?? e.state })),
     ...w.removedLanes.map((l) => ({ kind: 'lane_removed', id: l.laneId, text: l.removedBy ? `Removed by ${l.removedBy}` : 'Removed' })),
     ...w.movedTickets.map((m) => ({ kind: 'ticket_moved', id: m.ticket, text: `Taken into lane ${m.laneId}${m.by ? ` by ${m.by}` : ''}` })),
-    // One item each, with its id: acknowledge the last one handled (`ack`), or they come back.
+    // One item each, with its id: acknowledge the last one handled (`ack`), or they come back
+    // (marked `repeat` once the caller's `since` is past them).
     ...w.groupMessages.flatMap((g) =>
-      g.messages.map((m) => ({ kind: 'group_note', id: String(m.id), text: ownerWords([m]), by: m.author })),
+      g.messages.map((m) => ({ kind: 'group_note', id: String(m.id), text: ownerWords([m]), by: m.author, ...(m.repeat ? { repeat: true } : {}) })),
     ),
   ];
   const counts = { open: w.open.length, decidedUnacknowledged: w.decided.length, waitingOnYou: w.replies.length };
   return {
-    // From the items themselves: `pub.wait` may have dropped some the caller no longer sees.
-    ready: items.length > 0,
+    // From the items themselves: `pub.wait` may have dropped some the caller no longer sees. Notes
+    // it already had don't make it ready on their own.
+    ready: items.some((i) => !('repeat' in i)),
     items,
     // Left out when all zero: an idle wait returning on its timeout is the call agents repeat most.
     counts: counts.open || counts.decidedUnacknowledged || counts.waitingOnYou ? counts : undefined,
+    ...notesHint(w),
     checkedAt: w.checkedAt,
   };
+};
+
+/**
+ * Said in the result itself, for agents whose client listed the tools before `ack` existed: notes
+ * that keep coming back haven't been acknowledged.
+ */
+const notesHint = (w: WaitResult) => {
+  const repeats = w.groupMessages.flatMap((g) => g.messages).filter((m) => m.repeat);
+  return repeats.length
+    ? { hint: `group_note items come back until acknowledged: once handled, pass ack: ${repeats.at(-1)!.id} (or the last id you handled)` }
+    : {};
 };
 
 /** A wait result with its escalations in brief. */
@@ -557,9 +571,12 @@ export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
   groupMessages: w.groupMessages.length
     ? w.groupMessages.map((g) => ({
         group: g.group,
-        messages: g.messages.map((m) => compact({ id: m.id, body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined })),
+        messages: g.messages.map((m) =>
+          compact({ id: m.id, body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined, repeat: m.repeat }),
+        ),
       }))
     : undefined,
+  ...notesHint(w),
 });
 
 /**

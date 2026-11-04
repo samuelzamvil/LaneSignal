@@ -149,6 +149,12 @@ export interface WaitScope {
    * a loop passes the previous result's `checkedAt` so nothing slips between calls.
    */
   since?: string;
+  /**
+   * The group notes the caller already had: unacknowledged ones written before this come back marked
+   * `repeat` and don't end a wait on their own. Left out, `since` (the caller's own); null, none (a
+   * wait without a `since` of its own hands over every note as new).
+   */
+  notesSince?: string | null;
   /** Who is waiting: their own withdrawals aren't reported back to them. */
   viewer?: string;
   /**
@@ -181,9 +187,10 @@ export interface WaitResult {
   movedTickets: { ticket: string; ticketId: number; laneId: string; by: string | null; at: string }[];
   /**
    * A group's wait: people's messages written to the group that its overseer hasn't acknowledged,
-   * oldest first. They come back on every wait until acknowledged (`ack` with the last id handled).
+   * oldest first. They come back on every wait until acknowledged (`ack` with the last id handled);
+   * `repeat` marks one written before the caller's `since`, which it had already.
    */
-  groupMessages: { group: string; messages: GroupMessage[] }[];
+  groupMessages: { group: string; messages: (GroupMessage & { repeat?: true })[] }[];
   /** Server time of this result; pass it as `since` on the next wait. */
   checkedAt: string;
 }
@@ -1350,6 +1357,7 @@ export class Store {
           .get(r.id as string) as Row;
         return { lastMessageId: m.last == null ? null : Number(m.last), lastAgentMessageId: m.agent == null ? null : Number(m.agent) };
       })(),
+      overseerReadId: Number(r.overseer_read_id ?? 0),
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
     };
@@ -3621,13 +3629,25 @@ export class Store {
   /**
    * The overseer acknowledges the group's messages up to `upTo` (the last id it handled). Never moves
    * back, and never past the group's latest message, so repeating it changes nothing. Returns the
-   * position now.
+   * position now. With `by` (the caller's key, as groups record their overseer), anyone but the
+   * group's overseer is refused. When it moves, clients hear of it (the group's `overseerReadId`), so
+   * people see their messages marked seen.
    */
-  ackGroupMessages(groupId: string, upTo: number): number {
-    this.requireGroupRow(groupId);
+  ackGroupMessages(groupId: string, upTo: number, by?: string): number {
+    const g = this.requireGroupRow(groupId);
+    if (by !== undefined && g.owner !== by) {
+      const overseer = overseerName((g.owner as string | null) ?? null);
+      throw new ForbiddenError(
+        `Only the group's overseer acknowledges its messages${overseer ? ` (${overseer} is)` : ''}: register the group (update_group) to take control of it`,
+      );
+    }
     const latest = Number((this.db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM group_messages WHERE group_id = ?').get(groupId) as Row).n);
     const to = Math.min(Math.max(0, Math.floor(upTo)), latest);
-    this.db.prepare('UPDATE groups SET overseer_read_id = ? WHERE id = ? AND overseer_read_id < ?').run(to, groupId, to);
+    const moved = Number(this.db.prepare('UPDATE groups SET overseer_read_id = ? WHERE id = ? AND overseer_read_id < ?').run(to, groupId, to).changes) > 0;
+    if (moved) {
+      const group = this.getGroup(groupId);
+      if (group) this.emit({ type: 'group', group });
+    }
     return this.overseerReadId(groupId);
   }
 
@@ -4088,8 +4108,15 @@ export class Store {
       }
     }
     const groupMessages: WaitResult['groupMessages'] = [];
+    // Notes the caller had already (written before its `since`) are listed again but end no wait: a
+    // loop on `checkedAt` that doesn't acknowledge them waits for something new instead of spinning.
+    let newNotes = 0;
     if (scope.groupId) {
-      const unacknowledged = this.unacknowledgedGroupMessages(scope.groupId);
+      const notesSince = scope.notesSince === undefined ? scope.since : scope.notesSince;
+      const unacknowledged = this.unacknowledgedGroupMessages(scope.groupId).map((m) =>
+        notesSince && m.at < notesSince ? { ...m, repeat: true as const } : m,
+      );
+      newNotes = unacknowledged.filter((m) => !('repeat' in m)).length;
       if (unacknowledged.length) groupMessages.push({ group: scope.groupId, messages: unacknowledged });
     }
     // Tickets from these lanes that a lane outside them took since `since`.
@@ -4145,7 +4172,7 @@ export class Store {
         decided.length > 0 ||
         replies.length > 0 ||
 
-        groupMessages.length > 0 ||
+        newNotes > 0 ||
         closed.length > 0 ||
         removedLanes.length > 0 ||
         movedTickets.length > 0 ||
@@ -4171,8 +4198,8 @@ export class Store {
    * a new question during the wait.
    */
   waitForDecisions(scope: WaitScope, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
-    // Without a `since` of its own, the wait still hands over notes the agent hasn't had.
-    scope = { ...scope, since: scope.since ?? this.now().toISOString() };
+    // Without a `since` of its own, the wait still hands over notes the agent hasn't had, all as new.
+    scope = { ...scope, notesSince: scope.notesSince === undefined ? (scope.since ?? null) : scope.notesSince, since: scope.since ?? this.now().toISOString() };
     const first = this.decisionsFor(scope);
     if (first.ready || timeoutMs <= 0 || signal?.aborted) return Promise.resolve(first);
     const held = new Set<string>();
