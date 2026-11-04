@@ -682,13 +682,15 @@ export class Store {
       {
         table: 'lane_messages',
         column: 'lane_message_id',
-        select: `SELECT 1, m.id, NULL, m.lane_id, NULL, m.author_kind, m.author, m.body, m.created_at, l.group_id, m.lane_id
+        select: `SELECT 1 AS src, m.id, NULL AS escalation_id, m.lane_id, NULL AS epic_id, m.author_kind, m.author, m.body, m.created_at,
+                   l.group_id, m.lane_id AS home
                  FROM lane_messages m LEFT JOIN lanes l ON l.id = m.lane_id`,
       },
       {
         table: 'epic_messages',
         column: 'epic_message_id',
-        select: `SELECT 2, m.id, NULL, NULL, m.epic_id, m.author_kind, m.author, m.body, m.created_at, ep.group_id, ep.project_id || '/'
+        select: `SELECT 2 AS src, m.id, NULL AS escalation_id, NULL AS lane_id, m.epic_id, m.author_kind, m.author, m.body, m.created_at,
+                   ep.group_id, ep.project_id || '/' AS home
                  FROM epic_messages m JOIN epics ep ON ep.num = m.epic_id`,
       },
     ].filter((src) => tableExists(src.table));
