@@ -295,6 +295,35 @@ test('any overseer can take control of a group, and each change is recorded', ()
   store.close();
 });
 
+test('a question on a lane removed with its group brings both back', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  publishLane(store, 'default/l', { group: 'default/g', ticket: 'T-1', status: 'active' }, 'bot');
+  const blocking = escalate(store, { laneId: 'default/l', question: 'Before?' }, 'bot');
+  assert.equal(store.getLane('default/l')?.status, 'blocked_human');
+  store.deleteGroup('default/g', 'alice');
+  // Removed with its group: the blocked spell ends, the ticket is parked, its question stays open on it.
+  assert.equal(store.getLane('default/l'), null);
+  const parked = store.exportRows('tickets').find((t) => t.ref === 't-1' || t.display_ref === 'T-1');
+  assert.equal(parked?.state, 'parked');
+  assert.equal(store.getEscalation(blocking.id)?.state, 'open');
+  const groups: string[] = [];
+  store.events.on('change', (e) => e.type === 'group' && groups.push(e.group.id));
+  store.createEscalation({ laneId: 'default/l', question: 'Again?' }, 'bot');
+  assert.equal(store.getLane('default/l')?.group, 'default/g');
+  assert.deepEqual(store.listGroups().map((g) => g.id), ['default/g']);
+  assert.deepEqual(groups, ['default/g']);
+  store.close();
+});
+
+test('a group nobody registered has no overseer', () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl });
+  store.upsertGroup('default/g', {}, 'bot');
+  assert.equal(store.getGroup('default/g')?.overseer, null);
+  assert.equal(store.getGroup('default/g')?.overseerSince, null);
+  assert.deepEqual(store.groupOverseers('default/g'), []);
+  store.close();
+});
+
 test('a lane is never outside a group', () => {
   const store = new Store({ path: ':memory:', resolveTicketUrl });
   assert.throws(() => store.upsertLane('default/loner', { name: 'Loner' }, 'bot'), /needs a group/);

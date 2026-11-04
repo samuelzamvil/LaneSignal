@@ -39,7 +39,8 @@ export const groupProducts = z.object({ products: z.array(productId).max(20) }).
 
 export const lanePatch = z.object({
   name: z.string().min(1).max(200).optional(),
-  group: groupId.nullable().optional(),
+  // Every lane is in a group: there's no moving one out of its group (null).
+  group: groupId.optional(),
   status: z.enum(LANE_STATUSES).optional(),
   ticket: z.string().max(300).nullable().optional(),
   activity: z.string().max(2000).nullable().optional(),

@@ -212,7 +212,7 @@ export const EXPORT_COLUMNS: Record<ExportDataset, readonly string[]> = {
     'created_at', 'updated_at', 'status_since', 'blocked_seconds_total', 'blocked_since', 'escalations_total',
     'escalations_open', 'links', 'archived_at', 'ticket_id',
   ],
-  groups: ['id', 'project', 'name', 'ticket', 'ticket_url', 'links', 'products', 'last_published_by', 'created_at', 'updated_at', 'archived_at'],
+  groups: ['id', 'project', 'name', 'ticket', 'ticket_url', 'links', 'products', 'last_published_by', 'overseer', 'overseer_since', 'created_at', 'updated_at', 'archived_at'],
   tickets: [
     'id', 'project', 'ref', 'display_ref', 'code', 'ticket_url', 'group_id', 'lane_id', 'state', 'park_reason', 'waiting_on',
     'status', 'blocked_seconds_total', 'escalations_total', 'escalations_open', 'created_at', 'updated_at', 'closed_at',
@@ -663,7 +663,7 @@ export class Store {
   private migrateV23() {
     this.db.exec(`
       INSERT INTO group_overseers (group_id, overseer, previous, at)
-        SELECT id, owner, NULL, updated_at FROM groups WHERE owner IS NOT NULL;
+        SELECT id, owner, NULL, updated_at FROM groups WHERE owner IS NOT NULL; -- when it took control isn't known: its last update stands in
     `);
     const at = this.now().toISOString();
     const stray = this.db
@@ -1224,8 +1224,7 @@ export class Store {
 
   /**
    * Must run inside a transaction. Publishing to an archived group brings it
-   * back; returns true in that case so callers re-emit its lanes, which clients
-   * have been showing as ungrouped. A group's `ticket` is read-only (its epic has it now):
+   * back; returns true in that case so callers re-emit its lanes. A group's `ticket` is read-only (its epic has it now):
    * `patch.ticket` is ignored.
    */
   private writeGroup(id: string, patch: GroupPatch, actor: string | null, at: string, owner?: string): boolean {
@@ -1255,7 +1254,7 @@ export class Store {
     return restored;
   }
 
-  /** Re-sends a restored group's lanes, which clients have been showing as ungrouped. */
+  /** Re-sends a restored group's lanes, so clients show them in it again. */
   private emitGroupLanes(groupId: string, exceptLaneId?: string) {
     for (const lane of this.listLanes()) {
       if (lane.group === groupId && lane.id !== exceptLaneId) this.emit({ type: 'lane', lane });
@@ -3115,9 +3114,17 @@ export class Store {
       }
       return { ...this.requireEscalation(id), duplicate: true };
     }
+    let restoredGroup: string | null = null;
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
-      if (!Store.isEpicLane(input.laneId)) this.restoreLane(input.laneId, actor, at);
+      // A removed lane comes back for its question, and its group with it: no lane is outside one.
+      if (!Store.isEpicLane(input.laneId) && this.restoreLane(input.laneId, actor, at)) {
+        const groupId = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row).group_id as string;
+        if (!this.getGroup(groupId)) {
+          this.writeGroup(groupId, {}, actor, at);
+          restoredGroup = groupId;
+        }
+      }
       const lane = this.laneIncludingArchived(input.laneId)!.lane;
       const id = randomUUID();
       const ref = Number((this.db.prepare('SELECT COALESCE(MAX(ref), 0) + 1 AS n FROM escalations').get() as Row).n);
@@ -3171,6 +3178,10 @@ export class Store {
       }
       return { escalation: this.requireEscalation(id), lane: Store.isEpicLane(input.laneId) ? null : this.requireLane(input.laneId), blocks };
     });
+    if (restoredGroup) {
+      this.emit({ type: 'group', group: this.getGroup(restoredGroup)! });
+      this.emitGroupEpics(restoredGroup);
+    }
     this.emit({ type: 'escalation', escalation });
     if (lane) this.emit({ type: 'lane', lane, statusChanged: blocks });
     return escalation;
@@ -4184,6 +4195,11 @@ export class Store {
         links: r.links,
         products: this.groupProductIds(r.id as string, r.project_id as string).join(' | '),
         last_published_by: r.agent,
+        overseer: overseerName((r.owner as string | null) ?? null),
+        overseer_since: (r.owner as string | null)
+          ? (((this.db.prepare('SELECT at FROM group_overseers WHERE group_id = ? ORDER BY id DESC LIMIT 1').get(r.id as string) as Row | undefined)
+              ?.at as string | undefined) ?? null)
+          : null,
         created_at: r.created_at,
         updated_at: r.updated_at,
         archived_at: r.archived_at,

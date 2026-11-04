@@ -53,7 +53,7 @@ A ticket is what a lane works on. It owns its escalations and its status history
 The rules:
 
 - **One record per ticket:** `967`, `#967`, `redmine:967` and the Redmine URL are the same ticket (refs are put into one form, using the default ticket system). A ticket is created the first time a lane is filled with it.
-- **One lane at a time:** filling a lane with a ticket another lane holds is refused. A worker and a reviewer on one ticket share a lane. Any lane can take a parked ticket, and filling a lane with a done or dropped one reopens it.
+- **One lane at a time:** filling a lane with a ticket another lane holds is refused. Any lane can take a parked ticket, and filling a lane with a done or dropped one reopens it.
 - **Questions keep their lane:** an escalation stays recorded on the lane it was raised in (for history and export), and counts, blocks and is waited on where its ticket is now.
 - **Letting go:** a lane lets its ticket go as **parked** (to pick up again, with a reason), **done**, or **dropped** (unfinished). Whatever happens to a ticket, its open questions stay open and in your inbox, answered as ever; they block only the lane holding it. A lane published as `completed` marks its ticket done and empties (`idle`), ready for the next.
 - **Not a tracker:** a ticket's state here only says whether a lane holds it and how the last one let it go. Its real status lives in Redmine, GitHub or wherever it's tracked; LaneSignal never syncs it.

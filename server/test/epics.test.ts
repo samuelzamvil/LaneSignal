@@ -48,6 +48,9 @@ describe('every group has an epic', () => {
     assert.ok(!(await srv.call('GET', '/api/groups', ALICE)).body.some((g: any) => g.id === 'ungrouped'));
     await group('home');
     await srv.call('PUT', '/api/lanes/loner', AGENT, { group: 'home', ticket: '100' });
+    const viaMcp = await srv.tool(AGENT, 'update_lane', { lane_id: 'mcp-loner', ticket: '101' });
+    assert.ok(viaMcp.isError);
+    assert.match(viaMcp.text, /needs a group/);
     const moved = await srv.call('PUT', '/api/lanes/loner', AGENT, { group: null });
     assert.equal(moved.status, 400);
     assert.equal((await lane('loner')).group, 'home');
