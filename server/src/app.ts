@@ -363,6 +363,16 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.set({ 'cache-control': 'no-cache', 'content-type': 'text/markdown; charset=utf-8' }).send(readFileSync(file, 'utf8'));
   });
 
+  /** The skill's relay, which holds the agent socket for an overseer session (see the skill's "Staying connected"). */
+  app.get('/api/skill/relay.mjs', (_req, res) => {
+    const file = skillFile && path.join(path.dirname(skillFile), 'relay.mjs');
+    if (!file || !existsSync(file)) {
+      res.status(404).json({ error: 'relay not bundled with this server' });
+      return;
+    }
+    res.set({ 'cache-control': 'no-cache', 'content-type': 'text/javascript; charset=utf-8' }).send(readFileSync(file, 'utf8'));
+  });
+
   app.get('/healthz', (_req, res) => {
     try {
       store.ping();

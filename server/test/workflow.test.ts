@@ -359,6 +359,10 @@ describe('agent skill', () => {
     const served = await (await fetch(`${srv.base}/api/skill`)).text();
     const plugin = readFileSync(new URL('../../plugin/skills/lanesignal/SKILL.md', import.meta.url), 'utf8');
     assert.equal(plugin, served, 'run node scripts/build-plugin-skill.mjs');
+    // And the relay beside it, as /api/skill/relay.mjs serves it.
+    const relay = await (await fetch(`${srv.base}/api/skill/relay.mjs`)).text();
+    const pluginRelay = readFileSync(new URL('../../plugin/skills/lanesignal/relay.mjs', import.meta.url), 'utf8');
+    assert.equal(pluginRelay, relay, 'run node scripts/build-plugin-skill.mjs');
   });
 
   test('requirements can be turned off', async () => {
