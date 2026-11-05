@@ -261,7 +261,7 @@ test('a disconnect alert goes out quietly, once, when the overseer goes offline 
 
   // Connected, then quiet (reconnecting), then offline: only the transition to disconnected notifies.
   store.presence.attach('default/main', 'token:bot', 's', 'wait')();
-  await settle();
+  for (const end = Date.now() + 3000; !sink.received.length && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
   assert.equal(store.getGroup('default/main')!.presence!.state, 'disconnected');
   assert.deepEqual(reasons, ['connected', 'quiet', 'offline']);
   assert.equal(sink.received.length, 1);
@@ -273,6 +273,27 @@ test('a disconnect alert goes out quietly, once, when the overseer goes offline 
   // It opens the group's conversation.
   assert.equal(body.click, 'lanesignal://group/default/main');
   sink.close();
+  store.close();
+});
+
+test("the disconnect alert counts questions where the Lanes page does: a ticket's go with it, an epic's count", () => {
+  const { store } = presenceSetup({});
+  store.upsertGroup('default/a', { name: 'A' }, 'bot');
+  store.upsertGroup('default/b', { name: 'B' }, 'bot');
+  publishLane(store, 'default/la', { name: 'La', status: 'active', group: 'default/a', ticket: 'T-1' }, 'bot');
+  escalate(store, { laneId: 'default/la', question: 'Ship it?' }, 'bot');
+  assert.equal(store.blockingQuestionsOf('default/a'), 1);
+  // The lane goes (its ticket is parked, the question stays open), then group B's lane takes the ticket.
+  store.deleteLane('default/la', 'bot');
+  assert.equal(store.blockingQuestionsOf('default/a'), 1, 'a parked ticket still counts for its group');
+  publishLane(store, 'default/lb', { name: 'Lb', status: 'active', group: 'default/b', ticket: 'T-1' }, 'bot');
+  assert.equal(store.blockingQuestionsOf('default/b'), 1, 'the question moved with its ticket');
+  assert.equal(store.blockingQuestionsOf('default/a'), 0);
+  // A question raised on the group's epic counts too.
+  const epic = store.upsertEpic('default', { groupId: 'default/a', ref: '680' }, 'bot');
+  publishLane(store, 'default/la2', { name: 'La2', status: 'active', group: 'default/a', ticket: null }, 'bot');
+  escalate(store, { laneId: 'default/la2', epic: epic.id, question: 'Scope?' } as never, 'bot');
+  assert.equal(store.blockingQuestionsOf('default/a'), 1, "the epic's question");
   store.close();
 });
 
@@ -308,7 +329,7 @@ test('no disconnect alert without decisions waiting on a person', async () => {
   assert.equal(store.blockingQuestionsOf('default/main'), 0);
   startNotifier(config, store);
   store.presence.attach('default/main', 'token:bot', 's', 'wait')();
-  await settle();
+  for (const end = Date.now() + 3000; !sink.received.length && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
   assert.equal(store.getGroup('default/main')!.presence!.state, 'disconnected');
   assert.equal(sink.received.length, 0);
   sink.close();
@@ -324,6 +345,9 @@ test('disconnect alerts are off by default', async () => {
   publishLane(store, 'default/l', { name: 'L', status: 'active' }, 'bot');
   const e = escalate(store, { laneId: 'default/l', question: 'Ship?' }, 'bot');
   store.presence.attach('default/main', 'token:bot', 's', 'wait')();
+  for (const end = Date.now() + 3000; store.getGroup('default/main')!.presence!.state !== 'disconnected' && Date.now() < end; ) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
   await settle();
   assert.equal(store.getGroup('default/main')!.presence!.state, 'disconnected');
   // The question still notifies; the disconnect doesn't.

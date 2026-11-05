@@ -1459,16 +1459,21 @@ export class Store {
   }
 
   /**
-   * The group's questions waiting on a person: open, blocking, and the owner's turn, raised on its lanes or
-   * its epics (the escalations the Lanes page counts as "need you"). FYIs block nothing, so they don't count.
+   * The group's questions waiting on a person: open, blocking, and the owner's turn. The set the group's
+   * wait covers and the Lanes page counts as "need you": questions on the tickets the group holds or parked
+   * (wherever they were raised: a ticket moves between groups with its questions), on its epics, and the
+   * older ones on its live lanes that have neither. FYIs block nothing, so they don't count.
    */
   blockingQuestionsOf(groupId: string): number {
     const r = this.db
       .prepare(
         `SELECT COUNT(*) AS n FROM escalations WHERE state = 'open' AND blocking = 1 AND turn = 'owner'
-           AND (lane_id IN (SELECT id FROM lanes WHERE group_id = ?) OR epic_id IN (SELECT num FROM epics WHERE group_id = ?))`,
+           AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?)
+             OR epic_id IN (SELECT num FROM epics WHERE group_id = ?)
+             OR (ticket_id IS NULL AND epic_id IS NULL
+               AND lane_id IN (SELECT id FROM lanes WHERE group_id = ? AND archived_at IS NULL)))`,
       )
-      .get(groupId, groupId) as Row;
+      .get(groupId, groupId, groupId) as Row;
     return Number(r.n ?? 0);
   }
 
