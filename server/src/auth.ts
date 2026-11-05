@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import type { IncomingMessage } from 'node:http';
 import type { NextFunction, Request, Response } from 'express';
 import type { Accounts } from './accounts.ts';
 import { ACCESS_JWT_HEADER, type AccessVerifier } from './cloudflare-access.ts';
@@ -18,8 +19,32 @@ export interface AccessAuth {
   verifier: AccessVerifier;
   createAccounts: boolean;
   /** Origins a browser request signed in through Access may come from (CSRF guard; see `sameSiteOk`). */
-  trustedOrigins: (req: Request) => string[];
+  trustedOrigins: (req: IncomingMessage) => string[];
 }
+
+/** What `authenticate` needs: an Express request, or a plain Node one (a WebSocket upgrade). */
+type AuthRequest = IncomingMessage & { originalUrl?: string };
+
+export interface AuthOptions {
+  /** Roles allowed; any role when left out. */
+  roles?: Role[];
+  /** A LaneSignal credential is required: an identity from Cloudflare Access alone is refused. */
+  credentialRequired?: boolean;
+}
+
+export type AuthResult =
+  | {
+      ok: true;
+      principal: Principal;
+      /** Re-checks the credential: still valid, and still the same identity and role. */
+      stillValid: () => Promise<boolean>;
+      /** Calls `onInvalid` as soon as a revocation invalidates the credential; returns the unsubscribe. */
+      watchRevocation: (onInvalid: () => void) => () => void;
+    }
+  | { ok: false; status: 401 | 403; error: string };
+
+/** The request's path and query, as the client sent them (Express rewrites `url` inside routers). */
+const urlOf = (req: AuthRequest) => new URL(req.originalUrl ?? req.url ?? '/', 'http://localhost');
 
 /**
  * Header for a LaneSignal session next to Access's Managed OAuth token, which takes `Authorization` in the app:
@@ -75,18 +100,20 @@ export function createAuth(
     return viaAccess ? { principal: viaAccess } : { principal: null, unknownEmail: who.email };
   }
 
-  function tokenFrom(req: Request): string | undefined {
+  function tokenFrom(req: AuthRequest): string | undefined {
     const header = req.headers.authorization;
     const bearer = header?.startsWith('Bearer ') ? header.slice(7).trim() : undefined;
     const session = req.headers[SESSION_HEADER];
     if (typeof session === 'string' && session.trim() && (!bearer || isAccessOAuthToken(bearer))) return session.trim();
     if (bearer) return bearer;
     // EventSource can't send headers; allow the token as a query parameter for /api/events only.
-    if (req.originalUrl.split('?')[0] === '/api/events' && typeof req.query.access_token === 'string') return req.query.access_token;
+    const url = urlOf(req);
+    const query = url.searchParams.get('access_token');
+    if (url.pathname === '/api/events' && query !== null) return query;
     return undefined;
   }
 
-  function credentialFrom(req: Request): Credential {
+  function credentialFrom(req: AuthRequest): Credential {
     const assertion = access ? req.headers[ACCESS_JWT_HEADER] : undefined;
     return { bearer: tokenFrom(req), access: typeof assertion === 'string' ? assertion : undefined };
   }
@@ -96,14 +123,14 @@ export function createAuth(
    * which bearer tokens never do. So a change signed in through Access must not come from another site:
    * browsers send Origin on every cross-origin request and on same-origin POSTs.
    */
-  function sameSiteOk(req: Request) {
-    if (!access || ['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return true;
+  function sameSiteOk(req: AuthRequest) {
+    if (!access || ['GET', 'HEAD', 'OPTIONS'].includes(req.method ?? 'GET')) return true;
     const origin = req.headers.origin;
     return !origin || access.trustedOrigins(req).includes(origin);
   }
 
   /** The account a request is signed in as through Cloudflare Access (none when it carries a LaneSignal credential). */
-  async function accessPrincipal(req: Request): Promise<Principal | null> {
+  async function accessPrincipal(req: AuthRequest): Promise<Principal | null> {
     if (!access) return null;
     const c = credentialFrom(req);
     if (c.bearer && !isAccessOAuthToken(c.bearer)) return null;
@@ -111,60 +138,74 @@ export function createAuth(
     return principal && sameSiteOk(req) ? principal : null;
   }
 
+  /**
+   * Who a request is, for HTTP routes and WebSocket upgrades alike: the credential it carries (or, with
+   * Cloudflare Access on and no credential, the account Access verified), checked against `opts`.
+   */
+  async function authenticate(req: AuthRequest, opts: AuthOptions = {}): Promise<AuthResult> {
+    const credential = credentialFrom(req);
+    if (opts.credentialRequired && !(credential.bearer && !isAccessOAuthToken(credential.bearer))) {
+      return { ok: false, status: 401, error: 'unauthorized' };
+    }
+    const { principal, unknownEmail } = await identifyCredential(credential);
+    if (!principal) {
+      if (unknownEmail) {
+        return {
+          ok: false,
+          status: 403,
+          error: `Cloudflare Access signed you in as ${unknownEmail}, which has no active LaneSignal account. Ask an admin to add you.`,
+        };
+      }
+      return { ok: false, status: 401, error: 'unauthorized' };
+    }
+    if (principal.cloudflareAccess && !sameSiteOk(req)) return { ok: false, status: 403, error: 'cross-site request refused' };
+    const roles = opts.roles ?? [];
+    if (roles.length && !roles.includes(principal.role)) return { ok: false, status: 403, error: `requires role ${roles.join(' or ')}` };
+    // Long-lived requests (SSE, long-polls, sockets) re-check the credential while they stay open. An Access
+    // assertion stops being valid when it expires, so a stream signed in that way ends and reconnects.
+    // An account admin who is demoted loses every project they weren't a member of: treat that as invalid too.
+    // It must still be the same identity: an account removed and made again isn't the one that opened the stream.
+    const stillValid = async () => {
+      const now = (await identifyCredential(credential, false)).principal;
+      return (
+        now !== null &&
+        now.role === principal.role &&
+        now.userId === principal.userId &&
+        now.name === principal.name &&
+        !!now.superuser === !!principal.superuser
+      );
+    };
+    // Calls onInvalid as soon as a revocation (sign-out, key delete, ban, removal...) invalidates this credential.
+    const watchRevocation = (onInvalid: () => void) => {
+      const check = () => void stillValid().then((ok) => ok || onInvalid());
+      accounts.revocations.on('revoked', check);
+      return () => accounts.revocations.off('revoked', check);
+    };
+    return { ok: true, principal, stillValid, watchRevocation };
+  }
+
   /** Requires a valid credential; optionally restricts to roles. */
   function require(...roles: Role[]) {
     return async (req: Request, res: Response, next: NextFunction) => {
-      const credential = credentialFrom(req);
-      const { principal, unknownEmail } = await identifyCredential(credential);
-      if (!principal) {
-        if (unknownEmail) {
-          res.status(403).json({ error: `Cloudflare Access signed you in as ${unknownEmail}, which has no active LaneSignal account. Ask an admin to add you.` });
-          return;
-        }
-        res.status(401).json({ error: 'unauthorized' });
+      const result = await authenticate(req, { roles });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
         return;
       }
-      if (principal.cloudflareAccess && !sameSiteOk(req)) {
-        res.status(403).json({ error: 'cross-site request refused' });
-        return;
-      }
-      if (roles.length && !roles.includes(principal.role)) {
-        res.status(403).json({ error: `requires role ${roles.join(' or ')}` });
-        return;
-      }
-      res.locals.principal = principal;
-      // Long-lived requests (SSE, long-polls) re-check the credential while they stay open. An Access
-      // assertion stops being valid when it expires, so a stream signed in that way ends and reconnects.
-      // An account admin who is demoted loses every project they weren't a member of: treat that as invalid too.
-      // It must still be the same identity: an account removed and made again isn't the one that opened the stream.
-      const stillValid = async () => {
-        const now = (await identifyCredential(credential, false)).principal;
-        return (
-          now !== null &&
-          now.role === principal.role &&
-          now.userId === principal.userId &&
-          now.name === principal.name &&
-          !!now.superuser === !!principal.superuser
-        );
-      };
-      res.locals.stillValid = stillValid;
-      // Calls onInvalid as soon as a revocation (sign-out, key delete, ban, removal...) invalidates this credential.
-      res.locals.watchRevocation = (onInvalid: () => void) => {
-        const check = () => void stillValid().then((ok) => ok || onInvalid());
-        accounts.revocations.on('revoked', check);
-        return () => accounts.revocations.off('revoked', check);
-      };
+      res.locals.principal = result.principal;
+      res.locals.stillValid = result.stillValid;
+      res.locals.watchRevocation = result.watchRevocation;
       next();
     };
   }
 
   /** The LaneSignal credential a request carries (its bearer, or the session header beside a Managed OAuth token). */
-  function bearerOf(req: Request): string | undefined {
+  function bearerOf(req: AuthRequest): string | undefined {
     const token = tokenFrom(req);
     return token && !isAccessOAuthToken(token) ? token : undefined;
   }
 
-  return { identify, require, accessPrincipal, bearerOf };
+  return { identify, authenticate, require, accessPrincipal, bearerOf };
 }
 
 export const principalOf = (res: Response) => res.locals.principal as Principal;
