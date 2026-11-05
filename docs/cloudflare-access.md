@@ -100,6 +100,8 @@ Access sits in front of `/mcp` and the agent API too, so overseers need a way th
   ```
 - **Bypass** `lanesignal.example.com/mcp` for agents on a network you trust (an Access policy can also be limited to IP ranges).
 
+The agent socket, `/api/agent/socket`, needs the same way through as `/mcp`: the relay sends the service-token headers (`LANESIGNAL_CF_ACCESS_CLIENT_ID` and `LANESIGNAL_CF_ACCESS_CLIENT_SECRET`) with its key, or bypass that path for the same networks. Cloudflare passes WebSockets through by itself. The socket never accepts an Access identity on its own, only an agent key, because browsers attach the Access cookie to cross-site upgrades too.
+
 Managed OAuth also answers unauthenticated requests with a `401` that names its OAuth endpoints, so MCP clients that support OAuth may offer to sign in through Access themselves. A person signed in that way gets the human tools, not an overseer's.
 
 The service-token combination (an `Authorization` header that isn't Access's, next to the service-token headers, with Managed OAuth on) hasn't been tested against Cloudflare. Check it with `curl` before moving overseers over.

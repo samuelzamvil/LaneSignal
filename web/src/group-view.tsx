@@ -2,8 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, GroupFeedItem } from './api.ts';
 import { AttachmentList } from './attachments.tsx';
 import { RichText } from './components.tsx';
-import { absolute, ago } from './format.ts';
-import { markMessagesSeen } from './seen.ts';
+import { PresenceSessions } from './epic-views.tsx';
+import { absolute, ago, seenByOverseer } from './format.ts';
+import { deliveryLine } from './presence.ts';
+import { latestEscalationAt, markMessagesSeen } from './seen.ts';
 
 /** A group's conversation: its sheet's route. */
 export const groupRoute = (project: string, group: string) => `#/group/${encodeURIComponent(project)}/${encodeURIComponent(group)}`;
@@ -37,6 +39,7 @@ export function GroupView({
   canWrite,
   onClose,
   backTo,
+  focus,
 }: {
   project: string;
   groupId: string;
@@ -52,6 +55,8 @@ export function GroupView({
   canWrite: boolean;
   onClose: () => void;
   backTo: string;
+  /** An escalation's id: its thread is brought into view and marked (a push about it opens here). */
+  focus?: string;
 }) {
   // Everything loaded so far, by key: the newest page is fetched again on changes and merged in, so
   // nothing already showing drops out; `next` stays where the oldest loaded page ended.
@@ -65,6 +70,10 @@ export function GroupView({
   const bottom = useRef<HTMLDivElement>(null);
   // Follows new messages while you're at the newest one, like a chat; reading back stays put.
   const atBottom = useRef(true);
+  // How far the overseer has acknowledged, never moving back: a stale copy of the group arriving
+  // after a newer one mustn't turn "seen" back into "not seen yet".
+  const readId = useRef(0);
+  readId.current = Math.max(readId.current, group?.overseerReadId ?? 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,10 +101,40 @@ export function GroupView({
     };
   }, [client, project, groupId, version, sent]);
 
-  // Read here: the chat button stops marking the overseer's messages as new.
+  // Read here: the chat button stops marking the overseer's messages, and escalations raised here, as new.
+  const latestEscalation = group ? latestEscalationAt(escalations.values(), group) : null;
   useEffect(() => {
-    if (group) markMessagesSeen(group, group.lastAgentMessageId);
-  }, [group]);
+    if (group) markMessagesSeen(group, group.lastAgentMessageId, latestEscalation);
+  }, [group, latestEscalation]);
+
+  // The escalation a push was about: brought into view once loaded, paging back until it's found
+  // (the feed is in the order questions were raised). While it's in view, following new messages
+  // waits until you scroll or touch, so threads filling in don't carry it away.
+  const focused = useRef<string | null>(null);
+  const holdFocus = useRef(false);
+  const [focusMissing, setFocusMissing] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focus || !items || focused.current === focus) return;
+    if (!items.has(`escalation:${focus}`)) {
+      // A page that failed to load isn't retried here (no loop on a flaky network): the button does that.
+      if (loadingOlder || error) return;
+      if (next) void loadOlder();
+      // Every page read and it isn't here: say so, with a way to it.
+      else {
+        focused.current = focus;
+        setFocusMissing(focus);
+      }
+      return;
+    }
+    focused.current = focus;
+    setFocusMissing(null);
+    atBottom.current = false;
+    holdFocus.current = true;
+    requestAnimationFrame(() => {
+      const el = [...(list.current?.querySelectorAll<HTMLElement>('[data-esc]') ?? [])].find((n) => n.dataset.esc === focus);
+      el?.scrollIntoView({ block: 'start' });
+    });
+  }, [focus, items, next, loadingOlder, error]);
 
   // Opens at the newest message, and stays there as threads fill in and messages arrive, unless you scrolled up.
   useLayoutEffect(() => {
@@ -103,16 +142,23 @@ export function GroupView({
     const sheet = el?.closest('.convo');
     if (!el || !sheet) return;
     const onScroll = () => {
+      if (holdFocus.current) return;
       atBottom.current = sheet.scrollHeight - sheet.scrollTop - sheet.clientHeight < 80;
     };
+    // You taking over (a scroll, a tap, a key) releases the focused thread.
+    const release = () => {
+      holdFocus.current = false;
+    };
     const follow = new ResizeObserver(() => {
-      if (atBottom.current) bottom.current?.scrollIntoView({ block: 'end' });
+      if (atBottom.current && !holdFocus.current) bottom.current?.scrollIntoView({ block: 'end' });
     });
     follow.observe(el);
     sheet.addEventListener('scroll', onScroll, { passive: true });
+    for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const) sheet.addEventListener(type, release, { passive: true });
     return () => {
       follow.disconnect();
       sheet.removeEventListener('scroll', onScroll);
+      for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const) sheet.removeEventListener(type, release);
     };
   }, [items !== null]);
 
@@ -127,6 +173,8 @@ export function GroupView({
       atBottom.current = false;
       setItems(merged);
       setNext(page.next);
+      // A page that loads clears an earlier failure, and lets paging toward a pushed thread go on.
+      setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -158,6 +206,11 @@ export function GroupView({
               </button>
             </p>
           )}
+          {focusMissing && (
+            <p className="hint">
+              That escalation isn't in this conversation. <a href={`#/esc/${encodeURIComponent(focusMissing)}`}>Open it</a>
+            </p>
+          )}
           {items && shown.length === 0 && <p className="hint">Nothing said yet. What you write here reaches {name}'s overseer.</p>}
           <ol className="convo-list" ref={list}>
             {shown.map((i) =>
@@ -167,13 +220,17 @@ export function GroupView({
                     {i.author} <span title={absolute(i.at)}>· {ago(i.at, now)}</span>
                     {i.laneId && <span> · on lane {i.laneId}</span>}
                     {i.epicId !== null && <span> · on an epic's board</span>}
+                    {(() => {
+                      const seen = seenByOverseer(i, readId.current);
+                      return seen === null ? null : <span className="msg-seen">{seen ? ' · seen by the overseer' : ' · not seen yet'}</span>;
+                    })()}
                   </div>
                   <RichText text={i.body} />
                   {i.attachments.length > 0 && <AttachmentList client={client} files={i.attachments} />}
                 </li>
               ) : (
-                <li key={keyOf(i)} className="convo-esc">
-                  <EscalationThread item={i} live={escalations.get(i.id)} client={client} now={now} />
+                <li key={keyOf(i)} className={`convo-esc${i.id === focus ? ' focused' : ''}`} data-esc={i.id}>
+                  <EscalationThread item={i} live={escalations.get(i.id)} client={client} now={now} focused={i.id === focus} canAnswer={canWrite} />
                 </li>
               ),
             )}
@@ -183,6 +240,7 @@ export function GroupView({
         {canWrite && group && (
           <GroupComposer
             name={name}
+            group={group}
             onSend={async (body, clientKey) => {
               await client.groupMessage(project, groupId, body, clientKey);
               atBottom.current = true;
@@ -208,11 +266,17 @@ function EscalationThread({
   live,
   client,
   now,
+  focused = false,
+  canAnswer = false,
 }: {
   item: Extract<GroupFeedItem, { type: 'escalation' }>;
   live: Escalation | undefined;
   client: Client;
   now: number;
+  /** The thread a push opened: on your turn, its decision is one tap away. */
+  focused?: boolean;
+  /** You may answer here (a person, with answering in LaneSignal on). */
+  canAnswer?: boolean;
 }) {
   const [esc, setEsc] = useState<Escalation | null>(null);
   // Refetched when the live copy changes (a reply, an answer), or the feed says it moved on.
@@ -245,7 +309,13 @@ function EscalationThread({
           <span className={`pill ${yourTurn ? 'tone-danger' : state === 'acknowledged' ? 'tone-ok' : ''}`}>
             {yourTurn ? 'Waiting on you' : state === 'open' ? 'Waiting on the overseer' : STATE_LABEL[state]}
           </span>
-          <a href={`#/esc/${item.id}`}>Open escalation</a>
+          {focused && yourTurn && canAnswer ? (
+            <a className="button primary" href={`#/esc/${item.id}`}>
+              {blocking ? 'Decide' : 'Open to answer'}
+            </a>
+          ) : (
+            <a href={`#/esc/${item.id}`}>Open escalation</a>
+          )}
         </span>
       </header>
       <ol className="convo-list nested">
@@ -286,7 +356,16 @@ function EscalationThread({
 }
 
 /** Writes to the group's overseer. Each message gets its own key, so a retry after a dropped connection never posts twice. */
-function GroupComposer({ name, onSend }: { name: string; onSend: (body: string, clientKey: string) => Promise<void> }) {
+function GroupComposer({
+  name,
+  group,
+  onSend,
+}: {
+  name: string;
+  group: Group;
+  onSend: (body: string, clientKey: string) => Promise<void>;
+}) {
+  const delivery = deliveryLine(group);
   const [body, setBody] = useState('');
   const [key, setKey] = useState(newKey);
   const [busy, setBusy] = useState(false);
@@ -342,6 +421,11 @@ function GroupComposer({ name, onSend }: { name: string; onSend: (body: string, 
           {busy ? 'Sending…' : 'Send'}
         </button>
       </div>
+      {delivery && (
+        <p className={`presence-line presence-${group.presence!.state}`}>
+          {delivery} <PresenceSessions group={group} />
+        </p>
+      )}
     </form>
   );
 }

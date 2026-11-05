@@ -15,7 +15,15 @@ export const ALICE = 'alice-token-0123456789';
  * A server on a random port with static tokens: agents "overseer" and "reviewer", human "alice".
  * With `trmnl`, it pushes TRMNL screens through the given (fake) fetch.
  */
-export async function startServer(env: Record<string, string> = {}, opts: { trmnl?: TrmnlOptions } = {}) {
+export async function startServer(
+  env: Record<string, string> = {},
+  opts: {
+    trmnl?: TrmnlOptions;
+    presence?: { quietMs: number; offlineMs: number };
+    /** The agent socket's heartbeat (default: the config's, 20s and 2 missed pings). */
+    agentSocket?: { pingMs?: number; missedPings?: number };
+  } = {},
+) {
   const config = loadConfig({
     LANESIGNAL_DATA_DIR: '/nonexistent-unused',
     LANESIGNAL_CONFIG: '/nonexistent.json',
@@ -29,8 +37,11 @@ export async function startServer(env: Record<string, string> = {}, opts: { trmn
     path: ':memory:',
     resolveTicketUrl: ticketResolver(config.ticketTemplates, config.defaultTicketSystem),
     ticketRefs: ticketRefs(config.ticketTemplates, config.defaultTicketSystem),
-    waitGraceMs: 50,
+    // Short timers keep tests fast: the quiet window (lanes' "agent waiting" too), then disconnected.
+    waitGraceMs: opts.presence?.quietMs ?? 50,
+    presenceOfflineMs: opts.presence?.offlineMs ?? 150,
     attachmentsPerItem: config.attachmentsPerItem,
+    decisions: config.decisions,
   });
   // Every lane is in a group: tests publish theirs in "main", here in each project they use.
   for (const project of ['default', 'shop']) store.upsertGroup(`${project}/main`, { name: 'main' }, 'overseer');
@@ -38,7 +49,9 @@ export async function startServer(env: Record<string, string> = {}, opts: { trmn
   const skillFile = fileURLToPath(new URL('../../skills/lanesignal/SKILL.md', import.meta.url));
   const trmnl = opts.trmnl ? new TrmnlPusher(store, opts.trmnl).start() : undefined;
   const trmnlDir = fileURLToPath(new URL('../../integrations/trmnl', import.meta.url));
-  const server = createApp({ config, store, accounts, push: { fcm: false, ntfy: false }, skillFile, trmnl, trmnlDir }).listen(0);
+  const app = createApp({ config, store, accounts, push: { fcm: false, ntfy: false }, skillFile, trmnl, trmnlDir, agentSocket: opts.agentSocket });
+  const server = app.listen(0);
+  server.on('upgrade', app.locals.upgrade);
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
@@ -115,8 +128,11 @@ export async function startServer(env: Record<string, string> = {}, opts: { trmn
     call,
     tool,
     publish,
+    /** Closes agent sockets with 1012, as shutdown does. */
+    closeSockets: () => app.locals.closeSockets() as void,
     close() {
       trmnl?.stop();
+      app.locals.closeSockets();
       server.closeAllConnections();
       server.close();
     },

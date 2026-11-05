@@ -88,6 +88,8 @@ export const epicQuery = z
 
 export const closeRequest = z.object({ reason: z.string().trim().min(1).max(1000) });
 export const closeDecision = z.object({ approve: z.boolean() });
+export const reopenRequest = z.object({ reason: z.string().trim().min(1).max(1000) });
+export const reopenDecision = z.object({ approve: z.boolean() });
 
 export const ticketQuery = z
   .object({
@@ -127,6 +129,22 @@ export const escalationFields = {
   links: z.array(link).max(20).optional(),
   blocking: z.boolean().optional(),
 };
+
+/**
+ * An open FYI made blocking by its code (`upgrade`), with any fields to replace. Where it's raised
+ * stays as it was.
+ */
+export const escalationUpgrade = z
+  .object(escalationFields)
+  .omit({ laneId: true, epic: true, blocking: true, positions: true })
+  .partial()
+  .extend({ upgrade: z.string().trim().min(1).max(100) })
+  .strict()
+  // With options given, the recommended one is among them (else the store checks the FYI's own).
+  .refine((e) => !e.recommendedOption || !e.options?.length || e.options.includes(e.recommendedOption), {
+    message: 'recommendedOption must be one of options',
+    path: ['recommendedOption'],
+  });
 
 /** The agent's message on a lane: a quiet phone notification, with any files. */
 export const notice = z.object({
@@ -274,6 +292,9 @@ export const waitScope = z
 const csv = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v);
 
 /** GET /api/wait query: ?group=&lane=a,b&ids=1,2&timeout=seconds&since=iso */
+/** The name an overseer gives its agent session, such as its Remote Control link. */
+export const waitSession = z.string().trim().min(1).max(512);
+
 export const waitQuery = z
   .object({
     group: groupId.optional(),
@@ -285,6 +306,18 @@ export const waitQuery = z
     format: z.enum(['digest', 'full']).optional(),
     /** With `group`: the last group message handled; it and those before it are acknowledged first. */
     ack: z.coerce.number().int().min(0).optional(),
+    /** With `group`, from its overseer: the agent session this wait keeps connected (see Group.presence). */
+    session: waitSession.optional(),
+  })
+  .strict();
+
+/** The agent socket's query: GET /api/agent/socket?group=G&session=S[&project=P][&since=T] */
+export const socketQuery = z
+  .object({
+    group: groupId,
+    session: waitSession,
+    project: z.string().max(40).optional(),
+    since: z.string().max(40).optional(),
   })
   .strict();
 

@@ -46,14 +46,14 @@ export const UNDO_V24 = `
   UPDATE meta SET value = '23' WHERE key = 'schema_version';
 `;
 
-// Takes a database back from v26 (groups hold questions of their own): their internal lanes, their
+// Takes a database back from v29 (groups hold questions of their own): their internal lanes, their
 // own questions, and their codes and status lines go.
-export const UNDO_V26 = `
+export const UNDO_V29 = `
   DELETE FROM lane_events WHERE lane_id LIKE '%/~group-%';
   DELETE FROM group_messages WHERE escalation_id IN (SELECT id FROM escalations WHERE lane_id LIKE '%/~group-%');
   DELETE FROM escalations WHERE lane_id LIKE '%/~group-%';
   DELETE FROM lanes WHERE id LIKE '%/~group-%';
   ALTER TABLE groups DROP COLUMN code_ref;
   ALTER TABLE groups DROP COLUMN status_line;
-  UPDATE meta SET value = '25' WHERE key = 'schema_version';
+  UPDATE meta SET value = '28' WHERE key = 'schema_version';
 `;

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
-import { accessFor, approvesRequirements, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, ackerOf, approvesRequirements, isWriter, markNotesDelivered, presenceForWait, requireWriter, upgradeFor, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { checkAttachment, readUpload } from './attachments.ts';
 import { CLIENT_IP_HEADER, FAILOVER_KEY_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, SESSION_HEADER, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
@@ -15,6 +15,7 @@ import { mcpHandler } from './mcp.ts';
 import { OIDC_CALLBACK_PATH, OIDC_START_PATH, OIDC_STATE_COOKIE, OidcError } from './oidc.ts';
 import { buildPayload, checkWebhookUrl, maskWebhookUrl, pluginZip, type TrmnlPusher } from './trmnl.ts';
 import * as s from './schemas.ts';
+import { createAgentSockets, SOCKET_PATH } from './socket.ts';
 import { datasetCsvAsync, datasetRowsAsync, exportZip } from './export.ts';
 import {
   ConflictError,
@@ -69,6 +70,8 @@ export interface AppOptions {
   trmnlDir?: string;
   /** Fetches Cloudflare Access's signing keys (tests pass a fake). */
   accessFetch?: typeof fetch;
+  /** The agent socket's heartbeat, overriding LANESIGNAL_AGENT_PING_SECONDS / _MISSED_PINGS (tests use short ones). */
+  agentSocket?: { pingMs?: number; missedPings?: number };
 }
 
 /** The OAuth redirect URI the Android app registers with Cloudflare Access (Managed OAuth). */
@@ -113,7 +116,7 @@ const h = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => 
   Promise.resolve(fn(req, res)).catch(next);
 };
 
-export function createApp({ config, store, accounts, push, webDir, skillFile, trmnl, trmnlDir, accessFetch }: AppOptions) {
+export function createApp({ config, store, accounts, push, webDir, skillFile, trmnl, trmnlDir, accessFetch, agentSocket }: AppOptions) {
   const app = express();
   const cf = config.cloudflareAccess;
   const access: AccessAuth | null = cf && {
@@ -360,6 +363,16 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.set({ 'cache-control': 'no-cache', 'content-type': 'text/markdown; charset=utf-8' }).send(readFileSync(file, 'utf8'));
   });
 
+  /** The skill's relay, which holds the agent socket for an overseer session (see the skill's "Staying connected"). */
+  app.get('/api/skill/relay.mjs', (_req, res) => {
+    const file = skillFile && path.join(path.dirname(skillFile), 'relay.mjs');
+    if (!file || !existsSync(file)) {
+      res.status(404).json({ error: 'relay not bundled with this server' });
+      return;
+    }
+    res.set({ 'cache-control': 'no-cache', 'content-type': 'text/javascript; charset=utf-8' }).send(readFileSync(file, 'utf8'));
+  });
+
   app.get('/healthz', (_req, res) => {
     try {
       store.ping();
@@ -369,7 +382,19 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     }
   });
 
-  const any = auth.require();
+  /** Any credential, observer keys included: for MCP, which checks each tool itself. */
+  const signedIn = auth.require();
+  /**
+   * Observer keys only read: refused on anything but GET and HEAD (a GET that changes something,
+   * like `ack` on a wait, checks with `requireWriter`). Positive list, so an unknown role can't write either.
+   */
+  const readsOnly = (req: Request, res: Response, next: NextFunction) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || isWriter(principalOf(res))) return next();
+    res.status(403).json({ error: "Observer keys are read-only: they can't make changes" });
+  };
+  /** Any credential; observer keys only on reads. */
+  const any = (req: Request, res: Response, next: NextFunction) =>
+    signedIn(req, res, (err?: unknown) => (err ? next(err) : readsOnly(req, res, next)));
   const agent = auth.require('agent');
   const human = auth.require('human');
 
@@ -390,6 +415,18 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   };
   const membershipChanges = new EventEmitter<{ changed: [] }>();
   membershipChanges.setMaxListeners(0);
+  // The agent socket: attach `app.locals.upgrade` to the HTTP server's `upgrade` event, and call
+  // `app.locals.closeSockets()` on shutdown (closing the server's connections doesn't reach upgraded sockets).
+  const sockets = createAgentSockets({
+    store,
+    authenticate: auth.authenticate,
+    decisions: config.decisions,
+    pingMs: agentSocket?.pingMs ?? config.agentSocket.pingSeconds * 1000,
+    missedPings: agentSocket?.missedPings ?? config.agentSocket.missedPings,
+    membershipChanges,
+  });
+  app.locals.upgrade = sockets.upgrade;
+  app.locals.closeSockets = sockets.closeAll;
   // On a one-project server a new person joins it, so they don't sign in to an empty dashboard.
   // With several projects, an admin chooses (Settings → Projects).
   // Account admins see every project anyway, so they aren't made members (which would outlast a demotion).
@@ -466,7 +503,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       lanes: store.listLanes(projects).map(pub.lane),
       escalations: store.listEscalations({ projects }).map(pub.escalation),
       tickets: store.snapshotTickets(projects).map(pub.ticket),
-      epics: store.listEpics({ projects }).map(pub.epic),
+      epics: store.listEpics({ projects, reopenRequests: true }).map(pub.epic),
       serverTime: new Date().toISOString(),
     });
   });
@@ -804,6 +841,19 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     res.json(pub.epic(store.decideEpicClose(epic.id, parse(s.closeDecision, req.body ?? {}).approve, principalOf(res).name)));
   });
 
+  /** An overseer asks a person to reopen a closed epic. */
+  app.post('/api/epics/:id/reopen-request', agent, (req, res) => {
+    const epic = epicOf(req, res);
+    res.json(pub.epic(store.requestEpicReopen(epic.id, parse(s.reopenRequest, req.body ?? {}).reason, principalOf(res).name)));
+  });
+
+  /** A person approves or declines a reopen request, or (`approve: true` with none waiting) reopens the epic directly. */
+  app.post('/api/epics/:id/reopen', human, (req, res) => {
+    if (!approvesRequirements(principalOf(res))) throw new ForbiddenError('Reopen an epic signed in, not with a personal key');
+    const epic = epicOf(req, res);
+    res.json(pub.epic(store.decideEpicReopen(epic.id, parse(s.reopenDecision, req.body ?? {}).approve, principalOf(res).name)));
+  });
+
   // ---- tickets: held by lanes, parked, done ----
 
   app.get('/api/tickets', any, (req, res) => {
@@ -907,7 +957,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   app.post('/api/groups/:id/ack', agent, (req, res) => {
     const body = parse(s.groupAck, req.body ?? {});
     const project = acc(res).pick(projectQuery(req), { group: String(req.params.id) });
-    res.json({ acknowledgedUpTo: store.ackGroupMessages(q(project, String(req.params.id)), body.upTo) });
+    res.json({ acknowledgedUpTo: store.ackGroupMessages(q(project, String(req.params.id)), body.upTo, ackerOf(principalOf(res))) });
   });
 
   app.post('/api/lanes/:id/messages', any, retired("Lanes' conversations"));
@@ -961,6 +1011,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
 
   /** 201 when created; 200 with `duplicate: true` when the same open question already exists (a retry). */
   app.post('/api/escalations', agent, (req, res) => {
+    // `upgrade`: an open FYI's code, made blocking instead of raising a new question.
+    if (req.body && typeof req.body === 'object' && 'upgrade' in req.body) {
+      const { upgrade, ...fields } = parse(s.escalationUpgrade, req.body);
+      const upgraded = upgradeFor(store, acc(res), upgrade, fields, projectQuery(req), principalOf(res));
+      res.status(200).json(pub.escalation(upgraded));
+      return;
+    }
     const { epic, group, ...input } = parse(s.escalationInput, req.body);
     const target = escalationTarget(store, acc(res), { laneId: input.laneId, epic, group }, projectQuery(req));
     const escalation = store.createEscalation({ ...input, ...target }, principalOf(res).name, ownerOf(principalOf(res)));
@@ -975,10 +1032,13 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       parse(s.waitScope, { ids: query.ids, laneIds: query.lane, groupId: query.group, since: query.since }),
       query.project,
     );
-    // Only the overseer acknowledges what's meant for it.
-    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
-    const { ready: _ready, ...all } = briefWait(pub.wait(store.decisionsFor(scope)));
-    res.json(all);
+    // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+    if (query.ack !== undefined) requireWriter(principalOf(res), 'acknowledge group notes');
+    const acked = query.ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, query.ack, ackerOf(principalOf(res))) : undefined;
+    const value = store.decisionsFor(scope);
+    markNotesDelivered(store, value, principalOf(res));
+    const { ready: _ready, ...all } = briefWait(pub.wait(value));
+    res.json(acked !== undefined ? { ...all, acked } : all);
   });
 
   /**
@@ -1002,37 +1062,63 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         mode: query.format ?? 'digest',
       };
       const shape = (w: WaitResult) => (query.format === 'full' ? briefWait(w) : digestWait(w, acc(res).projects.length > 1));
-      // Only the overseer acknowledges what's meant for it.
-    if (query.ack !== undefined && scope.groupId && principalOf(res).role === 'agent') store.ackGroupMessages(scope.groupId, query.ack);
-      const now = store.decisionsFor(scope);
+      // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+      if (query.ack !== undefined) requireWriter(principalOf(res), 'acknowledge group notes');
+      const acked = query.ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, query.ack, ackerOf(principalOf(res))) : undefined;
+      const withAck = <T extends object>(body: T) => (acked !== undefined ? { ...body, acked } : body);
+      // The overseer's session counts as connected while this waits, and checks in even when it returns at once.
+      const release = presenceForWait(store, principalOf(res), scope.groupId, query.session);
+      let now;
+      try {
+        now = store.decisionsFor(scope);
+      } catch (err) {
+        release();
+        throw err;
+      }
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
-        res.json(shape(pub.wait(now)));
+        release();
+        markNotesDelivered(store, now, principalOf(res));
+        res.json(withAck(shape(pub.wait(now))));
         return;
       }
       const abort = new AbortController();
-      res.on('close', () => abort.abort());
       let revoked = false;
-      const unwatch = watchRevocationOf(res)(() => {
-        revoked = true;
-        abort.abort();
-      });
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
-      res.write(' ');
-      const stillValid = stillValidOf(res);
-      const keepalive = setInterval(() => {
+      let unwatch = () => {};
+      let keepalive: ReturnType<typeof setInterval> | undefined;
+      try {
+        res.on('close', () => abort.abort());
+        // The client may have hung up while it was being authenticated: 'close' has fired already.
+        if (res.closed || req.destroyed) abort.abort();
+        unwatch = watchRevocationOf(res)(() => {
+          revoked = true;
+          abort.abort();
+        });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
         res.write(' ');
-        void stillValid().then((ok) => ok || ((revoked = true), abort.abort()));
-      }, 20_000);
+        const stillValid = stillValidOf(res);
+        keepalive = setInterval(() => {
+          res.write(' ');
+          void stillValid().then((ok) => ok || ((revoked = true), abort.abort()));
+        }, 20_000);
+      } catch (err) {
+        clearInterval(keepalive);
+        unwatch();
+        release();
+        throw err;
+      }
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;
-        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : shape(pub.wait(result, visible))));
+        // Only what reaches the caller counts as handed over: not a wait it hung up on.
+        if (!revoked && !abort.signal.aborted) markNotesDelivered(store, result, principalOf(res), visible);
+        res.end(JSON.stringify(revoked ? { error: 'unauthorized', ready: false } : withAck(shape(pub.wait(result, visible)))));
       } catch (err) {
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'internal error', ready: false }));
       } finally {
         clearInterval(keepalive);
         unwatch();
+        release();
       }
     }),
   );
@@ -1054,7 +1140,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       });
       let escalation;
       try {
-        escalation = await store.waitForDecision(target.id, wait * 1000, abort.signal);
+        escalation = await store.waitForDecision(target.id, wait * 1000, abort.signal, isWriter(principalOf(res)));
       } finally {
         unwatch();
       }
@@ -1431,13 +1517,18 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
     });
   });
 
+  /** The agent socket answers upgrades only (see socket.ts): a plain request is told so. */
+  app.get(SOCKET_PATH, decisionsOnly, (_req, res) => {
+    res.status(426).set('upgrade', 'websocket').json({ error: 'This is a WebSocket endpoint: connect with Upgrade: websocket' });
+  });
+
   // ---- MCP ----
 
   // Twice the file: base64 is a third larger, and text JSON-escaped (\u…) by some clients can double.
   const mcpBody = express.json({ limit: config.attachmentMaxBytes * 2 + 256 * 1024 });
   app.post(
     '/mcp',
-    any,
+    signedIn,
     mcpBody,
     mcpHandler(store, { decisions: config.decisions, requirements: config.requirements, laneAdvice: config.laneAdvice }, { attachmentMaxBytes: config.attachmentMaxBytes }),
   );

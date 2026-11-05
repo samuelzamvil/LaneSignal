@@ -450,6 +450,17 @@ textarea {
 .parked-main .muted {
   font-size: 0.8rem;
 }
+/* Reopen requests: each item and its Approve / Decline read as one row. */
+.reopen-item {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.reopen-item .parked-item {
+  border-bottom: none;
+}
+.reopen-item .close-request {
+  margin-top: 0;
+}
 
 .sheet.sheet-ticket {
   --kind: var(--accent);
@@ -576,6 +587,34 @@ textarea {
 
 .agent-presence.late {
   color: var(--warn);
+}
+
+/* Whether a group's overseer is connected: in its header, and under its conversation's box. */
+.presence-chip {
+  font-size: 0.8rem;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.presence-chip.presence-listening,
+.presence-line.presence-listening {
+  color: var(--ok);
+}
+
+.presence-chip.presence-not_responding,
+.presence-line.presence-not_responding {
+  color: var(--warn);
+}
+
+.presence-line {
+  margin: 6px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.presence-sessions {
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .activity {
@@ -2741,6 +2780,11 @@ a.button.primary {
 }
 .convo-msg .attachments {
   margin-top: 6px;
+}
+
+.convo-esc.focused .esc-thread {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .esc-thread {

@@ -136,7 +136,7 @@ export async function createAccounts(config: Config, dbPath: string, opts: { oid
         if (ctx.path === '/api-key/create' && ctx.body && 'prefix' in ctx.body) {
           throw new APIError('BAD_REQUEST', { message: 'Custom key prefixes are not supported' });
         }
-        // Key metadata only says which role the key acts as, and optionally the one project an agent key is bound to.
+        // Key metadata only says which role the key acts as, and optionally the one project an agent or observer key is bound to.
         if ((ctx.path === '/api-key/create' || ctx.path === '/api-key/update') && ctx.body?.metadata !== undefined) {
           const m = ctx.body.metadata as unknown;
           const meta = (m ?? {}) as { role?: unknown; project?: unknown };
@@ -144,12 +144,12 @@ export async function createAccounts(config: Config, dbPath: string, opts: { oid
             m === null ||
             (typeof m === 'object' &&
               Object.keys(m as object).every((k) => k === 'role' || k === 'project') &&
-              ['agent', 'human', undefined].includes(meta.role as string | undefined) &&
+              ['agent', 'observer', 'human', undefined].includes(meta.role as string | undefined) &&
               (meta.project === undefined || (typeof meta.project === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(meta.project))) &&
               !(meta.role === 'human' && meta.project !== undefined));
           if (!ok) {
             throw new APIError('BAD_REQUEST', {
-              message: 'Key metadata may only set role ("agent" or "human") and, for agent keys, a project id',
+              message: 'Key metadata may only set role ("agent", "observer" or "human") and, for agent and observer keys, a project id',
             });
           }
         }
@@ -176,7 +176,8 @@ export async function createAccounts(config: Config, dbPath: string, opts: { oid
       admin(),
       apiKey({
         defaultPrefix: KEY_PREFIX,
-        // Holds only { role }: "human" keys let a person answer escalations from their own MCP client.
+        // Holds only { role, project }: "human" keys let a person answer escalations from their own MCP client,
+        // "observer" keys only read.
         enableMetadata: true,
         // The plugin's default (10 requests/day/key) would starve agents.
         rateLimit: { enabled: false },
@@ -409,7 +410,7 @@ export async function createAccounts(config: Config, dbPath: string, opts: { oid
           }
           return {
             name: res.key.name ?? 'agent',
-            role: 'agent',
+            role: meta?.role === 'observer' ? 'observer' : 'agent',
             userId: res.key.referenceId,
             superuser: isAdminRole(owner.role),
             ...(meta?.project ? { project: meta.project } : {}),

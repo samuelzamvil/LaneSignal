@@ -10,6 +10,10 @@ export interface TokenEntry {
   token: string;
 }
 
+/** What `LANESIGNAL_NOTIFY_ON` can turn on. `disconnected`: a group's overseer went offline with questions waiting (off by default). */
+export const NOTIFY_KINDS = ['escalation', 'notice', 'blocked', 'completed', 'disconnected'] as const;
+export type NotifyKind = (typeof NOTIFY_KINDS)[number];
+
 export interface Config {
   name: string;
   host: string;
@@ -42,7 +46,7 @@ export interface Config {
   /** Most attachments on one escalation. */
   attachmentsPerItem: number;
   /** Which events trigger push notifications. */
-  notifyOn: Set<'escalation' | 'notice' | 'blocked' | 'completed'>;
+  notifyOn: Set<NotifyKind>;
   fcmServiceAccountFile: string | null;
   ntfyUrl: string | null;
   ntfyToken: string | null;
@@ -52,6 +56,16 @@ export interface Config {
    */
   ntfyOpen: 'app' | 'browser';
   eventRetention: number;
+  /**
+   * Overseer presence: a session stays listening for `quietSeconds` after its last connection ends (lanes' "agent
+   * waiting" too), then shows reconnecting until `offlineMinutes` after it ended, then disconnected.
+   */
+  presence: { quietSeconds: number; offlineMinutes: number };
+  /**
+   * The agent socket (GET /api/agent/socket): a protocol ping and an application `ping` frame every `pingSeconds`;
+   * a client that leaves `missedPings` pings in a row unanswered is dropped.
+   */
+  agentSocket: { pingSeconds: number; missedPings: number };
   /**
    * Answering escalations in LaneSignal (on by default): the dashboard's decision buttons, and agents
    * waiting for and acknowledging decisions. Off, LaneSignal only alerts: people answer in the agent's
@@ -136,6 +150,8 @@ const list = (v: string | undefined) =>
     ?.split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+
+const ROLES = ['human', 'agent', 'observer'] as const satisfies readonly Role[];
 
 /** "name:token,name2:token2" */
 function parseTokens(v: string | undefined, role: Role): TokenEntry[] {
@@ -312,6 +328,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // Former name of LANESIGNAL_HUMAN_TOKENS, still accepted.
     ...parseTokens(env.LANESIGNAL_OVERSEER_TOKENS, 'human'),
     ...parseTokens(env.LANESIGNAL_AGENT_TOKENS, 'agent'),
+    ...parseTokens(env.LANESIGNAL_OBSERVER_TOKENS, 'observer'),
     // "overseer" was the former name of the human role.
     ...(file.tokens ?? []).map((t) => ({ ...t, role: (t.role as string) === 'overseer' ? ('human' as const) : t.role })),
   ];
@@ -322,6 +339,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   for (const t of tokens) {
     if (t.token.length < 16) throw new Error(`Token for "${t.name}" is shorter than 16 characters`);
+    if (!(ROLES as readonly string[]).includes(t.role)) throw new Error(`Token for "${t.name}" has role "${t.role}": use ${ROLES.join(', ')}`);
   }
 
   // Ticket system names are lower-case wherever they appear ("Redmine" configures "redmine").
@@ -330,10 +348,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   );
   const notifyOn = new Set(
     (list(env.LANESIGNAL_NOTIFY_ON) ?? file.notifyOn ?? ['escalation', 'notice']).filter(
-      (n): n is 'escalation' | 'notice' | 'blocked' | 'completed' =>
-        n === 'escalation' || n === 'notice' || n === 'blocked' || n === 'completed',
+      (n): n is NotifyKind => (NOTIFY_KINDS as readonly string[]).includes(n),
     ),
   );
+
+  const presence = {
+    quietSeconds: int('LANESIGNAL_PRESENCE_QUIET_SECONDS', env.LANESIGNAL_PRESENCE_QUIET_SECONDS, 60, 1, 86_400),
+    offlineMinutes: int('LANESIGNAL_PRESENCE_OFFLINE_MINUTES', env.LANESIGNAL_PRESENCE_OFFLINE_MINUTES, 10, 1, 10_080),
+  };
+  // Reconnecting is the time between the two: without any, a session would skip it, or come back from disconnected.
+  if (presence.quietSeconds >= presence.offlineMinutes * 60) {
+    throw new Error(
+      `LANESIGNAL_PRESENCE_QUIET_SECONDS (${presence.quietSeconds}) must be shorter than LANESIGNAL_PRESENCE_OFFLINE_MINUTES (${presence.offlineMinutes} minutes)`,
+    );
+  }
+
+  const agentSocket = {
+    pingSeconds: int('LANESIGNAL_AGENT_PING_SECONDS', env.LANESIGNAL_AGENT_PING_SECONDS, 20, 1, 3600),
+    missedPings: int('LANESIGNAL_AGENT_MISSED_PINGS', env.LANESIGNAL_AGENT_MISSED_PINGS, 2, 1, 100),
+  };
 
   const publicUrl = env.LANESIGNAL_PUBLIC_URL ?? file.publicUrl ?? null;
   return {
@@ -364,6 +397,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ntfyToken: env.LANESIGNAL_NTFY_TOKEN ?? file.ntfyToken ?? null,
     ntfyOpen: oneOf('LANESIGNAL_NTFY_OPEN', env.LANESIGNAL_NTFY_OPEN, ['app', 'browser'] as const, 'app'),
     eventRetention: int('LANESIGNAL_EVENT_RETENTION', env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention, 200, 1, 100_000),
+    presence,
+    agentSocket,
     decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, true),
     requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),
     laneAdvice: bool('LANESIGNAL_LANE_ADVICE', env.LANESIGNAL_LANE_ADVICE, true),

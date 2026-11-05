@@ -202,6 +202,15 @@ export function startNotifier(
     }
   }
 
+  /**
+   * Where tapping an escalation's notification goes: its thread in the conversation of the group it
+   * was raised in, in focus (one conversation per group); the escalation alone when it has none.
+   */
+  const escalationRoute = (esc: { id: string; project: string; group: string | null }) =>
+    esc.group
+      ? `#/group/${encodeURIComponent(esc.project)}/${encodeURIComponent(localId(esc.group))}/esc/${encodeURIComponent(esc.id)}`
+      : `#/esc/${encodeURIComponent(esc.id)}`;
+
   function toNotification(e: StreamEvent): Notification | null {
     // The agent wrote in a conversation: every message reaches the owner.
     if (e.type === 'escalation' && e.replied && e.escalation.lastMessage && config.notifyOn.has('escalation')) {
@@ -214,7 +223,7 @@ export function startNotifier(
         title: `${reply ? 'Reply' : 'Update'} ${code} · ${where}`,
         body: esc.lastMessage!.body,
         data: { escalationId: esc.id, laneId: localId(esc.laneId ?? ''), project: esc.project },
-        route: `#/esc/${esc.id}`,
+        route: escalationRoute(esc),
         urgent,
         project: esc.project,
       };
@@ -234,9 +243,27 @@ export function startNotifier(
           ? `${e.escalation.question}\nRecommended: ${e.escalation.recommendation}`
           : e.escalation.question,
         data: { escalationId: e.escalation.id, laneId: localId(e.escalation.laneId ?? ''), project: e.escalation.project },
-        route: `#/esc/${e.escalation.id}`,
+        route: escalationRoute(e.escalation),
         urgent,
         project: e.escalation.project,
+      };
+    }
+    // The overseer went offline while questions wait on a person: quiet, opt-in, and never for a takeover
+    // (the group has a new overseer). Presence starts disconnected without a transition, so nothing at startup.
+    if (e.type === 'group' && e.presence && config.notifyOn.has('disconnected')) {
+      const { from, to, reason } = e.presence;
+      if (to !== 'disconnected' || from === 'disconnected' || reason === 'taken_over') return null;
+      const waiting = store.blockingQuestionsOf(e.group.id);
+      if (!waiting) return null;
+      const g = e.group;
+      return {
+        title: `${g.name}'s overseer disconnected · ${waiting} ${waiting === 1 ? 'decision' : 'decisions'} waiting`,
+        body: 'Answers reach the overseer when it reconnects.',
+        data: { groupId: localId(g.id), project: g.project },
+        // It opens the group's conversation, like the overseer's notices.
+        route: `#/group/${encodeURIComponent(g.project)}/${encodeURIComponent(localId(g.id))}`,
+        urgent: false,
+        project: g.project,
       };
     }
     if (e.type === 'lane' && e.statusChanged) {

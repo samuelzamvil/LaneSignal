@@ -4,7 +4,8 @@ import { keyOf } from './merge.ts';
 /** A group's epics on its section of the Lanes page, oldest first (none, for a group holding only its own questions). */
 export function epicsOnScreen(groupKey: string | null, epics: Iterable<Epic>): Epic[] {
   if (!groupKey) return [];
-  return [...epics].filter((e) => keyOf(e.project, e.group) === groupKey).sort((a, b) => a.id - b.id);
+  // A closed epic waiting for a reopen decision isn't on screen as an epic: it's in the group's Reopen requested row.
+  return [...epics].filter((e) => keyOf(e.project, e.group) === groupKey && e.state !== 'closed').sort((a, b) => a.id - b.id);
 }
 
 /**

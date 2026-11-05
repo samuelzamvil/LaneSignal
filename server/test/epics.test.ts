@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { after, before, describe, test } from 'node:test';
 import { EXPORT_COLUMNS, Store } from '../src/store.ts';
 import { AGENT, ALICE, REVIEWER, startServer } from './helpers.ts';
-import { UNDO_V24, UNDO_V26 } from './undo.ts';
+import { UNDO_V24, UNDO_V29 } from './undo.ts';
 
 let srv: Awaited<ReturnType<typeof startServer>>;
 before(async () => {
@@ -264,6 +264,59 @@ describe('closing an epic', () => {
     assert.equal(fill.isError, true);
     assert.match(fill.text, /Epic 800 is closed/);
   });
+
+  let reopenedId = 0;
+  test("an overseer asks to reopen a closed epic; approved, the group's own questions stay the group's", async () => {
+    const meanwhile = (await ask({ group_id: 'closing', question: 'Meanwhile: file the audit follow-up?' })).value;
+    const asked = await srv.tool(AGENT, 'request_epic_reopen', { epic: '800', reason: 'Auditors came back' });
+    assert.equal(asked.isError, false, asked.text);
+    assert.equal(asked.value.state, 'closed');
+    assert.equal(asked.value.reopenRequested, 'Auditors came back');
+    // People see it in the app's snapshot, to decide; agents' lists of epics leave it out, since it's still closed.
+    const e800 = ((await srv.call('GET', '/api/snapshot', ALICE)).body.epics as any[]).find((e) => e.displayRef === '800');
+    assert.equal(e800.reopenRequest.reason, 'Auditors came back');
+    assert.deepEqual(await epics('closing'), []);
+    assert.ok(!((await srv.call('GET', '/api/epics?group=closing', AGENT)).body as any[]).some((e) => e.id === e800.id));
+    const advice = await srv.tool(AGENT, 'fill_lane', { lane_id: 'reopen-slot', group: 'closing', ticket: '820' });
+    assert.doesNotMatch(advice.text, /This group has epics \(800\)/);
+    assert.equal((await srv.call('POST', `/api/epics/${e800.id}/reopen`, AGENT, { approve: true })).status, 403);
+    assert.equal((await srv.call('POST', `/api/epics/${e800.id}/reopen`, personal, { approve: true })).status, 403);
+    const since = new Date().toISOString();
+    reopenedId = e800.id;
+    const reopened = await srv.call('POST', `/api/epics/${e800.id}/reopen`, ALICE, { approve: true });
+    assert.equal(reopened.status, 200, JSON.stringify(reopened.body));
+    assert.equal(reopened.body.state, 'open');
+    assert.equal(reopened.body.reopenRequest, null);
+    assert.equal(reopened.body.closeReason, null);
+    assert.deepEqual((await epics('closing')).map((e) => e.epic), ['800']);
+    assert.ok(!(await epicDetail(e800.id)).escalations.some((x: any) => x.id === meanwhile.id), "the group's question stays the group's");
+    assert.equal((await srv.call('GET', `/api/escalations/${meanwhile.id}`, ALICE)).body.group, 'closing');
+    const items = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'closing', since, wait_seconds: 0 })).value.items as any[];
+    assert.deepEqual(items.filter((i) => i.kind.startsWith('reopen_')).map((i) => [i.kind, i.id]), [['reopen_approved', '800']]);
+    // A ticket can name it again.
+    const fill = await srv.tool(AGENT, 'fill_lane', { lane_id: 'close-slot', group: 'closing', ticket: '810', epic: '800' });
+    assert.equal(fill.isError, false, fill.text);
+    assert.match((await srv.tool(AGENT, 'request_epic_reopen', { epic: '800', reason: 'x' })).text, /This epic is open/);
+  });
+
+  test('a person declines, or reopens a closed epic without being asked', async () => {
+    const id = reopenedId;
+    for (const x of (await epicDetail(id)).escalations.filter((x: any) => x.state === 'open')) {
+      const out = await srv.call('POST', `/api/escalations/${x.id}/withdraw`, ALICE, { reason: 'later' });
+      assert.equal(out.status, 200, JSON.stringify(out.body));
+    }
+    await srv.call('POST', `/api/epics/${id}/close-request`, AGENT, { reason: 'Done again' });
+    assert.equal((await srv.call('POST', `/api/epics/${id}/close`, ALICE, { approve: true })).body.state, 'closed');
+    assert.equal((await srv.call('POST', `/api/epics/${id}/reopen`, ALICE, { approve: false })).status, 409, 'nobody asked');
+    await srv.call('POST', `/api/epics/${id}/reopen-request`, AGENT, { reason: 'One more thing' });
+    const declined = await srv.call('POST', `/api/epics/${id}/reopen`, ALICE, { approve: false });
+    assert.equal(declined.body.state, 'closed');
+    assert.equal(declined.body.reopenRequest, null);
+    assert.ok(!(await srv.call('GET', '/api/snapshot', ALICE)).body.epics.some((e: any) => e.id === id), 'closed epics drop out again');
+    const direct = await srv.call('POST', `/api/epics/${id}/reopen`, ALICE, { approve: true });
+    assert.equal(direct.body.state, 'open');
+    assert.deepEqual((await epics('closing')).map((e) => e.epic), ['800']);
+  });
 });
 
 describe('export', () => {
@@ -310,7 +363,7 @@ describe('REST', () => {
 
 /** Takes a database back from v18 (epics) to v17. */
 const UNDO_V18 = `
-  ${UNDO_V26}
+  ${UNDO_V29}
   ${UNDO_V24}
   DELETE FROM lane_events WHERE lane_id LIKE '%/~epic-%';
   DELETE FROM escalations WHERE lane_id LIKE '%/~epic-%';

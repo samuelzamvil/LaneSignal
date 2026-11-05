@@ -19,7 +19,8 @@ import type { Epic, Escalation, Group, GroupMessage, Lane, Link, Message, Princi
  *
  * - Config tokens and account admins (and keys they own): every project, as admin.
  * - People: the projects they're members of, with their role there.
- * - Agent keys: their owner's projects, or only the one project the key is bound to.
+ * - Agent and observer keys: their owner's projects, or only the one project the key is bound to.
+ *   Observer keys only read (`requireWriter`).
  */
 export interface Access {
   principal: Principal;
@@ -63,7 +64,8 @@ export function accessFor(store: Store, principal: Principal): Access {
 
   const roleIn = (project: string): ProjectRole | null => {
     if (!visible.includes(project)) return null;
-    if (principal.role === 'agent') return 'member';
+    // Keys that aren't people's are members wherever they see, even an account admin's.
+    if (principal.role !== 'human') return 'member';
     if (all) return 'admin';
     return memberships!.get(project)?.role ?? null;
   };
@@ -226,7 +228,11 @@ export function waitScopeFor(
     laneIds: raw.laneIds?.map((l) => qualify(pr!, l)),
     groupId: raw.groupId ? qualify(pr!, raw.groupId) : undefined,
     since: raw.since,
-    viewer: a.principal.name,
+    // An observer did nothing itself, so nothing is left out as its own (an agent with its name did it). And it
+    // only watches: lanes don't show an agent waiting because of it.
+    viewer: isWriter(a.principal) ? a.principal.name : null,
+    viewerKey: ownerOf(a.principal),
+    ...(isWriter(a.principal) ? {} : { holdsWaiting: false }),
   };
 }
 
@@ -316,6 +322,9 @@ export const pub = {
       open: w.open.filter((o) => keep(o.laneId)).map((o) => ({ ...o, laneId: pubLaneId(o.laneId) })),
       removedLanes: w.removedLanes.filter((l) => keep(l.laneId)).map((l) => ({ ...l, laneId: localId(l.laneId) })),
       movedTickets: w.movedTickets.filter((m) => keep(m.laneId)).map((m) => ({ ...m, laneId: localId(m.laneId) })),
+      reopenDecisions: w.reopenDecisions
+        .filter((d) => !projects || projects.includes(projectOf(d.group)))
+        .map((d) => ({ ...d, group: localId(d.group) })),
       groupMessages: w.groupMessages
         .filter((g) => !projects || projects.includes(projectOf(g.group)))
         .map((g) => ({ group: localId(g.group), messages: g.messages.map(pub.groupMessage) })),
@@ -352,7 +361,7 @@ export const pub = {
  * An escalation as agents need it after asking: what was decided, not the whole question echoed
  * back (context can run to pages). get_escalation and GET /api/escalations/:id return everything.
  */
-export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean }) =>
+export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean; openFyis?: string[] }) =>
   compact({
     id: e.id,
     ref: e.ref,
@@ -372,6 +381,8 @@ export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean 
     resolution: e.resolution,
     positions: e.positions.length ? e.positions : undefined,
     createdBy: e.createdBy,
+    // Open FYIs in the group, named when a new blocking question is raised beside them.
+    openFyis: e.openFyis,
   });
 
 /** Drops null and undefined fields, which an agent would pay for and learn nothing from. */
@@ -472,6 +483,7 @@ export const briefEpic = (e: Epic) =>
     state: e.state,
     statusLine: e.statusLine,
     closeReason: e.closeReason,
+    reopenRequested: e.reopenRequest?.reason,
     openEscalations: e.openEscalations || undefined,
     blockingEscalations: e.blockingEscalations || undefined,
     updatedAt: e.updatedAt,
@@ -536,15 +548,22 @@ export const digestWait = (w: WaitResult, keyed = false) => {
     ...w.closed.map((e) => ({ code: code(e), kind: 'closed', text: e.resolution ?? e.state })),
     ...w.removedLanes.map((l) => ({ kind: 'lane_removed', id: l.laneId, text: l.removedBy ? `Removed by ${l.removedBy}` : 'Removed' })),
     ...w.movedTickets.map((m) => ({ kind: 'ticket_moved', id: m.ticket, text: `Taken into lane ${m.laneId}${m.by ? ` by ${m.by}` : ''}` })),
-    // One item each, with its id: acknowledge the last one handled (`ack`), or they come back.
+    ...w.reopenDecisions.map((d) => ({
+      kind: d.approved ? 'reopen_approved' : 'reopen_declined',
+      id: d.epic,
+      text: d.approved ? `Epic reopened${d.by ? ` by ${d.by}` : ''}` : `Epic stays closed: ${d.by ?? 'a person'} declined to reopen it`,
+    })),
+    // One item each, with its id: acknowledge the last one handled (`ack`), or they come back
+    // (`seen: true` once the caller's `since` is past them: it had them already).
     ...w.groupMessages.flatMap((g) =>
-      g.messages.map((m) => ({ kind: 'group_note', id: String(m.id), text: ownerWords([m]), by: m.author })),
+      g.messages.map((m) => ({ kind: 'group_note', id: String(m.id), text: ownerWords([m]), by: m.author, ...(m.repeat ? { seen: true } : {}) })),
     ),
   ];
   const counts = { open: w.open.length, decidedUnacknowledged: w.decided.length, waitingOnYou: w.replies.length };
   return {
-    // From the items themselves: `pub.wait` may have dropped some the caller no longer sees.
-    ready: items.length > 0,
+    // From the items themselves: `pub.wait` may have dropped some the caller no longer sees. Notes
+    // it already had don't make it ready on their own.
+    ready: items.some((i) => !('seen' in i)),
     items,
     // Left out when all zero: an idle wait returning on its timeout is the call agents repeat most.
     counts: counts.open || counts.decidedUnacknowledged || counts.waitingOnYou ? counts : undefined,
@@ -553,7 +572,7 @@ export const digestWait = (w: WaitResult, keyed = false) => {
 };
 
 /** A wait result with its escalations in brief. */
-export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
+export const briefWait = ({ movedTickets: _moved, reopenDecisions: _reopened, ...w }: WaitResult) => ({
   ...w,
   decided: w.decided.map(brief),
   replies: w.replies.map(({ projectKey: _key, ...r }) => ({ ...r, messages: briefMessages(r.messages) })),
@@ -562,7 +581,9 @@ export const briefWait = ({ movedTickets: _moved, ...w }: WaitResult) => ({
   groupMessages: w.groupMessages.length
     ? w.groupMessages.map((g) => ({
         group: g.group,
-        messages: g.messages.map((m) => compact({ id: m.id, body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined })),
+        messages: g.messages.map((m) =>
+          compact({ id: m.id, body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined, seen: m.repeat }),
+        ),
       }))
     : undefined,
 });
@@ -585,7 +606,53 @@ export function productsKeptWarning(group: { products: string[] }, asked: string
 
 export const approvesRequirements = (p: Principal) => p.role === 'human' && !p.personalKey;
 
-export const ownerOf = (p: Principal) => (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);
+/**
+ * The key something was done with. An observer's is its own even when it shares an agent key's name, so what it
+ * was handed (group notes) never counts as handed to that agent.
+ */
+export const ownerOf = (p: Principal) =>
+  (p.role === 'observer' ? 'observer:' : '') + (p.userId ? `user:${p.userId}:${p.name}` : `token:${p.name}`);
+
+/** Roles that may change anything: observer keys only read. */
+export const WRITER_ROLES = ['human', 'agent'] as const;
+
+export const isWriter = (p: Principal) => (WRITER_ROLES as readonly string[]).includes(p.role);
+
+/** Throws for an observer key (or anything else that isn't a person or an agent): `what` names the refused change. */
+export function requireWriter(p: Principal, what: string) {
+  if (!isWriter(p)) throw new ForbiddenError(`Observer keys are read-only: they can't ${what}`);
+}
+
+/** The caller as acknowledging a group's messages needs it: its key, and whether it's an agent. */
+export const ackerOf = (p: Principal) => ({ key: ownerOf(p), agent: p.role === 'agent' });
+
+/**
+ * A wait on a group by its overseer holds the overseer's session (`session`, or `wait:<key name>`) connected:
+ * call it before checking whether the result is ready, and the release when the wait ends (at once for a
+ * wait that returns at once, which still counts as the session checking in). Only the group's overseer key
+ * counts, or any agent key while the group has none (who may acknowledge its notes); anyone else holds nothing.
+ */
+export function presenceForWait(store: Store, p: Principal, groupId: string | undefined, session: string | undefined): () => void {
+  // Agent keys only: a person's principal can share its key string with an agent key of the same name.
+  if (!groupId || p.role !== 'agent') return () => {};
+  const owner = store.groupOwner(groupId);
+  const key = ownerOf(p);
+  if (owner === undefined || (owner !== null && owner !== key)) return () => {};
+  return store.presence.attach(groupId, key, session ?? `wait:${p.name}`, 'wait');
+}
+
+/**
+ * Records that the caller (its key) was handed the group notes in this result, so
+ * the next wait treats them as had already once its `since` is past them. Call it with what was returned.
+ */
+export function markNotesDelivered(store: Store, w: WaitResult, p: Principal, projects?: string[]) {
+  for (const g of w.groupMessages) {
+    // What the caller no longer sees isn't returned to it (pub.wait), so it isn't handed over either.
+    if (projects && !projects.includes(projectOf(g.group))) continue;
+    const last = g.messages.at(-1);
+    if (last) store.markGroupMessagesDelivered(g.group, last.id, ownerOf(p));
+  }
+}
 
 /**
  * An attachment the caller may read: one on an escalation, lane message or epic message in a
@@ -619,7 +686,7 @@ export function readableAttachment(store: Store, a: Access, id: string, project?
  * Only the agent that raised an escalation acknowledges or dismisses it (or a person, on its behalf):
  * codes repeat across groups, and another overseer closing it by mistake would swallow the decision.
  */
-export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss' | 'reply to') {
+export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'acknowledge' | 'dismiss' | 'reply to' | 'upgrade') {
   if (a.principal.role !== 'agent') return;
   const owner = store.escalationOwner(e.id);
   // Older rows recorded the account alone ("user:<id>"); those match any key of that account.
@@ -636,4 +703,21 @@ export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'ack
     const where = e.epicId !== null ? 'the overseer of the group its epic is in' : onGroup ? "the group's overseer" : 'the overseer of the group its ticket is in';
     throw new ForbiddenError(`${e.ref} was raised by ${e.createdBy}; only that agent, ${where}, or a person can ${verb} it`);
   }
+}
+
+/**
+ * `upgrade` on create_escalation: the open FYI named by `code` becomes blocking, taking `fields`.
+ * Only its raiser, or the overseer of the group its ticket or epic is in, may.
+ */
+export function upgradeFor(
+  store: Store,
+  a: Access,
+  code: string,
+  fields: Parameters<Store['upgradeEscalation']>[1],
+  project: string | null | undefined,
+  p: Principal,
+) {
+  const e = a.escalation(code, project);
+  requireRaiser(store, a, e, 'upgrade');
+  return store.upgradeEscalation(e.id, fields, p.name, ownerOf(p));
 }

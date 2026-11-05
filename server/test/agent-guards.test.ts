@@ -205,6 +205,127 @@ describe('an FYI that now needs the owner', () => {
     const fresh = await ask('fyi-lane', 'Flaky test in payouts', AGENT, { blocking: true });
     assert.notEqual(fresh.id, fyi2.id);
   });
+  const tool = (args: Record<string, unknown>, token = AGENT) => srv.tool(token, 'create_escalation', args);
+
+  test('the same question in other spacing, case or closing punctuation is still the same: it upgrades', async () => {
+    await srv.publish('fyi-punct', { group: 'fyi-g1' });
+    const fyi = (await tool({ lane_id: 'fyi-punct', question: 'Ship it?', blocking: false })).value;
+    const again = (await tool({ lane_id: 'fyi-punct', question: 'ship  it' })).value;
+    assert.equal(again.id, fyi.id);
+    assert.equal(again.upgraded, true);
+    // Different words, or punctuation inside that changes what it asks, are a different question.
+    assert.notEqual((await tool({ lane_id: 'fyi-punct', question: 'Ship it now?' })).value.id, fyi.id);
+    const a = (await tool({ lane_id: 'fyi-punct', question: 'Rename foo-bar to foo_bar?', blocking: false })).value;
+    assert.notEqual((await tool({ lane_id: 'fyi-punct', question: 'Rename foo_bar to foo-bar?', blocking: false })).value.id, a.id);
+    const b = (await tool({ lane_id: 'fyi-punct', question: 'Is a > b?', blocking: false })).value;
+    assert.notEqual((await tool({ lane_id: 'fyi-punct', question: 'Is a < b?', blocking: false })).value.id, b.id);
+  });
+
+  test("asked as blocking from a lane, an FYI on the group or its epic moves to the lane and blocks it; another lane's never is", async () => {
+    await srv.publish('fyi-move', { group: 'fyi-g2' });
+    await srv.publish('fyi-move-2', { group: 'fyi-g2' });
+    const onEpic = (await tool({ epic: 'fyi-g2', question: 'Freeze the schema?', blocking: false })).value;
+    // Asked again as an FYI from a lane, it's the lane's own.
+    assert.notEqual((await tool({ lane_id: 'fyi-move-2', question: 'Freeze the schema?', blocking: false })).value.id, onEpic.id);
+    const fromLane = (await tool({ lane_id: 'fyi-move', question: 'Freeze the schema.' })).value;
+    assert.equal(fromLane.id, onEpic.id);
+    assert.equal(fromLane.upgraded, true);
+    // Same code, now the lane's ticket's: the lane blocks, and a wait on the lane hears the answer.
+    assert.equal(fromLane.ref, onEpic.ref);
+    assert.equal(fromLane.laneId, 'fyi-move');
+    assert.equal(fromLane.epic, undefined);
+    // A retry keeps the question's words.
+    assert.equal(fromLane.question, 'Freeze the schema?');
+    assert.equal((await srv.call('GET', '/api/lanes/fyi-move', ALICE)).body.lane.status, 'blocked_human');
+    await srv.call('POST', `/api/escalations/${onEpic.id}/decide`, ALICE, { decision: 'Accept' });
+    const heard = (await srv.tool(AGENT, 'wait_for_decisions', { lane_ids: ['fyi-move'], wait_seconds: 0 })).value;
+    assert.deepEqual(heard.items.map((i: { code: string; kind: string }) => [i.code, i.kind]), [[onEpic.ref, 'decided']]);
+    await srv.tool(AGENT, 'acknowledge_escalation', { id: onEpic.ref });
+    // If the upgrade fails, nothing moved: the FYI stays on the epic.
+    const stays = (await tool({ epic: 'fyi-g2', question: 'Pin the versions?', blocking: false })).value;
+    const failed = await tool({ lane_id: 'fyi-move', question: 'Pin the versions?', attachments: ['no-such-file'] });
+    assert.ok(failed.isError);
+    const after = (await srv.call('GET', `/api/escalations/${stays.id}`, ALICE)).body;
+    assert.equal(after.laneId, null);
+    assert.equal(after.blocking, false);
+    // The same goes for an epic's FYI, but one raised from another lane isn't this lane's to take.
+    await srv.tool(AGENT, 'update_epic', { epic: '820', group: 'fyi-g2', name: 'SDK' });
+    const onRealEpic = (await tool({ epic: '820', question: 'Drop Node 20?', blocking: false })).value;
+    assert.equal((await tool({ lane_id: 'fyi-move', question: 'Drop Node 20?' })).value.id, onRealEpic.id);
+    const fromOther = (await tool({ epic: '820', lane_id: 'fyi-move-2', question: 'Bump the SDK?', blocking: false })).value;
+    assert.notEqual((await tool({ lane_id: 'fyi-move', question: 'Bump the SDK?' })).value.id, fromOther.id);
+    // The same short question on two lanes is two questions: each lane's own blocks.
+    const onOther = (await tool({ lane_id: 'fyi-move-2', question: 'OK to merge?', blocking: false })).value;
+    const here = (await tool({ lane_id: 'fyi-move', question: 'OK to merge?' })).value;
+    assert.notEqual(here.id, onOther.id);
+    assert.equal((await srv.call('GET', '/api/lanes/fyi-move', ALICE)).body.lane.status, 'blocked_human');
+    assert.equal((await srv.call('GET', '/api/lanes/fyi-move-2', ALICE)).body.lane.status, 'active');
+    // Another overseer's FYI is never taken for yours.
+    const theirs = (await tool({ epic: 'fyi-g2', question: 'Rename the service?', blocking: false }, REVIEWER)).value;
+    assert.notEqual((await tool({ lane_id: 'fyi-move-2', question: 'Rename the service?' })).value.id, theirs.id);
+  });
+
+  test('`upgrade` names the FYI by its code, whatever its words', async () => {
+    await srv.publish('fyi-code', { group: 'fyi-g3' });
+    const fyi = (await tool({ lane_id: 'fyi-code', question: 'Payments CI is slow', blocking: false })).value;
+    const up = await tool({ upgrade: fyi.ref, question: 'Split the payments e2e job now?', recommendation: 'Split it' });
+    assert.equal(up.isError, false, up.text);
+    assert.equal(up.value.id, fyi.id);
+    assert.equal(up.value.upgraded, true);
+    assert.equal(up.value.question, 'Split the payments e2e job now?');
+    assert.equal((await srv.call('GET', '/api/lanes/fyi-code', ALICE)).body.lane.status, 'blocked_human');
+    // Again: already blocking, nothing to upgrade.
+    const twice = (await tool({ upgrade: fyi.ref })).value;
+    assert.equal(twice.duplicate, true);
+    assert.equal(twice.upgraded, undefined);
+    // Over HTTP too, with the question left out.
+    const fyi2 = (await tool({ lane_id: 'fyi-code', question: 'Disk at 80%', blocking: false })).value;
+    const http = await srv.call('POST', '/api/escalations', AGENT, { upgrade: fyi2.ref });
+    assert.equal(http.status, 200);
+    assert.equal(http.body.upgraded, true);
+    assert.equal(http.body.question, 'Disk at 80%');
+    // Not another agent's (outside its group), not a closed one, and no question without `upgrade`.
+    const fyi3 = (await tool({ lane_id: 'fyi-code', question: 'Logs are noisy', blocking: false })).value;
+    const other = await tool({ upgrade: fyi3.ref }, REVIEWER);
+    assert.ok(other.isError);
+    assert.match(other.text, /only that agent, the overseer of the group/);
+    await srv.call('POST', `/api/escalations/${fyi3.id}/decide`, ALICE, { decision: 'noted' });
+    const closed = await tool({ upgrade: fyi3.ref });
+    assert.ok(closed.isError);
+    assert.ok((await tool({ lane_id: 'fyi-code' })).isError);
+    // Where it is stays: lane_id, epic, blocking or positions with it are refused, not dropped.
+    const fyi4 = (await tool({ lane_id: 'fyi-code', question: 'Cache is cold', blocking: false })).value;
+    assert.match((await tool({ upgrade: fyi4.ref, lane_id: 'fyi-code' })).text, /leave out lane_id/);
+    assert.equal((await srv.call('POST', '/api/escalations', AGENT, { upgrade: fyi4.ref, blocking: false })).status, 400);
+    // A recommended option alone must be one of its options.
+    const rec = await srv.call('POST', '/api/escalations', AGENT, { upgrade: fyi4.ref, recommendedOption: 'Warm it' });
+    assert.equal(rec.status, 400);
+    assert.match(rec.body.error, /must be one of/);
+    // Answered Other, the FYI still goes back to the owner, as when it's raised again as blocking.
+    await srv.call('POST', `/api/escalations/${fyi4.id}/decide`, ALICE, { decision: 'Other', note: 'Why?' });
+    const other4 = (await tool({ upgrade: fyi4.ref })).value;
+    assert.equal(other4.upgraded, true);
+    assert.equal((await srv.call('GET', `/api/escalations/${fyi4.id}`, ALICE)).body.turn, 'owner');
+  });
+
+  test('a new blocking question names the open FYIs in its group', async () => {
+    await srv.publish('fyi-list', { group: 'fyi-g4' });
+    const a = (await tool({ lane_id: 'fyi-list', question: 'Heads up: quota', blocking: false })).value;
+    const b = (await tool({ epic: 'fyi-g4', question: 'Heads up: billing', blocking: false })).value;
+    const blocking = (await tool({ lane_id: 'fyi-list', question: 'Raise the quota to 10k?' })).value;
+    assert.deepEqual(blocking.openFyis, [a.ref, b.ref]);
+    // Not on an FYI, and not when there are none.
+    assert.equal((await tool({ lane_id: 'fyi-list', question: 'Heads up: more', blocking: false })).value.openFyis, undefined);
+    // The group's overseer sees every FYI in it; another key only its own, the ones it can upgrade.
+    await srv.publish('fyi-list-2', { group: 'fyi-g4', token: REVIEWER });
+    const theirs = (await tool({ lane_id: 'fyi-list-2', question: 'Heads up: theirs', blocking: false }, REVIEWER)).value;
+    const all = (await tool({ lane_id: 'fyi-list-2', question: 'Ready to ship?' }, REVIEWER)).value.openFyis;
+    assert.ok(all.includes(a.ref) && all.includes(theirs.ref));
+    const mine = (await tool({ lane_id: 'fyi-list', question: 'Ready to deploy?' })).value.openFyis;
+    assert.ok(mine.includes(a.ref) && !mine.includes(theirs.ref));
+    await srv.publish('fyi-none', { group: 'fyi-g5' });
+    assert.equal((await tool({ lane_id: 'fyi-none', question: 'Go?' })).value.openFyis, undefined);
+  });
 });
 
 test('a notice can run to several lines; a retry returns it, another within the minute is refused', async () => {

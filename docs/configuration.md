@@ -39,8 +39,9 @@ Set these in the stack's environment (Compose / `.env`); there's no switch in th
 | `LANESIGNAL_TRMNL_DIR` | | bundled | Folder with the TRMNL plugin files (`integrations/trmnl`) served as `/api/projects/:id/trmnl/plugin.zip` |
 | `LANESIGNAL_HUMAN_TOKENS` | `tokens[]` | | Optional static human tokens, `name:token,…` (16+ chars each), for break-glass and scripts. `LANESIGNAL_OVERSEER_TOKENS` is the old name and still works |
 | `LANESIGNAL_AGENT_TOKENS` | `tokens[]` | | Optional static agent tokens. Prefer [agent keys](accounts.md#agent-keys) |
+| `LANESIGNAL_OBSERVER_TOKENS` | `tokens[]` | | Optional static read-only tokens, for every project. Prefer [observer keys](accounts.md#observer-keys) |
 
-In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent", "token" }`.
+In the JSON file, `tokens` is a list of `{ "name", "role": "human" | "agent" | "observer", "token" }`. Any other role stops the server from starting.
 
 ## Cloudflare Access
 
@@ -79,12 +80,16 @@ Only read when `LANESIGNAL_OIDC_ISSUER` is set. See [Sign in with Cloudflare](oi
 | `LANESIGNAL_ATTACHMENTS_PER_ITEM` | | `5` | Most files on one escalation or one message (1–20) |
 | `LANESIGNAL_STALE_MINUTES` | `staleMinutes` | `30` | A lane that is `active`, `pending_ci` or `awaiting_agent` and hasn't published for this long is flagged stale. `0` turns this off |
 | `LANESIGNAL_EVENT_RETENTION` | `eventRetention` | `200` | Routine activity lines kept per lane. Status changes and escalation history are always kept |
+| `LANESIGNAL_PRESENCE_QUIET_SECONDS` | | `60` | How long a group's overseer still shows **listening** after its wait ends, and a lane still shows **agent waiting**, so a re-wait doesn't flicker (1–86400). Must be shorter than the offline window, or the server doesn't start |
+| `LANESIGNAL_AGENT_PING_SECONDS` | | `20` | How often the [agent socket](api.md#the-agent-socket) sends a protocol ping and a `ping` frame, and re-checks the key (1–3600) |
+| `LANESIGNAL_AGENT_MISSED_PINGS` | | `2` | Pings in a row an agent socket may leave unanswered before the server drops it (1–100) |
+| `LANESIGNAL_PRESENCE_OFFLINE_MINUTES` | | `10` | How long after its wait ended an overseer's session shows **reconnecting** before it's **disconnected** (1–10080). See [groups](concepts.md#groups-one-overseer-many-lanes) |
 
 ## Notifications
 
 | Env var | JSON key | Default | Notes |
 |---|---|---|---|
-| `LANESIGNAL_NOTIFY_ON` | `notifyOn` | `escalation,notice` | Comma-separated: `escalation` (new questions, and FYIs that become blocking), `notice` (milestones overseers send with `notify_owner`), `blocked`, `completed`. A list set before notices existed (e.g. `escalation` alone) leaves them out: add `notice` |
+| `LANESIGNAL_NOTIFY_ON` | `notifyOn` | `escalation,notice` | Comma-separated: `escalation` (new questions, and FYIs that become blocking), `notice` (milestones overseers send with `notify_owner`), `blocked`, `completed`, `disconnected` (a group's overseer went offline while blocking questions in the group wait on a person: quiet, never for a takeover; off unless listed). A list set before notices existed (e.g. `escalation` alone) leaves them out: add `notice` |
 | `LANESIGNAL_NTFY_URL` | `ntfyUrl` | | `https://ntfy.example.com/<topic>` |
 | `LANESIGNAL_NTFY_TOKEN` | `ntfyToken` | | If your ntfy topic needs auth |
 | `LANESIGNAL_NTFY_OPEN` | | `app` | What tapping an ntfy notification opens: `app`, the LaneSignal Android app (with an **Open in browser** button when `LANESIGNAL_PUBLIC_URL` is set), or `browser`, the web app at `LANESIGNAL_PUBLIC_URL` |

@@ -20,6 +20,12 @@ import {
   updateEpicFor,
   compact,
   ownerOf,
+  ackerOf,
+  isWriter,
+  requireWriter,
+  markNotesDelivered,
+  presenceForWait,
+  upgradeFor,
   pub,
   q,
   readableAttachment,
@@ -110,6 +116,8 @@ async function cancellable<T>(
 ): Promise<{ value: T; revoked: boolean }> {
   const ctrl = new AbortController();
   extra.signal.addEventListener('abort', () => ctrl.abort());
+  // Cancelled before the wait began: its 'abort' has fired already.
+  if (extra.signal.aborted) ctrl.abort();
   let revoked = false;
   const unwatch = watchRevocation(() => {
     revoked = true;
@@ -431,7 +439,7 @@ function buildServer(
       try {
         const target = a.escalation(id, project);
         const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
-          store.waitForDecision(target.id, (wait_seconds ?? 0) * 1000, signal),
+          store.waitForDecision(target.id, (wait_seconds ?? 0) * 1000, signal, isWriter(who)),
         );
         if (revoked || (wait_seconds && !(await stillValid()))) return fail(new Error('Credential revoked'));
         if (wait_seconds && !accessFor(store, a.principal).projects.includes(value.project)) {
@@ -515,13 +523,19 @@ function buildServer(
       since: z
         .string()
         .optional()
-        .describe('Pass the previous result\'s `checkedAt`: what changed since then comes back, again if you repeat it.'),
+        .describe(
+          'Pass the previous result\'s `checkedAt`: what changed since then comes back, again if you repeat it. ' +
+            'It doesn\'t clear `group_note`s: only `ack` does. Ones you had already come back with `seen: true` and don\'t end the wait.',
+        ),
       ack: z
         .number()
         .int()
         .min(0)
         .optional()
-        .describe('With your group: the id of the last `group_note` you handled. It and those before it stop coming back.'),
+        .describe(
+          'With your group: the id of the last `group_note` you handled. It and those before it stop coming back; ' +
+            'the result\'s `acked` says how far you\'ve acknowledged. Only the group\'s overseer can.',
+        ),
       ...PROJECT,
     };
 
@@ -531,33 +545,45 @@ function buildServer(
         description:
           'Wait for what needs you in your group, some lanes or escalations; it waits even when nothing is open. Returns ' +
           '`items`: `{code, kind, text}` for an escalation, `{kind, id, text}` for a lane, ticket or epic (the owner\'s words, or what happened). Kinds: `decided` (answered), `reply` (the owner answered Other), ' +
-          '`closed`, `lane_removed`, `ticket_moved`, `group_note` (a person wrote to your group; `id` is the ' +
-          'message\'s: pass the last one you handled as `ack`). `decided`, `reply` and `group_note` repeat until handled; ' +
-          'the rest come once per `since`. `counts` (left out when all zero): `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
-          'it timed out: call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
+          '`closed`, `lane_removed`, `ticket_moved`, `reopen_approved` / `reopen_declined` (a person reopened one of ' +
+          'your group\'s closed epics, or declined your request_epic_reopen; `id` is the epic), `group_note` (a person wrote to your group; `id` is the ' +
+          'message\'s: pass the last one you handled as `ack`; `since` doesn\'t clear them). `decided`, `reply` and `group_note` repeat until handled ' +
+          '(a `group_note` you had before `since` comes back with `seen: true` and doesn\'t end the wait); the rest come once per `since`. `counts` (left out when all zero): `open`, `decidedUnacknowledged`, `waitingOnYou`. `ready: false` means ' +
+          'it timed out (any `items` are notes you had already): call again with `since` = `checkedAt`. Holds your session while it waits (default 300s, max 3600; ' +
           '0 for a quick check). `format: "full"`: the older shape.',
         inputSchema: {
           ...waitInput,
+          session: s.waitSession
+            .optional()
+            .describe(
+              'With your group: a name for this agent session (your Remote Control link, or an id you keep for the session). ' +
+                'It shows people that you\'re listening. Without it, the session is `wait:<your key name>`.',
+            ),
           wait_seconds: z.number().int().min(0).max(3600).optional(),
           format: z.enum(['digest', 'full']).optional().describe('Default `digest`. `full` is kept for older agents.'),
         },
       },
-      async ({ group_id, group, lane_ids, ids, wait_seconds, since, ack, format, project }, extra) => {
+      async ({ group_id, group, lane_ids, ids, wait_seconds, since, ack, format, session, project }, extra) => {
         try {
           const scope = {
             ...waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project),
             mode: format ?? 'digest',
           };
-          // Only the overseer acknowledges what's meant for it.
-          if (ack !== undefined && scope.groupId && who.role === 'agent') store.ackGroupMessages(scope.groupId, ack);
+          // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+          if (ack !== undefined) requireWriter(who, 'acknowledge group notes');
+          const acked = ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, ack, ackerOf(who)) : undefined;
           const timeout = wait_seconds ?? 300;
+          // The overseer's session counts as connected while this waits, and checks in even when it returns at once.
+          const release = presenceForWait(store, who, scope.groupId, session);
           const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
             store.waitForDecisions(scope, timeout * 1000, signal),
-          );
+          ).finally(release);
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
           const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
+          // Only what reaches the caller counts as handed over: not a call it cancelled.
+          if (!extra.signal.aborted) markNotesDelivered(store, value, who, timeout ? visible : undefined);
           const result = pub.wait(value, timeout ? visible : undefined);
-          return json(format === 'full' ? briefWait(result) : digestWait(result, a.projects.length > 1));
+          return json({ ...(format === 'full' ? briefWait(result) : digestWait(result, a.projects.length > 1)), ...(acked !== undefined ? { acked } : {}) });
         } catch (err) {
           return fail(err);
         }
@@ -569,18 +595,20 @@ function buildServer(
       {
         description:
           'Everything in scope that involves you, without waiting: `decided`, `replies`, `open`, your group\'s ' +
-          'unacknowledged `groupMessages` (pass the last id handled as `ack`), and with `since`, what was withdrawn or removed since.',
+          'unacknowledged `groupMessages` (pass the last id handled as `ack`: `since` doesn\'t clear them), and with `since`, what was withdrawn or removed since.',
         inputSchema: waitInput,
       },
       async ({ group_id, group, lane_ids, ids, since, ack, project }) => {
         try {
           const scope = waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project);
-          // Only the overseer acknowledges what's meant for it.
-          if (ack !== undefined && scope.groupId && who.role === 'agent') store.ackGroupMessages(scope.groupId, ack);
+          // Only the overseer acknowledges what's meant for it; anyone else is refused, not ignored.
+          if (ack !== undefined) requireWriter(who, 'acknowledge group notes');
+          const acked = ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, ack, ackerOf(who)) : undefined;
           // Digest rules (notes since `since` included), the full shape.
           const value = store.decisionsFor(scope);
+          markNotesDelivered(store, value, who);
           const { ready: _ready, ...all } = briefWait(pub.wait(value));
-          return json(all);
+          return json({ ...all, ...(acked !== undefined ? { acked } : {}) });
         } catch (err) {
           return fail(err);
         }
@@ -588,8 +616,8 @@ function buildServer(
     );
   }
 
-  // People's own Claude sessions can export; agents don't need it in every session's tool list.
-  if (who.role === 'human') {
+  // People's own Claude sessions and observer keys can export; agents don't need it in every session's tool list.
+  if (who.role !== 'agent') {
     server.registerTool(
       'export_data',
       {
@@ -846,59 +874,105 @@ function buildServer(
       },
     );
 
-    server.registerTool(
-      'record_requirement',
-      {
-        description:
-          'Record one product decision, scoped to where it applies: the products it concerns, the whole project, or every ' +
-          'project. ' +
-          (features.decisions
-            ? 'Cite `source_escalation` alone if it was answered on the dashboard; otherwise say who decided (`decided_by`), ' +
-              'plus `source_escalation` when it answered an escalation in your session. '
-            : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
-          'The same requirement from the same escalation returns the first (`duplicate: true`). ' +
-          '`similar` lists ones that read alike (supersede_requirement replaces one). ' +
-          'A locked product refuses new requirements from agents.' +
-          (approvesRequirements(who) ? '' : ' What you record is `pending` until a person approves it, whatever its scope.'),
-        inputSchema: { ...requirementFields, ...PROJECT_WRITE },
-      },
-      async (args) => {
-        try {
-          return json(
-            pubRecord(a, store.recordRequirement(toInput(args), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who))),
-          );
-        } catch (err) {
-          return fail(err);
-        }
-      },
-    );
+    // Observer keys only read.
+    if (isWriter(who)) {
+      server.registerTool(
+        'record_requirement',
+        {
+          description:
+            'Record one product decision, scoped to where it applies: the products it concerns, the whole project, or every ' +
+            'project. ' +
+            (features.decisions
+              ? 'Cite `source_escalation` alone if it was answered on the dashboard; otherwise say who decided (`decided_by`), ' +
+                'plus `source_escalation` when it answered an escalation in your session. '
+              : 'Say who decided (`decided_by`), plus `source_escalation` when it answered an escalation. ') +
+            'The same requirement from the same escalation returns the first (`duplicate: true`). ' +
+            '`similar` lists ones that read alike (supersede_requirement replaces one). ' +
+            'A locked product refuses new requirements from agents.' +
+            (approvesRequirements(who) ? '' : ' What you record is `pending` until a person approves it, whatever its scope.'),
+          inputSchema: { ...requirementFields, ...PROJECT_WRITE },
+        },
+        async (args) => {
+          try {
+            return json(
+              pubRecord(a, store.recordRequirement(toInput(args), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who))),
+            );
+          } catch (err) {
+            return fail(err);
+          }
+        },
+      );
 
+      server.registerTool(
+        'supersede_requirement',
+        {
+          description:
+            'The owner changed a decision: record the new one and mark the old one superseded (kept for history). ' +
+            'Fields as in record_requirement; scope defaults to the old one\'s. Refused for a requirement in a locked product.' +
+            (approvesRequirements(who)
+              ? ''
+              : ' The new one is `pending`; the old one stays in force, its `supersededBy` naming the replacement, until a person approves it.'),
+          inputSchema: { id: z.string().describe(REQ_ID_HELP), ...supersedeFields, ...PROJECT_WRITE },
+        },
+        async ({ id, ...args }) => {
+          try {
+            const current = visibleRequirement(id);
+            return json(
+              pubRecord(
+                a,
+                store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who)),
+              ),
+            );
+          } catch (err) {
+            return fail(err);
+          }
+        },
+      );
+    }
+  }
+
+  /** A group's conversation: for agents, and observer keys. */
+  const registerReadConversation = () => {
     server.registerTool(
-      'supersede_requirement',
+      'read_conversation',
       {
         description:
-          'The owner changed a decision: record the new one and mark the old one superseded (kept for history). ' +
-          'Fields as in record_requirement; scope defaults to the old one\'s. Refused for a requirement in a locked product.' +
-          (approvesRequirements(who)
-            ? ''
-            : ' The new one is `pending`; the old one stays in force, its `supersededBy` naming the replacement, until a person approves it.'),
-        inputSchema: { id: z.string().describe(REQ_ID_HELP), ...supersedeFields, ...PROJECT_WRITE },
+          'Your group\'s conversation, newest first (50 a time): messages written to the group, and its escalations ' +
+          '(`type: "escalation"`, each where its thread starts; get_escalation has the thread). `next`: pass it as `before` for older ones.',
+        inputSchema: {
+          group_id: s.groupId,
+          before: z.string().max(80).optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+          ...PROJECT,
+        },
+        annotations: { readOnlyHint: true },
       },
-      async ({ id, ...args }) => {
+      async ({ group_id, before, limit, project }) => {
         try {
-          const current = visibleRequirement(id);
-          return json(
-            pubRecord(
-              a,
-              store.supersedeRequirement(current.id, toInput(args, current), who.name, who.role === 'human', ownerOf(who), approvesRequirements(who)),
+          const page = store.groupConversation(q(a.pick(project, { group: group_id }), group_id), { before, limit });
+          return json({
+            items: page.items.map((i) =>
+              i.type === 'message'
+                ? compact({
+                    type: i.type,
+                    id: i.id,
+                    from: i.from,
+                    by: i.author,
+                    body: i.body,
+                    at: i.at,
+                    escalation: i.escalationId ?? undefined,
+                    attachments: i.attachments.length ? i.attachments : undefined,
+                  })
+                : compact({ type: i.type, id: i.id, code: i.ref, question: i.question, state: i.state, decision: i.decision ?? undefined, at: i.at }),
             ),
-          );
+            next: page.next,
+          });
         } catch (err) {
           return fail(err);
         }
       },
     );
-  }
+  };
 
   if (who.role === 'agent') {
     server.registerTool(
@@ -1116,45 +1190,7 @@ function buildServer(
       },
     );
 
-    server.registerTool(
-      'read_conversation',
-      {
-        description:
-          'Your group\'s conversation, newest first (50 a time): messages written to the group, and its escalations ' +
-          '(`type: "escalation"`, each where its thread starts; get_escalation has the thread). `next`: pass it as `before` for older ones.',
-        inputSchema: {
-          group_id: s.groupId,
-          before: z.string().max(80).optional(),
-          limit: z.number().int().min(1).max(100).optional(),
-          ...PROJECT,
-        },
-        annotations: { readOnlyHint: true },
-      },
-      async ({ group_id, before, limit, project }) => {
-        try {
-          const page = store.groupConversation(q(a.pick(project, { group: group_id }), group_id), { before, limit });
-          return json({
-            items: page.items.map((i) =>
-              i.type === 'message'
-                ? compact({
-                    type: i.type,
-                    id: i.id,
-                    from: i.from,
-                    by: i.author,
-                    body: i.body,
-                    at: i.at,
-                    escalation: i.escalationId ?? undefined,
-                    attachments: i.attachments.length ? i.attachments : undefined,
-                  })
-                : compact({ type: i.type, id: i.id, code: i.ref, question: i.question, state: i.state, decision: i.decision ?? undefined, at: i.at }),
-            ),
-            next: page.next,
-          });
-        } catch (err) {
-          return fail(err);
-        }
-      },
-    );
+    registerReadConversation();
 
     server.registerTool(
       'post_to_group',
@@ -1204,6 +1240,25 @@ function buildServer(
     );
 
     server.registerTool(
+      'request_epic_reopen',
+      {
+        description:
+          'Ask a person to reopen a closed epic (its work came back); they approve or decline in the app, and your group ' +
+          'wait reports it (`reopen_approved` / `reopen_declined`).',
+        inputSchema: { epic: EPIC, reason: s.reopenRequest.shape.reason, ...PROJECT_WRITE },
+      },
+      async ({ epic, reason, project }) => {
+        try {
+          const e = a.epic(epic, project);
+          if (!e) throw new NotFoundError(`Epic "${epic}" not found (list_epics shows them)`);
+          return json(briefEpic(pub.epic(store.requestEpicReopen(e.id, reason, who.name))));
+        } catch (err) {
+          return fail(err);
+        }
+      },
+    );
+
+    server.registerTool(
       'notify_owner',
       {
         description:
@@ -1237,12 +1292,16 @@ function buildServer(
           '`lane_id` raises it on the epic; `group_id` alone raises it on your group (direction, scope, what comes next): ' +
           'it blocks the group, not a lane. ' +
           'Returns its code (`ref`, e.g. "967A"). The same open question again returns the first (`duplicate: true`); ' +
-          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give (attachments are added).',
+          'an open FYI asked again without `blocking: false` becomes blocking (`upgraded: true`), taking the fields you give (attachments are added). ' +
+          '"The same" ignores spacing, case and closing punctuation; asked as blocking from a lane, an FYI of yours on its group\'s epic counts too and moves to the lane\'s ticket. ' +
+          'To make an FYI blocking whatever its words, pass its code as `upgrade` (question optional: given, it replaces the FYI\'s; leave out lane_id, epic, blocking and positions). ' +
+          'A new blocking question lists the open FYIs in its group you can upgrade as `openFyis`: upgrade or dismiss any it repeats.',
         inputSchema: {
           lane_id: s.laneId.optional().describe('The lane it\'s raised in; leave out to raise it on `epic` or your group.'),
           epic: s.epicName.optional().describe('The epic it\'s for: its ref.'),
           group_id: s.groupId.optional().describe('Raise it on your group itself, with no lane or epic.'),
-          question: s.escalationFields.question,
+          question: s.escalationFields.question.optional().describe('Required, unless `upgrade` names the FYI.'),
+          upgrade: z.string().optional().describe('An open FYI\'s code ("967A"): make it blocking instead of raising a new question.'),
           context: s.escalationFields.context,
           recommendation: s.escalationFields.recommendation,
           cost: s.escalationFields.cost,
@@ -1262,8 +1321,23 @@ function buildServer(
           ...PROJECT_WRITE,
         },
       },
-      async ({ lane_id, group_id, accept_means, reject_means, allow_reject, project, ...rest }) => {
+      async ({ lane_id, group_id, accept_means, reject_means, allow_reject, project, upgrade, ...rest }) => {
         try {
+          if (upgrade !== undefined) {
+            const { epic, blocking, positions, ...fields } = rest;
+            // Where it's raised stays as it was, and it becomes blocking: say so rather than drop them.
+            if (lane_id !== undefined || group_id !== undefined || epic !== undefined || blocking !== undefined || positions !== undefined) {
+              throw new ValidationError('`upgrade` makes that FYI blocking where it is: leave out lane_id, group_id, epic, blocking and positions (add_position records one)');
+            }
+            const { upgrade: code, ...input } = s.escalationUpgrade.parse({
+              upgrade,
+              acceptMeans: accept_means,
+              rejectMeans: reject_means,
+              allowReject: allow_reject,
+              ...fields,
+            });
+            return json(brief(pub.escalation(upgradeFor(store, a, code, input, project, who))));
+          }
           const { epic, group, ...input } = s.escalationInput.parse({
             laneId: lane_id,
             group: group_id,
@@ -1386,6 +1460,8 @@ function buildServer(
       },
     );
   }
+
+  if (who.role === 'observer') registerReadConversation();
 
   if (who.role === 'human') {
   if (features.decisions) {

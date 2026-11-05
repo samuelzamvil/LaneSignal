@@ -62,7 +62,7 @@ The server must be reachable over **HTTPS**; see [Reverse proxy](reverse-proxy.m
 
 ## Push notifications
 
-Push goes out for **new escalations** and overseers' milestone **notices**, unless `LANESIGNAL_NOTIFY_ON` says otherwise (it can also add `blocked` or `completed`). Tapping a notification opens that escalation, or the lane for a notice. A notice with files shows 📎 and the file's name (or the count) under its text. Pick one backend, or use both.
+Push goes out for **new escalations** and overseers' milestone **notices**, unless `LANESIGNAL_NOTIFY_ON` says otherwise (it can also add `blocked`, `completed` or `disconnected`). Tapping an escalation's notification opens its group's conversation with that escalation's thread in view (a **Decide** button on it when it waits on you); a notice, or a `disconnected` alert, opens the conversation too. A notice with files shows 📎 and the file's name (or the count) under its text. Pick one backend, or use both.
 
 ### ntfy (simplest, no Google account)
 

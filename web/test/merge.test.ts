@@ -32,7 +32,7 @@ test('removing a lane drops it and its escalations', () => {
 });
 
 test('group events add and remove groups', () => {
-  const group = { id: 'g', project: 'p', name: 'G', ticket: null, ticketUrl: null, links: [], products: [], agent: null, overseer: null, overseerSince: null, lastMessageId: null, lastAgentMessageId: null, statusLine: null, code: 'g', openEscalations: 0, blockingEscalations: 0, createdAt: 'x', updatedAt: 'x' };
+  const group = { id: 'g', project: 'p', name: 'G', ticket: null, ticketUrl: null, links: [], products: [], agent: null, overseer: null, overseerSince: null, lastMessageId: null, lastAgentMessageId: null, statusLine: null, code: 'g', openEscalations: 0, blockingEscalations: 0, overseerReadId: 0, createdAt: 'x', updatedAt: 'x' };
   let s = applyEvent(empty(), { type: 'group', group });
   assert.ok(s.groups.has('p/g'));
   s = applyEvent(s, { type: 'group_deleted', id: 'g', project: 'p' });
@@ -85,4 +85,12 @@ test("removing a lane keeps the questions raised on it for its epic", () => {
   let s = applyEvent(empty(), { type: 'escalation', escalation: escalation({ epicId: 7, epicName: 'Checkout revamp' }) });
   s = applyEvent(s, { type: 'lane_deleted', id: 'l1', project: 'p' });
   assert.equal(s.escalations.has('e1'), true);
+});
+
+test('a closed epic an overseer asked to reopen stays until a person decides', () => {
+  const request = { reason: 'Auditors came back', by: 'overseer', at: '2026-10-01T00:00:03Z' };
+  let s = applyEvent(empty(), { type: 'epic', epic: epic({ state: 'closed', reopenRequest: request, updatedAt: '2026-10-01T00:00:03Z' }) });
+  assert.equal(s.epics.get('7')?.reopenRequest?.reason, 'Auditors came back');
+  s = applyEvent(s, { type: 'epic', epic: epic({ state: 'closed', updatedAt: '2026-10-01T00:00:04Z' }) });
+  assert.equal(s.epics.has('7'), false, 'declined: it leaves');
 });

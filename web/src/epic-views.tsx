@@ -2,10 +2,12 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import type { Client, Epic, Escalation, Group, LaneEvent } from './api.ts';
 import { FOLD, Links, SheetSection, TicketLink, useStored, type Fold } from './components.tsx';
 import { absolute, ago } from './format.ts';
+import { PRESENCE_META, presenceTitle, sessionHref, shownPresence } from './presence.ts';
 import { hasNewMessage } from './seen.ts';
 import { toast } from './toast.tsx';
+import { ReopenControls } from './reopen.tsx';
 
-/** Open epics (and ones waiting for close approval), by number. */
+/** Open epics (and ones waiting for close approval, or closed ones waiting for reopen approval), by number. */
 export const EpicsContext = createContext<Map<string, Epic>>(new Map());
 
 /** An epic's sheet. */
@@ -24,6 +26,44 @@ export const laneKeyOf = (e: Pick<Escalation, 'project' | 'laneId' | 'epicId'>) 
 
 /** The overseer's Remote Control session, from its group's links. */
 const sessionLink = (group: Group | undefined) => group?.links.find((l) => l.kind === 'session');
+
+/** Whether the group's overseer is connected: nothing without presence (answering in LaneSignal off). */
+export function PresenceChip({ group }: { group: Group | undefined }) {
+  const presence = shownPresence(group);
+  if (!presence) return null;
+  const meta = PRESENCE_META[presence.state];
+  return (
+    <span className={`presence-chip presence-${presence.state}`} title={presenceTitle(presence, absolute)}>
+      {meta.icon} {meta.label}
+    </span>
+  );
+}
+
+/** The overseer's sessions, each a link when its id is one (a Remote Control URL). */
+export function PresenceSessions({ group }: { group: Group | undefined }) {
+  const sessions = group?.presence?.sessions ?? [];
+  if (!sessions.length) return null;
+  return (
+    <span className="presence-sessions">
+      {sessions.map((s, i) => {
+        const href = sessionHref(s.id);
+        const label = `${PRESENCE_META[s.state].icon} ${s.id}`;
+        return (
+          <span key={`${i}-${s.id}`} title={`${s.transport}: ${PRESENCE_META[s.state].label}`}>
+            {i > 0 && ' · '}
+            {href ? (
+              <a href={href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                {label}
+              </a>
+            ) : (
+              label
+            )}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
 
 /** The epic a question belongs to, linking to its sheet. */
 export function EpicChip({ esc }: { esc: Pick<Escalation, 'project' | 'epicId' | 'epicName'> }) {
@@ -110,6 +150,8 @@ export function GroupHeader({
   lanes,
   waiting,
   blocking,
+  fyi = 0,
+  latestEscalation = null,
   showTicket,
   onChat,
 }: {
@@ -121,6 +163,10 @@ export function GroupHeader({
   waiting: number;
   /** The group's own questions that block it, waiting on a person. */
   blocking: number;
+  /** Open FYI questions raised in the group, waiting on a person (they block nothing). */
+  fyi?: number;
+  /** When the newest escalation raised in the group was: the chat button marks it until the conversation is opened. */
+  latestEscalation?: string | null;
   /** The group's own ticket from before epics: not shown once its epics carry theirs. */
   showTicket: boolean;
   /** Opens the group's conversation. */
@@ -136,7 +182,9 @@ export function GroupHeader({
         <h3>{onChat ? <TitleButton name={name} onOpen={onChat} /> : name}</h3>
         <span className="count">{lanes}</span>
         {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
+        {fyi > 0 && <span className="fyi-count">ⓘ {fyi} FYI</span>}
         {blocked && <span className="pill tone-danger">Waiting on you</span>}
+        <PresenceChip group={group} />
         {showTicket && group && <TicketLink lane={group} />}
         {session && (
           <a className="session-link" href={session.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
@@ -158,13 +206,13 @@ export function GroupHeader({
             e.stopPropagation();
             onChat();
           }}
-          aria-label={`Chat with ${name}'s overseer${hasNewMessage(group) ? ' (new messages)' : ''}`}
+          aria-label={`Chat with ${name}'s overseer${hasNewMessage(group, latestEscalation) ? ' (new messages)' : ''}`}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" />
           </svg>
           Chat
-          {hasNewMessage(group) && <span className="chat-new" aria-hidden="true" />}
+          {hasNewMessage(group, latestEscalation) && <span className="chat-new" aria-hidden="true" />}
         </button>
       )}
     </header>
@@ -332,6 +380,15 @@ export function EpicDetail({
             </dl>
             {epic.statusLine && <p className="status-line full">{epic.statusLine}</p>}
             <CloseRequest epic={epic} client={client} canApprove={canApprove} />
+            {group && (
+              <ReopenControls
+                name={`epic ${epic.name}`}
+                request={epic.reopenRequest}
+                closed={closed}
+                canApprove={canApprove}
+                decide={(approve) => client.decideEpicReopen(epic.id, approve)}
+              />
+            )}
             <Links links={epic.links} />
             {group && sessionLink(group) && <Links links={[sessionLink(group)!]} />}
 

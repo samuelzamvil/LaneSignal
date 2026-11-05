@@ -70,3 +70,9 @@ test('a group with no epics holds its lanes directly in the box', () => {
   assert.deepEqual(layout.epics, []);
   assert.equal(layout.noEpic.length, 1);
 });
+
+test('a closed epic waiting for a reopen decision gets no card of its own', () => {
+  const waiting = epic({ id: 9, state: 'closed', reopenRequest: { reason: 'x', by: 'o', at: '2026-10-01T00:00:00Z' } });
+  assert.deepEqual(epicsOnScreen('p/g1', [waiting]).map((e) => e.id), []);
+  assert.deepEqual(epicsOnScreen('p/g1', [epic({ id: 7 }), waiting]).map((e) => e.id), [7]);
+});

@@ -16,6 +16,7 @@ import {
   type Message,
   type Notice,
   type Position,
+  type PresenceChange,
   type Project,
   type ProjectRole,
   type Product,
@@ -33,8 +34,10 @@ import {
   type Epic,
   type EpicState,
   type Ticket,
+  type ReopenRequest,
   type TicketState,
 } from './types.ts';
+import { Presence } from './presence.ts';
 import { ticketRefs, type TicketRefs } from './tickets.ts';
 
 export class NotFoundError extends Error {}
@@ -132,8 +135,28 @@ export const projectOf = (qualified: string) => {
   return qualified.slice(0, i);
 };
 
-/** How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker. */
-const WAIT_GRACE_MS = 30_000;
+/**
+ * How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker: the presence
+ * quiet window (LANESIGNAL_PRESENCE_QUIET_SECONDS).
+ */
+const WAIT_GRACE_MS = 60_000;
+/** How long an overseer's session stays reconnecting before it's disconnected (LANESIGNAL_PRESENCE_OFFLINE_MINUTES). */
+const PRESENCE_OFFLINE_MS = 10 * 60_000;
+
+/**
+ * The same question in other spacing, case or closing punctuation ("Ship it?" and "ship  it"). Only
+ * what ends it is ignored: punctuation inside it ("a > b", "foo-bar", "C++") can change what it asks.
+ */
+export const sameQuestion = (a: string, b: string) => {
+  const norm = (t: string) =>
+    t
+      .normalize('NFKC')
+      .toLowerCase()
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .replace(/[\s?!.…。？！]+$/u, '');
+  return norm(a) === norm(b);
+};
 
 /** What `waitForDecisions` watches: explicit escalations, whole lanes, and/or a group's lanes. */
 /** An escalation as the store holds it: always the lane it was raised in (an epic's internal lane for one raised on the epic). */
@@ -149,8 +172,21 @@ export interface WaitScope {
    * a loop passes the previous result's `checkedAt` so nothing slips between calls.
    */
   since?: string;
-  /** Who is waiting: their own withdrawals aren't reported back to them. */
-  viewer?: string;
+  /**
+   * The group notes the caller already had: unacknowledged ones written before this come back marked
+   * `repeat` and don't end a wait on their own. Left out, `since` (the caller's own); null, none (a
+   * wait without a `since` of its own hands over every note as new).
+   */
+  notesSince?: string | null;
+  /** Who is waiting: their own withdrawals aren't reported back to them. Null: nobody's are left out (observer keys). */
+  viewer?: string | null;
+  /** False: the wait doesn't mark its lanes as having a waiting agent (observer keys). Default true. */
+  holdsWaiting?: boolean;
+  /**
+   * The waiting key ("user:<account>:<key name>" or "token:<name>"): group notes count as ones it had
+   * only when they were handed to this key.
+   */
+  viewerKey?: string;
   /**
    * `digest`: ready only when there's something to handle. `full`: the older behaviour, ready at once
    * when nothing is open. Left out: get_updates.
@@ -179,11 +215,14 @@ export interface WaitResult {
   removedLanes: { laneId: string; removedBy: string | null; at: string }[];
   /** Digest only: tickets from lanes in scope that a lane outside it took since `since` (another overseer, usually). */
   movedTickets: { ticket: string; ticketId: number; laneId: string; by: string | null; at: string }[];
+  /** Digest only, on a group's wait: the group's epics a person reopened, or declined to reopen, since `since`. */
+  reopenDecisions: { group: string; epic: string; approved: boolean; by: string | null; at: string }[];
   /**
    * A group's wait: people's messages written to the group that its overseer hasn't acknowledged,
-   * oldest first. They come back on every wait until acknowledged (`ack` with the last id handled).
+   * oldest first. They come back on every wait until acknowledged (`ack` with the last id handled);
+   * `repeat` marks one written before the caller's `since`, which it had already.
    */
-  groupMessages: { group: string; messages: GroupMessage[] }[];
+  groupMessages: { group: string; messages: (GroupMessage & { repeat?: true })[] }[];
   /** Server time of this result; pass it as `since` on the next wait. */
   checkedAt: string;
 }
@@ -317,13 +356,17 @@ export interface StoreOptions {
   ticketRefs?: TicketRefs;
   eventRetention?: number;
   now?: () => Date;
-  /** How long a lane keeps showing "agent waiting" after a wait ends (default 30s). */
+  /** How long a lane keeps showing "agent waiting" after a wait ends, and an overseer's session stays listening (default 60s). */
   waitGraceMs?: number;
+  /** How long after its last connection ended an overseer's session is disconnected (default 10 minutes). */
+  presenceOfflineMs?: number;
+  /** Answering in LaneSignal (default on): off, groups carry no presence. */
+  decisions?: boolean;
   /** Most files on one escalation (default 5). */
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 26;
+const SCHEMA_VERSION = 29;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -335,6 +378,10 @@ const UNREFERENCED_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_PENDING_UPLOADS = 20;
 
 type Row = Record<string, unknown>;
+
+/** A reopen request waiting on an epic row, or none. */
+const reopenRequestOf = (r: Row): ReopenRequest | null =>
+  r.reopen_requested_at ? { reason: r.reopen_reason as string, by: r.reopen_requested_by as string, at: r.reopen_requested_at as string } : null;
 
 /** What a ticket switch changed besides the lane itself, for events once the transaction commits. */
 interface Touched {
@@ -370,6 +417,9 @@ export class Store {
   private graceTimers = new Set<ReturnType<typeof setTimeout>>();
   private waitGraceMs: number;
   private attachmentsPerItem: number;
+  /** Which of each group's overseer sessions are connected. */
+  readonly presence: Presence;
+  private decisions: boolean;
 
   constructor(opts: StoreOptions) {
     this.db = new DatabaseSync(opts.path);
@@ -383,6 +433,13 @@ export class Store {
     };
     this.waitGraceMs = opts.waitGraceMs ?? WAIT_GRACE_MS;
     this.attachmentsPerItem = opts.attachmentsPerItem ?? 5;
+    this.decisions = opts.decisions ?? true;
+    this.presence = new Presence({
+      quietMs: this.waitGraceMs,
+      offlineMs: opts.presenceOfflineMs ?? PRESENCE_OFFLINE_MS,
+      now: () => this.now(),
+      onChange: (groupId, change) => this.emitPresence(groupId, change),
+    });
     this.events.setMaxListeners(0);
     this.migrate();
     // Each group's latest messages, read with every group: added after v25, so made here for databases already there.
@@ -423,6 +480,7 @@ export class Store {
 
   close() {
     for (const t of this.graceTimers) clearTimeout(t);
+    this.presence.close();
     this.db.close();
   }
 
@@ -660,6 +718,9 @@ export class Store {
       if (version < 24) this.migrateV24();
       if (version < 25) this.migrateV25();
       if (version < 26) this.migrateV26();
+      if (version < 27) this.migrateV27();
+      if (version < 28) this.migrateV28();
+      if (version < 29) this.migrateV29();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
@@ -667,12 +728,12 @@ export class Store {
   }
 
   /**
-   * v26: a group holds questions of its own, so it no longer needs an epic standing in for it. Each
+   * v29: a group holds questions of its own, so it no longer needs an epic standing in for it. Each
    * group gets the code its questions start with and an internal lane; each stand-in epic's questions
    * become its group's (codes kept), its status line the group's, its board plain messages in the
    * group's conversation, and the stand-in goes.
    */
-  private migrateV26() {
+  private migrateV29() {
     if (!this.hasColumn('groups', 'code_ref')) this.db.exec('ALTER TABLE groups ADD COLUMN code_ref TEXT');
     if (!this.hasColumn('groups', 'status_line')) this.db.exec('ALTER TABLE groups ADD COLUMN status_line TEXT');
     const at = this.now().toISOString();
@@ -701,6 +762,37 @@ export class Store {
       this.db.prepare('DELETE FROM epics WHERE num = ?').run(num);
     }
     for (const g of this.db.prepare('SELECT id FROM groups').all() as Row[]) this.ensureGroupHome(g.id as string, at);
+  }
+
+  /**
+   * v27: how far each key was handed each group's messages (its waits and get_updates), so a note
+   * counts as one a caller had only when it was handed to that caller. Replaces v26's single
+   * groups.overseer_delivered_id, which is no longer read.
+   */
+  private migrateV27() {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS group_note_deliveries (
+      group_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      up_to INTEGER NOT NULL,
+      PRIMARY KEY (group_id, key)
+    )`);
+  }
+
+  /**
+   * v28: an overseer asks to reopen a closed epic, and a person decides. The request waits in
+   * reopen_*; the decision stays (reopen_decision, by, at) so the overseer's wait hears of it.
+   */
+  private migrateV28() {
+    for (const column of ['reopen_reason', 'reopen_requested_by', 'reopen_requested_at', 'reopen_decision', 'reopen_decided_by', 'reopen_decided_at']) {
+      if (!this.hasColumn('epics', column)) this.db.exec(`ALTER TABLE epics ADD COLUMN ${column} TEXT`);
+    }
+  }
+
+  /** v26: how far the group's overseer was handed the group's messages (no longer read since v27). */
+  private migrateV26() {
+    if (!this.hasColumn('groups', 'overseer_delivered_id')) {
+      this.db.exec('ALTER TABLE groups ADD COLUMN overseer_delivered_id INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   /**
@@ -1405,9 +1497,49 @@ export class Store {
           .get(r.id as string) as Row;
         return { openEscalations: Number(c.open ?? 0), blockingEscalations: Number(c.blocking ?? 0) };
       })(),
+      overseerReadId: Number(r.overseer_read_id ?? 0),
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
+      ...(this.decisions ? { presence: this.presence.of(r.id as string) } : {}),
     };
+  }
+
+  /**
+   * The group's overseer key, as stored ("user:<account>:<key name>" or "token:<name>"): null when it has none
+   * (made by publishing a lane, or from before overseers), undefined when there's no such group.
+   */
+  groupOwner(id: string): string | null | undefined {
+    const r = this.db.prepare('SELECT owner FROM groups WHERE id = ? AND archived_at IS NULL').get(id) as Row | undefined;
+    return r ? ((r.owner as string | null) ?? null) : undefined;
+  }
+
+  /**
+   * The group's questions waiting on a person: open, blocking, and the owner's turn. The set the group's
+   * wait covers and the Lanes page counts as "need you": questions on the tickets the group holds or parked
+   * (wherever they were raised: a ticket moves between groups with its questions), on its epics, and the
+   * older ones on its live lanes that have neither. FYIs block nothing, so they don't count.
+   */
+  blockingQuestionsOf(groupId: string): number {
+    const r = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM escalations WHERE state = 'open' AND blocking = 1 AND turn = 'owner'
+           AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?)
+             OR epic_id IN (SELECT num FROM epics WHERE group_id = ?)
+             OR (ticket_id IS NULL AND epic_id IS NULL
+               AND lane_id IN (SELECT id FROM lanes WHERE group_id = ? AND archived_at IS NULL)))`,
+      )
+      .get(groupId, groupId, groupId) as Row;
+    return Number(r.n ?? 0);
+  }
+
+  /** A group's presence changed: sent from timers too, so it tolerates a closing database. */
+  private emitPresence(groupId: string, change: PresenceChange | null) {
+    try {
+      const group = this.getGroup(groupId);
+      if (group) this.emit({ type: 'group', group, ...(change ? { presence: change } : {}) });
+    } catch {
+      // The database is closing.
+    }
   }
 
   /** Who has overseen the group, latest first: each change of overseer, when it happened, and who it replaced. */
@@ -1521,7 +1653,8 @@ export class Store {
   /** `owner`: the registering key ("user:<account>:<key name>"), recorded as the group's overseer. */
   upsertGroup(id: string, patch: GroupPatch, actor: string | null, owner?: string): Group {
     const project = projectOf(id);
-    const { group, restored } = this.tx(() => {
+    const ownerBefore = owner ? this.groupOwner(id) : undefined;
+    const { restored } = this.tx(() => {
       // An overseer says what it works on when it registers. After that the choice is a person's,
       // and naming others changes nothing, so it can't cost the rest of this update.
       const takes = !!patch.products && !this.groupProductIds(id, project).length;
@@ -1532,8 +1665,11 @@ export class Store {
         this.writeGroupProducts(id, patch.products!);
         this.db.prepare('UPDATE groups SET updated_at = ?, agent = COALESCE(?, agent) WHERE id = ?').run(at, actor, id);
       }
-      return { group: this.getGroup(id)!, restored };
+      return { restored };
     });
+    // A takeover ends the previous overseer's sessions, once the new owner is stored.
+    if (owner && ownerBefore !== owner) this.presence.endOwner(id, owner);
+    const group = this.getGroup(id)!;
     this.emit({ type: 'group', group });
     this.emitGroupEpics(id);
     if (restored) this.emitGroupLanes(id);
@@ -1578,6 +1714,7 @@ export class Store {
     });
     for (const laneId of removed) touched.lanes.delete(laneId);
     this.emitTouched(touched);
+    this.presence.remove(id);
     this.emit({ type: 'group_deleted', id, project: projectOf(id) });
     for (const laneId of removed) this.emit({ type: 'lane_deleted', id: laneId, project: projectOf(laneId) });
   }
@@ -2091,6 +2228,7 @@ export class Store {
       state: r.state as EpicState,
       closeReason: (r.close_reason as string | null) ?? null,
       closeRequestedBy: (r.close_requested_by as string | null) ?? null,
+      reopenRequest: reopenRequestOf(r),
       openEscalations: Number(counts.open ?? 0),
       blockingEscalations: Number(counts.blocking ?? 0),
       createdAt: r.created_at as string,
@@ -2111,9 +2249,12 @@ export class Store {
   }
 
   /** Epics in some projects (or a group): open and close-requested ones by default, in groups that aren't removed. */
-  listEpics(filter: { projects?: string[]; groupId?: string; states?: EpicState[] } = {}): Epic[] {
+  listEpics(filter: { projects?: string[]; groupId?: string; states?: EpicState[]; reopenRequests?: boolean } = {}): Epic[] {
     const states = filter.states?.length ? filter.states : (['open', 'close_requested'] as EpicState[]);
-    const where = [`e.state IN (${states.map(() => '?').join(',')})`];
+    // `reopenRequests`: closed epics an overseer asked to reopen come too, for the people who decide (the app's snapshot).
+    const where = [
+      `(e.state IN (${states.map(() => '?').join(',')})${filter.reopenRequests ? " OR (e.state = 'closed' AND e.reopen_requested_at IS NOT NULL)" : ''})`,
+    ];
     const params: string[] = [...states];
     if (filter.groupId) {
       where.push('e.group_id = ?');
@@ -2249,6 +2390,54 @@ export class Store {
       this.db.prepare("UPDATE epics SET state = 'closed', closed_at = ?, updated_at = ? WHERE num = ?").run(at, at, num);
     });
     void by;
+    return this.emitEpic(num)!;
+  }
+
+  /**
+   * An overseer asks to reopen a closed epic; a person approves or declines. Asking again while one
+   * waits replaces its reason.
+   */
+  requestEpicReopen(num: number, reason: string, actor: string): Epic {
+    this.tx(() => {
+      const r = this.epicRow(num);
+      if (r.state !== 'closed') throw new ConflictError('This epic is open: only a closed epic is reopened');
+      if (!this.getGroup(r.group_id as string)) throw new ConflictError(`Group "${localId(r.group_id as string)}" was removed: register it again (update_group) first`);
+      const at = this.now().toISOString();
+      this.db
+        .prepare('UPDATE epics SET reopen_reason = ?, reopen_requested_by = ?, reopen_requested_at = ?, updated_at = ? WHERE num = ?')
+        .run(reason.trim(), actor, at, at, num);
+    });
+    return this.emitEpic(num)!;
+  }
+
+  /**
+   * A person's answer to a reopen request, or a person reopening a closed epic directly (`approve`
+   * with no request waiting).
+   */
+  decideEpicReopen(num: number, approve: boolean, by: string): Epic {
+    this.tx(() => {
+      const r = this.epicRow(num);
+      const waiting = r.reopen_requested_at != null;
+      if (!waiting && !approve) throw new ConflictError('Nobody has asked to reopen this epic');
+      if (r.state !== 'closed') throw new ConflictError('This epic is open already');
+      const at = this.now().toISOString();
+      const decide = (decision: 'approved' | 'declined') =>
+        this.db
+          .prepare(
+            `UPDATE epics SET reopen_reason = NULL, reopen_requested_by = NULL, reopen_requested_at = NULL,
+               reopen_decision = ?, reopen_decided_by = ?, reopen_decided_at = ?, updated_at = ? WHERE num = ?`,
+          )
+          .run(decision, by, at, at, num);
+      if (!approve) {
+        decide('declined');
+        return;
+      }
+      if (!this.getGroup(r.group_id as string)) throw new ConflictError(`Group "${localId(r.group_id as string)}" was removed: it has to be registered again first`);
+      this.db
+        .prepare("UPDATE epics SET state = 'open', closed_at = NULL, close_reason = NULL, close_requested_by = NULL WHERE num = ?")
+        .run(num);
+      decide('approved');
+    });
     return this.emitEpic(num)!;
   }
 
@@ -3225,7 +3414,7 @@ export class Store {
     input: EscalationInput,
     actor: string,
     owner: string | null = null,
-  ): Escalation & { duplicate?: boolean; upgraded?: boolean } {
+  ): Escalation & { duplicate?: boolean; upgraded?: boolean; openFyis?: string[] } {
     projectOf(input.laneId);
     // A typo would otherwise create a new lane outside the group, which the overseer's wait never sees.
     if (!this.laneExists(input.laneId)) {
@@ -3234,20 +3423,53 @@ export class Store {
       );
     }
     const home = this.homeOf(input.laneId, input.epic);
-    // The same question again (ignoring spacing and case) on the same ticket, epic or group is a retry.
-    const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
-    const where =
-      home.ticketId !== null ? 'ticket_id = ?' : home.epicId !== null ? 'epic_id = ?' : 'ticket_id IS NULL AND epic_id IS NULL AND group_id = ?';
+    // The group the question is raised in: its own, its epic's, or its lane's.
+    const groupOfCall =
+      home.groupId ??
+      (home.epicId !== null
+        ? ((this.db.prepare('SELECT group_id FROM epics WHERE num = ?').get(home.epicId) as Row | undefined)?.group_id as string | undefined)
+        : ((this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row | undefined)?.group_id as string | undefined));
+    // The same question again (ignoring spacing, case and closing punctuation) from the same raiser is a
+    // retry: on the same ticket, epic or group. Asked as blocking from a lane, an FYI of its group (or one
+    // of the group's epics) counts too (an agent moves between a lane and its group): it moves to the
+    // lane's ticket and blocks that lane. Never another lane's ticket. The same home is preferred.
+    const sameHome = (r: Row) =>
+      home.ticketId !== null
+        ? Number(r.ticket_id) === home.ticketId
+        : home.epicId !== null
+          ? Number(r.epic_id) === home.epicId
+          : r.ticket_id == null && r.epic_id == null && r.group_id === home.groupId;
+    const groupWide = home.ticketId !== null && input.blocking !== false && groupOfCall;
+    const homeWhere =
+      home.ticketId !== null ? 'ticket_id = ?' : home.epicId !== null ? 'epic_id = ?' : '(ticket_id IS NULL AND epic_id IS NULL AND group_id = ?)';
     const existing = (
       this.db
-        .prepare(`SELECT id, question FROM escalations WHERE state = 'open' AND ${where} AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`)
-        .all(home.ticketId ?? home.epicId ?? home.groupId!, owner ?? actor) as Row[]
-    ).find((r) => norm(r.question as string) === norm(input.question));
+        .prepare(
+          `SELECT id, question, ticket_id, epic_id, group_id, lane_id FROM escalations WHERE state = 'open'
+             AND (${homeWhere}
+               ${
+                 groupWide
+                   ? `OR (blocking = 0 AND (epic_id IN (SELECT num FROM epics WHERE group_id = ? AND state <> 'closed')
+                        OR (ticket_id IS NULL AND epic_id IS NULL AND group_id = ?)))`
+                   : ''
+               })
+             AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`,
+        )
+        .all(home.ticketId ?? home.epicId ?? home.groupId!, ...(groupWide ? [groupOfCall, groupOfCall] : []), owner ?? actor) as Row[]
+    )
+      .filter((r) => sameQuestion(r.question as string, input.question))
+      // A group's or epic's FYI moves only when it was raised on the group or epic itself or from this
+      // lane: one raised from another lane (an agent's key often serves several) stays that lane's business.
+      .filter((r) => sameHome(r) || Store.isInternalLane(r.lane_id as string) || r.lane_id === input.laneId)
+      .sort((a, b) => Number(sameHome(b)) - Number(sameHome(a)))[0];
     if (existing) {
       const id = existing.id as string;
-      // Raising an open FYI again as blocking (the default) makes it need the owner now (same code).
+      // Raising an open FYI again as blocking (the default) makes it need the owner now (same code),
+      // even during the agent's turn: it goes back to the owner.
       if (input.blocking !== false && !this.requireEscalation(id).blocking) {
-        return { ...this.makeBlocking(id, input, actor, owner), duplicate: true, upgraded: true };
+        // An FYI of the group or its epic, asked again from a lane: it's the lane's ticket's question now.
+        const moveTo = home.ticketId !== null && !sameHome(existing) ? { ticketId: home.ticketId, laneId: input.laneId } : undefined;
+        return { ...this.makeBlocking(id, input, actor, owner, false, moveTo), duplicate: true, upgraded: true };
       }
       if (this.requireEscalation(id).turn === 'agent') {
         throw new ConflictError(
@@ -3334,7 +3556,73 @@ export class Store {
     }
     this.emit({ type: 'escalation', escalation });
     if (lane) this.emit({ type: 'lane', lane, statusChanged: blocks });
+    // A new blocking question while FYIs are open in its group: name them, so a question raised
+    // again in other words can be upgraded (`upgrade`) or the FYI dismissed rather than left open twice.
+    if (escalation.blocking) {
+      const fyis = this.openFyisIn(groupOfCall ?? null, escalation.id, owner ?? actor, !!owner);
+      if (fyis.length) return { ...escalation, openFyis: fyis };
+    }
     return escalation;
+  }
+
+  /**
+   * Codes of the open FYI questions in the group now (on its tickets, wherever they were raised, its
+   * epics, or the group itself), oldest first, but `except`: those the caller can upgrade, all of them for the group's
+   * overseer, otherwise its own. `raiser` is its key (`byKey`) or, for a config token, its name.
+   */
+  private openFyisIn(groupId: string | null, except: string, raiser: string, byKey: boolean): string[] {
+    if (!groupId) return [];
+    // As requireRaiser decides: the group's overseer (while the group is live) may upgrade any of them.
+    const overseer =
+      byKey &&
+      (this.db.prepare('SELECT owner FROM groups WHERE id = ? AND archived_at IS NULL').get(groupId) as Row | undefined)?.owner === raiser;
+    // Older rows recorded the account alone ("user:<id>"): those are the same key's too.
+    const account = /^user:[^:]+/.exec(raiser)?.[0];
+    const mine = byKey ? `AND (raised_by_owner = ?${account ? ' OR raised_by_owner = ?' : ''})` : 'AND created_by = ?';
+    return (
+      this.db
+        .prepare(
+          `SELECT id FROM escalations WHERE state = 'open' AND blocking = 0 AND id <> ?
+             AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?) OR epic_id IN (SELECT num FROM epics WHERE group_id = ?)
+               OR (ticket_id IS NULL AND epic_id IS NULL AND group_id = ?))
+             ${overseer ? '' : mine}
+           ORDER BY created_at, ref LIMIT 20`,
+        )
+        .all(except, groupId, groupId, groupId, ...(overseer ? [] : [raiser, ...(byKey && account ? [account] : [])])) as Row[]
+    ).map((r) => this.requireEscalation(r.id as string).ref);
+  }
+
+  /**
+   * An open FYI named by the agent becomes blocking (`upgrade` on create_escalation): as for the same
+   * question raised again, without having to word it the same. The fields given replace the FYI's,
+   * its question too; attachments are added. One already blocking comes back as is (`duplicate`).
+   * Who may is checked by the caller (the raiser, or its group's overseer).
+   */
+  upgradeEscalation(
+    id: string,
+    input: Partial<Omit<EscalationInput, 'laneId' | 'epic' | 'blocking'>>,
+    actor: string,
+    owner: string | null,
+  ): Escalation & { duplicate: true; upgraded?: true } {
+    const e = this.requireEscalation(id);
+    if (e.state !== 'open') throw new ConflictError(`${e.ref} is ${e.state}: raise a new question instead`);
+    // A recommended option alone must be one of the FYI's own options.
+    if (input.recommendedOption && !input.options?.length && !e.options.includes(input.recommendedOption)) {
+      throw new ValidationError(`recommendedOption must be one of ${e.ref}'s options (${e.options.join(', ') || 'it has none'}), or give options too`);
+    }
+    if (e.blocking) {
+      if (input.attachments?.length) {
+        const before = this.attachmentsOf(id).length;
+        this.tx(() => this.linkAttachments(id, input.attachments!, owner ?? actor));
+        if (this.attachmentsOf(id).length !== before) this.emit({ type: 'escalation', escalation: this.requireEscalation(id) });
+      }
+      return { ...this.requireEscalation(id), duplicate: true };
+    }
+    return {
+      ...this.makeBlocking(id, { ...input, laneId: e.laneId!, question: input.question ?? e.question }, actor, owner, input.question !== undefined),
+      duplicate: true,
+      upgraded: true,
+    };
   }
 
   /**
@@ -3396,10 +3684,32 @@ export class Store {
    * Fields given again (context, recommendation, options, ...) replace the FYI's, so the owner has
    * what they need to answer.
    */
-  private makeBlocking(id: string, input: EscalationInput, actor: string, owner: string | null): Escalation {
+  /**
+   * `newQuestion`: `input.question` replaces the FYI's (an explicit upgrade); a retry keeps its words.
+   * `moveTo`: an epic's FYI asked again from a lane becomes that lane's ticket's question first (it
+   * keeps its code and its thread, in the same group's conversation), in the same transaction.
+   */
+  private makeBlocking(
+    id: string,
+    input: EscalationInput,
+    actor: string,
+    owner: string | null,
+    newQuestion = false,
+    moveTo?: { ticketId: number; laneId: string },
+  ): Escalation {
     let loose = false;
+    const fromEpic = moveTo ? this.requireEscalation(id).epicId : null;
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
+      if (moveTo) {
+        const was = this.requireEscalation(id);
+        this.db
+          .prepare('UPDATE escalations SET ticket_id = ?, epic_id = NULL, lane_id = ?, updated_at = ? WHERE id = ?')
+          .run(moveTo.ticketId, moveTo.laneId, at, id);
+        this.db.prepare('UPDATE tickets SET updated_at = ? WHERE num = ?').run(at, moveTo.ticketId);
+        const from = was.epicId !== null ? 'the epic' : 'the group';
+        this.addEvent(moveTo.laneId, at, 'escalation', `${was.ref} moved here from ${from}: ${was.question}`, actor, moveTo.ticketId);
+      }
       const before = this.requireEscalation(id);
       const given = (v: unknown) => (v === undefined || v === null || (Array.isArray(v) && v.length === 0) ? null : v);
       const list = (v: unknown[] | undefined) => (given(v) ? JSON.stringify(v) : null);
@@ -3407,7 +3717,7 @@ export class Store {
       const newOptions = given(input.options) !== null;
       this.db
         .prepare(
-          `UPDATE escalations SET blocking = 1, turn = 'owner', updated_at = ?,
+          `UPDATE escalations SET blocking = 1, turn = 'owner', updated_at = ?, question = ?,
              context = COALESCE(?, context), recommendation = COALESCE(?, recommendation), cost = COALESCE(?, cost),
              ticket = COALESCE(?, ticket), alternatives = COALESCE(?, alternatives), links = COALESCE(?, links),
              options = COALESCE(?, options), recommended_option = CASE WHEN ? THEN ? ELSE COALESCE(?, recommended_option) END,
@@ -3417,6 +3727,7 @@ export class Store {
         )
         .run(
           at,
+          newQuestion && input.question.trim() ? input.question : before.question,
           given(input.context) as string | null,
           given(input.recommendation) as string | null,
           given(input.cost) as string | null,
@@ -3435,7 +3746,7 @@ export class Store {
       // Reject withdrawn: what it meant no longer applies.
       if (input.allowReject === false) this.db.prepare('UPDATE escalations SET reject_means = NULL WHERE id = ?').run(id);
       this.linkAttachments(id, input.attachments ?? [], owner ?? actor);
-      this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${before.question}`, actor, before.ticketId);
+      this.addEvent(before.laneId, at, 'escalation', `${before.ref} now needs you: ${newQuestion && input.question.trim() ? input.question : before.question}`, actor, before.ticketId);
       // It blocks the lane holding its ticket (or, with no ticket, the lane it was raised in); none while parked.
       const holder = this.holderOf(before);
       const lane = holder ? this.getLane(holder) : null;
@@ -3448,6 +3759,8 @@ export class Store {
       return { escalation: this.requireEscalation(id), lane: lane ? this.requireLane(lane.id) : null, blocks };
     });
     this.emit({ type: 'escalation', escalation, raised: true });
+    if (fromEpic !== null) this.emitEpic(fromEpic);
+    if (moveTo && !loose) this.emitTicket(moveTo.ticketId);
     if (loose) this.emitTicket(escalation.ticketId);
     if (lane) this.emit({ type: 'lane', lane, statusChanged: blocks });
     return escalation;
@@ -3480,6 +3793,42 @@ export class Store {
       laneId: (r.lane_id as string | null) ?? null,
       epicId: r.epic_id == null ? null : Number(r.epic_id),
     };
+  }
+
+  /**
+   * How far the group's messages were handed to `key` (0: never). Per key, not per session: sessions
+   * sharing a key share what they were handed.
+   */
+  private deliveredTo(groupId: string, key: string | undefined): number {
+    if (!key) return 0;
+    const r = this.db.prepare('SELECT up_to FROM group_note_deliveries WHERE group_id = ? AND key = ?').get(groupId, key) as Row | undefined;
+    return r ? Number(r.up_to) : 0;
+  }
+
+  /**
+   * Whether `by` may acknowledge the group's messages: its overseer (the key that registered it
+   * last), or any agent while it has none. Throws otherwise.
+   */
+  private requireGroupOverseer(g: Row, by: { key: string; agent: boolean }) {
+    const owner = (g.owner as string | null) ?? null;
+    if (by.agent && (owner === null || owner === by.key)) return;
+    const name = overseerName(owner);
+    throw new ForbiddenError(
+      `Only the group's overseer${name ? ` (${name})` : ''} acknowledges its messages: this ack wasn't recorded`,
+    );
+  }
+
+  /**
+   * `key` was handed the group's messages up to `upTo` (a wait or get_updates result that listed
+   * them). Recorded for every caller, overseer or not; never moves back.
+   */
+  markGroupMessagesDelivered(groupId: string, upTo: number, key: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO group_note_deliveries (group_id, key, up_to) VALUES (?1, ?2, ?3)
+         ON CONFLICT (group_id, key) DO UPDATE SET up_to = MAX(up_to, excluded.up_to)`,
+      )
+      .run(groupId, key, upTo);
   }
 
   /** How far the group's overseer has acknowledged the group's messages (0: none yet). */
@@ -3682,13 +4031,20 @@ export class Store {
   /**
    * The overseer acknowledges the group's messages up to `upTo` (the last id it handled). Never moves
    * back, and never past the group's latest message, so repeating it changes nothing. Returns the
-   * position now.
+   * position now. With `by` (the caller: its key, as groups record their overseer, and whether it's
+   * an agent), anyone but the group's overseer is refused (any agent while it has none). When it
+   * moves, clients hear of it (the group's `overseerReadId`), so people see their messages marked seen.
    */
-  ackGroupMessages(groupId: string, upTo: number): number {
-    this.requireGroupRow(groupId);
+  ackGroupMessages(groupId: string, upTo: number, by?: { key: string; agent: boolean }): number {
+    const g = this.requireGroupRow(groupId);
+    if (by) this.requireGroupOverseer(g, by);
     const latest = Number((this.db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM group_messages WHERE group_id = ?').get(groupId) as Row).n);
     const to = Math.min(Math.max(0, Math.floor(upTo)), latest);
-    this.db.prepare('UPDATE groups SET overseer_read_id = ? WHERE id = ? AND overseer_read_id < ?').run(to, groupId, to);
+    const moved = Number(this.db.prepare('UPDATE groups SET overseer_read_id = ? WHERE id = ? AND overseer_read_id < ?').run(to, groupId, to).changes) > 0;
+    if (moved) {
+      const group = this.getGroup(groupId);
+      if (group) this.emit({ type: 'group', group });
+    }
     return this.overseerReadId(groupId);
   }
 
@@ -4015,6 +4371,14 @@ export class Store {
     };
   }
 
+  /**
+   * Marks lanes as having a waiting agent for a listener other than a wait (the agent socket); returns the release,
+   * after which they keep showing it for the quiet window, as after a wait.
+   */
+  holdLanes(laneIds: Iterable<string>) {
+    return this.holdWaiting(laneIds);
+  }
+
   private emitLaneIfShown(id: string) {
     try {
       const lane = this.getLane(id);
@@ -4025,12 +4389,12 @@ export class Store {
   }
 
   /** Resolves when the escalation leaves `open`, or with the current value on timeout. */
-  waitForDecision(id: string, timeoutMs: number, signal?: AbortSignal): Promise<Escalation> {
+  waitForDecision(id: string, timeoutMs: number, signal?: AbortSignal, holdsWaiting = true): Promise<Escalation> {
     const current = this.requireEscalation(id);
     // The agent's turn (the owner answered Other) needs the agent as much as a decision does.
     if (current.state !== 'open' || current.turn === 'agent' || timeoutMs <= 0) return Promise.resolve(current);
     id = current.id;
-    const release = this.holdWaiting([current.laneId]);
+    const release = holdsWaiting ? this.holdWaiting([current.laneId]) : () => {};
     return new Promise((resolve, reject) => {
       const done = () => {
         clearTimeout(timer);
@@ -4054,6 +4418,8 @@ export class Store {
 
   /** Where things stand for a wait scope right now. Unknown groups and lanes are errors (likely typos). */
   decisionsFor(scope: WaitScope): WaitResult {
+    // Twice, for `(? IS NULL OR … <> ?)`: null leaves nobody's actions out (an observer did nothing itself).
+    const viewerArgs = scope.viewer === null ? [null, null] : [scope.viewer ?? '', scope.viewer ?? ''];
     // A millisecond past everything this result can include, and nothing written later is stamped
     // earlier: a wait from this `since` neither repeats what it returns nor misses what comes next.
     const checkedMs = this.now().getTime() + 1;
@@ -4081,7 +4447,7 @@ export class Store {
       // acknowledgement would otherwise wake every later wait at once.
       if (digest) {
         const by = (this.db.prepare('SELECT withdrawn_by FROM escalations WHERE id = ?').get(e.id) as Row).withdrawn_by;
-        if (e.state !== 'withdrawn' || !scope.since || e.updatedAt < scope.since || (by ?? '') === (scope.viewer ?? '')) continue;
+        if (e.state !== 'withdrawn' || !scope.since || e.updatedAt < scope.since || scope.viewer !== null && (by ?? '') === (scope.viewer ?? '')) continue;
       }
       closedById.set(e.id, e);
     }
@@ -4093,9 +4459,9 @@ export class Store {
           .prepare(
             `SELECT e.at, e.actor FROM lane_events e JOIN lanes l ON l.id = e.lane_id
              WHERE e.lane_id = ? AND l.archived_at IS NOT NULL AND e.kind = 'status' AND e.message = 'Lane removed'
-               AND e.at >= ? AND COALESCE(e.actor, '') <> ? ORDER BY e.id DESC LIMIT 1`,
+               AND e.at >= ? AND (? IS NULL OR COALESCE(e.actor, '') <> ?) ORDER BY e.id DESC LIMIT 1`,
           )
-          .get(laneId, scope.since, scope.viewer ?? '') as Row | undefined;
+          .get(laneId, scope.since, ...viewerArgs) as Row | undefined;
         if (removed) removedLanes.push({ laneId, removedBy: (removed.actor as string | null) ?? null, at: removed.at as string });
       }
       for (const e of this.listEscalations({ laneId, states: ['open', 'decided'] })) byId.set(e.id, e);
@@ -4103,9 +4469,9 @@ export class Store {
         const rows = this.db
           .prepare(
             `SELECT * FROM escalations WHERE lane_id = ? AND state = 'withdrawn' AND updated_at >= ?
-               AND COALESCE(withdrawn_by, '') <> ?`,
+               AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)`,
           )
-          .all(laneId, scope.since, scope.viewer ?? '') as Row[];
+          .all(laneId, scope.since, ...viewerArgs) as Row[];
         for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
       }
     }
@@ -4126,9 +4492,9 @@ export class Store {
         const rows = this.db
           .prepare(
             `SELECT * FROM escalations WHERE ticket_id = ? AND state = 'withdrawn' AND updated_at >= ?
-               AND COALESCE(withdrawn_by, '') <> ?`,
+               AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)`,
           )
-          .all(ticketId, scope.since, scope.viewer ?? '') as Row[];
+          .all(ticketId, scope.since, ...viewerArgs) as Row[];
         for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
       }
     }
@@ -4141,16 +4507,26 @@ export class Store {
           const rows = this.db
             .prepare(
               `SELECT * FROM escalations WHERE epic_id = ? AND state = 'withdrawn' AND updated_at >= ?
-                 AND COALESCE(withdrawn_by, '') <> ?`,
+                 AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)`,
             )
-            .all(epicId, scope.since, scope.viewer ?? '') as Row[];
+            .all(epicId, scope.since, ...viewerArgs) as Row[];
           for (const row of rows) closedById.set(row.id as string, this.escalationFromRow(row));
         }
       }
     }
     const groupMessages: WaitResult['groupMessages'] = [];
+    // Notes the caller had already are listed again but end no wait: a loop on `checkedAt` that
+    // doesn't acknowledge them waits for something new instead of spinning. Had already: written
+    // before its `since`, and handed to the overseer (a note it never received is always new, whatever
+    // `since` it passes).
+    let newNotes = 0;
     if (scope.groupId) {
-      const unacknowledged = this.unacknowledgedGroupMessages(scope.groupId);
+      const notesSince = scope.notesSince === undefined ? scope.since : scope.notesSince;
+      const delivered = this.deliveredTo(scope.groupId, scope.viewerKey);
+      const unacknowledged = this.unacknowledgedGroupMessages(scope.groupId).map((m) =>
+        notesSince && m.at < notesSince && m.id <= delivered ? { ...m, repeat: true as const } : m,
+      );
+      newNotes = unacknowledged.filter((m) => !('repeat' in m)).length;
       if (unacknowledged.length) groupMessages.push({ group: scope.groupId, messages: unacknowledged });
     }
     // Tickets from these lanes that a lane outside them took since `since`.
@@ -4161,12 +4537,12 @@ export class Store {
       const rows = this.db
         .prepare(
           `SELECT f.ticket_id, f.lane_id, f.actor, f.at, t.ref FROM lane_events f JOIN tickets t ON t.num = f.ticket_id
-           WHERE f.kind = 'ticket' AND f.message LIKE 'Filled with %' AND f.at >= ? AND COALESCE(f.actor, '') <> ?
+           WHERE f.kind = 'ticket' AND f.message LIKE 'Filled with %' AND f.at >= ? AND (? IS NULL OR COALESCE(f.actor, '') <> ?)
              AND f.lane_id NOT IN (${marks})
              AND EXISTS (SELECT 1 FROM lane_events p WHERE p.ticket_id = f.ticket_id AND p.lane_id IN (${marks}) AND p.id < f.id)
            ORDER BY f.id`,
         )
-        .all(scope.since, scope.viewer ?? '', ...inScope, ...inScope) as Row[];
+        .all(scope.since, ...viewerArgs, ...inScope, ...inScope) as Row[];
       for (const r of rows) {
         movedTickets.push({
           ticket: this.refs.display(r.ref as string),
@@ -4174,6 +4550,22 @@ export class Store {
           laneId: r.lane_id as string,
           by: (r.actor as string | null) ?? null,
           at: r.at as string,
+        });
+      }
+    }
+    // The group's epics a person reopened (or declined to) since `since`.
+    const reopenDecisions: WaitResult['reopenDecisions'] = [];
+    if (digest && scope.since && scope.groupId) {
+      const rows = this.db
+        .prepare('SELECT * FROM epics WHERE group_id = ? AND reopen_decided_at >= ? ORDER BY reopen_decided_at')
+        .all(scope.groupId, scope.since) as Row[];
+      for (const r of rows) {
+        reopenDecisions.push({
+          group: r.group_id as string,
+          epic: (r.display_ref as string | null) ?? (r.name as string),
+          approved: r.reopen_decision === 'approved',
+          by: (r.reopen_decided_by as string | null) ?? null,
+          at: r.reopen_decided_at as string,
         });
       }
     }
@@ -4206,10 +4598,11 @@ export class Store {
         decided.length > 0 ||
         replies.length > 0 ||
 
-        groupMessages.length > 0 ||
+        newNotes > 0 ||
         closed.length > 0 ||
         removedLanes.length > 0 ||
         movedTickets.length > 0 ||
+        reopenDecisions.length > 0 ||
         // The full format also returns when nothing is left to wait for; a digest waits for a change.
         (!digest && open.length === 0),
       decided,
@@ -4218,6 +4611,7 @@ export class Store {
       open,
       removedLanes,
       movedTickets,
+      reopenDecisions,
       groupMessages,
       checkedAt,
     };
@@ -4232,13 +4626,14 @@ export class Store {
    * a new question during the wait.
    */
   waitForDecisions(scope: WaitScope, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
-    // Without a `since` of its own, the wait still hands over notes the agent hasn't had.
-    scope = { ...scope, since: scope.since ?? this.now().toISOString() };
+    // Without a `since` of its own, the wait still hands over notes the agent hasn't had, all as new.
+    scope = { ...scope, notesSince: scope.notesSince === undefined ? (scope.since ?? null) : scope.notesSince, since: scope.since ?? this.now().toISOString() };
     const first = this.decisionsFor(scope);
     if (first.ready || timeoutMs <= 0 || signal?.aborted) return Promise.resolve(first);
     const held = new Set<string>();
     const releases: (() => void)[] = [];
     const hold = (laneIds: Iterable<string | null>) => {
+      if (scope.holdsWaiting === false) return;
       const fresh = [...laneIds].filter((id): id is string => id !== null && !held.has(id));
       if (!fresh.length) return;
       for (const id of fresh) held.add(id);
@@ -4259,7 +4654,8 @@ export class Store {
       };
       const onChange = (e: StreamEvent) => {
         const note = e.type === 'group_message' && e.message.from === 'owner' && e.group === scope.groupId;
-        if (e.type !== 'escalation' && e.type !== 'lane_deleted' && e.type !== 'ticket' && !note) return;
+        const epicHere = e.type === 'epic' && e.epic.group === scope.groupId;
+        if (e.type !== 'escalation' && e.type !== 'lane_deleted' && e.type !== 'ticket' && !epicHere && !note) return;
         try {
           const now = this.decisionsFor(scope);
           if (now.ready) finish();

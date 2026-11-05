@@ -18,6 +18,7 @@ import {
 } from './api.ts';
 import { Chips, LaneCard, LaneDetail, LaneRow, LayoutToggle, useLayout, useStored } from './components.tsx';
 import { onActiveTicket, ParkedRow, TicketDetail, TicketsContext } from './ticket-views.tsx';
+import { ReopenRow } from './reopen.tsx';
 import { EpicCard, EpicDetail, EpicsContext, epicRoute, GroupHeader, hasLane, laneKeyOf, QuietLanes } from './epic-views.tsx';
 import { groupRoute, GroupView } from './group-view.tsx';
 import { epicsOnScreen, groupLayout } from './epics.ts';
@@ -33,7 +34,7 @@ import { Login } from './login.tsx';
 import { pushSupported, setupPush, teardownPush } from './push.ts';
 import { HistoryPane } from './history.tsx';
 import { RequirementsPane } from './requirements.tsx';
-import { baselineSeen, useSeenVersion } from './seen.ts';
+import { baselineSeen, baselineSeenEscalations, latestEscalationAt, markMessagesSeen, useSeenVersion } from './seen.ts';
 import { Toaster } from './toast.tsx';
 import { ProductsSection } from './products-panel.tsx';
 import { groupTitles, productGroups } from './products.ts';
@@ -56,6 +57,8 @@ interface Route {
   /** A group's conversation: its project and id. */
   groupProject?: string;
   groupId?: string;
+  /** An escalation's thread to bring into view in the group's conversation (a push opens it there). */
+  groupFocus?: string;
 }
 
 /** A URL path segment decoded, or null when it's malformed (e.g. "%E0" from a crafted link). */
@@ -68,7 +71,7 @@ const decode = (part: string) => {
 };
 
 function parseRoute(hash: string): Route {
-  const [, a, b, c] = hash.replace(/^#/, '').split('/');
+  const [, a, b, c, d, e] = hash.replace(/^#/, '').split('/');
   const lb = b ? decode(b) : null;
   const lc = c ? decode(c) : null;
   if (a === 'lane' && lb && lc) return { view: 'lanes', laneProject: lb, laneId: lc };
@@ -76,7 +79,10 @@ function parseRoute(hash: string): Route {
   if (a === 'esc' && b) return { view: 'inbox', escId: b };
   if (a === 'ticket' && lb && lc) return { view: 'lanes', ticketProject: lb, ticketRef: lc };
   if (a === 'epic' && lb && lc && /^\d{1,12}$/.test(lc)) return { view: 'lanes', epicId: Number(lc) };
-  if (a === 'group' && lb && lc) return { view: 'lanes', groupProject: lb, groupId: lc };
+  if (a === 'group' && lb && lc) {
+    const focus = d === 'esc' && e ? decode(e) : null;
+    return { view: 'lanes', groupProject: lb, groupId: lc, ...(focus ? { groupFocus: focus } : {}) };
+  }
   // A closed escalation opened from History: closing it goes back there.
   if (a === 'history' && b) return { view: 'history', escId: b };
   if (a === 'lanes' || a === 'reqs' || a === 'history' || a === 'settings') return { view: a };
@@ -232,8 +238,10 @@ function Dashboard({
   // Groups' chat buttons mark the overseer's new messages until the conversation is opened.
   useSeenVersion();
   useEffect(() => {
-    if (live.syncedAt !== null) baselineSeen(live.groups.values());
-  }, [live.syncedAt, live.groups]);
+    if (live.syncedAt === null) return;
+    baselineSeen(live.groups.values());
+    baselineSeenEscalations(live.groups.values(), [...live.escalations.values()]);
+  }, [live.syncedAt, live.groups, live.escalations]);
   const [route, navigate] = useRoute();
   const [filters, setFilters] = useFilters();
 
@@ -430,6 +438,11 @@ function Dashboard({
       [...live.escalations.values()].find((e) => isCodeOf(e, route.escId!) && inScope(e.project)) ??
       [...live.escalations.values()].find((e) => isCodeOf(e, route.escId!)))
     : undefined;
+  // An escalation opened anywhere (Needs you, History, the inbox) has been seen: its group's chat
+  // button stops marking it as new.
+  useEffect(() => {
+    if (routeEsc?.group) markMessagesSeen({ project: routeEsc.project, id: routeEsc.group }, null, routeEsc.createdAt);
+  }, [routeEsc?.id]);
   // Closed escalations drop out of the live map, which also changes this key.
   const escVersion = route.escId ? (routeEsc?.updatedAt ?? 'closed') : '';
   const seqOf = (e: (typeof escalations)[number]) => {
@@ -538,6 +551,12 @@ function Dashboard({
     .filter((t) => !activeGroups.length || (t.group !== null && activeGroups.includes(keyOf(t.project, t.group))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const parkedIn = (groupId: string | null) => parkedAll.filter((t) => (t.group ? keyOf(t.project, t.group) : null) === groupId);
+  // Closed epics their overseer asked to reopen: under their group, whatever the status filter, since they wait on a person.
+  const canApprove = me?.role === 'human' && !me.personalKey;
+  const reopenEpicsAll = [...live.epics.values()].filter(
+    (e) => e.state === 'closed' && e.reopenRequest && inScope(e.project) && (!activeGroups.length || activeGroups.includes(keyOf(e.project, e.group))),
+  );
+  const reopenEpicsIn = (groupId: string | null) => reopenEpicsAll.filter((e) => keyOf(e.project, e.group) === groupId);
   const leftLane = (t: Ticket) =>
     t.lastLane ? (live.lanes.get(keyOf(t.project, t.lastLane))?.name ?? `${t.lastLane} (removed)`) : null;
   const epicsOf = (groupId: string | null) => epicsOnScreen(groupId, live.epics.values());
@@ -724,7 +743,8 @@ function Dashboard({
   const epicCardsIn = (sec: Section) => !activeStatuses.length && (!activeGroups.length || (!!sec.groupId && activeGroups.includes(sec.groupId)));
   const sectionShows = (sec: Section) =>
     sec.lanes.length > 0 ||
-    (sec.groupId !== undefined && (parkedIn(sec.groupId).length > 0 || (epicCardsIn(sec) && epicsOf(sec.groupId).length > 0)));
+    (sec.groupId !== undefined &&
+      (parkedIn(sec.groupId).length > 0 || reopenEpicsIn(sec.groupId).length > 0 || (epicCardsIn(sec) && epicsOf(sec.groupId).length > 0)));
 
   const lanePane = (
     <section className="pane lanes" aria-label="Lanes">
@@ -815,6 +835,24 @@ function Dashboard({
               lanes={sec.lanes.length}
               waiting={waiting}
               blocking={groupBlocking}
+              fyi={(() => {
+                // Like `waiting`, only what's in the box: FYIs on its lanes' tickets, its epics and the group itself.
+                const laneIds = new Set(sec.lanes.map((l) => l.id));
+                const ticketIds = new Set(sec.lanes.map((l) => l.ticketId).filter((t): t is number => t != null));
+                const epicIds = new Set(layout.epics.map(({ epic: e }) => e.id));
+                return [...live.escalations.values()].filter(
+                  (e) =>
+                    e.project === (group?.project ?? sec.lanes[0]?.project) &&
+                    e.state === 'open' &&
+                    !e.blocking &&
+                    e.turn === 'owner' &&
+                    ((e.ticketId !== null && ticketIds.has(e.ticketId)) ||
+                      (e.epicId != null && epicIds.has(e.epicId)) ||
+                      (e.ticketId === null && !e.epicId && e.laneId !== null && laneIds.has(e.laneId)) ||
+                      (e.ticketId === null && !e.epicId && group !== undefined && e.group === group.id)),
+                ).length;
+              })()}
+              latestEscalation={group ? latestEscalationAt(live.escalations.values(), group) : null}
               showTicket={epics.length === 0}
               onChat={group && (() => navigate(groupRoute(group.project, group.id)))}
             />
@@ -840,10 +878,16 @@ function Dashboard({
             )}
             {laneList(layout.noEpic)}
             <QuietLanes count={layout.quiet.length}>{laneList(layout.quiet)}</QuietLanes>
+            <ReopenRow epics={reopenEpicsIn(sec.groupId)} client={client} canApprove={canApprove} now={now} />
             <ParkedRow tickets={parkedIn(sec.groupId)} now={now} laneName={leftLane} />
           </div>
         );
       })}
+      {filters.arrange !== 'group' && reopenEpicsAll.length > 0 && (
+        <div className="group">
+          <ReopenRow epics={reopenEpicsAll} client={client} canApprove={canApprove} now={now} />
+        </div>
+      )}
       {filters.arrange !== 'group' && parkedAll.length > 0 && (
         <div className="group">
           <ParkedRow tickets={parkedAll} now={now} laneName={leftLane} />
@@ -1079,6 +1123,7 @@ function Dashboard({
         {route.groupId && route.groupProject && (
           <GroupView
             key={`${route.groupProject}/${route.groupId}`}
+            focus={route.groupFocus}
             project={route.groupProject}
             groupId={route.groupId}
             group={namedGroups.get(keyOf(route.groupProject, route.groupId))}
