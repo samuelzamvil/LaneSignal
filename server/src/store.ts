@@ -288,6 +288,8 @@ export interface GroupPatch {
   name?: string;
   ticket?: string | null;
   links?: Link[];
+  /** One line on the group's box (null clears it). */
+  statusLine?: string | null;
 }
 
 export interface LanePatch {
@@ -364,7 +366,7 @@ export interface StoreOptions {
   attachmentsPerItem?: number;
 }
 
-const SCHEMA_VERSION = 28;
+const SCHEMA_VERSION = 29;
 
 /** Agent messages stay short: anything longer belongs in an attached file. */
 export const AGENT_MESSAGE_MAX = 500;
@@ -718,10 +720,61 @@ export class Store {
       if (version < 26) this.migrateV26();
       if (version < 27) this.migrateV27();
       if (version < 28) this.migrateV28();
+      if (version < 29) this.migrateV29();
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(String(SCHEMA_VERSION));
     });
+  }
+
+  /**
+   * v29: a group holds questions of its own, so it no longer needs an epic standing in for it. Each
+   * group gets the code its questions start with and an internal lane; each stand-in epic's questions
+   * become its group's (codes kept), its status line the group's, its board plain messages in the
+   * group's conversation, and the stand-in goes.
+   */
+  private migrateV29() {
+    if (!this.hasColumn('groups', 'code_ref')) this.db.exec('ALTER TABLE groups ADD COLUMN code_ref TEXT');
+    if (!this.hasColumn('groups', 'status_line')) this.db.exec('ALTER TABLE groups ADD COLUMN status_line TEXT');
+    const at = this.now().toISOString();
+    for (const e of this.db.prepare('SELECT * FROM epics WHERE stand_in = 1 ORDER BY num').all() as Row[]) {
+      const num = Number(e.num);
+      const groupId = e.group_id as string;
+      // Every epic's group has a row; should one be missing, the stand-in is left as it was rather than the upgrade fail.
+      if (!this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(groupId)) continue;
+      // Its questions keep their codes: the group's code is the stand-in's.
+      this.db.prepare('UPDATE groups SET code_ref = COALESCE(code_ref, ?) WHERE id = ?').run(e.code_ref as string, groupId);
+      if (e.state !== 'closed' && e.status_line) {
+        this.db.prepare('UPDATE groups SET status_line = COALESCE(status_line, ?) WHERE id = ?').run(e.status_line as string, groupId);
+      }
+      this.ensureGroupHome(groupId, at);
+      const groupLane = Store.groupLaneId(groupId);
+      const epicLane = Store.epicLaneId(e.project_id as string, num);
+      this.db.prepare('UPDATE escalations SET lane_id = ? WHERE lane_id = ?').run(groupLane, epicLane);
+      this.db.prepare('UPDATE escalations SET epic_id = NULL, group_id = COALESCE(group_id, ?) WHERE epic_id = ?').run(groupId, num);
+      this.db.prepare('UPDATE tickets SET epic_id = NULL WHERE epic_id = ?').run(num);
+      // Its board's notes the overseer had read stay acknowledged once they're the group's, as far as
+      // that leaves no unread group note behind (the group has one mark for both): never lose one.
+      const read = Number(
+        (this.db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM group_messages WHERE epic_id = ? AND id <= ?').get(num, Number(e.agent_read_id ?? 0)) as Row).n,
+      );
+      const firstUnread = (
+        this.db
+          .prepare(
+            `SELECT MIN(m.id) AS n FROM group_messages m JOIN groups g ON g.id = m.group_id
+             WHERE m.group_id = ? AND m.author_kind = 'owner' AND m.escalation_id IS NULL AND m.lane_id IS NULL AND m.epic_id IS NULL
+               AND m.id > g.overseer_read_id`,
+          )
+          .get(groupId) as Row
+      ).n;
+      const upTo = firstUnread == null ? read : Math.min(read, Number(firstUnread) - 1);
+      this.db.prepare('UPDATE group_messages SET epic_id = NULL WHERE epic_id = ?').run(num);
+      this.db.prepare('UPDATE groups SET overseer_read_id = MAX(overseer_read_id, ?) WHERE id = ?').run(upTo, groupId);
+      this.db.prepare('UPDATE lane_events SET lane_id = ? WHERE lane_id = ?').run(groupLane, epicLane);
+      this.db.prepare('DELETE FROM lanes WHERE id = ?').run(epicLane);
+      this.db.prepare('DELETE FROM epics WHERE num = ?').run(num);
+    }
+    for (const g of this.db.prepare('SELECT id FROM groups').all() as Row[]) this.ensureGroupHome(g.id as string, at);
   }
 
   /**
@@ -1304,8 +1357,11 @@ export class Store {
       .all() as Row[];
     for (const r of loose) {
       const groupId = (r.group_id as string | null) ?? this.ungroupedGroup(r.project_id as string, at);
-      const epic = this.openEpicsOf(groupId)[0];
-      this.db.prepare('UPDATE escalations SET epic_id = ? WHERE rowid = ?').run(Number(epic.num), Number(r.rid));
+      // As it was then: real epics first, then the stand-in (none, for a catch-all group made since: it stays the group's).
+      const epic = this.db.prepare("SELECT num FROM epics WHERE group_id = ? AND state <> 'closed' ORDER BY stand_in, num LIMIT 1").get(groupId) as
+        | Row
+        | undefined;
+      if (epic) this.db.prepare('UPDATE escalations SET epic_id = ? WHERE rowid = ?').run(Number(epic.num), Number(r.rid));
     }
     // A lane holding a ticket that its own questions no longer block (they were raised before it took
     // the ticket, and are the epic's now) stops showing blocked.
@@ -1409,7 +1465,7 @@ export class Store {
 
   private emit(event: StreamEvent) {
     // An epic's internal lane is never shown.
-    if (event.type === 'lane' && Store.isEpicLane(event.lane.id)) return;
+    if (event.type === 'lane' && Store.isInternalLane(event.lane.id)) return;
     this.events.emit('change', event);
     // An epic's card counts its questions.
     if (event.type === 'escalation' && event.escalation.epicId !== null) this.emitEpic(event.escalation.epicId);
@@ -1442,6 +1498,18 @@ export class Store {
           .get(r.id as string) as Row;
         return { lastMessageId: m.last == null ? null : Number(m.last), lastAgentMessageId: m.agent == null ? null : Number(m.agent) };
       })(),
+      statusLine: (r.status_line as string | null) ?? null,
+      code: (r.code_ref as string | null) ?? localId(r.id as string),
+      // Its own questions (not its tickets' or epics'): a blocking one has it waiting on a person.
+      ...(() => {
+        const c = this.db
+          .prepare(
+            `SELECT COUNT(*) AS open, SUM(blocking = 1 AND turn = 'owner') AS blocking FROM escalations
+             WHERE group_id = ? AND ticket_id IS NULL AND epic_id IS NULL AND state = 'open'`,
+          )
+          .get(r.id as string) as Row;
+        return { openEscalations: Number(c.open ?? 0), blockingEscalations: Number(c.blocking ?? 0) };
+      })(),
       overseerReadId: Number(r.overseer_read_id ?? 0),
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
@@ -1461,8 +1529,8 @@ export class Store {
   /**
    * The group's questions waiting on a person: open, blocking, and the owner's turn. The set the group's
    * wait covers and the Lanes page counts as "need you": questions on the tickets the group holds or parked
-   * (wherever they were raised: a ticket moves between groups with its questions), on its epics, and the
-   * older ones on its live lanes that have neither. FYIs block nothing, so they don't count.
+   * (wherever they were raised: a ticket moves between groups with its questions), on its epics, and its
+   * own (neither a ticket nor an epic: they stay the group's when a lane moves). FYIs block nothing, so they don't count.
    */
   blockingQuestionsOf(groupId: string): number {
     const r = this.db
@@ -1470,8 +1538,7 @@ export class Store {
         `SELECT COUNT(*) AS n FROM escalations WHERE state = 'open' AND blocking = 1 AND turn = 'owner'
            AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?)
              OR epic_id IN (SELECT num FROM epics WHERE group_id = ?)
-             OR (ticket_id IS NULL AND epic_id IS NULL
-               AND lane_id IN (SELECT id FROM lanes WHERE group_id = ? AND archived_at IS NULL)))`,
+             OR (ticket_id IS NULL AND epic_id IS NULL AND group_id = ?))`,
       )
       .get(groupId, groupId, groupId) as Row;
     return Number(r.n ?? 0);
@@ -1564,12 +1631,18 @@ export class Store {
         .prepare('INSERT INTO groups (id, name, links, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
         .run(id, patch.name ?? localId(id), JSON.stringify(patch.links ?? []), actor, at, at);
       if (owner) this.setOverseer(id, owner, at);
-      // Every group has an epic: a new one starts with its stand-in.
-      this.ensureEpic(id, at);
+      if (patch.statusLine !== undefined) this.db.prepare('UPDATE groups SET status_line = ? WHERE id = ?').run(patch.statusLine?.trim() || null, id);
+      // It can hold questions of its own from the start.
+      this.ensureGroupHome(id, at);
       return false;
     }
     if (owner) this.setOverseer(id, owner, at);
+    if (patch.statusLine !== undefined) {
+      this.db.prepare('UPDATE groups SET status_line = ?, updated_at = ? WHERE id = ?').run(patch.statusLine?.trim() || null, at, id);
+    }
     if (patch.name === undefined && patch.links === undefined) return restored;
+    // Its own questions' lane carries its name, for notifications.
+    if (patch.name !== undefined) this.db.prepare('UPDATE lanes SET name = ? WHERE id = ?').run(patch.name, Store.groupLaneId(id));
     this.db
       .prepare('UPDATE groups SET name = ?, links = ?, agent = ?, updated_at = ? WHERE id = ?')
       .run(
@@ -1738,7 +1811,7 @@ export class Store {
    * lane that's about to get an escalation.
    */
   private syncLetter(laneId: string, hold = false) {
-    if (Store.isEpicLane(laneId)) return;
+    if (Store.isInternalLane(laneId)) return;
     const r = this.db
       .prepare(
         `SELECT letter_index, (archived_at IS NULL AND status <> 'completed') AS active,
@@ -1935,7 +2008,7 @@ export class Store {
   deleteLane(id: string, actor: string | null = null, release: { previous?: TicketRelease; reason?: string | null } = {}) {
     const touched: Touched = { escalations: new Set(), lanes: new Set(), tickets: new Set() };
     this.tx(() => {
-      const lane = Store.isEpicLane(id) ? null : this.getLane(id);
+      const lane = Store.isInternalLane(id) ? null : this.getLane(id);
       if (!lane) throw new NotFoundError(`Lane "${localId(id)}" not found`);
       this.archiveLane(lane, actor, release, this.now().toISOString(), touched);
     });
@@ -2008,11 +2081,21 @@ export class Store {
    * "<project>/~epic-<n>". Escalations need a lane they were raised in; this is that lane for them.
    */
   static epicLaneId = (project: string, num: number) => `${project}/~epic-${num}`;
-  static isEpicLane = (laneId: string) => laneId.includes('/~epic-');
+  /** A group's internal lane: questions raised on the group itself are raised there. */
+  static groupLaneId = (groupId: string) => `${projectOf(groupId)}/~group-${localId(groupId)}`;
+  /** An epic's or a group's internal lane, never shown as a lane. */
+  static isInternalLane = (laneId: string) => laneId.includes('/~epic-') || laneId.includes('/~group-');
 
   /** Whether a code prefix is in use in the project, by a ticket or an epic (other than the ones named). */
   private codeRefTaken(project: string, code: string, except: { ticket?: number; epic?: number } = {}) {
     if (this.db.prepare('SELECT 1 FROM tickets WHERE project_id = ? AND code_ref = ? COLLATE NOCASE AND num <> ?').get(project, code, except.ticket ?? -1)) {
+      return true;
+    }
+    // A group's own questions have its code.
+    if (
+      this.hasColumn('groups', 'code_ref') &&
+      this.db.prepare("SELECT 1 FROM groups WHERE code_ref = ? COLLATE NOCASE AND id LIKE ? ESCAPE '\\'").get(code, `${project.replace(/[\\%_]/g, '\\$&')}/%`)
+    ) {
       return true;
     }
     return (
@@ -2043,8 +2126,9 @@ export class Store {
   }
 
   /**
-   * Must run inside a transaction. Creates an epic, with its internal board lane. `ref` null makes
-   * the group's stand-in epic, coded with the group's id.
+   * Must run inside a transaction. Creates an epic, with its internal lane (its own questions are raised
+   * there). `ref` null makes a stand-in epic, as upgrading from before epics (v18) did for groups without
+   * a ticket; v26 turns those into the group's own questions.
    */
   private insertEpic(
     project: string,
@@ -2071,7 +2155,7 @@ export class Store {
       const short = this.refs.display(e.ref);
       code = usable(short) ? short : `E${num}`;
     } else {
-      // A stand-in uses its group's ticket ("680A"), or the group's id when it has none.
+      // A stand-in used its group's ticket ("680A"), or the group's id when it had none.
       const groupTicket = (this.db.prepare('SELECT ticket FROM groups WHERE id = ?').get(groupId) as Row | undefined)?.ticket as string | null;
       const short = groupTicket?.trim() ? this.refs.display(this.refs.canonical(groupTicket)) : null;
       code = usable(short) ? short : localId(groupId);
@@ -2088,7 +2172,7 @@ export class Store {
     return num;
   }
 
-  /** Must run inside a transaction. The project's "Ungrouped" group, created with its stand-in epic if need be. */
+  /** Must run inside a transaction. The project's "Ungrouped" group (for data from before every lane had a group). */
   private ungroupedGroup(project: string, at: string): string {
     const id = qualify(project, 'ungrouped');
     // Removed from the dashboard earlier: lanes joining it bring it back.
@@ -2098,31 +2182,40 @@ export class Store {
         .prepare("INSERT INTO groups (id, name, links, agent, created_at, updated_at) VALUES (?, 'Ungrouped', '[]', NULL, ?, ?)")
         .run(id, at, at);
     }
-    this.ensureEpic(id, at);
+    this.ensureGroupHome(id, at);
     return id;
   }
 
-  /** The group's epics that aren't closed, real ones first (oldest first). */
+  /** The group's epics that aren't closed, oldest first. */
   private openEpicsOf(groupId: string): Row[] {
-    return this.db
-      .prepare("SELECT * FROM epics WHERE group_id = ? AND state <> 'closed' ORDER BY stand_in, num")
-      .all(groupId) as Row[];
+    return this.db.prepare("SELECT * FROM epics WHERE group_id = ? AND state <> 'closed' AND stand_in = 0 ORDER BY num").all(groupId) as Row[];
   }
 
-  /** Must run inside a transaction. Every group has an epic: with none open, its stand-in comes (back). */
-  private ensureEpic(groupId: string, at: string) {
-    if (this.openEpicsOf(groupId).length) return;
-    const standIn = this.db.prepare('SELECT num FROM epics WHERE group_id = ? AND stand_in = 1 ORDER BY num DESC LIMIT 1').get(groupId) as
-      | Row
-      | undefined;
-    if (standIn) {
-      this.db
-        .prepare("UPDATE epics SET state = 'open', closed_at = NULL, close_reason = NULL, close_requested_by = NULL, updated_at = ? WHERE num = ?")
-        .run(at, Number(standIn.num));
-      return;
+  /**
+   * Must run inside a transaction. What a group needs to hold questions of its own: the code its
+   * questions start with (its ticket's, or its id; unique in the project) and its internal lane.
+   */
+  private ensureGroupHome(groupId: string, at: string) {
+    // Older steps of migrating run before groups have codes: v26 gives every group its home then.
+    if (!this.hasColumn('groups', 'code_ref')) return;
+    const g = this.db.prepare('SELECT name, ticket, code_ref FROM groups WHERE id = ?').get(groupId) as Row | undefined;
+    if (!g) return;
+    const project = projectOf(groupId);
+    if (!g.code_ref) {
+      const ticket = (g.ticket as string | null)?.trim();
+      const short = ticket ? this.refs.display(this.refs.canonical(ticket)) : null;
+      const taken = (c: string) => this.codeRefTaken(project, c);
+      const base = short && CODE_REF.test(short) && /\d$/.test(short) && !taken(short) ? short : localId(groupId);
+      let code = base;
+      for (let n = 2; taken(code); n++) code = `${base}-${n}`;
+      this.db.prepare('UPDATE groups SET code_ref = ? WHERE id = ?').run(code, groupId);
     }
-    const g = this.db.prepare('SELECT name FROM groups WHERE id = ?').get(groupId) as Row | undefined;
-    this.insertEpic(projectOf(groupId), groupId, { ref: null, displayRef: null, name: (g?.name as string) ?? localId(groupId), at });
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO lanes (id, name, group_id, status, links, created_at, updated_at, status_since)
+         VALUES (?, ?, ?, 'idle', '[]', ?, ?, ?)`,
+      )
+      .run(Store.groupLaneId(groupId), g.name as string, groupId, at, at, at);
   }
 
   private epicFromRow(r: Row): Epic {
@@ -2145,7 +2238,6 @@ export class Store {
       links: JSON.parse(r.links as string) as Link[],
       statusLine: (r.status_line as string | null) ?? null,
       state: r.state as EpicState,
-      standIn: Number(r.stand_in) === 1,
       closeReason: (r.close_reason as string | null) ?? null,
       closeRequestedBy: (r.close_requested_by as string | null) ?? null,
       reopenRequest: reopenRequestOf(r),
@@ -2185,13 +2277,13 @@ export class Store {
     const p = this.inProjects(filter.projects, 'e.project_id');
     params.push(...p.params);
     return (
-      this.db.prepare(`SELECT e.* FROM epics e WHERE ${where.join(' AND ')}${p.sql} ORDER BY e.stand_in, e.num`).all(...params) as Row[]
+      this.db.prepare(`SELECT e.* FROM epics e WHERE ${where.join(' AND ')}${p.sql} ORDER BY e.num`).all(...params) as Row[]
     ).map((r) => this.epicFromRow(r));
   }
 
   /**
-   * An epic named the way agents do: any form of its ref, or a group's id for that group's epic (its
-   * stand-in, or its only open epic; a group with several says to name one).
+   * An epic named the way agents do: any form of its ref, or a group's id for that group's only open
+   * epic (a group with several says to name one; one with none has none).
    */
   findEpic(project: string, name: string): Epic | null {
     const byRef = this.db.prepare('SELECT * FROM epics WHERE project_id = ? AND ref = ?').get(project, this.refs.canonical(name)) as
@@ -2208,16 +2300,12 @@ export class Store {
     return open.length ? this.epicFromRow(open[0]) : null;
   }
 
-  /**
-   * Creates or updates an epic. A ref no epic has yet creates a real epic in `groupId`; the group's
-   * stand-in then retires, its questions and board moving to the new epic (keeping their codes).
-   */
+  /** Creates or updates an epic. A ref no epic has yet creates an epic in `groupId`. */
   upsertEpic(
     project: string,
     input: { epic?: number; groupId?: string; ref?: string | null; name?: string; links?: Link[]; statusLine?: string | null },
     actor: string | null,
   ): Epic {
-    const touched: number[] = [];
     // Questions whose epic or epic name changes, re-sent so clients follow.
     const moved: string[] = [];
     const unresolved = (epic: number) =>
@@ -2239,7 +2327,6 @@ export class Store {
           if (!input.groupId || !this.getGroup(input.groupId)) {
             throw new NotFoundError(`Group "${input.groupId ? localId(input.groupId) : ''}" not found: say which group the epic belongs to (group)`);
           }
-          const standIn = this.openEpicsOf(input.groupId).find((r) => Number(r.stand_in) === 1);
           num = this.insertEpic(project, input.groupId, {
             ref,
             displayRef: input.ref!.trim(),
@@ -2247,11 +2334,6 @@ export class Store {
             links: JSON.stringify(input.links ?? []),
             at,
           });
-          if (standIn) {
-            moved.push(...unresolved(Number(standIn.num)));
-            this.retireStandIn(standIn, num, at);
-            touched.push(Number(standIn.num));
-          }
           if (input.statusLine !== undefined) {
             this.db.prepare('UPDATE epics SET status_line = ? WHERE num = ?').run(input.statusLine?.trim() || null, num);
           }
@@ -2261,10 +2343,7 @@ export class Store {
       const r = this.epicRow(num);
       if (r.state === 'closed') throw new ConflictError(`Epic ${(r.display_ref as string | null) ?? r.name} is closed`);
       const ref = input.ref === undefined ? (r.ref as string | null) : input.ref?.trim() ? this.refs.canonical(input.ref) : null;
-      if (ref !== r.ref && Number(r.stand_in) === 1) {
-        throw new ValidationError("A group's stand-in epic has no ref: create the real epic with update_epic and its ref instead");
-      }
-      if (ref === null && Number(r.stand_in) === 0) throw new ValidationError('An epic keeps its ticket ref: give it another, or ask to close it');
+      if (ref === null) throw new ValidationError('An epic keeps its ticket ref: give it another, or ask to close it');
       if (ref !== r.ref && this.db.prepare('SELECT 1 FROM epics WHERE project_id = ? AND ref = ? AND num <> ?').get(project, ref, num)) {
         throw new ConflictError(`${this.refs.display(ref!)} is another epic already`);
       }
@@ -2288,7 +2367,6 @@ export class Store {
     // Stamped as changed, so clients take the new copy (and it doesn't read as a new question).
     const stamp = this.now().toISOString();
     for (const id of moved) this.db.prepare('UPDATE escalations SET updated_at = ? WHERE id = ?').run(stamp, id);
-    for (const n of touched) this.emitEpic(n);
     for (const id of moved) {
       const e = this.getEscalation(id);
       if (e) this.events.emit('change', { type: 'escalation', escalation: e });
@@ -2300,7 +2378,6 @@ export class Store {
   requestEpicClose(num: number, reason: string, actor: string): Epic {
     this.tx(() => {
       const r = this.epicRow(num);
-      if (Number(r.stand_in) === 1) throw new ValidationError("A group's stand-in epic isn't closed: it steps aside when a real epic is added");
       if (r.state === 'closed') throw new ConflictError('This epic is closed already');
       this.refuseWhileUnresolved(num);
       const at = this.now().toISOString();
@@ -2311,39 +2388,21 @@ export class Store {
     return this.emitEpic(num)!;
   }
 
-  /** A person's answer to a close request. Closing the group's last real epic brings its stand-in back. */
+  /** A person's answer to a close request. */
   decideEpicClose(num: number, approve: boolean, by: string): Epic {
-    const back = this.tx(() => {
+    this.tx(() => {
       const r = this.epicRow(num);
       if (r.state !== 'close_requested') throw new ConflictError('Nobody has asked to close this epic');
       const at = this.now().toISOString();
       if (!approve) {
         this.db.prepare("UPDATE epics SET state = 'open', close_reason = NULL, close_requested_by = NULL, updated_at = ? WHERE num = ?").run(at, num);
-        return null;
+        return;
       }
       this.refuseWhileUnresolved(num);
       this.db.prepare("UPDATE epics SET state = 'closed', closed_at = ?, updated_at = ? WHERE num = ?").run(at, at, num);
-      this.ensureEpic(r.group_id as string, at);
-      const standIn = this.openEpicsOf(r.group_id as string).find((e) => Number(e.stand_in) === 1);
-      return standIn ? Number(standIn.num) : null;
     });
-    if (back !== null) this.emitEpic(back);
     void by;
     return this.emitEpic(num)!;
-  }
-
-  /**
-   * Must run inside a transaction. A real epic opens in the group: its stand-in steps aside, and its
-   * questions, board and status line (when it has one) move to `into`, codes and all.
-   */
-  private retireStandIn(standIn: Row, into: number, at: string) {
-    const from = Number(standIn.num);
-    this.db.prepare('UPDATE escalations SET epic_id = ? WHERE epic_id = ?').run(into, from);
-    this.db.prepare('UPDATE group_messages SET epic_id = ? WHERE epic_id = ?').run(into, from);
-    this.db
-      .prepare('UPDATE epics SET agent_read_id = MAX(agent_read_id, ?), status_line = COALESCE(?, status_line) WHERE num = ?')
-      .run(Number(standIn.agent_read_id), (standIn.status_line as string | null) ?? null, into);
-    this.db.prepare("UPDATE epics SET state = 'closed', closed_at = ?, updated_at = ? WHERE num = ?").run(at, at, from);
   }
 
   /**
@@ -2353,7 +2412,6 @@ export class Store {
   requestEpicReopen(num: number, reason: string, actor: string): Epic {
     this.tx(() => {
       const r = this.epicRow(num);
-      if (Number(r.stand_in) === 1) throw new ValidationError("A group's stand-in epic isn't reopened: it comes back by itself when the group's last real epic closes");
       if (r.state !== 'closed') throw new ConflictError('This epic is open: only a closed epic is reopened');
       if (!this.getGroup(r.group_id as string)) throw new ConflictError(`Group "${localId(r.group_id as string)}" was removed: register it again (update_group) first`);
       const at = this.now().toISOString();
@@ -2366,16 +2424,13 @@ export class Store {
 
   /**
    * A person's answer to a reopen request, or a person reopening a closed epic directly (`approve`
-   * with no request waiting). Reopening retires the group's stand-in, if it's back: its questions move here.
+   * with no request waiting).
    */
   decideEpicReopen(num: number, approve: boolean, by: string): Epic {
-    const moved: string[] = [];
-    let standInNum: number | null = null;
     this.tx(() => {
       const r = this.epicRow(num);
       const waiting = r.reopen_requested_at != null;
       if (!waiting && !approve) throw new ConflictError('Nobody has asked to reopen this epic');
-      if (Number(r.stand_in) === 1) throw new ValidationError("A group's stand-in epic isn't reopened: it comes back by itself when the group's last real epic closes");
       if (r.state !== 'closed') throw new ConflictError('This epic is open already');
       const at = this.now().toISOString();
       const decide = (decision: 'approved' | 'declined') =>
@@ -2390,29 +2445,11 @@ export class Store {
         return;
       }
       if (!this.getGroup(r.group_id as string)) throw new ConflictError(`Group "${localId(r.group_id as string)}" was removed: it has to be registered again first`);
-      const standIn = this.openEpicsOf(r.group_id as string).find((e) => Number(e.stand_in) === 1);
       this.db
         .prepare("UPDATE epics SET state = 'open', closed_at = NULL, close_reason = NULL, close_requested_by = NULL WHERE num = ?")
         .run(num);
-      if (standIn) {
-        standInNum = Number(standIn.num);
-        moved.push(
-          ...(this.db.prepare("SELECT id FROM escalations WHERE epic_id = ? AND state IN ('open', 'decided')").all(standInNum) as Row[]).map(
-            (e) => e.id as string,
-          ),
-        );
-        this.retireStandIn(standIn, num, at);
-      }
       decide('approved');
     });
-    if (standInNum !== null) this.emitEpic(standInNum);
-    // Stamped as changed, so clients take the new copy (and it doesn't read as a new question).
-    const stamp = this.now().toISOString();
-    for (const id of moved) {
-      this.db.prepare('UPDATE escalations SET updated_at = ? WHERE id = ?').run(stamp, id);
-      const e = this.getEscalation(id);
-      if (e) this.events.emit('change', { type: 'escalation', escalation: e });
-    }
     return this.emitEpic(num)!;
   }
 
@@ -2424,27 +2461,15 @@ export class Store {
     if (n) throw new ConflictError(`This epic has ${n} question(s) still open or awaiting acknowledgement: settle them first`);
   }
 
-  /**
-   * The lanes an epic's card lists: those whose ticket names it, or for a stand-in, the rest of its
-   * group's lanes. Its sheet shows their combined feed.
-   */
+  /** The lanes an epic's card lists: those whose ticket names it. Its sheet shows their combined feed. */
   epicLanes(num: number): string[] {
     const r = this.epicRow(num);
-    const rows =
-      Number(r.stand_in) === 1
-        ? (this.db
-            .prepare(
-              `SELECT l.id FROM lanes l LEFT JOIN tickets t ON t.num = l.ticket_id
-               WHERE l.group_id = ? AND l.archived_at IS NULL AND instr(l.id, '/~') = 0
-                 AND (t.epic_id IS NULL OR t.epic_id NOT IN (SELECT num FROM epics WHERE state <> 'closed' AND group_id = l.group_id))`,
-            )
-            .all(r.group_id as string) as Row[])
-        : (this.db
-            .prepare(
-              `SELECT l.id FROM lanes l JOIN tickets t ON t.num = l.ticket_id
-               WHERE t.epic_id = ? AND l.group_id = ? AND l.archived_at IS NULL`,
-            )
-            .all(num, r.group_id as string) as Row[]);
+    const rows = this.db
+      .prepare(
+        `SELECT l.id FROM lanes l JOIN tickets t ON t.num = l.ticket_id
+         WHERE t.epic_id = ? AND l.group_id = ? AND l.archived_at IS NULL`,
+      )
+      .all(num, r.group_id as string) as Row[];
     return rows.map((x) => x.id as string);
   }
 
@@ -2530,7 +2555,7 @@ export class Store {
     const r = this.db
       .prepare(
         `SELECT e.display_ref, e.state FROM tickets t JOIN epics e ON e.num = t.epic_id
-         WHERE t.num = ? AND e.group_id = ? AND e.stand_in = 0`,
+         WHERE t.num = ? AND e.group_id = ?`,
       )
       .get(ticketId, groupId) as Row | undefined;
     if (!r) return { name: null, closed: false };
@@ -2803,8 +2828,8 @@ export class Store {
   }
 
   /**
-   * Must run inside a transaction. The epic the lane's ticket is for, in the lane's group (a stand-in
-   * or null: none). Returns a warning, if any.
+   * Must run inside a transaction. The epic the lane's ticket is for, in the lane's group (null: none).
+   * Returns a warning, if any.
    */
   private setTicketEpic(lane: Lane, epic: number | null, at: string, touched: Touched): string | undefined {
     if (lane.ticketId === null) {
@@ -2826,7 +2851,7 @@ export class Store {
       if (e.group_id !== groupId) {
         throw new ValidationError(`Epic ${name} is in group "${localId(e.group_id as string)}": a lane's ticket names an epic of the lane's group`);
       }
-      num = Number(e.stand_in) === 1 ? null : epic;
+      num = epic;
     }
     const was = this.ticketRow(lane.ticketId).epic_id;
     if ((was == null ? null : Number(was)) === num) return undefined;
@@ -3365,6 +3390,12 @@ export class Store {
     return (r?.owner as string | null) ?? null;
   }
 
+  /** A group's overseer, while the group is live (see ticketOverseer). */
+  groupOverseer(groupId: string): string | null {
+    const r = this.db.prepare('SELECT owner FROM groups WHERE id = ? AND archived_at IS NULL').get(groupId) as Row | undefined;
+    return (r?.owner as string | null) ?? null;
+  }
+
   /** The overseer of an epic's group (see ticketOverseer). */
   epicOverseer(epicId: number): string | null {
     const r = this.db
@@ -3404,38 +3435,51 @@ export class Store {
       );
     }
     const home = this.homeOf(input.laneId, input.epic);
-    // The group the question is raised in: its epic's, or its lane's.
+    // The group the question is raised in: its own, its epic's, or its lane's.
     const groupOfCall =
-      home.epicId !== null
+      home.groupId ??
+      (home.epicId !== null
         ? ((this.db.prepare('SELECT group_id FROM epics WHERE num = ?').get(home.epicId) as Row | undefined)?.group_id as string | undefined)
-        : ((this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row | undefined)?.group_id as string | undefined);
+        : ((this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row | undefined)?.group_id as string | undefined));
     // The same question again (ignoring spacing, case and closing punctuation) from the same raiser is a
-    // retry: on the same ticket or epic. Asked as blocking from a lane, an FYI of its group's epic counts
-    // too (an agent moves between a lane and its group's epic): it moves to the lane's ticket and blocks
-    // that lane. Never another lane's ticket. The same ticket or epic is preferred.
-    const sameHome = (r: Row) => (home.ticketId !== null ? Number(r.ticket_id) === home.ticketId : Number(r.epic_id) === home.epicId);
-    const groupEpic = home.ticketId !== null && input.blocking !== false && groupOfCall;
+    // retry: on the same ticket, epic or group. Asked as blocking from a lane, an FYI of its group (or one
+    // of the group's epics) counts too (an agent moves between a lane and its group): it moves to the
+    // lane's ticket and blocks that lane. Never another lane's ticket. The same home is preferred.
+    const sameHome = (r: Row) =>
+      home.ticketId !== null
+        ? Number(r.ticket_id) === home.ticketId
+        : home.epicId !== null
+          ? Number(r.epic_id) === home.epicId
+          : r.ticket_id == null && r.epic_id == null && r.group_id === home.groupId;
+    const groupWide = home.ticketId !== null && input.blocking !== false && groupOfCall;
+    const homeWhere =
+      home.ticketId !== null ? 'ticket_id = ?' : home.epicId !== null ? 'epic_id = ?' : '(ticket_id IS NULL AND epic_id IS NULL AND group_id = ?)';
     const existing = (
       this.db
         .prepare(
-          `SELECT id, question, ticket_id, epic_id, lane_id FROM escalations WHERE state = 'open'
-             AND (${home.ticketId !== null ? 'ticket_id' : 'epic_id'} = ?
-               ${groupEpic ? "OR (blocking = 0 AND epic_id IN (SELECT num FROM epics WHERE group_id = ? AND state <> 'closed'))" : ''})
+          `SELECT id, question, ticket_id, epic_id, group_id, lane_id FROM escalations WHERE state = 'open'
+             AND (${homeWhere}
+               ${
+                 groupWide
+                   ? `OR (blocking = 0 AND (epic_id IN (SELECT num FROM epics WHERE group_id = ? AND state <> 'closed')
+                        OR (ticket_id IS NULL AND epic_id IS NULL AND group_id = ?)))`
+                   : ''
+               })
              AND ${owner ? 'raised_by_owner = ?' : 'created_by = ?'}`,
         )
-        .all(home.ticketId ?? home.epicId!, ...(groupEpic ? [groupOfCall] : []), owner ?? actor) as Row[]
+        .all(home.ticketId ?? home.epicId ?? home.groupId!, ...(groupWide ? [groupOfCall, groupOfCall] : []), owner ?? actor) as Row[]
     )
       .filter((r) => sameQuestion(r.question as string, input.question))
-      // An epic's FYI moves only when it was raised on the epic itself or from this lane: one raised
-      // from another lane (an agent's key often serves several) stays that lane's business.
-      .filter((r) => sameHome(r) || Store.isEpicLane(r.lane_id as string) || r.lane_id === input.laneId)
+      // A group's or epic's FYI moves only when it was raised on the group or epic itself or from this
+      // lane: one raised from another lane (an agent's key often serves several) stays that lane's business.
+      .filter((r) => sameHome(r) || Store.isInternalLane(r.lane_id as string) || r.lane_id === input.laneId)
       .sort((a, b) => Number(sameHome(b)) - Number(sameHome(a)))[0];
     if (existing) {
       const id = existing.id as string;
       // Raising an open FYI again as blocking (the default) makes it need the owner now (same code),
       // even during the agent's turn: it goes back to the owner.
       if (input.blocking !== false && !this.requireEscalation(id).blocking) {
-        // An FYI of the group's epic, asked again from a lane: it's the lane's ticket's question now.
+        // An FYI of the group or its epic, asked again from a lane: it's the lane's ticket's question now.
         const moveTo = home.ticketId !== null && !sameHome(existing) ? { ticketId: home.ticketId, laneId: input.laneId } : undefined;
         return { ...this.makeBlocking(id, input, actor, owner, false, moveTo), duplicate: true, upgraded: true };
       }
@@ -3456,7 +3500,7 @@ export class Store {
     const { escalation, lane, blocks } = this.tx(() => {
       const at = this.now().toISOString();
       // A removed lane comes back for its question, and its group with it: no lane is outside one.
-      if (!Store.isEpicLane(input.laneId) && this.restoreLane(input.laneId, actor, at)) {
+      if (!Store.isInternalLane(input.laneId) && this.restoreLane(input.laneId, actor, at)) {
         const groupId = (this.db.prepare('SELECT group_id FROM lanes WHERE id = ?').get(input.laneId) as Row).group_id as string;
         if (!this.getGroup(groupId)) {
           this.writeGroup(groupId, {}, actor, at);
@@ -3469,7 +3513,7 @@ export class Store {
       // The ticket's or epic's code and its next letter ("967A", "680A").
       const code = this.allocCode(projectOf(input.laneId), home.codeRef);
       if (home.ticketId !== null) this.db.prepare('UPDATE tickets SET updated_at = ? WHERE num = ?').run(at, home.ticketId);
-      else this.db.prepare('UPDATE epics SET updated_at = ? WHERE num = ?').run(at, home.epicId);
+      else if (home.epicId !== null) this.db.prepare('UPDATE epics SET updated_at = ? WHERE num = ?').run(at, home.epicId);
       this.db
         .prepare(
           `INSERT INTO escalations (id, ref, letter_index, seq, ticket_id, epic_id, code, lane_id, group_id, question, context, recommendation, recommended_option, cost,
@@ -3485,7 +3529,7 @@ export class Store {
           code,
           input.laneId,
           // Its thread sits in the conversation of the group it's raised in.
-          this.messageGroupOfLane(input.laneId, at),
+          home.groupId ?? this.messageGroupOfLane(input.laneId, at),
           input.question,
           input.context ?? null,
           input.recommendation ?? null,
@@ -3513,10 +3557,10 @@ export class Store {
       const blocks = home.ticketId !== null && input.blocking !== false && lane.status !== 'blocked_human';
       if (blocks) {
         this.applyLaneUpdate(lane, { status: 'blocked_human' }, actor, at);
-      } else if (!Store.isEpicLane(input.laneId)) {
+      } else if (!Store.isInternalLane(input.laneId)) {
         this.db.prepare('UPDATE lanes SET updated_at = ? WHERE id = ?').run(at, input.laneId);
       }
-      return { escalation: this.requireEscalation(id), lane: Store.isEpicLane(input.laneId) ? null : this.requireLane(input.laneId), blocks };
+      return { escalation: this.requireEscalation(id), lane: Store.isInternalLane(input.laneId) ? null : this.requireLane(input.laneId), blocks };
     });
     if (restoredGroup) {
       this.emit({ type: 'group', group: this.getGroup(restoredGroup)! });
@@ -3534,8 +3578,8 @@ export class Store {
   }
 
   /**
-   * Codes of the open FYI questions in the group now (on its tickets, wherever they were raised, or its
-   * epics), oldest first, but `except`: those the caller can upgrade, all of them for the group's
+   * Codes of the open FYI questions in the group now (on its tickets, wherever they were raised, its
+   * epics, or the group itself), oldest first, but `except`: those the caller can upgrade, all of them for the group's
    * overseer, otherwise its own. `raiser` is its key (`byKey`) or, for a config token, its name.
    */
   private openFyisIn(groupId: string | null, except: string, raiser: string, byKey: boolean): string[] {
@@ -3551,11 +3595,12 @@ export class Store {
       this.db
         .prepare(
           `SELECT id FROM escalations WHERE state = 'open' AND blocking = 0 AND id <> ?
-             AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?) OR epic_id IN (SELECT num FROM epics WHERE group_id = ?))
+             AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?) OR epic_id IN (SELECT num FROM epics WHERE group_id = ?)
+               OR (ticket_id IS NULL AND epic_id IS NULL AND group_id = ?))
              ${overseer ? '' : mine}
            ORDER BY created_at, ref LIMIT 20`,
         )
-        .all(except, groupId, groupId, ...(overseer ? [] : [raiser, ...(byKey && account ? [account] : [])])) as Row[]
+        .all(except, groupId, groupId, groupId, ...(overseer ? [] : [raiser, ...(byKey && account ? [account] : [])])) as Row[]
     ).map((r) => this.requireEscalation(r.id as string).ref);
   }
 
@@ -3596,7 +3641,20 @@ export class Store {
    * Where a new question belongs: the ticket its lane holds, or an epic (named, the one whose
    * internal lane it is, or the lane's group's epic when the lane holds no ticket).
    */
-  private homeOf(laneId: string, epic: number | undefined): { ticketId: number | null; epicId: number | null; codeRef: string } {
+  /**
+   * Where a new question belongs: the ticket its lane holds; an epic (named, or the internal lane's);
+   * the group itself (raised on it, on its internal lane, or from a lane holding no ticket in a group
+   * with no epic); or, from a lane holding no ticket, its group's only epic.
+   */
+  private homeOf(
+    laneId: string,
+    epic: number | undefined,
+  ): { ticketId: number | null; epicId: number | null; groupId: string | null; codeRef: string } {
+    const onGroup = (groupId: string) => {
+      const code = (this.db.prepare('SELECT code_ref FROM groups WHERE id = ?').get(groupId) as Row | undefined)?.code_ref as string | null;
+      if (!code) throw new Error(`internal: group ${groupId} has no code`);
+      return { ticketId: null, epicId: null, groupId, codeRef: code };
+    };
     const internal = /\/~epic-(\d+)$/.exec(laneId);
     const named = epic ?? (internal ? Number(internal[1]) : undefined);
     if (named !== undefined) {
@@ -3612,25 +3670,26 @@ export class Store {
       if (r.state === 'closed') {
         throw new ConflictError(`Epic ${(r.display_ref as string | null) ?? r.name} is closed: raise it on an open epic (list_epics)`);
       }
-      return { ticketId: null, epicId: named, codeRef: r.code_ref as string };
+      return { ticketId: null, epicId: named, groupId: null, codeRef: r.code_ref as string };
     }
-    const lane = this.db.prepare('SELECT ticket_id, group_id FROM lanes WHERE id = ?').get(laneId) as Row;
+    const lane = this.db.prepare('SELECT ticket_id, group_id FROM lanes WHERE id = ?').get(laneId) as Row | undefined;
+    if (!lane) throw new NotFoundError(`Lane "${localId(laneId)}" not found`);
+    // The group's internal lane: a question on the group itself.
+    if (laneId.includes('/~group-')) return onGroup(lane.group_id as string);
     if (lane.ticket_id != null) {
       const t = this.ticketRow(Number(lane.ticket_id));
-      return { ticketId: Number(lane.ticket_id), epicId: null, codeRef: t.code_ref as string };
+      return { ticketId: Number(lane.ticket_id), epicId: null, groupId: null, codeRef: t.code_ref as string };
     }
     const open = lane.group_id ? this.openEpicsOf(lane.group_id as string) : [];
-    const real = open.filter((r) => Number(r.stand_in) === 0);
-    if (real.length > 1) {
+    if (open.length > 1) {
       throw new ValidationError(
-        `Lane "${localId(laneId)}" holds no ticket and its group has ${real.length} epics: say which (epic: ${real
+        `Lane "${localId(laneId)}" holds no ticket and its group has ${open.length} epics: say which (epic: ${open
           .map((r) => `"${this.refs.display(r.ref as string)}"`)
           .join(' or ')}), or fill the lane with its ticket first`,
       );
     }
-    const r = real[0] ?? open[0];
-    if (!r) throw new Error(`internal: lane ${laneId} has no group epic`);
-    return { ticketId: null, epicId: Number(r.num), codeRef: r.code_ref as string };
+    if (open.length === 1) return { ticketId: null, epicId: Number(open[0].num), groupId: null, codeRef: open[0].code_ref as string };
+    return onGroup(lane.group_id as string);
   }
 
   /**
@@ -3661,7 +3720,8 @@ export class Store {
           .prepare('UPDATE escalations SET ticket_id = ?, epic_id = NULL, lane_id = ?, updated_at = ? WHERE id = ?')
           .run(moveTo.ticketId, moveTo.laneId, at, id);
         this.db.prepare('UPDATE tickets SET updated_at = ? WHERE num = ?').run(at, moveTo.ticketId);
-        this.addEvent(moveTo.laneId, at, 'escalation', `${was.ref} moved here from the epic: ${was.question}`, actor, moveTo.ticketId);
+        const from = was.epicId !== null ? 'the epic' : 'the group';
+        this.addEvent(moveTo.laneId, at, 'escalation', `${was.ref} moved here from ${from}: ${was.question}`, actor, moveTo.ticketId);
       }
       const before = this.requireEscalation(id);
       const given = (v: unknown) => (v === undefined || v === null || (Array.isArray(v) && v.length === 0) ? null : v);
@@ -3849,7 +3909,7 @@ export class Store {
         decidedBy: e.decidedBy,
         decidedAt: e.decidedAt,
         resolution: e.resolution,
-        laneId: Store.isEpicLane(e.laneId) ? null : e.laneId,
+        laneId: Store.isInternalLane(e.laneId) ? null : e.laneId,
         at: e.createdAt,
       };
     });
@@ -4006,7 +4066,7 @@ export class Store {
    * conversation (lanes have no conversation of their own), pushed quietly, and a line in the lane's history.
    */
   postNotice(laneId: string, message: string, actor: string, attachments: string[] = [], owner = actor): { laneId: string; message: string; at: string } {
-    const found = Store.isEpicLane(laneId) ? null : this.laneIncludingArchived(laneId);
+    const found = Store.isInternalLane(laneId) ? null : this.laneIncludingArchived(laneId);
     if (!found) throw new NotFoundError(`Lane "${localId(laneId)}" not found: publish it first (update_lane with its group)`);
     // A lane removed before every lane had a group: its project's catch-all group.
     const groupId = this.tx(() => this.messageGroupOfLane(laneId, this.now().toISOString()));
@@ -4404,6 +4464,9 @@ export class Store {
       }
       closedById.set(e.id, e);
     }
+    // On a group's wait, a lane's question that's another group's own (raised there before the lane moved) isn't this group's.
+    const otherGroups = (e: StoredEscalation) =>
+      !!scope.groupId && e.ticketId === null && e.epicId === null && e.group !== null && e.group !== scope.groupId;
     const removedLanes: WaitResult['removedLanes'] = [];
     for (const laneId of laneIds) {
       if (scope.since) {
@@ -4417,7 +4480,7 @@ export class Store {
           .get(laneId, scope.since, ...viewerArgs) as Row | undefined;
         if (removed) removedLanes.push({ laneId, removedBy: (removed.actor as string | null) ?? null, at: removed.at as string });
       }
-      for (const e of this.listEscalations({ laneId, states: ['open', 'decided'] })) byId.set(e.id, e);
+      for (const e of this.listEscalations({ laneId, states: ['open', 'decided'] })) if (!otherGroups(e)) byId.set(e.id, e);
       if (scope.since) {
         const rows = this.db
           .prepare(
@@ -4425,7 +4488,24 @@ export class Store {
                AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)`,
           )
           .all(laneId, scope.since, ...viewerArgs) as Row[];
-        for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
+        for (const r of rows) {
+          const e = this.escalationFromRow(r);
+          if (!otherGroups(e)) closedById.set(r.id as string, e);
+        }
+      }
+    }
+    // A group's own questions (neither a ticket's nor an epic's), wherever the lane they were raised from went.
+    if (scope.groupId) {
+      for (const r of this.db
+        .prepare(
+          `SELECT * FROM escalations WHERE ticket_id IS NULL AND epic_id IS NULL AND group_id = ?
+             AND (state IN ('open', 'decided')
+               OR (? IS NOT NULL AND state = 'withdrawn' AND updated_at >= ? AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)))`,
+        )
+        .all(scope.groupId, scope.since ?? null, scope.since ?? null, ...viewerArgs) as Row[]) {
+        const e = this.escalationFromRow(r);
+        if (e.state === 'withdrawn') closedById.set(e.id, e);
+        else byId.set(e.id, e);
       }
     }
     // Questions also count where their ticket is: those of tickets the lanes hold, and a group's parked ones.
@@ -4660,7 +4740,7 @@ export class Store {
     /** WHERE clause: keyset position, optional time range on `timeCol`, optional lane. */
     const local = (v: unknown) => (typeof v === 'string' ? localId(v) : v);
     // An epic's internal lane (where its own questions are raised) isn't a lane anyone knows.
-    const laneOut = (v: unknown) => (typeof v === 'string' && Store.isEpicLane(v) ? null : local(v));
+    const laneOut = (v: unknown) => (typeof v === 'string' && Store.isInternalLane(v) ? null : local(v));
     const where = (
       ridCol: string,
       laneCol: string | null,
@@ -4949,7 +5029,8 @@ export class Store {
           code: e.code,
           name: e.name,
           ticket_url: e.url,
-          stand_in: e.standIn,
+          // Stand-in epics are gone (v26): every epic is a real one.
+          stand_in: false,
           state: e.state,
           status_line: e.statusLine,
           links: r.links,
@@ -5042,7 +5123,7 @@ export class Store {
         ref: this.codeOf(e),
         project: projectOf(e.lane_id as string),
         lane_id: laneOut(e.lane_id),
-        lane_name: Store.isEpicLane(e.lane_id as string) ? null : e.lane_name,
+        lane_name: Store.isInternalLane(e.lane_id as string) ? null : e.lane_name,
         group_id: local(e.group_id),
         group_name: e.group_name,
         ticket: e.ticket,

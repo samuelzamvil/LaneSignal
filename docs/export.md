@@ -122,14 +122,14 @@ Blocked time and status history belong to a lane's ticket: when a lane moves to 
 | `id` | The epic's number (escalations refer to it as `epic_id`) |
 | `group_id` | The group it belongs to |
 | `ref`, `display_ref` | Its ticket's canonical reference and how it was first written; empty for a group standing in as its epic |
-| `code` | What its escalation codes start with (`680`; for a stand-in, its group's id, or its ticket from before epics; `E7` when the ref can't be one) |
+| `code` | What its escalation codes start with (`680`; `E7` when the ref can't be one) |
 | `name`, `ticket_url`, `links` | |
-| `stand_in` | `true` for the group standing in as its epic |
+| `stand_in` | Always `false` (groups hold their own questions since schema v29; kept for older readers) |
 | `state` | `open`, `close_requested` or `closed` |
 | `status_line` | The overseer's one line on its card |
 | `close_reason`, `close_requested_by` | The overseer's close request, while it waits for a person |
 | `escalations_total`, `escalations_open` | Counts |
-| `created_at`, `updated_at`, `closed_at` | Timing (`closed_at` once closed, or for a stand-in, once it stepped aside) |
+| `created_at`, `updated_at`, `closed_at` | Timing (`closed_at` once closed) |
 
 ### `epic_messages.csv` (epics' boards)
 

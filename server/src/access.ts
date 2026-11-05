@@ -168,13 +168,23 @@ export function accessFor(store: Store, principal: Principal): Access {
 }
 
 /**
- * Where a new escalation goes, from a client's `lane_id` and/or `epic`: the qualified lane it's raised
- * in (an epic's internal lane when raised on the epic directly) and the epic's number, if named.
+ * Where a new escalation goes, from a client's `lane_id`, `epic` or `group`: the qualified lane it's
+ * raised in (an epic's or the group's internal lane when raised on it directly) and the epic's number,
+ * if named. `epic` naming a group with no epic of its own raises it on the group, as before epics were optional.
  */
-export function escalationTarget(store: Store, a: Access, raw: { laneId?: string; epic?: string }, project?: string | null) {
+export function escalationTarget(store: Store, a: Access, raw: { laneId?: string; epic?: string; group?: string }, project?: string | null) {
+  if (raw.group) {
+    const groupId = qualify(a.pick(project, { group: raw.group }), raw.group);
+    if (!store.getGroup(groupId)) throw new NotFoundError(`Group "${raw.group}" not found: register it first (update_group)`);
+    return { laneId: Store.groupLaneId(groupId), epic: undefined };
+  }
   if (raw.epic) {
     const e = a.epic(raw.epic, project ?? (raw.laneId ? a.pick(project, { lane: raw.laneId }) : undefined));
-    if (!e) throw new NotFoundError(`Epic "${raw.epic}" not found: name it by its ticket ref, or its group's id (list_epics shows them)`);
+    if (!e && !raw.laneId && /^[A-Za-z0-9._:-]{1,64}$/.test(raw.epic)) {
+      const pr = a.projects.find((p) => store.getGroup(qualify(p, raw.epic!)) && (!project || a.pick(project, { group: raw.epic }) === p));
+      if (pr) return { laneId: Store.groupLaneId(qualify(pr, raw.epic)), epic: undefined };
+    }
+    if (!e) throw new NotFoundError(`Epic "${raw.epic}" not found: name it by its ticket ref (list_epics shows them), or raise it on your group (group)`);
     if (raw.laneId && !store.laneExists(qualify(e.project, raw.laneId))) {
       throw new NotFoundError(`Lane "${raw.laneId}" not found: publish it first, or leave lane_id out to raise it on the epic`);
     }
@@ -183,10 +193,7 @@ export function escalationTarget(store: Store, a: Access, raw: { laneId?: string
   return { laneId: qualify(a.pick(project, { lane: raw.laneId }), raw.laneId!), epic: undefined };
 }
 
-/**
- * update_epic: changes an epic named by its ref or group. A ref no epic has yet, with a `group`, adds
- * a real epic to that group; so does giving a ref to a group's stand-in epic. Either retires the stand-in.
- */
+/** update_epic: changes an epic named by its ref (or its group's id, for a group's only epic). A ref no epic has yet, with a `group`, adds that epic to the group. */
 export function updateEpicFor(
   store: Store,
   a: Access,
@@ -197,7 +204,6 @@ export function updateEpicFor(
   const fields = { name: raw.name, links: raw.links, statusLine: raw.statusLine };
   const found = a.epic(raw.epic, project ?? (raw.group ? a.pick(project, { group: raw.group }) : undefined));
   if (found) {
-    if (found.standIn && raw.ref?.trim()) return store.upsertEpic(found.project, { groupId: found.group, ref: raw.ref, ...fields }, actor);
     return store.upsertEpic(found.project, { epic: found.id, ref: raw.ref, ...fields }, actor);
   }
   if (!raw.group) {
@@ -363,9 +369,11 @@ export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean;
     upgraded: e.upgraded,
     turn: e.state === 'open' && e.turn === 'agent' ? 'agent' : undefined,
     projectKey: e.projectKey,
-    laneId: e.laneId === null || isEpicLane(e.laneId) ? undefined : e.laneId,
+    laneId: e.laneId === null || isInternalLane(e.laneId) ? undefined : e.laneId,
     // An epic's question: which epic (its lane, if any, is only where it was raised).
     epic: e.epicName,
+    // The group's own question (no ticket or epic): which group.
+    group: e.ticketId === null && e.epicId === null && e.group ? localId(e.group) : undefined,
     state: e.state,
     blocking: e.blocking ? undefined : false,
     question: e.question,
@@ -466,7 +474,7 @@ export const briefTicket = (t: Ticket) =>
     updatedAt: t.updatedAt,
   });
 
-/** An epic as agents read it. `epic` is how to name it in other tools: its ref, or the group's id for a stand-in. */
+/** An epic as agents read it. `epic` is how to name it in other tools: its ref. */
 export const briefEpic = (e: Epic) =>
   compact({
     epic: e.displayRef ?? e.group,
@@ -474,7 +482,6 @@ export const briefEpic = (e: Epic) =>
     group: e.group,
     project: e.project,
     code: e.code,
-    standIn: e.standIn || undefined,
     state: e.state,
     statusLine: e.statusLine,
     closeReason: e.closeReason,
@@ -511,11 +518,11 @@ export const briefRequirement = (r: Requirement, full = false) =>
 export const briefMessages = (messages: Message[]) =>
   messages.map((m) => compact({ body: m.body, by: m.author, at: m.at, attachments: m.attachments.length ? m.attachments : undefined }));
 
-/** An epic's internal lane (its own questions are raised there), in either id form. */
-export const isEpicLane = (laneId: string) => /(^|\/)~epic-\d+$/.test(laneId);
+/** An epic's or a group's internal lane (their own questions are raised there), in either id form. */
+export const isInternalLane = (laneId: string) => /(^|\/)~(epic-\d+|group-.+)$/.test(laneId);
 
 /** A lane id as clients know it; null for an epic's internal lane. */
-const pubLaneId = (laneId: string | null) => (laneId === null || isEpicLane(laneId) ? null : localId(laneId));
+const pubLaneId = (laneId: string | null) => (laneId === null || isInternalLane(laneId) ? null : localId(laneId));
 
 /** The owner's messages as one text: each in full, with any files attached (name and id, for GET /api/attachments/:id). */
 const ownerWords = (messages: { body: string; attachments: { id: string; name: string }[] }[]) =>
@@ -688,13 +695,15 @@ export function requireRaiser(store: Store, a: Access, e: Escalation, verb: 'ack
   const me = ownerOf(a.principal);
   const mine = owner ? owner === me || (a.principal.userId !== undefined && owner === `user:${a.principal.userId}`) : e.createdBy === a.principal.name;
   // A ticket moved to another overseer's group goes with its questions: that overseer may close them too.
-  // An epic's questions: its group's overseer too.
+  // An epic's questions, and a group's own: the group's overseer too.
+  const onGroup = e.ticketId === null && e.epicId === null;
   const overseer =
-    (e.ticketId !== null && store.ticketOverseer(e.ticketId) === me) || (e.epicId !== null && store.epicOverseer(e.epicId) === me);
+    (e.ticketId !== null && store.ticketOverseer(e.ticketId) === me) ||
+    (e.epicId !== null && store.epicOverseer(e.epicId) === me) ||
+    (onGroup && e.group !== null && store.groupOverseer(e.group.includes('/') ? e.group : qualify(e.project, e.group)) === me);
   if (!mine && !overseer) {
-    throw new ForbiddenError(
-      `${e.ref} was raised by ${e.createdBy}; only that agent, the overseer of the group its ${e.epicId !== null ? 'epic' : 'ticket'} is in, or a person can ${verb} it`,
-    );
+    const where = e.epicId !== null ? 'the overseer of the group its epic is in' : onGroup ? "the group's overseer" : 'the overseer of the group its ticket is in';
+    throw new ForbiddenError(`${e.ref} was raised by ${e.createdBy}; only that agent, ${where}, or a person can ${verb} it`);
   }
 }
 

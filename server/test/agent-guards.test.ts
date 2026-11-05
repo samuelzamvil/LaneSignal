@@ -221,7 +221,7 @@ describe('an FYI that now needs the owner', () => {
     assert.notEqual((await tool({ lane_id: 'fyi-punct', question: 'Is a < b?', blocking: false })).value.id, b.id);
   });
 
-  test("asked as blocking from a lane, an FYI on the group's epic moves to the lane and blocks it; another lane's never is", async () => {
+  test("asked as blocking from a lane, an FYI on the group or its epic moves to the lane and blocks it; another lane's never is", async () => {
     await srv.publish('fyi-move', { group: 'fyi-g2' });
     await srv.publish('fyi-move-2', { group: 'fyi-g2' });
     const onEpic = (await tool({ epic: 'fyi-g2', question: 'Freeze the schema?', blocking: false })).value;
@@ -248,8 +248,11 @@ describe('an FYI that now needs the owner', () => {
     const after = (await srv.call('GET', `/api/escalations/${stays.id}`, ALICE)).body;
     assert.equal(after.laneId, null);
     assert.equal(after.blocking, false);
-    // An epic FYI raised from another lane isn't this lane's to take.
-    const fromOther = (await tool({ epic: 'fyi-g2', lane_id: 'fyi-move-2', question: 'Bump the SDK?', blocking: false })).value;
+    // The same goes for an epic's FYI, but one raised from another lane isn't this lane's to take.
+    await srv.tool(AGENT, 'update_epic', { epic: '820', group: 'fyi-g2', name: 'SDK' });
+    const onRealEpic = (await tool({ epic: '820', question: 'Drop Node 20?', blocking: false })).value;
+    assert.equal((await tool({ lane_id: 'fyi-move', question: 'Drop Node 20?' })).value.id, onRealEpic.id);
+    const fromOther = (await tool({ epic: '820', lane_id: 'fyi-move-2', question: 'Bump the SDK?', blocking: false })).value;
     assert.notEqual((await tool({ lane_id: 'fyi-move', question: 'Bump the SDK?' })).value.id, fromOther.id);
     // The same short question on two lanes is two questions: each lane's own blocks.
     const onOther = (await tool({ lane_id: 'fyi-move-2', question: 'OK to merge?', blocking: false })).value;

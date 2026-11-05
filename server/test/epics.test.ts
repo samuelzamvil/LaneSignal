@@ -1,5 +1,5 @@
-// Epics: a group's long-lived tickets, with their own questions and close approval.
-// Every group has one; a group without its own stands in as its epic.
+// Epics: a group's long-lived tickets, with their own questions and close approval. A group may
+// have none: its own questions are then raised on the group.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { after, before, describe, test } from 'node:test';
 import { EXPORT_COLUMNS, Store } from '../src/store.ts';
 import { AGENT, ALICE, REVIEWER, startServer } from './helpers.ts';
-import { UNDO_V24 } from './undo.ts';
+import { UNDO_V24, UNDO_V29 } from './undo.ts';
 
 let srv: Awaited<ReturnType<typeof startServer>>;
 before(async () => {
@@ -28,17 +28,22 @@ const ask = async (args: Record<string, unknown>, token = AGENT) => srv.tool(tok
 const decide = (id: string, decision = 'Accept') => srv.call('POST', `/api/escalations/${id}/decide`, ALICE, { decision });
 const lane = async (id: string) => (await srv.call('GET', `/api/lanes/${id}`, ALICE)).body.lane;
 
-describe('every group has an epic', () => {
-  test('a new group stands in as its epic, named by its id and coded with it', async () => {
+const groupOf = async (id: string) => (await srv.call('GET', '/api/groups', ALICE)).body.find((g: any) => g.id === id);
+
+describe('groups hold questions of their own', () => {
+  test('a new group has no epic; its own questions are coded with its id', async () => {
     await group('search');
-    const [e] = await epics('search');
-    assert.equal(e.epic, 'search');
-    assert.equal(e.standIn, true);
-    assert.equal(e.code, 'search');
-    // A group's ticket is its epic's now: one sent with the group is left out, with a pointer.
+    assert.deepEqual(await epics('search'), []);
+    const g = await groupOf('search');
+    assert.equal(g.code, 'search');
+    assert.deepEqual([g.openEscalations, g.blockingEscalations, g.statusLine], [0, 0, null]);
+    // A group's ticket is its epic's: one sent with the group is left out, with a pointer.
     const billing = await group('billing', { ticket: '680' });
     assert.match(billing.value.warning, /update_epic with epic "680" and group "billing"/);
-    assert.equal((await epics('billing'))[0].code, 'billing');
+    assert.equal((await groupOf('billing')).code, 'billing');
+    // Its status line is the group's, on its box.
+    await group('search', { status_line: '2 lanes busy' });
+    assert.equal((await groupOf('search')).statusLine, '2 lanes busy');
   });
 
   test('a lane is never outside a group: publishing one without its group is refused', async () => {
@@ -57,68 +62,76 @@ describe('every group has an epic', () => {
     assert.equal((await lane('loner')).group, 'home');
   });
 
-  test('the epic\'s internal lane is never listed, shown or written to', async () => {
-    const id = await epicId('search');
+  test("a group's and an epic's internal lanes are never listed, shown or written to", async () => {
     const snapshot = (await srv.call('GET', '/api/snapshot', ALICE)).body;
     assert.ok(!snapshot.lanes.some((l: any) => l.id.includes('~')));
-    assert.ok(snapshot.epics.some((e: any) => e.id === id));
     assert.ok(!(await srv.call('GET', '/api/lanes', ALICE)).body.some((l: any) => l.id.includes('~')));
-    assert.equal((await srv.call('GET', `/api/lanes/~epic-${id}`, ALICE)).status, 404);
-    assert.equal((await srv.call('POST', `/api/lanes/~epic-${id}/messages`, ALICE, { body: 'hi' })).status, 410);
-    assert.equal((await srv.call('DELETE', `/api/lanes/~epic-${id}`, ALICE)).status, 404);
+    assert.equal((await srv.call('GET', '/api/lanes/~group-search', ALICE)).status, 404);
+    assert.equal((await srv.call('DELETE', '/api/lanes/~group-search', ALICE)).status, 404);
+    assert.equal((await srv.call('POST', '/api/lanes/~group-search/messages', ALICE, { body: 'hi' })).status, 410);
   });
 });
 
-describe('questions on epics', () => {
-  test('a ticketless lane raises on its group\'s epic: idle, never blocked, counted on the card', async () => {
-    await group('search');
+describe("a group's own questions", () => {
+  test("a ticketless lane in a group with no epic raises on the group: idle, never blocked, counted on the group", async () => {
     const res = await srv.tool(AGENT, 'update_lane', { lane_id: 'slot-1', group: 'search', status: 'active' });
     assert.match(res.value.warning, /holds no ticket, so it shows idle/);
-    assert.equal((await lane('slot-1')).status, 'idle');
     const q = (await ask({ lane_id: 'slot-1', question: 'Which ticket next?' })).value;
     assert.equal(q.ref, 'searchA');
-    assert.equal(q.epic, 'Search');
+    assert.equal(q.epic, undefined);
     assert.equal(q.laneId, 'slot-1');
     const l = await lane('slot-1');
     assert.equal(l.status, 'idle');
     assert.equal(l.openEscalations, 0);
-    const [e] = await epics('search');
-    assert.equal(e.openEscalations, 1);
-    assert.equal(e.blockingEscalations, 1);
+    const g = await groupOf('search');
+    assert.deepEqual([g.openEscalations, g.blockingEscalations], [1, 1]);
     // An FYI counts as open but not blocking.
     await ask({ lane_id: 'slot-1', question: 'FYI: CI is slow', blocking: false });
-    const [after] = await epics('search');
+    const after = await groupOf('search');
     assert.deepEqual([after.openEscalations, after.blockingEscalations], [2, 1]);
   });
 
-  test('raised on an epic directly, with no lane; the same question again is a retry', async () => {
-    const q = (await ask({ epic: 'search', question: 'Do we file the reindex ticket?' })).value;
+  test('raised on the group directly, with no lane or epic; the same question again is a retry', async () => {
+    const q = (await ask({ group_id: 'search', question: 'Do we file the reindex ticket?' })).value;
     assert.equal(q.ref, 'searchC');
     assert.equal(q.laneId, undefined);
-    const again = (await ask({ epic: 'search', question: 'do we file the reindex  ticket?' })).value;
+    const again = (await ask({ group_id: 'search', question: 'do we file the reindex  ticket?' })).value;
     assert.equal(again.id, q.id);
     assert.equal(again.duplicate, true);
     const full = (await srv.call('GET', `/api/escalations/${q.id}`, ALICE)).body;
-    assert.equal(full.epicId, await epicId('search'));
-    assert.equal(full.ticketId, null);
+    assert.deepEqual([full.epicId, full.ticketId, full.laneId, full.group], [null, null, null, 'search']);
+    // `epic` naming a group with no epic still raises on the group, as when the group stood in as its epic.
+    const legacy = (await ask({ epic: 'search', question: 'Split search into two services?' })).value;
+    assert.match(legacy.ref, /^search[A-Z]$/);
+    assert.equal((await srv.call('GET', `/api/escalations/${legacy.id}`, ALICE)).body.group, 'search');
+    // Over HTTP too.
+    const http = await srv.call('POST', '/api/escalations', AGENT, { group: 'search', question: 'Freeze on Friday?', blocking: false });
+    assert.equal(http.status, 201);
+    assert.equal(http.body.laneId, null);
+    assert.equal((await srv.call('POST', '/api/escalations', AGENT, { group: 'search', laneId: 'slot-1', question: 'Both?' })).status, 400);
     const missing = await ask({ question: 'Where?' });
     assert.equal(missing.isError, true);
     const unknown = await ask({ epic: 'nope-epic', question: 'Where?' });
     assert.match(unknown.text, /Epic "nope-epic" not found/);
+    // A blocking one has the group waiting on a person; its lanes' status doesn't change.
+    assert.ok((await groupOf('search')).blockingEscalations >= 3);
+    assert.equal((await lane('slot-1')).status, 'idle');
   });
 
   test('a lane holding a ticket raises on the ticket, unless it names an epic', async () => {
-    await srv.tool(AGENT, 'fill_lane', { lane_id: 'slot-2', group: 'search', ticket: '900' });
+    await group('catalog');
+    await srv.tool(AGENT, 'update_epic', { epic: '950', group: 'catalog', name: 'Catalog v2' });
+    await srv.tool(AGENT, 'fill_lane', { lane_id: 'slot-2', group: 'catalog', ticket: '900' });
     const own = (await ask({ lane_id: 'slot-2', question: 'Ship 900?' })).value;
     assert.equal(own.ref, '900A');
     assert.equal((await lane('slot-2')).status, 'blocked_human');
-    const durable = (await ask({ lane_id: 'slot-2', epic: 'search', question: 'Split search into two services?' })).value;
-    assert.match(durable.ref, /^search[A-Z]$/);
+    const durable = (await ask({ lane_id: 'slot-2', epic: '950', question: 'Split the catalog?' })).value;
+    assert.equal(durable.ref, '950A');
     assert.equal(durable.laneId, 'slot-2', 'raised in the lane');
     assert.equal((await lane('slot-2')).blockingEscalations, 1, "the epic's question doesn't block the lane");
   });
 
-  test("the overseer of the epic's group may acknowledge its questions", async () => {
+  test("the group's overseer may acknowledge its questions", async () => {
     await group('payments');
     await srv.tool(REVIEWER, 'update_lane', { lane_id: 'rev-slot', group: 'payments' });
     const q = (await ask({ lane_id: 'rev-slot', question: 'Which payout ticket first?' }, REVIEWER)).value;
@@ -126,33 +139,30 @@ describe('questions on epics', () => {
     const ack = await srv.tool(AGENT, 'acknowledge_escalation', { id: q.ref });
     assert.equal(ack.isError, false, ack.text);
     // Not the other way round: the reviewer doesn't oversee search.
-    const other = (await ask({ epic: 'search', question: 'Reviewer may not close this?' })).value;
+    const other = (await ask({ group_id: 'search', question: 'Reviewer may not close this?' })).value;
     await decide(other.id);
     const denied = await srv.tool(REVIEWER, 'acknowledge_escalation', { id: other.ref });
-    assert.match(denied.text, /overseer of the group its epic is in/);
+    assert.match(denied.text, /the group's overseer/);
     await srv.tool(AGENT, 'acknowledge_escalation', { id: other.ref });
   });
 });
 
 describe('real epics', () => {
-  test('the first real epic retires the stand-in: questions move to it, codes kept; status line set', async () => {
-    await group('orders');
-    const standIn = await epicId('orders');
-    const q = (await ask({ epic: 'orders', question: 'Keep the legacy cart?' })).value;
+  test("adding an epic leaves the group's own questions on the group; the epic's take its code", async () => {
+    await group('orders', { status_line: '2 lanes busy' });
+    const q = (await ask({ group_id: 'orders', question: 'Keep the legacy cart?' })).value;
     assert.equal(q.ref, 'ordersA');
-    await srv.tool(AGENT, 'update_epic', { epic: 'orders', status_line: '2 lanes busy' });
     const created = await srv.tool(AGENT, 'update_epic', { epic: '700', group: 'orders', name: 'Checkout v2' });
     assert.equal(created.isError, false, created.text);
     assert.equal(created.value.epic, '700');
-    assert.equal(created.value.statusLine, '2 lanes busy', 'the stand-in\'s status line carries over');
-    const real = await epicId('orders');
-    assert.notEqual(real, standIn);
-    const moved = (await srv.call('GET', `/api/escalations/${q.id}`, ALICE)).body;
-    assert.equal(moved.epicId, real);
-    assert.equal(moved.ref, 'ordersA', 'codes are kept');
-    assert.equal((await srv.call('GET', `/api/epics/${standIn}`, ALICE)).body.epic.state, 'closed');
-    // New questions take the real epic's code.
+    assert.equal(created.value.statusLine, undefined, "the group's status line stays the group's");
+    assert.equal((await groupOf('orders')).statusLine, '2 lanes busy');
+    const kept = (await srv.call('GET', `/api/escalations/${q.id}`, ALICE)).body;
+    assert.deepEqual([kept.epicId, kept.group, kept.ref], [null, 'orders', 'ordersA']);
     assert.equal((await ask({ epic: '700', question: 'Guest checkout?' })).value.ref, '700A');
+    // A ticketless lane in a group with one epic raises on that epic.
+    await srv.tool(AGENT, 'update_lane', { lane_id: 'ord-first', group: 'orders' });
+    assert.equal((await ask({ lane_id: 'ord-first', question: 'Which ticket first?' })).value.ref, '700B');
     // Over REST, with its status line.
     const rest = await srv.call('POST', '/api/epics', AGENT, { group: 'orders', ref: '701', name: 'Returns', statusLine: 'Scoping' });
     assert.equal(rest.status, 201, JSON.stringify(rest.body));
@@ -174,29 +184,30 @@ describe('real epics', () => {
   test('a ticket and an epic with the same ref share one letter sequence', async () => {
     await srv.tool(AGENT, 'fill_lane', { lane_id: 'groom', group: 'orders', ticket: '700' });
     const q = (await ask({ lane_id: 'groom', question: 'Groom 700 now?' })).value;
-    assert.equal(q.ref, '700B', '700A is the epic\'s');
+    assert.equal(q.ref, '700C', '700A and 700B are the epic\'s');
     assert.equal((await srv.call('GET', `/api/escalations/${q.ref}`, ALICE)).body.ticketId !== null, true);
   });
 
-  test('fill_lane names the epic a ticket is for; closed epics and other groups\' are refused; the stand-in clears it', async () => {
+  test('fill_lane names the epic a ticket is for; closed epics and other groups\' are refused', async () => {
     const filled = await srv.tool(AGENT, 'fill_lane', { lane_id: 'ord-slot', ticket: '710', epic: '701' });
     assert.equal(filled.isError, false, filled.text);
     const t = srv.store.getTicket('default', '710')!;
     assert.equal(t.epicId, await epicId('orders', '701'));
     assert.deepEqual((await epicDetail(t.epicId!)).lanes, ['ord-slot']);
-    const other = await srv.tool(AGENT, 'fill_lane', { lane_id: 'ord-slot', ticket: '710', epic: 'search' });
+    const other = await srv.tool(AGENT, 'fill_lane', { lane_id: 'ord-slot', ticket: '710', epic: '950' });
     assert.match(other.text, /a lane's ticket names an epic of the lane's group/);
     await srv.tool(AGENT, 'fill_lane', { lane_id: 'ord-slot', ticket: '710', epic: null });
     assert.equal(srv.store.getTicket('default', '710')!.epicId, null);
-    // The search group's stand-in: naming it means no epic of its own.
-    await srv.tool(AGENT, 'fill_lane', { lane_id: 'slot-3', group: 'search', ticket: '720', epic: 'search' });
-    assert.equal(srv.store.getTicket('default', '720')!.epicId, null);
+    // A group with no epic has none to name.
+    const none = await srv.tool(AGENT, 'fill_lane', { lane_id: 'slot-3', group: 'search', ticket: '720', epic: 'search' });
+    assert.equal(none.isError, true);
   });
 });
 
 describe('message boards', () => {
   test('are retired: everything is said in the group\'s conversation', async () => {
     await group('boards');
+    await srv.tool(AGENT, 'update_epic', { epic: '960', group: 'boards' });
     const id = await epicId('boards');
     const refused = await srv.call('POST', `/api/epics/${id}/messages`, ALICE, { body: 'Do the audit ticket first' });
     assert.equal(refused.status, 410);
@@ -223,8 +234,6 @@ describe('closing an epic', () => {
   test('an overseer asks; refused while questions are open or answered and unacknowledged', async () => {
     await group('closing');
     await srv.tool(AGENT, 'update_epic', { epic: '800', group: 'closing', name: 'Audit' });
-    // A stand-in isn't closed: it steps aside for a real epic.
-    assert.match((await srv.tool(AGENT, 'request_epic_close', { epic: 'boards', reason: 'x' })).text, /stand-in epic isn't closed/);
     const q = (await ask({ epic: '800', question: 'Anything left?' })).value;
     assert.match((await srv.tool(AGENT, 'request_epic_close', { epic: '800', reason: 'Done' })).text, /still open or awaiting acknowledgement/);
     await decide(q.id);
@@ -236,7 +245,7 @@ describe('closing an epic', () => {
     assert.equal(asked.value.closeReason, 'Audit filed');
   });
 
-  test('a person approves or declines, signed in; the last real epic closing brings the stand-in back', async () => {
+  test('a person approves or declines, signed in; a group whose last epic closed has none', async () => {
     const id = await epicId('closing', '800');
     assert.equal((await srv.call('POST', `/api/epics/${id}/close`, AGENT, { approve: true })).status, 403);
     assert.equal((await srv.call('POST', `/api/epics/${id}/close`, personal, { approve: true })).status, 403);
@@ -247,8 +256,7 @@ describe('closing an epic', () => {
     await srv.call('POST', `/api/epics/${id}/close-request`, AGENT, { reason: 'Audit filed' });
     const closed = await srv.call('POST', `/api/epics/${id}/close`, ALICE, { approve: true });
     assert.equal(closed.body.state, 'closed');
-    const now = await epics('closing');
-    assert.deepEqual(now.map((e) => [e.epic, e.standIn]), [['closing', true]]);
+    assert.deepEqual(await epics('closing'), []);
     // A closed epic takes no more questions.
     assert.match((await ask({ epic: '800', question: 'More?' })).text, /not found|closed/);
     // Nor can a ticket name it any more.
@@ -258,11 +266,8 @@ describe('closing an epic', () => {
   });
 
   let reopenedId = 0;
-  test('an overseer asks to reopen a closed epic; approved, it takes back the stand-in\'s questions', async () => {
-    const id = await epicId('closing');
-    assert.match((await srv.tool(AGENT, 'request_epic_reopen', { epic: 'closing', reason: 'x' })).text, /stand-in epic isn't reopened/);
-    const meanwhile = (await ask({ epic: 'closing', question: 'Meanwhile: file the audit follow-up?' })).value;
-    await srv.tool(AGENT, 'update_epic', { epic: 'closing', status_line: 'Follow-up pending' });
+  test("an overseer asks to reopen a closed epic; approved, the group's own questions stay the group's", async () => {
+    const meanwhile = (await ask({ group_id: 'closing', question: 'Meanwhile: file the audit follow-up?' })).value;
     const asked = await srv.tool(AGENT, 'request_epic_reopen', { epic: '800', reason: 'Auditors came back' });
     assert.equal(asked.isError, false, asked.text);
     assert.equal(asked.value.state, 'closed');
@@ -270,7 +275,7 @@ describe('closing an epic', () => {
     // People see it in the app's snapshot, to decide; agents' lists of epics leave it out, since it's still closed.
     const e800 = ((await srv.call('GET', '/api/snapshot', ALICE)).body.epics as any[]).find((e) => e.displayRef === '800');
     assert.equal(e800.reopenRequest.reason, 'Auditors came back');
-    assert.deepEqual((await epics('closing')).map((e) => e.epic), ['closing']);
+    assert.deepEqual(await epics('closing'), []);
     assert.ok(!((await srv.call('GET', '/api/epics?group=closing', AGENT)).body as any[]).some((e) => e.id === e800.id));
     const advice = await srv.tool(AGENT, 'fill_lane', { lane_id: 'reopen-slot', group: 'closing', ticket: '820' });
     assert.doesNotMatch(advice.text, /This group has epics \(800\)/);
@@ -283,10 +288,9 @@ describe('closing an epic', () => {
     assert.equal(reopened.body.state, 'open');
     assert.equal(reopened.body.reopenRequest, null);
     assert.equal(reopened.body.closeReason, null);
-    assert.equal(reopened.body.statusLine, 'Follow-up pending');
-    assert.deepEqual((await epics('closing')).map((e) => [e.epic, e.standIn ?? false]), [['800', false]]);
-    assert.ok((await epicDetail(e800.id)).escalations.some((x: any) => x.id === meanwhile.id), "the stand-in's question moved");
-    assert.equal((await srv.call('GET', `/api/epics/${id}`, ALICE)).body.epic.state, 'closed');
+    assert.deepEqual((await epics('closing')).map((e) => e.epic), ['800']);
+    assert.ok(!(await epicDetail(e800.id)).escalations.some((x: any) => x.id === meanwhile.id), "the group's question stays the group's");
+    assert.equal((await srv.call('GET', `/api/escalations/${meanwhile.id}`, ALICE)).body.group, 'closing');
     const items = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'closing', since, wait_seconds: 0 })).value.items as any[];
     assert.deepEqual(items.filter((i) => i.kind.startsWith('reopen_')).map((i) => [i.kind, i.id]), [['reopen_approved', '800']]);
     // A ticket can name it again.
@@ -323,11 +327,12 @@ describe('export', () => {
     }
     const epicRows = (await srv.call('GET', '/api/export/epics.json', ALICE)).body;
     assert.ok(epicRows.some((r: any) => r.display_ref === '700' && r.name === 'Checkout v2' && r.stand_in === false));
-    assert.ok(epicRows.some((r: any) => r.group_id === 'orders' && r.stand_in === true && r.state === 'closed'));
     const escs = (await srv.call('GET', '/api/export/escalations.json', ALICE)).body;
     const direct = escs.find((r: any) => r.question === 'Do we file the reindex ticket?');
-    assert.equal(typeof direct.epic_id, 'number');
-    assert.equal(direct.lane_id, null, 'raised on the epic, in no lane');
+    assert.equal(direct.epic_id, null, "the group's own");
+    assert.equal(direct.lane_id, null, 'raised on the group, in no lane');
+    assert.equal(direct.group_id, 'search');
+    assert.equal(typeof escs.find((r: any) => r.question === 'Guest checkout?').epic_id, 'number');
     assert.equal(escs.find((r: any) => r.question === 'Ship 900?').epic_id, null);
     const lanes = (await srv.call('GET', '/api/export/lanes.json', ALICE)).body;
     assert.ok(lanes.length > 0 && !lanes.some((l: any) => String(l.id).includes('~')));
@@ -358,6 +363,7 @@ describe('REST', () => {
 
 /** Takes a database back from v18 (epics) to v17. */
 const UNDO_V18 = `
+  ${UNDO_V29}
   ${UNDO_V24}
   DELETE FROM lane_events WHERE lane_id LIKE '%/~epic-%';
   DELETE FROM escalations WHERE lane_id LIKE '%/~epic-%';
@@ -374,7 +380,7 @@ const UNDO_V18 = `
   UPDATE meta SET value = '17' WHERE key = 'schema_version';
 `;
 
-test('upgrading to epics: real epics for groups with a ticket, stand-ins otherwise, Ungrouped, idle ticketless lanes', () => {
+test('upgrading to epics, then past stand-ins: real epics for groups with a ticket, the others hold their own questions', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v17-'));
   const file = path.join(dir, 'lanesignal.db');
   const resolveTicketUrl = () => null;
@@ -399,11 +405,12 @@ test('upgrading to epics: real epics for groups with a ticket, stand-ins otherwi
 
     store = new Store({ path: file, resolveTicketUrl });
     const train = store.listEpics({ groupId: 'default/train' });
-    assert.deepEqual(train.map((e) => [e.ref, e.standIn, e.name]), [['680', false, 'Train']]);
-    const plain = store.listEpics({ groupId: 'default/plain' });
-    assert.deepEqual(plain.map((e) => [e.ref, e.standIn, e.code]), [[null, true, 'plain']]);
+    assert.deepEqual(train.map((e) => [e.ref, e.name]), [['680', 'Train']]);
+    // The stand-in v18 made for a group without a ticket is gone (v26): the group holds its questions, with its code.
+    assert.deepEqual(store.listEpics({ groupId: 'default/plain' }), []);
+    assert.equal(store.getGroup('default/plain')?.code, 'plain');
     assert.equal(store.getLane('default/stray')?.group, 'default/ungrouped');
-    assert.equal(store.listEpics({ groupId: 'default/ungrouped' })[0]?.standIn, true);
+    assert.deepEqual(store.listEpics({ groupId: 'default/ungrouped' }), []);
     // The ticketless lane's question belongs to its group's epic, and the lane shows idle.
     assert.equal(store.getEscalation(loose.id)?.epicId, train[0].id);
     assert.equal(store.getLane('default/t-slot')?.status, 'idle');
@@ -412,7 +419,7 @@ test('upgrading to epics: real epics for groups with a ticket, stand-ins otherwi
     // Opening it again changes nothing.
     store.close();
     store = new Store({ path: file, resolveTicketUrl });
-    assert.equal(store.listEpics({ states: ['open', 'close_requested', 'closed'] }).length, 3);
+    assert.equal(store.listEpics({ states: ['open', 'close_requested', 'closed'] }).length, 1);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -420,15 +427,15 @@ test('upgrading to epics: real epics for groups with a ticket, stand-ins otherwi
 });
 
 describe('review fixes', () => {
-  test("an epic's own question has no lane for clients; digests and get_updates name its epic", async () => {
+  test("a group's own question has no lane for clients; digests and get_updates list it", async () => {
     await group('direct');
-    const q = (await ask({ epic: 'direct', question: 'Which direction?' })).value;
+    const q = (await ask({ group_id: 'direct', question: 'Which direction?' })).value;
     assert.equal((await srv.call('GET', `/api/escalations/${q.id}`, ALICE)).body.laneId, null);
     const snapshot = (await srv.call('GET', '/api/snapshot', ALICE)).body;
     assert.equal(snapshot.escalations.find((e: any) => e.id === q.id).laneId, null);
     const open = (await srv.tool(AGENT, 'get_updates', { group_id: 'direct' })).value.open;
-    assert.deepEqual(open.map((o: any) => [o.ref, o.laneId ?? null, o.epicName]), [[q.ref, null, 'Direct']]);
-    // The owner answers Other; the agent's turn comes back as a reply naming the epic.
+    assert.deepEqual(open.map((o: any) => [o.ref, o.laneId ?? null, o.epicName]), [[q.ref, null, undefined]]);
+    // The owner answers Other; the agent's turn comes back as a reply.
     const start = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'direct', wait_seconds: 0 })).value;
     await srv.call('POST', `/api/escalations/${q.id}/decide`, ALICE, { decision: 'Other', note: 'Ask product first' });
     const w = (await srv.tool(AGENT, 'wait_for_decisions', { group_id: 'direct', since: start.checkedAt, wait_seconds: 0 })).value;
@@ -447,7 +454,8 @@ describe('review fixes', () => {
     await group('refs2');
     assert.equal((await srv.call('POST', '/api/epics', AGENT, { group: 'refs2', ref: '850' })).status, 409);
     await srv.tool(AGENT, 'update_lane', { lane_id: 'refs-slot', group: 'refs' });
-    const cross = await ask({ lane_id: 'refs-slot', epic: 'refs2', question: 'Wrong group?' });
+    await srv.tool(AGENT, 'update_epic', { epic: '852', group: 'refs2' });
+    const cross = await ask({ lane_id: 'refs-slot', epic: '852', question: 'Wrong group?' });
     assert.match(cross.text, /not this lane's/);
     // History finds an epic's closed questions by its ref.
     const q = (await ask({ epic: '850', question: 'Scope the audit?' })).value;
@@ -456,18 +464,17 @@ describe('review fixes', () => {
     assert.deepEqual(found.map((e: any) => e.id), [q.id]);
   });
 
-  test("a closed epic's tickets keep their link; questions follow a retired stand-in and a renamed epic", async () => {
+  test("a closed epic's tickets keep their link; questions follow a renamed epic", async () => {
     await group('links');
-    const standIn = await epicId('links');
-    const q = (await ask({ epic: 'links', question: 'Keep the old links page?' })).value;
+    await srv.tool(AGENT, 'update_epic', { epic: '860', group: 'links', name: 'Links v2' });
+    const q = (await ask({ epic: '860', question: 'Keep the old links page?' })).value;
     const sent: any[] = [];
     const on = (e: any) => e.type === 'escalation' && e.escalation.id === q.id && sent.push(e.escalation);
     srv.store.events.on('change', on);
-    await srv.tool(AGENT, 'update_epic', { epic: '860', group: 'links', name: 'Links v2' });
+    await new Promise((r) => setTimeout(r, 5));
     await srv.tool(AGENT, 'update_epic', { epic: '860', name: 'Links revamp' });
     srv.store.events.off('change', on);
-    assert.notEqual(sent[0].epicId, standIn, 'clients hear the question moved');
-    assert.equal(sent.at(-1).epicName, 'Links revamp', 'and the new name');
+    assert.equal(sent.at(-1).epicName, 'Links revamp', 'clients hear the new name');
     assert.ok(sent[0].updatedAt > sent[0].createdAt, "so it doesn't read as a new question");
     await srv.tool(AGENT, 'acknowledge_escalation', { id: q.ref }).catch(() => {});
     await srv.call('POST', `/api/escalations/${q.id}/withdraw`, ALICE, { note: 'moot' });
@@ -504,9 +511,10 @@ test('upgrading to epics: two groups with one ticket, and a lane its own earlier
 
     store = new Store({ path: file, resolveTicketUrl });
     const epics = store.listEpics();
+    // The second group with the same ticket stood in as its own epic (v18); since v26 it holds its own questions.
     assert.deepEqual(
-      epics.filter((e) => e.group !== 'default/ungrouped').map((e) => [e.group, e.ref, e.standIn]).sort(),
-      [['default/new-train', null, true], ['default/old-train', '680', false]],
+      epics.map((e) => [e.group, e.ref]).sort(),
+      [['default/old-train', '680']],
     );
     assert.equal(store.getLane('default/b-slot')?.status, 'awaiting_agent');
     assert.equal(store.getEscalation(loose.id)?.state, 'open');

@@ -340,7 +340,7 @@ test('upgrading to v25: each escalation joins the conversation of the group it w
     let store = new Store({ path: file, resolveTicketUrl: () => null });
     publishLane(store, 'default/l', { group: 'default/g' }, 'bot');
     const onLane = store.createEscalation({ laneId: 'default/l', question: 'On the lane?' }, 'bot');
-    const epic = store.listEpics({ groupId: 'default/g' })[0];
+    const epic = store.upsertEpic('default', { groupId: 'default/g', ref: '700' }, 'bot');
     const onEpic = store.createEscalation({ laneId: Store.epicLaneId('default', epic.id), epic: epic.id, question: 'On the epic?' }, 'bot');
     store.close();
     const db = new DatabaseSync(file);
@@ -358,6 +358,107 @@ test('upgrading to v25: each escalation joins the conversation of the group it w
       .map((i) => i.id)
       .sort();
     assert.deepEqual(ids, [onLane.id, onEpic.id].sort());
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("upgrading to v29: a stand-in epic's questions, board and status line become its group's", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v28-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl: () => null });
+    publishLane(store, 'default/slot', { group: 'default/grp', ticket: null }, 'bot');
+    const loose = store.createEscalation({ laneId: 'default/slot', question: 'Which ticket next?' }, 'bot');
+    const direct = store.createEscalation({ laneId: Store.groupLaneId('default/grp'), question: 'Freeze on Friday?' }, 'bot');
+    store.close();
+    // Back to v28, where the group stood in as its own epic and held these on it.
+    const db = new DatabaseSync(file);
+    db.exec(`
+      INSERT INTO epics (num, project_id, group_id, ref, display_ref, code_ref, name, links, state, stand_in, status_line, agent_read_id, created_at, updated_at)
+        VALUES (77, 'default', 'default/grp', NULL, NULL, 'grp', 'Grp', '[]', 'open', 1, 'Two lanes busy', 0, '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z');
+      INSERT INTO lanes (id, name, group_id, status, links, created_at, updated_at, status_since)
+        VALUES ('default/~epic-77', 'Grp', 'default/grp', 'idle', '[]', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z');
+      UPDATE escalations SET epic_id = 77 WHERE id = '${loose.id}';
+      UPDATE escalations SET epic_id = 77, lane_id = 'default/~epic-77' WHERE id = '${direct.id}';
+      UPDATE lane_events SET lane_id = 'default/~epic-77' WHERE lane_id = 'default/~group-grp';
+      DELETE FROM lanes WHERE id = 'default/~group-grp';
+      INSERT INTO group_messages (id, group_id, epic_id, author_kind, author, body, created_at)
+        VALUES (500, 'default/grp', 77, 'owner', 'alice', 'Read already', '2026-11-01T00:00:01.000Z'),
+               (501, 'default/grp', 77, 'owner', 'alice', 'Not read yet', '2026-11-01T00:00:02.000Z');
+      UPDATE epics SET agent_read_id = 500 WHERE num = 77;
+      ALTER TABLE groups DROP COLUMN code_ref;
+      ALTER TABLE groups DROP COLUMN status_line;
+      UPDATE meta SET value = '28' WHERE key = 'schema_version';`);
+    db.close();
+
+    store = new Store({ path: file, resolveTicketUrl: () => null });
+    assert.deepEqual(store.listEpics({ groupId: 'default/grp', states: ['open', 'close_requested', 'closed'] }), []);
+    const g = store.getGroup('default/grp')!;
+    assert.deepEqual([g.code, g.statusLine, g.openEscalations], ['grp', 'Two lanes busy', 2]);
+    for (const [id, ref] of [
+      [loose.id, loose.ref],
+      [direct.id, direct.ref],
+    ]) {
+      const e = store.getEscalation(id)!;
+      assert.deepEqual([e.epicId, e.ticketId, e.group, e.ref], [null, null, 'default/grp', ref], 'codes kept');
+    }
+    assert.equal(store.getEscalation(direct.id)?.laneId, Store.groupLaneId('default/grp'));
+    // The board's notes are the group's now; the one the overseer had read stays read.
+    assert.deepEqual(store.unacknowledgedGroupMessages('default/grp').map((m) => m.body), ['Not read yet']);
+    // New questions carry on the group's code.
+    const next = store.createEscalation({ laneId: Store.groupLaneId('default/grp'), question: 'And next?' }, 'bot');
+    assert.match(next.ref, /^grp[A-Z]$/);
+    assert.notEqual(next.ref, loose.ref);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a group's own question stays the group's when the lane it came from moves on", () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
+  try {
+    publishLane(store, 'default/x', { group: 'default/a', ticket: null }, 'bot');
+    const q = store.createEscalation({ laneId: 'default/x', question: 'What next?' }, 'bot');
+    assert.deepEqual([q.ticketId, q.epicId, q.group], [null, null, 'default/a']);
+    publishLane(store, 'default/x', { group: 'default/b', ticket: null }, 'bot');
+    assert.equal(store.blockingQuestionsOf('default/a'), 1);
+    assert.equal(store.blockingQuestionsOf('default/b'), 0);
+    store.decideEscalation(q.id, 'Accept', null, 'alice');
+    const decided = (group: string) => store.decisionsFor({ groupId: group }).decided.map((e) => e.id);
+    assert.deepEqual(decided('default/a'), [q.id]);
+    assert.deepEqual(decided('default/b'), []);
+  } finally {
+    store.close();
+  }
+});
+
+test('upgrading to v29 never marks an unread group note as read', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v28-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl: () => null });
+    publishLane(store, 'default/slot', { group: 'default/grp' }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      INSERT INTO epics (num, project_id, group_id, ref, display_ref, code_ref, name, links, state, stand_in, agent_read_id, created_at, updated_at)
+        VALUES (77, 'default', 'default/grp', NULL, NULL, 'grp', 'Grp', '[]', 'open', 1, 501, '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z');
+      INSERT INTO group_messages (id, group_id, epic_id, author_kind, author, body, created_at)
+        VALUES (500, 'default/grp', NULL, 'owner', 'alice', 'Group note, unread', '2026-11-01T00:00:01.000Z'),
+               (501, 'default/grp', 77, 'owner', 'alice', 'Board, read', '2026-11-01T00:00:02.000Z'),
+               (502, 'default/grp', 77, 'owner', 'alice', 'Board, unread', '2026-11-01T00:00:03.000Z');
+      ALTER TABLE groups DROP COLUMN code_ref;
+      ALTER TABLE groups DROP COLUMN status_line;
+      UPDATE meta SET value = '28' WHERE key = 'schema_version';`);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl: () => null });
+    assert.deepEqual(
+      store.unacknowledgedGroupMessages('default/grp').map((m) => m.body),
+      ['Group note, unread', 'Board, read', 'Board, unread'],
+    );
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

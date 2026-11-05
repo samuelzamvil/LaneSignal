@@ -32,6 +32,8 @@ export const groupPatch = z.object({
   links: z.array(link).max(20).optional(),
   /** The products this group works on. Once a group has some, only a person changes them. */
   products: z.array(productId).min(1).max(20).optional(),
+  /** One line on the group's box: what's queued or waiting (null clears it). */
+  statusLine: z.string().max(300).nullable().optional(),
 });
 
 /** PUT /api/groups/:id/products: a person sets which products a group works on. */
@@ -109,6 +111,8 @@ export const escalationFields = {
   laneId: laneId.optional(),
   /** The epic it's for: needed when raised on an epic directly, or from a lane holding no ticket in a group with several epics. */
   epic: epicName.optional(),
+  /** Raised on the group itself (no lane or epic): it blocks the group, not a lane. */
+  group: groupId.optional(),
   question: z.string().min(1).max(1000),
   context: z.string().max(20_000).nullable().optional(),
   recommendation: z.string().max(10_000).nullable().optional(),
@@ -150,7 +154,8 @@ export const notice = z.object({
 
 export const escalationInput = z
   .object(escalationFields)
-  .refine((e) => e.laneId || e.epic, { message: 'Say where it\'s raised: laneId, or epic', path: ['laneId'] })
+  .refine((e) => e.laneId || e.epic || e.group, { message: 'Say where it\'s raised: laneId, epic or group', path: ['laneId'] })
+  .refine((e) => !e.group || (!e.laneId && !e.epic), { message: 'A question on the group names no lane or epic', path: ['group'] })
   .refine((e) => !e.recommendedOption || (e.options ?? []).includes(e.recommendedOption), {
     message: 'recommendedOption must be one of options',
     path: ['recommendedOption'],

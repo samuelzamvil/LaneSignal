@@ -8,6 +8,7 @@ import {
   type Client,
   type Connection,
   type Escalation,
+  type Group,
   type Lane,
   type LaneStatus,
   type Principal,
@@ -20,7 +21,7 @@ import { onActiveTicket, ParkedRow, TicketDetail, TicketsContext } from './ticke
 import { ReopenRow } from './reopen.tsx';
 import { EpicCard, EpicDetail, EpicsContext, epicRoute, GroupHeader, hasLane, laneKeyOf, QuietLanes } from './epic-views.tsx';
 import { groupRoute, GroupView } from './group-view.tsx';
-import { epicShows, epicsOnScreen, groupLayout } from './epics.ts';
+import { epicsOnScreen, groupLayout } from './epics.ts';
 import { TicketLinksContext } from './linked-text.tsx';
 import { EscalationCard, EscalationDetail, EscalationRow, isCodeOf } from './escalations.tsx';
 import { accessSignOut, accessTokens } from './access-session.ts';
@@ -358,12 +359,19 @@ function Dashboard({
     [live.escalations, projectFilter],
   );
   const laneOf = (e: Escalation) => live.lanes.get(laneKeyOf(e));
+  /** A group's own questions (not its tickets' or epics') blocking it and waiting on a person. */
+  const ownBlocking = (g: Group) =>
+    [...live.escalations.values()].filter(
+      (e) => e.project === g.project && e.group === g.id && e.ticketId === null && e.epicId === null && e.state === 'open' && e.blocking && e.turn === 'owner',
+    ).length;
   const groupOfLane = (l: { project: string; group: string | null } | undefined) =>
     l?.group ? namedGroups.get(keyOf(l.project, l.group)) : undefined;
-  /** An escalation's group: its lane's, or for one raised on an epic, the epic's. */
+  /** An escalation's group: its lane's; for one raised on an epic, the epic's; for one raised on the group itself, that group. */
   const groupOfEsc = (e: Escalation) => {
     const epic = e.epicId ? live.epics.get(String(e.epicId)) : undefined;
-    return !hasLane(e.laneId) && epic ? namedGroups.get(keyOf(epic.project, epic.group)) : groupOfLane(laneOf(e));
+    if (!hasLane(e.laneId) && epic) return namedGroups.get(keyOf(epic.project, epic.group));
+    if (!hasLane(e.laneId) && e.group) return namedGroups.get(keyOf(e.project, e.group));
+    return groupOfLane(laneOf(e));
   };
   // Inbox order: lanes by their oldest open question, then each lane's questions in order,
   // so a batch ("four questions from #921") reads top to bottom.
@@ -526,8 +534,10 @@ function Dashboard({
     const lane = hasLane(e.laneId) ? laneOf(e) : undefined;
     if (lane) return laneMatches(lane);
     const epic = e.epicId ? live.epics.get(String(e.epicId)) : undefined;
-    if (!epic) return true;
-    return !activeStatuses.length && (!activeGroups.length || activeGroups.includes(keyOf(epic.project, epic.group)));
+    // An epic's question follows its epic's group; a group's own, its group.
+    const groupKey = epic ? keyOf(epic.project, epic.group) : e.group ? keyOf(e.project, e.group) : null;
+    if (!groupKey) return true;
+    return !activeStatuses.length && (!activeGroups.length || activeGroups.includes(groupKey));
   };
   // Counts and badges still count what the filters hide.
   const shown = (list: Escalation[]) => onTicket(list).filter(escMatches);
@@ -555,7 +565,10 @@ function Dashboard({
   if (filters.arrange === 'group') {
     // Groups needing a human first, then alphabetical; ungrouped lanes last.
     const ids: (string | null)[] = [...groupIds, null];
-    const urgent = (sec: Section) => sec.lanes.some(needsHuman) || epicsOf(sec.groupId ?? null).some((e) => e.blockingEscalations > 0);
+    const urgent = (sec: Section) => {
+      const g = sec.groupId ? namedGroups.get(sec.groupId) : undefined;
+      return sec.lanes.some(needsHuman) || epicsOf(sec.groupId ?? null).some((e) => e.blockingEscalations > 0) || (!!g && ownBlocking(g) > 0);
+    };
     sections = ids
       .map((id) => ({ key: id ?? '', groupId: id, lanes: visible.filter((l) => laneGroupKey(l) === id) }))
       .sort(
@@ -574,7 +587,7 @@ function Dashboard({
   /** One escalation in the inbox: a card with the answer buttons, or a one-line row. */
   const escItem = (e: Escalation, seq?: { index: number; total: number }) =>
     inboxLayout === 'list' ? (
-      <EscalationRow key={e.id} esc={e} lane={laneOf(e)} now={now} showProject={showProject} selected={route.escId === e.id} />
+      <EscalationRow key={e.id} esc={e} lane={laneOf(e)} groupName={groupOfEsc(e)?.name} now={now} showProject={showProject} selected={route.escId === e.id} />
     ) : (
       <EscalationCard
         key={e.id}
@@ -731,12 +744,17 @@ function Dashboard({
 
   // An epic's card shows while a status filter is off, or a group filter picks its group.
   const epicCardsIn = (sec: Section) => !activeStatuses.length && (!activeGroups.length || (!!sec.groupId && activeGroups.includes(sec.groupId)));
+  // A group with no lanes or epics still shows while it holds questions of its own or a status line.
+  const groupHasOwn = (groupId: string | null) => {
+    const g = groupId ? namedGroups.get(groupId) : undefined;
+    return !!g && (g.openEscalations > 0 || ownBlocking(g) > 0 || !!g.statusLine);
+  };
   const sectionShows = (sec: Section) =>
     sec.lanes.length > 0 ||
     (sec.groupId !== undefined &&
       (parkedIn(sec.groupId).length > 0 ||
         reopenEpicsIn(sec.groupId).length > 0 ||
-        (epicCardsIn(sec) && epicsOf(sec.groupId).some(epicShows))));
+        (epicCardsIn(sec) && (epicsOf(sec.groupId).length > 0 || groupHasOwn(sec.groupId)))));
 
   const lanePane = (
     <section className="pane lanes" aria-label="Lanes">
@@ -815,10 +833,10 @@ function Dashboard({
           showEmptyEpics: epicCardsIn(sec),
           isQuiet: (l) => !activeStatuses.length && l.status === 'idle' && l.openEscalations === 0,
         });
-        const standIn = epics.find((e) => e.standIn);
-        const hasRealEpics = epics.length > 0 && !standIn;
+        // The group's own questions waiting on you (not its tickets' or epics'): the group is blocked.
+        const groupBlocking = group ? ownBlocking(group) : 0;
         // Only what's in the box: a filter leaves out epics, and the count shouldn't point at a card that isn't there.
-        const waiting = sec.lanes.filter(needsHuman).length + layout.epics.reduce((n, { epic: e }) => n + e.blockingEscalations, standIn?.blockingEscalations ?? 0);
+        const waiting = sec.lanes.filter(needsHuman).length + layout.epics.reduce((n, { epic: e }) => n + e.blockingEscalations, groupBlocking);
         return (
           <div key={sec.key} className="group group-box">
             <GroupHeader
@@ -826,24 +844,26 @@ function Dashboard({
               name={groupName(sec.groupId)}
               lanes={sec.lanes.length}
               waiting={waiting}
+              blocking={groupBlocking}
               fyi={(() => {
-                // Like `waiting`, only what's in the box: FYIs on its lanes' tickets and its epics.
+                // Like `waiting`, only what's in the box: FYIs on its lanes' tickets, its epics and the group itself.
                 const laneIds = new Set(sec.lanes.map((l) => l.id));
                 const ticketIds = new Set(sec.lanes.map((l) => l.ticketId).filter((t): t is number => t != null));
-                const epicIds = new Set([...layout.epics.map(({ epic: e }) => e.id), ...(standIn ? [standIn.id] : [])]);
+                const epicIds = new Set(layout.epics.map(({ epic: e }) => e.id));
                 return [...live.escalations.values()].filter(
                   (e) =>
                     e.project === (group?.project ?? sec.lanes[0]?.project) &&
                     e.state === 'open' &&
                     !e.blocking &&
                     e.turn === 'owner' &&
-                    ((e.ticketId !== null && ticketIds.has(e.ticketId)) || (e.epicId != null && epicIds.has(e.epicId)) || (e.ticketId === null && !e.epicId && e.laneId !== null && laneIds.has(e.laneId))),
+                    ((e.ticketId !== null && ticketIds.has(e.ticketId)) ||
+                      (e.epicId != null && epicIds.has(e.epicId)) ||
+                      (e.ticketId === null && !e.epicId && e.laneId !== null && laneIds.has(e.laneId)) ||
+                      (e.ticketId === null && !e.epicId && group !== undefined && e.group === group.id)),
                 ).length;
               })()}
               latestEscalation={group ? latestEscalationAt(live.escalations.values(), group) : null}
-              standIn={standIn}
-              showTicket={!hasRealEpics}
-              onOpen={standIn && (() => navigate(epicRoute(standIn.project, standIn.id)))}
+              showTicket={epics.length === 0}
               onChat={group && (() => navigate(groupRoute(group.project, group.id)))}
             />
             {layout.epics.map(({ epic: e, lanes: under }) => (
@@ -861,7 +881,7 @@ function Dashboard({
                 {under.length > 0 && <div className="epic-lanes">{laneList(under)}</div>}
               </div>
             ))}
-            {hasRealEpics && layout.noEpic.length > 0 && (
+            {epics.length > 0 && layout.noEpic.length > 0 && (
               <h4 className="group-rest">
                 No epic <span className="count">{layout.noEpic.length}</span>
               </h4>
