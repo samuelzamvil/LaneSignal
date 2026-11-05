@@ -231,3 +231,103 @@ test('instance admins switch quiet alerts; agents cannot', async () => {
   assert.equal((await srv.call('GET', '/api/config', ALICE)).body.quietAlerts, true);
   srv.close();
 });
+
+/** A store whose presence windows pass in milliseconds. */
+function presenceSetup(extraEnv: Record<string, string>) {
+  const config = loadConfig({ LANESIGNAL_CONFIG: '/nonexistent.json', LANESIGNAL_AGENT_TOKENS: 'bot:agent-token-0123456789', ...extraEnv });
+  const store = new Store({ path: ':memory:', resolveTicketUrl: () => null, waitGraceMs: 20, presenceOfflineMs: 60 });
+  return { config, store };
+}
+
+test('a disconnect alert goes out quietly, once, when the overseer goes offline with decisions waiting', async () => {
+  const sink = await ntfySink();
+  const { config, store } = presenceSetup({ LANESIGNAL_NTFY_URL: `${sink.url}/t`, LANESIGNAL_NOTIFY_ON: 'disconnected' });
+  publishLane(store, 'default/lane-1', { name: 'Auth', status: 'active' }, 'bot');
+  escalate(store, { laneId: 'default/lane-1', question: 'Ship it?' }, 'bot');
+  escalate(store, { laneId: 'default/lane-1', question: 'Which region?' }, 'bot');
+  // FYIs block nothing, and a decided question waits on no one: neither is counted.
+  escalate(store, { laneId: 'default/lane-1', question: 'Heads up', blocking: false }, 'bot');
+  const decided = escalate(store, { laneId: 'default/lane-1', question: 'Rename it?' }, 'bot');
+  store.decideEscalation(decided.id, 'yes', null, 'alice');
+  // Started with questions waiting: presence starts disconnected with no transition, so nothing is sent.
+  startNotifier(config, store);
+  const reasons: string[] = [];
+  store.events.on('change', (e) => e.type === 'group' && e.presence && reasons.push(e.presence.reason));
+  // Other group events don't notify.
+  store.upsertGroup('default/main', { name: 'main' }, 'bot');
+  await settle();
+  assert.equal(store.getGroup('default/main')!.presence!.state, 'disconnected');
+  assert.equal(sink.received.length, 0);
+
+  // Connected, then quiet (reconnecting), then offline: only the transition to disconnected notifies.
+  store.presence.attach('default/main', 'token:bot', 's', 'wait')();
+  await settle();
+  assert.equal(store.getGroup('default/main')!.presence!.state, 'disconnected');
+  assert.deepEqual(reasons, ['connected', 'quiet', 'offline']);
+  assert.equal(sink.received.length, 1);
+  const { body } = sink.received[0];
+  assert.equal(body.title, "main's overseer disconnected · 2 decisions waiting");
+  // Quiet, like notices.
+  assert.equal(body.priority, 3);
+  assert.deepEqual(body.tags, ['information_source']);
+  // It opens the group's conversation.
+  assert.equal(body.click, 'lanesignal://group/default/main');
+  sink.close();
+  store.close();
+});
+
+test('no disconnect alert for a takeover', async () => {
+  const sink = await ntfySink();
+  const { config, store } = presenceSetup({ LANESIGNAL_NTFY_URL: `${sink.url}/t`, LANESIGNAL_NOTIFY_ON: 'disconnected' });
+  store.upsertGroup('default/g', { name: 'Acme' }, 'old', 'token:old');
+  publishLane(store, 'default/l', { name: 'L', status: 'active', group: 'default/g' }, 'old');
+  escalate(store, { laneId: 'default/l', question: 'Ship?' }, 'old');
+  assert.equal(store.blockingQuestionsOf('default/g'), 1);
+  startNotifier(config, store);
+  const reasons: string[] = [];
+  store.events.on('change', (e) => e.type === 'group' && e.presence && reasons.push(`${e.presence.reason}:${e.presence.to}`));
+  store.presence.attach('default/g', 'token:old', 's', 'socket');
+  // Another key takes the group over: the previous overseer's sessions end at once.
+  store.upsertGroup('default/g', {}, 'new', 'token:new');
+  await settle();
+  assert.deepEqual(reasons, ['connected:listening', 'taken_over:disconnected']);
+  assert.equal(sink.received.length, 0);
+  sink.close();
+  store.close();
+});
+
+test('no disconnect alert without decisions waiting on a person', async () => {
+  const sink = await ntfySink();
+  const { config, store } = presenceSetup({ LANESIGNAL_NTFY_URL: `${sink.url}/t`, LANESIGNAL_NOTIFY_ON: 'disconnected' });
+  publishLane(store, 'default/l', { name: 'L', status: 'active' }, 'bot');
+  escalate(store, { laneId: 'default/l', question: 'FYI', blocking: false }, 'bot');
+  // The owner answered Other: its turn is the agent's.
+  const other = escalate(store, { laneId: 'default/l', question: 'Ship?' }, 'bot');
+  store.decideEscalation(other.id, 'Other', 'Behind a flag', 'alice');
+  assert.equal(store.getEscalation(other.id)!.turn, 'agent');
+  assert.equal(store.blockingQuestionsOf('default/main'), 0);
+  startNotifier(config, store);
+  store.presence.attach('default/main', 'token:bot', 's', 'wait')();
+  await settle();
+  assert.equal(store.getGroup('default/main')!.presence!.state, 'disconnected');
+  assert.equal(sink.received.length, 0);
+  sink.close();
+  store.close();
+});
+
+test('disconnect alerts are off by default', async () => {
+  const sink = await ntfySink();
+  const { config, store } = presenceSetup({ LANESIGNAL_NTFY_URL: `${sink.url}/t` });
+  assert.equal(config.notifyOn.has('disconnected'), false);
+  assert.equal(loadConfig({ LANESIGNAL_CONFIG: '/nonexistent.json', LANESIGNAL_NOTIFY_ON: 'escalation,disconnected' }).notifyOn.has('disconnected'), true);
+  startNotifier(config, store);
+  publishLane(store, 'default/l', { name: 'L', status: 'active' }, 'bot');
+  const e = escalate(store, { laneId: 'default/l', question: 'Ship?' }, 'bot');
+  store.presence.attach('default/main', 'token:bot', 's', 'wait')();
+  await settle();
+  assert.equal(store.getGroup('default/main')!.presence!.state, 'disconnected');
+  // The question still notifies; the disconnect doesn't.
+  assert.deepEqual(sink.received.map((r) => r.body.title), [`Needs you ${e.ref} · main / L`]);
+  sink.close();
+  store.close();
+});

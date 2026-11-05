@@ -1458,6 +1458,20 @@ export class Store {
     return r ? ((r.owner as string | null) ?? null) : undefined;
   }
 
+  /**
+   * The group's questions waiting on a person: open, blocking, and the owner's turn, raised on its lanes or
+   * its epics (the escalations the Lanes page counts as "need you"). FYIs block nothing, so they don't count.
+   */
+  blockingQuestionsOf(groupId: string): number {
+    const r = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM escalations WHERE state = 'open' AND blocking = 1 AND turn = 'owner'
+           AND (lane_id IN (SELECT id FROM lanes WHERE group_id = ?) OR epic_id IN (SELECT num FROM epics WHERE group_id = ?))`,
+      )
+      .get(groupId, groupId) as Row;
+    return Number(r.n ?? 0);
+  }
+
   /** A group's presence changed: sent from timers too, so it tolerates a closing database. */
   private emitPresence(groupId: string, change: PresenceChange | null) {
     try {
