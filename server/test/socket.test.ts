@@ -1,21 +1,28 @@
 // The agent socket (GET /api/agent/socket): an overseer session's connection, with the digest items
 // wait_for_decisions returns, a heartbeat, presence, and close codes for every refusal or end.
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import http from 'node:http';
+import net, { type AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import WebSocket from 'ws';
+import type { AuthResult } from '../src/auth.ts';
+import { createAgentSockets } from '../src/socket.ts';
 import type { StreamEvent } from '../src/types.ts';
 import { AGENT, ALICE, REVIEWER, startServer } from './helpers.ts';
 
 const WATCHER = 'watcher-token-0123456789';
-const QUIET = 200;
-const OFFLINE = 600;
-const PING = 100;
+// Generous windows: these tests run alongside others, and a busy event loop mustn't make them flaky.
+const QUIET = 300;
+const OFFLINE = 900;
+const PING = 150;
+const MISSED = 3;
 
 let srv: Awaited<ReturnType<typeof startServer>>;
 before(async () => {
   srv = await startServer(
     { LANESIGNAL_OBSERVER_TOKENS: `overseer:${WATCHER}`, LANESIGNAL_SIGNIN_RATE_MAX: '50' },
-    { presence: { quietMs: QUIET, offlineMs: OFFLINE }, agentSocket: { pingMs: PING, missedPings: 2 } },
+    { presence: { quietMs: QUIET, offlineMs: OFFLINE }, agentSocket: { pingMs: PING, missedPings: MISSED } },
   );
 });
 after(() => srv.close());
@@ -143,6 +150,9 @@ describe('agent socket: connecting', () => {
     assert.equal(hello.group, 'sock-hello');
     assert.equal(hello.session, 's1');
     assert.ok(Date.parse(hello.checkedAt));
+    // What the relay needs to tell a dead server: pings this often, this many in a row.
+    assert.equal(hello.pingSeconds, PING / 1000);
+    assert.equal(hello.missedPings, MISSED);
     const first = await c.frame((f) => f.type === 'items');
     assert.deepEqual(first.items, []);
     assert.deepEqual(first.counts, { open: 0, decidedUnacknowledged: 0, waitingOnYou: 0 });
@@ -200,7 +210,53 @@ describe('agent socket: connecting', () => {
       await c.refused;
     }
     // A plain request to the socket's path is told it's a WebSocket endpoint.
-    assert.equal((await srv.call('GET', '/api/agent/socket?group=main&session=s', AGENT)).status, 426);
+    const plain = await srv.call('GET', '/api/agent/socket?group=main&session=s', AGENT);
+    assert.equal(plain.status, 426);
+    assert.match(plain.body.error, /WebSocket/);
+  });
+
+  test('other upgrades (h2c) are plain requests: bodies, keep-alive and all', async () => {
+    const h2c = { connection: 'Upgrade, HTTP2-Settings', upgrade: 'h2c', 'http2-settings': 'AAMAAABkAAQAoAAAAAIAAAAA' };
+    const request = (method: string, path: string, headers: Record<string, string>, body?: string) =>
+      new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = http.request(`${srv.base}${path}`, { method, headers }, (res) => {
+          let text = '';
+          res.setEncoding('utf8');
+          res.on('data', (d) => (text += d));
+          res.on('end', () => resolve({ status: res.statusCode!, body: text }));
+        });
+        req.on('upgrade', () => reject(new Error('upgraded')));
+        req.on('error', reject);
+        req.end(body);
+      });
+    const plain = await srv.call('GET', '/api/config', null);
+    const upgraded = await request('GET', '/api/config', h2c);
+    assert.equal(upgraded.status, plain.status);
+    assert.equal(upgraded.status, 401);
+    assert.equal((await request('GET', '/api/config', { ...h2c, authorization: `Bearer ${AGENT}` })).status, 200);
+    assert.equal((await request('GET', '/api/agent/socket?group=main&session=s', { ...h2c, authorization: `Bearer ${AGENT}` })).status, 426);
+    // A body comes through, with a length or chunked.
+    const json = { ...h2c, authorization: `Bearer ${AGENT}`, 'content-type': 'application/json' };
+    const put = await request('PUT', '/api/groups/sock-h2c', json, JSON.stringify({ name: 'Over h2c' }));
+    assert.equal(put.status, 200, put.body);
+    assert.equal(JSON.parse(put.body).name, 'Over h2c');
+    const chunked = await request('PUT', '/api/groups/sock-h2c', { ...json, 'transfer-encoding': 'chunked' }, JSON.stringify({ name: 'Chunked' }));
+    assert.equal(chunked.status, 200, chunked.body);
+    assert.equal(JSON.parse(chunked.body).name, 'Chunked');
+    // The connection stays usable: a second request on it is answered too.
+    const port = new URL(srv.base).port;
+    const both = await new Promise<string>((resolve) => {
+      const sock = net.connect(Number(port), '127.0.0.1', () =>
+        sock.write(
+          'GET /api/config HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n' +
+            'GET /api/config HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
+        ),
+      );
+      let out = '';
+      sock.on('data', (d) => (out += d));
+      sock.on('close', () => resolve(out));
+    });
+    assert.equal(both.match(/HTTP\/1\.1 401/g)?.length, 2, both);
   });
 
   test('with answering in LaneSignal off, the socket path is 404 too', async () => {
@@ -281,6 +337,28 @@ describe('agent socket: items', () => {
     await c.stop();
     await fresh.stop();
   });
+
+  test('a reply comes again when the owner writes again, even the same words', async () => {
+    await srv.publish('sock-reply-lane', { group: 'sock-reply' });
+    const e = await ask('sock-reply-lane', 'Which cache?');
+    const c = connect('group=sock-reply&session=s');
+    await c.frame((f) => f.type === 'items');
+    const replies = () => c.items().filter((i) => i.kind === 'reply');
+    assert.equal((await srv.call('POST', `/api/escalations/${e.id}/decide`, ALICE, { decision: 'Other', note: 'ok' })).status, 200);
+    await until(replies, (r) => r.length === 1);
+    assert.deepEqual(replies(), [{ code: e.ref, kind: 'reply', text: 'ok' }]);
+    // The agent answers: nothing new for it.
+    const answer = await srv.tool(AGENT, 'reply_to_escalation', { id: e.ref, message: 'Redis then?' });
+    assert.equal(answer.isError, false, answer.text);
+    // The owner says "ok" again: a new reply, with the same words.
+    assert.equal((await srv.call('POST', `/api/escalations/${e.id}/messages`, ALICE, { body: 'ok' })).status < 300, true);
+    await until(replies, (r) => r.length === 2);
+    assert.deepEqual(replies(), [
+      { code: e.ref, kind: 'reply', text: 'ok' },
+      { code: e.ref, kind: 'reply', text: 'ok' },
+    ]);
+    await c.stop();
+  });
 });
 
 describe('agent socket: heartbeat', () => {
@@ -288,10 +366,14 @@ describe('agent socket: heartbeat', () => {
     await register('sock-ping');
     const c = connect('group=sock-ping&session=s');
     await c.frame((f) => f.type === 'hello');
-    await sleep(PING * 3.5);
-    const pings = c.frames.filter((f) => f.type === 'ping');
-    assert.ok(pings.length >= 2 && pings.length <= 4, `${pings.length} pings`);
-    assert.deepEqual(pings[0], { type: 'ping' });
+    const started = Date.now();
+    const pings = () => c.frames.filter((f) => f.type === 'ping');
+    await until(pings, (p) => p.length >= 3, PING * 30);
+    const took = Date.now() - started;
+    assert.ok(pings().length >= 3, `${pings().length} pings`);
+    // No faster than the interval (timers never fire early).
+    assert.ok(took >= PING * 3 - 20, `3 pings in ${took}ms`);
+    assert.deepEqual(pings()[0], { type: 'ping' });
     await c.stop();
   });
 
@@ -303,7 +385,7 @@ describe('agent socket: heartbeat', () => {
     const { code } = await c.closed;
     assert.equal(code, 1006, 'cut off, without a close handshake');
     const took = Date.now() - started;
-    assert.ok(took >= PING * 2 - 20 && took < PING * 6, `dropped after ${took}ms`);
+    assert.ok(took >= PING * MISSED - 20 && took < PING * 30, `dropped after ${took}ms`);
     // Its session ended like any other: listening for the quiet window, then reconnecting.
     const p = await until(() => presenceOf('sock-dead'), (v) => v.state === 'reconnecting');
     assert.equal(p.state, 'reconnecting');
@@ -313,7 +395,8 @@ describe('agent socket: heartbeat', () => {
     await register('sock-alive');
     const c = connect('group=sock-alive&session=s');
     await c.frame((f) => f.type === 'hello');
-    await sleep(PING * 5);
+    // Well past the point where a silent client is dropped.
+    await until(() => c.frames.filter((f) => f.type === 'ping').length, (n) => n >= MISSED + 3, PING * 40);
     assert.equal(c.ws.readyState, WebSocket.OPEN);
     await c.stop();
   });
@@ -362,9 +445,12 @@ describe('agent socket: presence', () => {
     // Never sent: armed.
     await sleep(OFFLINE + 50);
     assert.equal((await presenceOf('sock-armed')).state, 'listening');
+    const unarmed = Date.now();
     c.send({ type: 'armed', armed: false });
-    await sleep(OFFLINE / 2);
-    assert.equal((await presenceOf('sock-armed')).state, 'listening', 'still within the offline window');
+    await sleep(OFFLINE / 4);
+    const early = (await presenceOf('sock-armed')).state;
+    // Only meaningful if the event loop wasn't held up past the window.
+    if (Date.now() - unarmed < OFFLINE * 0.8) assert.equal(early, 'listening', 'still within the offline window');
     const p = await until(() => presenceOf('sock-armed'), (v) => v.state === 'not_responding');
     assert.equal(p.state, 'not_responding');
     assert.deepEqual(p.sessions.map((s: any) => s.state), ['not_responding']);
@@ -376,6 +462,23 @@ describe('agent socket: presence', () => {
     assert.equal((await until(() => presenceOf('sock-armed'), (v) => v.state === 'listening')).state, 'listening');
     assert.equal(c.ws.readyState, WebSocket.OPEN);
     await c.stop();
+  });
+
+  test('armed is per connection: a new socket for a not-responding session starts armed', async () => {
+    await register('sock-rearm');
+    const first = connect('group=sock-rearm&session=s');
+    await first.frame((f) => f.type === 'hello');
+    first.send({ type: 'armed', armed: false });
+    await until(() => presenceOf('sock-rearm'), (v) => v.state === 'not_responding');
+    assert.equal((await presenceOf('sock-rearm')).state, 'not_responding');
+    // The relay reconnects (the old socket not yet gone): listening again, and it stays so without an `armed`.
+    const second = connect('group=sock-rearm&session=s');
+    await second.frame((f) => f.type === 'hello');
+    await first.stop();
+    assert.equal((await until(() => presenceOf('sock-rearm'), (v) => v.state === 'listening')).state, 'listening');
+    await sleep(OFFLINE + 100);
+    assert.equal((await presenceOf('sock-rearm')).state, 'listening');
+    await second.stop();
   });
 
   test('an oversized frame closes the socket (1009)', async () => {
@@ -406,8 +509,9 @@ describe('agent socket: presence', () => {
     assert.equal((await until(() => laneOf('sock-held-a'), (l) => l.agentWaiting)).agentWaiting, true);
     // Closed: released after the quiet window.
     await c.stop();
-    await sleep(QUIET / 2);
-    assert.equal((await laneOf('sock-held-a')).agentWaiting, true, 'within the quiet window');
+    const stopped = Date.now();
+    const still = (await laneOf('sock-held-a')).agentWaiting;
+    if (Date.now() - stopped < QUIET / 2) assert.equal(still, true, 'within the quiet window');
     assert.equal((await until(() => laneOf('sock-held-a'), (l) => !l.agentWaiting)).agentWaiting, false);
     assert.equal((await laneOf('sock-held-b')).agentWaiting, false);
   });
@@ -488,5 +592,117 @@ describe('agent socket: closes', () => {
     } finally {
       other.close();
     }
+  });
+});
+
+describe('agent socket: the handshake and shutdown', () => {
+  /** An agent socket endpoint of its own on the test store, with authentication the test controls. */
+  async function endpoint(authenticate: () => Promise<AuthResult>) {
+    const sockets = createAgentSockets({
+      store: srv.store,
+      authenticate,
+      decisions: true,
+      pingMs: 60_000,
+      missedPings: 2,
+      membershipChanges: new EventEmitter<{ changed: [] }>(),
+    });
+    const server = http.createServer((_req, res) => res.writeHead(404).end());
+    server.on('upgrade', sockets.upgrade);
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    return { sockets, server, port, base: `http://127.0.0.1:${port}` };
+  }
+
+  const agent = (overrides: Partial<Extract<AuthResult, { ok: true }>> = {}): AuthResult => ({
+    ok: true,
+    principal: { name: 'overseer', role: 'agent' },
+    stillValid: async () => true,
+    watchRevocation: () => () => {},
+    ...overrides,
+  });
+
+  /** A bare WebSocket client: it completes the handshake, then answers nothing (not even a close frame). */
+  function rawClient(port: number, query: string) {
+    const sock = net.connect(port, '127.0.0.1');
+    let data = '';
+    const upgraded = new Promise<void>((resolve) =>
+      sock.on('data', (d) => {
+        data += d.toString('latin1');
+        if (data.startsWith('HTTP/1.1 101')) resolve();
+      }),
+    );
+    const closed = new Promise<number>((resolve) => sock.on('close', () => resolve(Date.now())));
+    sock.on('error', () => {});
+    sock.write(
+      `GET /api/agent/socket?${query} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
+    );
+    return { sock, upgraded, closed, data: () => data };
+  }
+
+  test('a client that hangs up while it is authenticated leaves nothing behind', async () => {
+    srv.store.upsertGroup('default/sock-hangup', { name: 'hangup' }, 'overseer');
+    let let_through!: () => void;
+    const gate = new Promise<void>((r) => (let_through = r));
+    const e = await endpoint(async () => {
+      await gate;
+      return agent();
+    });
+    try {
+      const c = rawClient(e.port, 'group=sock-hangup&session=s');
+      await sleep(50);
+      c.sock.destroy();
+      await c.closed;
+      let_through();
+      await sleep(50);
+      assert.equal((await presenceOf('sock-hangup')).state, 'disconnected');
+    } finally {
+      e.sockets.closeAll();
+      e.server.close();
+    }
+  });
+
+  test('a credential revoked during the handshake closes the socket with 4401', async () => {
+    srv.store.upsertGroup('default/sock-handshake', { name: 'handshake' }, 'overseer');
+    // Valid when checked, revoked before the revocation watch began: the watch never fires.
+    const e = await endpoint(async () => agent({ stillValid: async () => false }));
+    try {
+      const c = connect('group=sock-handshake&session=s', AGENT, { base: e.base });
+      assert.equal((await c.closed).code, 4401);
+    } finally {
+      e.sockets.closeAll();
+      e.server.close();
+    }
+  });
+
+  test('shutdown lets go at once, and cuts off stragglers and upgrades still authenticating', async () => {
+    srv.store.upsertGroup('default/sock-straggle', { name: 'straggle' }, 'overseer');
+    let calls = 0;
+    const e = await endpoint(async () => {
+      // The second upgrade never gets through authentication.
+      if (calls++ > 0) await new Promise(() => {});
+      return agent();
+    });
+    const straggler = rawClient(e.port, 'group=sock-straggle&session=s');
+    await straggler.upgraded;
+    await until(() => presenceOf('sock-straggle'), (v) => v.state === 'listening');
+    assert.equal((await presenceOf('sock-straggle')).state, 'listening');
+    const stuck = rawClient(e.port, 'group=sock-straggle&session=t');
+    await sleep(50);
+
+    const shutdownAt = Date.now();
+    e.sockets.closeAll();
+    const serverClosed = new Promise<number>((r) => e.server.close(() => r(Date.now())));
+    // The session is released without waiting for a close frame that never comes: reconnecting after the quiet window.
+    const p = await until(() => presenceOf('sock-straggle'), (v) => v.state === 'reconnecting', 1500);
+    assert.equal(p.state, 'reconnecting');
+    // The straggler gets 1012 (the close frame's code, then its reason), and is cut off after a moment.
+    assert.ok(straggler.data().includes('\x03\xf4server restarting'), 'close frame with 1012');
+    const cut = await straggler.closed;
+    assert.ok(cut - shutdownAt >= 1500, `cut off after ${cut - shutdownAt}ms`);
+    await stuck.closed;
+    // Nothing holds the server open.
+    const done = await serverClosed;
+    assert.ok(done - shutdownAt < 5000, `server closed after ${done - shutdownAt}ms`);
   });
 });

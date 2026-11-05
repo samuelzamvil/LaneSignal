@@ -89,10 +89,12 @@ export class Presence {
         g.sessions.set(id, s);
       }
       this.clearTimers(s);
+      // Armed is per socket connection: its relay reports anew on every connect, and until then it counts as armed.
+      if (transport === 'socket') this.clearUnarmed(s);
       s.transport = transport;
       s.conns.add(token);
       s.endedAt = null;
-      if (s.state === 'reconnecting') this.setState(s, 'listening');
+      if (s.state === 'reconnecting' || (transport === 'socket' && s.state === 'not_responding')) this.setState(s, 'listening');
     });
     if (refused) return () => {};
     let released = false;
