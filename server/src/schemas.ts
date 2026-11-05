@@ -306,6 +306,16 @@ export const waitQuery = z
   })
   .strict();
 
+/** The agent socket's query: GET /api/agent/socket?group=G&session=S[&project=P][&since=T] */
+export const socketQuery = z
+  .object({
+    group: groupId,
+    session: waitSession,
+    project: z.string().max(40).optional(),
+    since: z.string().max(40).optional(),
+  })
+  .strict();
+
 // ---- requirements ----
 
 export const REQUIREMENT_SCOPES = ['global', 'project', 'products'] as const;

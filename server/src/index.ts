@@ -59,9 +59,14 @@ const server = app.listen(config.port, config.host, (err?: Error) => {
   });
 });
 
+// The agent socket (GET /api/agent/socket); every other upgrade gets 404.
+server.on('upgrade', app.locals.upgrade);
+
 function shutdown(signal: string) {
   log.info('shutting down', { signal });
   trmnl.stop();
+  // Agent sockets first, with 1012 so their relays reconnect: closeAllConnections() doesn't reach upgraded sockets.
+  app.locals.closeSockets();
   server.close(() => {
     store.close();
     accounts.close();

@@ -85,10 +85,11 @@ A group's sessions are capped at 20. When a new one would go over the cap, the s
 
 ## Socket close codes
 
-The server accepts the upgrade from any agent key, then closes with an application code when it refuses or ends a session. Node's WebSocket client can't see an HTTP status on a refused upgrade, so the codes carry the reason. Requests for any other upgrade path are answered with 404, and their socket is destroyed.
+The server accepts the upgrade from any agent key, then closes with an application code when it refuses or ends a session. Node's WebSocket client can't see an HTTP status on a refused upgrade, so the codes carry the reason. WebSocket upgrades on any other path are answered with 404, and their socket is destroyed. Other upgrades (`h2c`) are served as plain requests.
 
 | Code | Meaning | Relay |
 |---|---|---|
+| 4400 | The query is malformed (a client bug) | Writes a final line, exits |
 | 4401 | Not authorized, or the credential was revoked | Writes a final line, exits |
 | 4403 | Not the group's overseer, or the wrong role | Writes a final line, exits |
 | 4404 | Unknown or removed group | Writes a final line, exits |
@@ -184,20 +185,20 @@ Each one is reviewed adversarially and fixed before it merges, and CI on `main` 
   - `createApp` exposes an upgrade handler (`app.locals.upgrade`). It's attached to the HTTP server in `index.ts` and in the test helper.
   - Path: `/api/agent/socket?group=G&session=S[&project=P][&since=T]`.
   - It's absent (404) when answering in LaneSignal is off.
-  - Any other upgrade path gets 404 and a destroyed socket.
+  - Any other WebSocket upgrade path gets 404 and a destroyed socket. Non-WebSocket upgrades (`Upgrade: h2c`) go back to the app as plain requests.
 - **Auth:**
   - Through `authenticate()`, with `Authorization` only.
   - It must be an agent key. Observer keys, human credentials and an Access identity alone are refused.
   - Refusals happen after the upgrade, with the close codes above.
 - **Server to client** (one JSON object per text frame):
-  - `{ "type": "hello", "group", "session", "checkedAt" }`, once.
+  - `{ "type": "hello", "group", "session", "checkedAt", "pingSeconds", "missedPings" }`, once. The relay takes the server for dead after `pingSeconds × missedPings` without a frame.
   - `{ "type": "items", "items": [...], "counts", "checkedAt" }`. These are the digest items `wait_for_decisions` returns.
     - On connect it sends what's pending, from `since`.
-    - After that it sends each item once per connection as it appears.
+    - After that it sends each item once per connection as it appears. Kinds listed until handled (decisions, replies, notes) are remembered per connection: a reply by the owner's last message, so the same words again are a new reply. Kinds reported once per `since` (`closed`, `lane_removed`, `ticket_moved`, `reopen_*`) aren't, so they come each time they happen.
     - Acknowledging stays on MCP (`acknowledge_escalation`, `ack`).
     - Notes aren't marked as handed over (see Decisions).
   - `{ "type": "ping" }` every `LANESIGNAL_AGENT_PING_SECONDS` (default 20). The relay reconnects after two intervals without any frame.
-- **Client to server:** `{ "type": "armed", "armed": boolean }`, from the relay. A session that never sends it counts as armed.
+- **Client to server:** `{ "type": "armed", "armed": boolean }`, from the relay, right after every connect and on each change. Armed is per connection: a new socket resets the session to armed. A connection that never sends it counts as armed.
 - **Heartbeat:**
   - A protocol ping every `LANESIGNAL_AGENT_PING_SECONDS`.
   - The server closes the socket after `LANESIGNAL_AGENT_MISSED_PINGS` (default 2) without a pong.

@@ -58,6 +58,11 @@ export interface Config {
    */
   presence: { quietSeconds: number; offlineMinutes: number };
   /**
+   * The agent socket (GET /api/agent/socket): a protocol ping and an application `ping` frame every `pingSeconds`;
+   * a client that leaves `missedPings` pings in a row unanswered is dropped.
+   */
+  agentSocket: { pingSeconds: number; missedPings: number };
+  /**
    * Answering escalations in LaneSignal (on by default): the dashboard's decision buttons, and agents
    * waiting for and acknowledging decisions. Off, LaneSignal only alerts: people answer in the agent's
    * own session, and the agent dismisses the alert with a justification.
@@ -355,6 +360,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  const agentSocket = {
+    pingSeconds: int('LANESIGNAL_AGENT_PING_SECONDS', env.LANESIGNAL_AGENT_PING_SECONDS, 20, 1, 3600),
+    missedPings: int('LANESIGNAL_AGENT_MISSED_PINGS', env.LANESIGNAL_AGENT_MISSED_PINGS, 2, 1, 100),
+  };
+
   const publicUrl = env.LANESIGNAL_PUBLIC_URL ?? file.publicUrl ?? null;
   return {
     name: env.LANESIGNAL_NAME ?? file.name ?? 'LaneSignal',
@@ -385,6 +395,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ntfyOpen: oneOf('LANESIGNAL_NTFY_OPEN', env.LANESIGNAL_NTFY_OPEN, ['app', 'browser'] as const, 'app'),
     eventRetention: int('LANESIGNAL_EVENT_RETENTION', env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention, 200, 1, 100_000),
     presence,
+    agentSocket,
     decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, true),
     requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),
     laneAdvice: bool('LANESIGNAL_LANE_ADVICE', env.LANESIGNAL_LANE_ADVICE, true),

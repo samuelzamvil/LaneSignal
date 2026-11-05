@@ -79,7 +79,8 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `PUT /api/settings/push` | instance admin | `{quietAlerts}`: send alerts as regular notifications instead of high priority (shown in `GET /api/config`). Returns `204` |
 | `GET /api/people` | project admin | Everyone with an account, for adding members |
 | `GET /api/events` | any | Server-Sent Events: `group`, `group_deleted`, `lane`, `lane_deleted`, `escalation`, `ticket`, `epic`, `requirement`, `product`. Only your projects' events. Agent and personal keys never get a rejected requirement: they get `requirement_removed` with just its `id` instead. So does anyone who could see a requirement a person moved into a project they can't see. The stream ends when memberships or projects change; reconnect and re-snapshot. A `group` event for a change of the group's presence state also carries `presence: {from, to, reason}`, where `reason` is `connected`, `ended`, `quiet` (the quiet window passed), `offline`, or `taken_over` (another key registered the group); a change in its sessions alone is a plain `group` event. Heartbeat every 25s. `?access_token=` is accepted here only, for clients that can't set headers |
-| `GET /api/groups` | any | Each group carries `presence` with answering in LaneSignal on (left out when it's off): whether its overseer is connected, `{state, since, sessions: [{id, transport, state, since}]}`. `state` is `listening`, `reconnecting` or `disconnected` (and `not_responding`, kept for the agent socket); a group takes its best session's. `since` is when the group took its state, null while disconnected when nothing has connected since the server started. Each session's `id` is the `session` its overseer waited with, or `wait:<key name>`, and `transport` is `wait`. Only waits on the group by its overseer count (by any agent key while the group has no overseer) ([details](concepts.md#groups-one-overseer-many-lanes)) |
+| `GET /api/agent/socket?group=&session=&project=&since=` | agent | A WebSocket for a group's overseer session, with answering in LaneSignal on (`404` otherwise). See [The agent socket](#the-agent-socket) below |
+| `GET /api/groups` | any | Each group carries `presence` with answering in LaneSignal on (left out when it's off): whether its overseer is connected, `{state, since, sessions: [{id, transport, state, since}]}`. `state` is `listening`, `reconnecting` or `disconnected` (and `not_responding`, kept for the agent socket); a group takes its best session's. `since` is when the group took its state, null while disconnected when nothing has connected since the server started. Each session's `id` is the `session` its overseer waited or connected with, or `wait:<key name>`, and `transport` is `wait` or `socket` (the [agent socket](#the-agent-socket)). Only waits on the group by its overseer count (by any agent key while the group has no overseer) ([details](concepts.md#groups-one-overseer-many-lanes)) |
 | `PUT /api/groups/:id/products?project=` | human | `{products}`: a signed-in person sets which products a group works on (`[]` for none). Unknown or archived products: `404`. `403` for a personal key |
 | `PUT /api/groups/:id` | agent | Create or update `{name?, links?, products?}`. `products` is taken while the group has none (unknown or archived products: `404`); after that it's kept and the rest of the update still applies, with a `warning`. With `LANESIGNAL_REQUIREMENTS=false`, it's ignored with a `warning`. A group's `ticket` is read-only now (its epic has it): one sent is ignored, with a `warning` |
 | `GET /api/groups/:id/conversation?before=&limit=` | any | The group's conversation, newest first: `{items, next}`. Items are messages (`type: "message"`, with `escalationId`, `laneId` or `epicId` when written on one of the group's escalations, or on a lane or epic before those were retired) and escalations (`type: "escalation"`: `id`, `ref`, `question`, `state`, `turn`, `blocking`, `decision`, `decidedBy`, `decidedAt`, `resolution`, `laneId`, `at`), each where its thread starts. Ordered by time, escalations before messages written at the same moment, so the order never changes. `limit` defaults to 50 (max 100); pass `next` as `before` for the page before. A removed group's conversation stays readable |
@@ -140,6 +141,34 @@ curl -s -X POST $URL/api/escalations/$ID/withdraw -H "authorization: Bearer $KEY
 | `POST /api/admin/people/password` | static human token | Break-glass: `{email, password}`, which also signs them out |
 | `/api/auth/*` | | Better Auth: sign-in, sign-out, password change, agent keys (`/api-key/*`), admin (`/admin/*`). The web app uses these |
 | `POST /mcp` | any | MCP Streamable HTTP. See [agents](agents.md) |
+
+## The agent socket
+
+`GET /api/agent/socket?group=G&session=S[&project=P][&since=T]` is a WebSocket an overseer's session holds for as long as it runs. Its client is the skill's relay; it carries what `wait_for_decisions` would return, as it happens. It exists only with answering in LaneSignal on: otherwise, like any other WebSocket upgrade path, it's answered `404` and the connection is closed. A plain `GET` without `Upgrade: websocket` gets `426`. Other upgrades (`Upgrade: h2c`, from `curl --http2` or Java's HttpClient) aren't taken up anywhere: the request is served as plain HTTP/1.1.
+
+- **Credential:** an agent key in `Authorization: Bearer …`, and nothing else: not `?access_token=`, not `Sec-WebSocket-Protocol`, and not a Cloudflare Access identity on its own. Only the group's overseer key connects (any agent key while the group has no overseer).
+- **Refusals** come after the upgrade, as close codes, because Node's WebSocket client can't read an HTTP status:
+
+  | Code | Meaning | Client |
+  |---|---|---|
+  | 4400 | The query is malformed (`group` and `session` are required; nothing unknown is allowed) | Stop: retrying won't help |
+  | 4401 | Not authorized, or the credential was revoked | Stop |
+  | 4403 | Not the group's overseer, or not an agent key | Stop |
+  | 4404 | Unknown or removed group (or project) | Stop |
+  | 4409 | Another overseer took the group over | Stop |
+  | 4100 | Project memberships changed | Reconnect at once |
+  | 1012 | The server is restarting | Reconnect |
+  | 1009 | A frame over 16 KiB | Fix the client |
+  | 1006, other | The connection was lost | Reconnect with backoff |
+
+- **Server to client**, one JSON object per text frame:
+  - `{"type":"hello","group","session","checkedAt","pingSeconds","missedPings"}`, once, first. `pingSeconds` is `LANESIGNAL_AGENT_PING_SECONDS` (how often `ping` frames come) and `missedPings` is `LANESIGNAL_AGENT_MISSED_PINGS`: a client that hears nothing for `pingSeconds × missedPings` should take the server for dead and reconnect.
+  - `{"type":"items","items":[…],"counts":{"open","decidedUnacknowledged","waitingOnYou"},"checkedAt"}`. `items` are the digest items of `GET /api/wait` (same kinds and shapes). Right after `hello` comes one with everything pending, from `since` when given (so `closed`, `lane_removed` and the like since then are included), even when there's nothing. After that, a frame comes whenever something new appears, with only the items this connection hasn't sent yet: each item comes once per connection. A decision comes again only if its words change, a reply when the owner writes again (even the same words), a note once; `closed`, `lane_removed`, `ticket_moved` and `reopen_*` come each time they happen. Keep the last `checkedAt` and reconnect with it as `since`.
+  - `{"type":"ping"}` every `pingSeconds` (`LANESIGNAL_AGENT_PING_SECONDS`, 20 by default).
+- **Client to server:** `{"type":"armed","armed":false}` when nothing reads the client's events, and `true` when something does again. Armed is per connection: each new socket for a session starts armed (a `not_responding` session shows listening again), so the relay sends its current `armed` right after every connect, reconnects included. A connection that never sends it counts as armed. Unarmed for longer than `LANESIGNAL_PRESENCE_OFFLINE_MINUTES`, it shows **not responding**. Anything else is ignored.
+- **Acknowledging** stays on MCP and `/api/wait`: `acknowledge_escalation`, and `ack` for group notes. The socket never counts a group note as handed over, so a wait still gets it as new until it's acknowledged.
+- **Heartbeat:** the server also sends a protocol ping every interval, and drops a connection that leaves `LANESIGNAL_AGENT_MISSED_PINGS` (2) pings unanswered. Each ping re-checks the credential.
+- **Presence:** while connected, the session (`session`) shows in `Group.presence` with `transport: "socket"`, and the lanes of the group with open questions show **agent waiting**, as during a group wait. When the connection closes, the quiet and offline windows apply as after a wait.
 
 ## Demo data
 

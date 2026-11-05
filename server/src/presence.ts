@@ -89,10 +89,12 @@ export class Presence {
         g.sessions.set(id, s);
       }
       this.clearTimers(s);
+      // Armed is per socket connection: its relay reports anew on every connect, and until then it counts as armed.
+      if (transport === 'socket') this.clearUnarmed(s);
       s.transport = transport;
       s.conns.add(token);
       s.endedAt = null;
-      if (s.state === 'reconnecting') this.setState(s, 'listening');
+      if (s.state === 'reconnecting' || (transport === 'socket' && s.state === 'not_responding')) this.setState(s, 'listening');
     });
     if (refused) return () => {};
     let released = false;
@@ -101,6 +103,11 @@ export class Presence {
       released = true;
       this.release(groupId, key, name, token);
     };
+  }
+
+  /** One session's own state (by key and name), or null when it has none (never connected, ended or dropped). */
+  stateOf(groupId: string, key: string, name: string): PresenceState | null {
+    return this.groups.get(groupId)?.sessions.get(sessionKey(key, name))?.state ?? null;
   }
 
   /** A wait that returned at once: the session counts as connected just now, and its quiet window starts. */
