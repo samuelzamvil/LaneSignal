@@ -81,7 +81,7 @@ A group takes the state of its best session, in this order: `listening`, then `n
 
 Presence is kept in memory, like lanes' **agent waiting**. After a restart every group is `disconnected` (with `since` null) until its overseer reconnects. Agents that reconnect promptly come back within the quiet window, so the restart barely shows.
 
-A group's sessions are capped at 20. When a new one would go over the cap, the session that ended longest ago is dropped first.
+A group's sessions are capped at 20. When a new one would go over the cap, the session that ended longest ago is dropped. When every session is connected, the new one isn't tracked (its wait still works), so live sessions never push each other out.
 
 ## Socket close codes
 

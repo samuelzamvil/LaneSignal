@@ -1062,19 +1062,30 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
         return;
       }
       const abort = new AbortController();
-      res.on('close', () => abort.abort());
       let revoked = false;
-      const unwatch = watchRevocationOf(res)(() => {
-        revoked = true;
-        abort.abort();
-      });
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
-      res.write(' ');
-      const stillValid = stillValidOf(res);
-      const keepalive = setInterval(() => {
+      let unwatch = () => {};
+      let keepalive: ReturnType<typeof setInterval> | undefined;
+      try {
+        res.on('close', () => abort.abort());
+        // The client may have hung up while it was being authenticated: 'close' has fired already.
+        if (res.closed || req.destroyed) abort.abort();
+        unwatch = watchRevocationOf(res)(() => {
+          revoked = true;
+          abort.abort();
+        });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
         res.write(' ');
-        void stillValid().then((ok) => ok || ((revoked = true), abort.abort()));
-      }, 20_000);
+        const stillValid = stillValidOf(res);
+        keepalive = setInterval(() => {
+          res.write(' ');
+          void stillValid().then((ok) => ok || ((revoked = true), abort.abort()));
+        }, 20_000);
+      } catch (err) {
+        clearInterval(keepalive);
+        unwatch();
+        release();
+        throw err;
+      }
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;

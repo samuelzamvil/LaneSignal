@@ -628,10 +628,11 @@ export const ackerOf = (p: Principal) => ({ key: ownerOf(p), agent: p.role === '
  * counts, or any agent key while the group has none (who may acknowledge its notes); anyone else holds nothing.
  */
 export function presenceForWait(store: Store, p: Principal, groupId: string | undefined, session: string | undefined): () => void {
-  if (!groupId || !isWriter(p)) return () => {};
+  // Agent keys only: a person's principal can share its key string with an agent key of the same name.
+  if (!groupId || p.role !== 'agent') return () => {};
   const owner = store.groupOwner(groupId);
   const key = ownerOf(p);
-  if (owner === undefined || (owner === null ? p.role !== 'agent' : owner !== key)) return () => {};
+  if (owner === undefined || (owner !== null && owner !== key)) return () => {};
   return store.presence.attach(groupId, key, session ?? `wait:${p.name}`, 'wait');
 }
 

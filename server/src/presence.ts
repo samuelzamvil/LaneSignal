@@ -75,11 +75,16 @@ export class Presence {
   attach(groupId: string, key: string, name: string, transport: PresenceTransport): () => void {
     if (this.closed) return () => {};
     const token = this.nextToken++;
+    let refused = false;
     this.change(groupId, 'connected', (g) => {
       const id = sessionKey(key, name);
       let s = g.sessions.get(id);
       if (!s) {
-        this.makeRoom(g);
+        // Every session connected and at the cap: this one isn't tracked (its wait still works).
+        if (!this.makeRoom(g)) {
+          refused = true;
+          return;
+        }
         s = { key, name, transport, conns: new Set(), state: 'listening', since: this.iso(), endedAt: null, unarmedSince: null, timers: new Set(), unarmedTimer: null };
         g.sessions.set(id, s);
       }
@@ -89,6 +94,7 @@ export class Presence {
       s.endedAt = null;
       if (s.state === 'reconnecting') this.setState(s, 'listening');
     });
+    if (refused) return () => {};
     let released = false;
     return () => {
       if (released) return;
@@ -155,42 +161,46 @@ export class Presence {
     if (s.conns.size) return;
     this.change(groupId, 'ended', () => {
       this.clearTimers(s, true);
-      s.endedAt = Date.now();
+      s.endedAt = this.opts.now().getTime();
       // Within the quiet window an ended connection still counts as listening: an ordinary re-wait doesn't flicker.
       if (s.state !== 'listening') this.setState(s, 'listening');
     });
-    this.schedule(groupId, s, this.opts.quietMs, 'quiet', () => this.setState(s, 'reconnecting'));
+    // Reconnecting and disconnected both date from when the connection ended, not from when a timer fired.
+    const ended = () => new Date(s.endedAt ?? this.opts.now().getTime()).toISOString();
+    this.schedule(groupId, s, this.opts.quietMs, 'quiet', () => {
+      this.setState(s, 'reconnecting');
+      s.since = ended();
+    }, ended);
     this.schedule(groupId, s, this.opts.offlineMs, 'offline', () => {
       const g = this.groups.get(groupId);
       if (g?.sessions.get(sessionKey(key, name)) === s) g.sessions.delete(sessionKey(key, name));
       this.clearTimers(s, true);
-    });
+    }, ended);
   }
 
-  /** A new session would go over the cap: the one that ended longest ago goes (or, all connected, the oldest). */
-  private makeRoom(g: GroupRecord) {
+  /**
+   * Room for a new session under the cap: the session that ended longest ago goes. False when every
+   * session is connected, so live sessions never push each other out.
+   */
+  private makeRoom(g: GroupRecord): boolean {
     while (g.sessions.size >= MAX_SESSIONS) {
       let victim: [string, Session] | null = null;
       for (const entry of g.sessions) {
-        const [, s] = entry;
-        if (!victim) victim = entry;
-        else {
-          const v = victim[1];
-          const older = s.endedAt !== null && (v.endedAt === null || s.endedAt < v.endedAt);
-          const bothLive = s.endedAt === null && v.endedAt === null && s.since < v.since;
-          if (older || bothLive) victim = entry;
-        }
+        const endedAt = entry[1].endedAt;
+        if (endedAt !== null && (!victim || endedAt < victim[1].endedAt!)) victim = entry;
       }
-      this.clearTimers(victim![1], true);
-      g.sessions.delete(victim![0]);
+      if (!victim) return false;
+      this.clearTimers(victim[1], true);
+      g.sessions.delete(victim[0]);
     }
+    return true;
   }
 
-  private schedule(groupId: string, s: Session, ms: number, reason: PresenceReason, fire: () => void) {
+  private schedule(groupId: string, s: Session, ms: number, reason: PresenceReason, fire: () => void, since?: () => string) {
     const timer = setTimeout(() => {
       s.timers.delete(timer);
       if (this.closed) return;
-      this.change(groupId, reason, fire);
+      this.change(groupId, reason, fire, since);
     }, ms);
     timer.unref?.();
     s.timers.add(timer);
@@ -216,7 +226,7 @@ export class Presence {
   }
 
   /** Runs `apply`, then reports what changed for the group (nothing, its sessions, or its state too). */
-  private change(groupId: string, reason: PresenceReason, apply: (g: GroupRecord) => void) {
+  private change(groupId: string, reason: PresenceReason, apply: (g: GroupRecord) => void, since?: () => string) {
     let g = this.groups.get(groupId);
     if (!g) {
       g = { sessions: new Map(), state: 'disconnected', since: null };
@@ -228,7 +238,7 @@ export class Presence {
     const from = g.state;
     if (state !== from) {
       g.state = state;
-      g.since = this.iso();
+      g.since = since && state !== 'listening' ? since() : this.iso();
     }
     if (snapshot(g) === before) return;
     this.opts.onChange(groupId, state !== from ? { from, to: state, reason } : null);

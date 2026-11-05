@@ -365,7 +365,7 @@ function GroupComposer({
   group: Group;
   onSend: (body: string, clientKey: string) => Promise<void>;
 }) {
-  const delivery = deliveryLine(group.presence);
+  const delivery = deliveryLine(group);
   const [body, setBody] = useState('');
   const [key, setKey] = useState(newKey);
   const [busy, setBusy] = useState(false);

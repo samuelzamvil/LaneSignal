@@ -19,18 +19,26 @@ test('session ids that are web addresses are links; other names are not', () => 
 });
 
 test('whether what a person writes reaches the overseer now', () => {
+  const owned = (state: GroupPresence['state']) => ({ overseer: 'overseer', presence: presence(state) });
   assert.equal(deliveryLine(undefined), null, 'nothing without presence');
-  assert.match(deliveryLine(presence('listening'))!, /listening: it gets this now/);
-  assert.match(deliveryLine(presence('reconnecting'))!, /when it reconnects/);
-  assert.match(deliveryLine(presence('disconnected'))!, /when it reconnects/);
-  assert.match(deliveryLine(presence('not_responding'))!, /isn't reading/);
+  assert.match(deliveryLine(owned('listening'))!, /listening: it gets this now/);
+  assert.match(deliveryLine(owned('reconnecting'))!, /when it reconnects/);
+  assert.match(deliveryLine(owned('disconnected'))!, /when it reconnects/);
+  assert.match(deliveryLine(owned('not_responding'))!, /isn't reading/);
+});
+
+test('a group nobody registered says nothing about an overseer while nobody is connected', () => {
+  assert.equal(deliveryLine({ overseer: null, presence: presence('disconnected') }), null);
+  assert.equal(overseerListening({ overseer: null, presence: presence('disconnected') }), undefined);
+  // An agent waiting on it still shows.
+  assert.equal(overseerListening({ overseer: null, presence: presence('listening') }), true);
 });
 
 test("an epic's question goes by its group's presence, and nothing is said without one", () => {
   assert.equal(overseerListening(undefined), undefined);
-  assert.equal(overseerListening({}), undefined);
-  assert.equal(overseerListening({ presence: presence('listening') }), true);
-  assert.equal(overseerListening({ presence: presence('reconnecting') }), false);
+  assert.equal(overseerListening({ overseer: 'o' }), undefined);
+  assert.equal(overseerListening({ overseer: 'o', presence: presence('listening') }), true);
+  assert.equal(overseerListening({ overseer: 'o', presence: presence('reconnecting') }), false);
 });
 
 test('the chip tooltip lists the sessions', () => {

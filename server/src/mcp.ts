@@ -116,6 +116,8 @@ async function cancellable<T>(
 ): Promise<{ value: T; revoked: boolean }> {
   const ctrl = new AbortController();
   extra.signal.addEventListener('abort', () => ctrl.abort());
+  // Cancelled before the wait began: its 'abort' has fired already.
+  if (extra.signal.aborted) ctrl.abort();
   let revoked = false;
   const unwatch = watchRevocation(() => {
     revoked = true;

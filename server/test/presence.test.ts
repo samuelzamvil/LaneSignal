@@ -2,6 +2,7 @@
 // held by `wait_for_decisions` and `GET /api/wait`, with the quiet and offline windows after.
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
+import { presenceForWait } from '../src/access.ts';
 import { loadConfig } from '../src/config.ts';
 import { MAX_SESSIONS, Presence } from '../src/presence.ts';
 import { Store } from '../src/store.ts';
@@ -286,6 +287,19 @@ describe('presence over waits', () => {
   });
 });
 
+describe('who counts', () => {
+  test("a person whose key string matches the overseer's (same name) never counts", () => {
+    // `token:twin` is both a config agent token's key and a config human token's: only the agent counts.
+    srv.store.upsertGroup('default/pres-twin', { name: 'pres-twin' }, 'twin', 'token:twin');
+    const person = presenceForWait(srv.store, { name: 'twin', role: 'human' }, 'default/pres-twin', undefined);
+    assert.equal(srv.store.presence.of('default/pres-twin').state, 'disconnected');
+    person();
+    const agent = presenceForWait(srv.store, { name: 'twin', role: 'agent' }, 'default/pres-twin', undefined);
+    assert.equal(srv.store.presence.of('default/pres-twin').state, 'listening');
+    agent();
+  });
+});
+
 describe('presence settings', () => {
   test('presence is absent with answering in LaneSignal off', async () => {
     const off = await startServer({ LANESIGNAL_DECISIONS: 'false' });
@@ -336,6 +350,36 @@ describe('the presence record', () => {
     // A dropped session's release does nothing.
     releases[3]();
     assert.equal(p.of('g').sessions.length, MAX_SESSIONS);
+    p.close();
+  });
+
+  test('at the cap with every session connected, a new one is not tracked and nothing changes', () => {
+    const { p, changes } = record(10_000, 20_000);
+    for (let i = 0; i < MAX_SESSIONS; i++) p.attach('g', 'k', `s${i}`, 'wait');
+    const before = changes.length;
+    const release = p.attach('g', 'k', 'extra', 'wait');
+    assert.equal(changes.length, before, 'no event');
+    assert.ok(!p.of('g').sessions.some((s) => s.id === 'extra'));
+    release();
+    assert.equal(p.of('g').sessions.length, MAX_SESSIONS);
+    p.close();
+  });
+
+  test('reconnecting and disconnected date from when the connection ended', async () => {
+    let clock = Date.parse('2026-11-05T10:00:00Z');
+    const p = new Presence({ quietMs: 20, offlineMs: 50, now: () => new Date(clock), onChange: () => {} });
+    const release = p.attach('g', 'k', 's', 'wait');
+    clock += 1000;
+    release();
+    const endedAt = new Date(clock).toISOString();
+    clock += 5000; // the timers fire later than the connection ended
+    await sleep(30);
+    assert.equal(p.of('g').state, 'reconnecting');
+    assert.equal(p.of('g').since, endedAt);
+    assert.equal(p.of('g').sessions[0].since, endedAt);
+    await sleep(40);
+    assert.equal(p.of('g').state, 'disconnected');
+    assert.equal(p.of('g').since, endedAt);
     p.close();
   });
 

@@ -17,12 +17,23 @@ export const sessionHref = (id: string) => {
   }
 };
 
-/** Whether the group's overseer gets something right now. Undefined without presence (answering in LaneSignal off). */
-export const overseerListening = (group: Pick<Group, 'presence'> | undefined) =>
-  group?.presence ? group.presence.state === 'listening' : undefined;
+/**
+ * The group's presence as the app shows it: none without presence (answering in LaneSignal off), and none
+ * for a group nobody registered (Ungrouped, or one made by publishing a lane) while nobody is connected,
+ * since it has no overseer to be missing.
+ */
+export const shownPresence = (group: Pick<Group, 'presence' | 'overseer'> | undefined): GroupPresence | undefined =>
+  group?.presence && (group.overseer || group.presence.state !== 'disconnected') ? group.presence : undefined;
+
+/** Whether the group's overseer gets something right now; undefined when the app shows no presence for it. */
+export const overseerListening = (group: Pick<Group, 'presence' | 'overseer'> | undefined) => {
+  const presence = shownPresence(group);
+  return presence ? presence.state === 'listening' : undefined;
+};
 
 /** The line under the group conversation's box: whether what's written reaches the overseer now. */
-export function deliveryLine(presence: GroupPresence | undefined): string | null {
+export function deliveryLine(group: Pick<Group, 'presence' | 'overseer'> | undefined): string | null {
+  const presence = shownPresence(group);
   if (!presence) return null;
   switch (presence.state) {
     case 'listening':

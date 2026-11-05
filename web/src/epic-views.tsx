@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import type { Client, Epic, Escalation, Group, LaneEvent } from './api.ts';
 import { FOLD, Links, SheetSection, TicketLink, useStored, type Fold } from './components.tsx';
 import { absolute, ago } from './format.ts';
-import { PRESENCE_META, presenceTitle, sessionHref } from './presence.ts';
+import { PRESENCE_META, presenceTitle, sessionHref, shownPresence } from './presence.ts';
 import { hasNewMessage } from './seen.ts';
 import { toast } from './toast.tsx';
 import { ReopenControls } from './reopen.tsx';
@@ -29,9 +29,8 @@ const sessionLink = (group: Group | undefined) => group?.links.find((l) => l.kin
 
 /** Whether the group's overseer is connected: nothing without presence (answering in LaneSignal off). */
 export function PresenceChip({ group }: { group: Group | undefined }) {
-  const presence = group?.presence;
-  // A group nobody registered (Ungrouped, or one made by publishing a lane) has no overseer to be missing.
-  if (!presence || (!group?.overseer && presence.state === 'disconnected')) return null;
+  const presence = shownPresence(group);
+  if (!presence) return null;
   const meta = PRESENCE_META[presence.state];
   return (
     <span className={`presence-chip presence-${presence.state}`} title={presenceTitle(presence, absolute)}>
