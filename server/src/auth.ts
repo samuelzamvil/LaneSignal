@@ -43,8 +43,16 @@ export type AuthResult =
     }
   | { ok: false; status: 401 | 403; error: string };
 
-/** The request's path and query, as the client sent them (Express rewrites `url` inside routers). */
-const urlOf = (req: AuthRequest) => new URL(req.originalUrl ?? req.url ?? '/', 'http://localhost');
+/**
+ * The request target as the client sent it (Express rewrites `url` inside routers), split into its raw
+ * path and query. Never normalised: WHATWG URL would resolve `..` and backslashes and so disagree with the route
+ * Express matches, and it throws on targets clients control.
+ */
+function targetOf(req: AuthRequest) {
+  const target = req.originalUrl ?? req.url ?? '';
+  const q = target.indexOf('?');
+  return { path: q < 0 ? target : target.slice(0, q), query: new URLSearchParams(q < 0 ? '' : target.slice(q + 1)) };
+}
 
 /**
  * Header for a LaneSignal session next to Access's Managed OAuth token, which takes `Authorization` in the app:
@@ -107,9 +115,9 @@ export function createAuth(
     if (typeof session === 'string' && session.trim() && (!bearer || isAccessOAuthToken(bearer))) return session.trim();
     if (bearer) return bearer;
     // EventSource can't send headers; allow the token as a query parameter for /api/events only.
-    const url = urlOf(req);
-    const query = url.searchParams.get('access_token');
-    if (url.pathname === '/api/events' && query !== null) return query;
+    const { path, query } = targetOf(req);
+    const tokens = query.getAll('access_token');
+    if (path === '/api/events' && tokens.length === 1) return tokens[0];
     return undefined;
   }
 
@@ -124,7 +132,10 @@ export function createAuth(
    * browsers send Origin on every cross-origin request and on same-origin POSTs.
    */
   function sameSiteOk(req: AuthRequest) {
-    if (!access || ['GET', 'HEAD', 'OPTIONS'].includes(req.method ?? 'GET')) return true;
+    if (!access) return true;
+    // A WebSocket upgrade is a GET, but it opens a two-way channel: browsers send Origin on it, so check it.
+    const upgrade = typeof req.headers.upgrade === 'string' && req.headers.upgrade.toLowerCase() === 'websocket';
+    if (!upgrade && ['GET', 'HEAD', 'OPTIONS'].includes(req.method ?? 'GET')) return true;
     const origin = req.headers.origin;
     return !origin || access.trustedOrigins(req).includes(origin);
   }
