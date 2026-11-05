@@ -53,6 +53,11 @@ export interface Config {
   ntfyOpen: 'app' | 'browser';
   eventRetention: number;
   /**
+   * Overseer presence: a session stays listening for `quietSeconds` after its last connection ends (lanes' "agent
+   * waiting" too), then shows reconnecting until `offlineMinutes` after it ended, then disconnected.
+   */
+  presence: { quietSeconds: number; offlineMinutes: number };
+  /**
    * Answering escalations in LaneSignal (on by default): the dashboard's decision buttons, and agents
    * waiting for and acknowledging decisions. Off, LaneSignal only alerts: people answer in the agent's
    * own session, and the agent dismisses the alert with a justification.
@@ -339,6 +344,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
   );
 
+  const presence = {
+    quietSeconds: int('LANESIGNAL_PRESENCE_QUIET_SECONDS', env.LANESIGNAL_PRESENCE_QUIET_SECONDS, 60, 1, 86_400),
+    offlineMinutes: int('LANESIGNAL_PRESENCE_OFFLINE_MINUTES', env.LANESIGNAL_PRESENCE_OFFLINE_MINUTES, 10, 1, 10_080),
+  };
+  // Reconnecting is the time between the two: without any, a session would skip it, or come back from disconnected.
+  if (presence.quietSeconds >= presence.offlineMinutes * 60) {
+    throw new Error(
+      `LANESIGNAL_PRESENCE_QUIET_SECONDS (${presence.quietSeconds}) must be shorter than LANESIGNAL_PRESENCE_OFFLINE_MINUTES (${presence.offlineMinutes} minutes)`,
+    );
+  }
+
   const publicUrl = env.LANESIGNAL_PUBLIC_URL ?? file.publicUrl ?? null;
   return {
     name: env.LANESIGNAL_NAME ?? file.name ?? 'LaneSignal',
@@ -368,6 +384,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ntfyToken: env.LANESIGNAL_NTFY_TOKEN ?? file.ntfyToken ?? null,
     ntfyOpen: oneOf('LANESIGNAL_NTFY_OPEN', env.LANESIGNAL_NTFY_OPEN, ['app', 'browser'] as const, 'app'),
     eventRetention: int('LANESIGNAL_EVENT_RETENTION', env.LANESIGNAL_EVENT_RETENTION ?? file.eventRetention, 200, 1, 100_000),
+    presence,
     decisions: bool('LANESIGNAL_DECISIONS', env.LANESIGNAL_DECISIONS, true),
     requirements: bool('LANESIGNAL_REQUIREMENTS', env.LANESIGNAL_REQUIREMENTS, true),
     laneAdvice: bool('LANESIGNAL_LANE_ADVICE', env.LANESIGNAL_LANE_ADVICE, true),

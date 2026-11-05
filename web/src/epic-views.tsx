@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import type { Client, Epic, Escalation, Group, LaneEvent } from './api.ts';
 import { FOLD, Links, SheetSection, TicketLink, useStored, type Fold } from './components.tsx';
 import { absolute, ago } from './format.ts';
+import { PRESENCE_META, presenceTitle, sessionHref, shownPresence } from './presence.ts';
 import { hasNewMessage } from './seen.ts';
 import { toast } from './toast.tsx';
 import { ReopenControls } from './reopen.tsx';
@@ -25,6 +26,44 @@ export const laneKeyOf = (e: Pick<Escalation, 'project' | 'laneId' | 'epicId'>) 
 
 /** The overseer's Remote Control session, from its group's links. */
 const sessionLink = (group: Group | undefined) => group?.links.find((l) => l.kind === 'session');
+
+/** Whether the group's overseer is connected: nothing without presence (answering in LaneSignal off). */
+export function PresenceChip({ group }: { group: Group | undefined }) {
+  const presence = shownPresence(group);
+  if (!presence) return null;
+  const meta = PRESENCE_META[presence.state];
+  return (
+    <span className={`presence-chip presence-${presence.state}`} title={presenceTitle(presence, absolute)}>
+      {meta.icon} {meta.label}
+    </span>
+  );
+}
+
+/** The overseer's sessions, each a link when its id is one (a Remote Control URL). */
+export function PresenceSessions({ group }: { group: Group | undefined }) {
+  const sessions = group?.presence?.sessions ?? [];
+  if (!sessions.length) return null;
+  return (
+    <span className="presence-sessions">
+      {sessions.map((s, i) => {
+        const href = sessionHref(s.id);
+        const label = `${PRESENCE_META[s.state].icon} ${s.id}`;
+        return (
+          <span key={`${i}-${s.id}`} title={`${s.transport}: ${PRESENCE_META[s.state].label}`}>
+            {i > 0 && ' · '}
+            {href ? (
+              <a href={href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                {label}
+              </a>
+            ) : (
+              label
+            )}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
 
 /** The epic a question belongs to, linking to its sheet. */
 export function EpicChip({ esc }: { esc: Pick<Escalation, 'project' | 'epicId' | 'epicName'> }) {
@@ -147,6 +186,7 @@ export function GroupHeader({
         {waiting > 0 && <span className="esc-count">⚑ {waiting} need you</span>}
         {fyi > 0 && <span className="fyi-count">ⓘ {fyi} FYI</span>}
         {blocked && <span className="pill tone-danger">Waiting on you</span>}
+        <PresenceChip group={group} />
         {showTicket && (standIn ? <EpicTicket epic={standIn} group={group} /> : group && <TicketLink lane={group} />)}
         {session && (
           <a className="session-link" href={session.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>

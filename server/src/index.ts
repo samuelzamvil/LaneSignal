@@ -19,6 +19,9 @@ const store = new Store({
   ticketRefs: ticketRefs(config.ticketTemplates, config.defaultTicketSystem),
   eventRetention: config.eventRetention,
   attachmentsPerItem: config.attachmentsPerItem,
+  waitGraceMs: config.presence.quietSeconds * 1000,
+  presenceOfflineMs: config.presence.offlineMinutes * 60_000,
+  decisions: config.decisions,
 });
 const accounts = await createAccounts(config, path.join(config.dataDir, 'lanesignal.db'));
 // Everyone who could see the data before projects arrived keeps seeing it (once, on upgrade).

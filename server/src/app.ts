@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toNodeHandler } from 'better-auth/node';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z, ZodError, type ZodType } from 'zod';
-import { accessFor, ackerOf, approvesRequirements, isWriter, markNotesDelivered, requireWriter, upgradeFor, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
+import { accessFor, ackerOf, approvesRequirements, isWriter, markNotesDelivered, presenceForWait, requireWriter, upgradeFor, productsKeptWarning, briefWait, digestWait, escalationTarget, ownerOf, pub, q, readableAttachment, requireRaiser, requirementInputFor, waitScopeFor, type Access } from './access.ts';
 import { checkAttachment, readUpload } from './attachments.ts';
 import { CLIENT_IP_HEADER, FAILOVER_KEY_HEADER, type Accounts } from './accounts.ts';
 import { createAuth, principalOf, SESSION_HEADER, stillValidOf, watchRevocationOf, type AccessAuth } from './auth.ts';
@@ -1045,27 +1045,47 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       if (query.ack !== undefined) requireWriter(principalOf(res), 'acknowledge group notes');
       const acked = query.ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, query.ack, ackerOf(principalOf(res))) : undefined;
       const withAck = <T extends object>(body: T) => (acked !== undefined ? { ...body, acked } : body);
-      const now = store.decisionsFor(scope);
+      // The overseer's session counts as connected while this waits, and checks in even when it returns at once.
+      const release = presenceForWait(store, principalOf(res), scope.groupId, query.session);
+      let now;
+      try {
+        now = store.decisionsFor(scope);
+      } catch (err) {
+        release();
+        throw err;
+      }
       const timeout = query.timeout ?? 300;
       if (now.ready || timeout === 0) {
+        release();
         markNotesDelivered(store, now, principalOf(res));
         res.json(withAck(shape(pub.wait(now))));
         return;
       }
       const abort = new AbortController();
-      res.on('close', () => abort.abort());
       let revoked = false;
-      const unwatch = watchRevocationOf(res)(() => {
-        revoked = true;
-        abort.abort();
-      });
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
-      res.write(' ');
-      const stillValid = stillValidOf(res);
-      const keepalive = setInterval(() => {
+      let unwatch = () => {};
+      let keepalive: ReturnType<typeof setInterval> | undefined;
+      try {
+        res.on('close', () => abort.abort());
+        // The client may have hung up while it was being authenticated: 'close' has fired already.
+        if (res.closed || req.destroyed) abort.abort();
+        unwatch = watchRevocationOf(res)(() => {
+          revoked = true;
+          abort.abort();
+        });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
         res.write(' ');
-        void stillValid().then((ok) => ok || ((revoked = true), abort.abort()));
-      }, 20_000);
+        const stillValid = stillValidOf(res);
+        keepalive = setInterval(() => {
+          res.write(' ');
+          void stillValid().then((ok) => ok || ((revoked = true), abort.abort()));
+        }, 20_000);
+      } catch (err) {
+        clearInterval(keepalive);
+        unwatch();
+        release();
+        throw err;
+      }
       try {
         const result = await store.waitForDecisions(scope, timeout * 1000, abort.signal);
         const visible = accessFor(store, principalOf(res)).projects;
@@ -1077,6 +1097,7 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       } finally {
         clearInterval(keepalive);
         unwatch();
+        release();
       }
     }),
   );

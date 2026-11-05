@@ -589,6 +589,34 @@ textarea {
   color: var(--warn);
 }
 
+/* Whether a group's overseer is connected: in its header, and under its conversation's box. */
+.presence-chip {
+  font-size: 0.8rem;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.presence-chip.presence-listening,
+.presence-line.presence-listening {
+  color: var(--ok);
+}
+
+.presence-chip.presence-not_responding,
+.presence-line.presence-not_responding {
+  color: var(--warn);
+}
+
+.presence-line {
+  margin: 6px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.presence-sessions {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .activity {
   margin: 8px 0 0;
   color: var(--muted);
