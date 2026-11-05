@@ -740,6 +740,8 @@ export class Store {
     for (const e of this.db.prepare('SELECT * FROM epics WHERE stand_in = 1 ORDER BY num').all() as Row[]) {
       const num = Number(e.num);
       const groupId = e.group_id as string;
+      // Every epic's group has a row; should one be missing, the stand-in is left as it was rather than the upgrade fail.
+      if (!this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(groupId)) continue;
       // Its questions keep their codes: the group's code is the stand-in's.
       this.db.prepare('UPDATE groups SET code_ref = COALESCE(code_ref, ?) WHERE id = ?').run(e.code_ref as string, groupId);
       if (e.state !== 'closed' && e.status_line) {
@@ -751,12 +753,23 @@ export class Store {
       this.db.prepare('UPDATE escalations SET lane_id = ? WHERE lane_id = ?').run(groupLane, epicLane);
       this.db.prepare('UPDATE escalations SET epic_id = NULL, group_id = COALESCE(group_id, ?) WHERE epic_id = ?').run(groupId, num);
       this.db.prepare('UPDATE tickets SET epic_id = NULL WHERE epic_id = ?').run(num);
-      // Its board's notes the overseer had read stay acknowledged once they're the group's.
+      // Its board's notes the overseer had read stay acknowledged once they're the group's, as far as
+      // that leaves no unread group note behind (the group has one mark for both): never lose one.
       const read = Number(
         (this.db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM group_messages WHERE epic_id = ? AND id <= ?').get(num, Number(e.agent_read_id ?? 0)) as Row).n,
       );
+      const firstUnread = (
+        this.db
+          .prepare(
+            `SELECT MIN(m.id) AS n FROM group_messages m JOIN groups g ON g.id = m.group_id
+             WHERE m.group_id = ? AND m.author_kind = 'owner' AND m.escalation_id IS NULL AND m.lane_id IS NULL AND m.epic_id IS NULL
+               AND m.id > g.overseer_read_id`,
+          )
+          .get(groupId) as Row
+      ).n;
+      const upTo = firstUnread == null ? read : Math.min(read, Number(firstUnread) - 1);
       this.db.prepare('UPDATE group_messages SET epic_id = NULL WHERE epic_id = ?').run(num);
-      this.db.prepare('UPDATE groups SET overseer_read_id = MAX(overseer_read_id, ?) WHERE id = ?').run(read, groupId);
+      this.db.prepare('UPDATE groups SET overseer_read_id = MAX(overseer_read_id, ?) WHERE id = ?').run(upTo, groupId);
       this.db.prepare('UPDATE lane_events SET lane_id = ? WHERE lane_id = ?').run(groupLane, epicLane);
       this.db.prepare('DELETE FROM lanes WHERE id = ?').run(epicLane);
       this.db.prepare('DELETE FROM epics WHERE num = ?').run(num);
@@ -1516,8 +1529,8 @@ export class Store {
   /**
    * The group's questions waiting on a person: open, blocking, and the owner's turn. The set the group's
    * wait covers and the Lanes page counts as "need you": questions on the tickets the group holds or parked
-   * (wherever they were raised: a ticket moves between groups with its questions), on its epics, and the
-   * older ones on its live lanes that have neither. FYIs block nothing, so they don't count.
+   * (wherever they were raised: a ticket moves between groups with its questions), on its epics, and its
+   * own (neither a ticket nor an epic: they stay the group's when a lane moves). FYIs block nothing, so they don't count.
    */
   blockingQuestionsOf(groupId: string): number {
     const r = this.db
@@ -1525,8 +1538,7 @@ export class Store {
         `SELECT COUNT(*) AS n FROM escalations WHERE state = 'open' AND blocking = 1 AND turn = 'owner'
            AND (ticket_id IN (SELECT num FROM tickets WHERE group_id = ?)
              OR epic_id IN (SELECT num FROM epics WHERE group_id = ?)
-             OR (ticket_id IS NULL AND epic_id IS NULL
-               AND lane_id IN (SELECT id FROM lanes WHERE group_id = ? AND archived_at IS NULL)))`,
+             OR (ticket_id IS NULL AND epic_id IS NULL AND group_id = ?))`,
       )
       .get(groupId, groupId, groupId) as Row;
     return Number(r.n ?? 0);
@@ -3660,7 +3672,8 @@ export class Store {
       }
       return { ticketId: null, epicId: named, groupId: null, codeRef: r.code_ref as string };
     }
-    const lane = this.db.prepare('SELECT ticket_id, group_id FROM lanes WHERE id = ?').get(laneId) as Row;
+    const lane = this.db.prepare('SELECT ticket_id, group_id FROM lanes WHERE id = ?').get(laneId) as Row | undefined;
+    if (!lane) throw new NotFoundError(`Lane "${localId(laneId)}" not found`);
     // The group's internal lane: a question on the group itself.
     if (laneId.includes('/~group-')) return onGroup(lane.group_id as string);
     if (lane.ticket_id != null) {
@@ -4451,6 +4464,9 @@ export class Store {
       }
       closedById.set(e.id, e);
     }
+    // On a group's wait, a lane's question that's another group's own (raised there before the lane moved) isn't this group's.
+    const otherGroups = (e: StoredEscalation) =>
+      !!scope.groupId && e.ticketId === null && e.epicId === null && e.group !== null && e.group !== scope.groupId;
     const removedLanes: WaitResult['removedLanes'] = [];
     for (const laneId of laneIds) {
       if (scope.since) {
@@ -4464,7 +4480,7 @@ export class Store {
           .get(laneId, scope.since, ...viewerArgs) as Row | undefined;
         if (removed) removedLanes.push({ laneId, removedBy: (removed.actor as string | null) ?? null, at: removed.at as string });
       }
-      for (const e of this.listEscalations({ laneId, states: ['open', 'decided'] })) byId.set(e.id, e);
+      for (const e of this.listEscalations({ laneId, states: ['open', 'decided'] })) if (!otherGroups(e)) byId.set(e.id, e);
       if (scope.since) {
         const rows = this.db
           .prepare(
@@ -4472,7 +4488,24 @@ export class Store {
                AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)`,
           )
           .all(laneId, scope.since, ...viewerArgs) as Row[];
-        for (const r of rows) closedById.set(r.id as string, this.escalationFromRow(r));
+        for (const r of rows) {
+          const e = this.escalationFromRow(r);
+          if (!otherGroups(e)) closedById.set(r.id as string, e);
+        }
+      }
+    }
+    // A group's own questions (neither a ticket's nor an epic's), wherever the lane they were raised from went.
+    if (scope.groupId) {
+      for (const r of this.db
+        .prepare(
+          `SELECT * FROM escalations WHERE ticket_id IS NULL AND epic_id IS NULL AND group_id = ?
+             AND (state IN ('open', 'decided')
+               OR (? IS NOT NULL AND state = 'withdrawn' AND updated_at >= ? AND (? IS NULL OR COALESCE(withdrawn_by, '') <> ?)))`,
+        )
+        .all(scope.groupId, scope.since ?? null, scope.since ?? null, ...viewerArgs) as Row[]) {
+        const e = this.escalationFromRow(r);
+        if (e.state === 'withdrawn') closedById.set(e.id, e);
+        else byId.set(e.id, e);
       }
     }
     // Questions also count where their ticket is: those of tickets the lanes hold, and a group's parked ones.

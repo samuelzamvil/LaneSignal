@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { routeFromAppLink } from '../src/deeplink.ts';
-import { epicsOnScreen, groupLayout, laneEpic } from '../src/epics.ts';
+import { epicsOnScreen, groupLayout, laneEpic, laneKeyOf, offLaneLabel } from '../src/epics.ts';
 import { labelFor, nextEntry } from '../src/nav.ts';
 import { epic, lane, ticket } from './fixtures.ts';
 
@@ -75,4 +75,13 @@ test('a closed epic waiting for a reopen decision gets no card of its own', () =
   const waiting = epic({ id: 9, state: 'closed', reopenRequest: { reason: 'x', by: 'o', at: '2026-10-01T00:00:00Z' } });
   assert.deepEqual(epicsOnScreen('p/g1', [waiting]).map((e) => e.id), []);
   assert.deepEqual(epicsOnScreen('p/g1', [epic({ id: 7 }), waiting]).map((e) => e.id), [7]);
+});
+
+test("a group's own questions are keyed and labelled by their group", () => {
+  const own = (group: string) => ({ project: 'p', laneId: null, epicId: null, epicName: null, group });
+  assert.equal(laneKeyOf(own('g1')), 'p/~group-g1');
+  assert.notEqual(laneKeyOf(own('g1')), laneKeyOf(own('g2')));
+  assert.equal(laneKeyOf({ project: 'p', laneId: null, epicId: 7, group: 'g1' }), 'p/~epic-7');
+  assert.equal(offLaneLabel(own('g1'), 'Payments'), '▣ Payments');
+  assert.equal(offLaneLabel({ epicId: 7, epicName: 'Checkout', group: 'g1' }), '◆ Checkout');
 });

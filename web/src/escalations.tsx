@@ -9,7 +9,7 @@ import { openItem, stepTo } from './nav.ts';
 import { overseerListening } from './presence.ts';
 import { toast } from './toast.tsx';
 import { TicketChip, useSeparateTicket, useTicketLabel } from './ticket-views.tsx';
-import { EpicChip, EpicsContext, hasLane, laneKeyOf } from './epic-views.tsx';
+import { EpicChip, EpicsContext, hasLane, laneKeyOf, offLaneLabel } from './epic-views.tsx';
 
 /** Whether `code` names the escalation: "A12", or across projects "LS-A12" / "LS·A12" / "LS:A12". */
 export function isCodeOf(e: Escalation, code: string) {
@@ -518,12 +518,15 @@ export function EscalationCard({
 export function EscalationRow({
   esc,
   lane,
+  groupName,
   now,
   showProject,
   selected,
 }: {
   esc: Escalation;
   lane: Lane | undefined;
+  /** Its group's name, for one raised on the group itself. */
+  groupName?: string;
   now: number;
   showProject: boolean;
   /** It's the one open beside the list. */
@@ -555,7 +558,7 @@ export function EscalationRow({
       <span className="esc-row-main">
         <span className="esc-row-question">{esc.question}</span>
         <span className="muted esc-row-where">
-          {hasLane(esc.laneId) ? (lane?.name ?? esc.laneId) : `◆ ${esc.epicName ?? 'epic'}`}
+          {hasLane(esc.laneId) ? (lane?.name ?? esc.laneId) : offLaneLabel(esc, groupName)}
           {hasLane(esc.laneId) && esc.epicName && ` · ◆ ${esc.epicName}`}
           {ticketLabel && ` · ${ticketLabel}`}
           {esc.attachments.length > 0 && (
@@ -632,9 +635,15 @@ export function EscalationDetail({
   const target = currentId ?? id;
   const esc = loaded && (loaded.id === target || isCodeOf(loaded, id)) ? loaded : null;
   const lane = esc ? lanes.get(laneKeyOf(esc)) : undefined;
-  // Its lane's group, or for one raised on an epic, the epic's.
+  // Its lane's group, for one raised on an epic the epic's, or for one raised on the group, that group.
   const epic = esc?.epicId ? epics.get(String(esc.epicId)) : undefined;
-  const group = lane?.group ? groups.get(keyOf(lane.project, lane.group)) : epic ? groups.get(keyOf(epic.project, epic.group)) : undefined;
+  const group = lane?.group
+    ? groups.get(keyOf(lane.project, lane.group))
+    : epic
+      ? groups.get(keyOf(epic.project, epic.group))
+      : esc && !hasLane(esc.laneId) && esc.group
+        ? groups.get(keyOf(esc.project, esc.group))
+        : undefined;
 
   useEffect(() => {
     sheet.current?.scrollTo(0, 0);

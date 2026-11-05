@@ -4,7 +4,7 @@ import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
 import { openItem } from './nav.ts';
 import { useStored } from './components.tsx';
-import { hasLane, laneKeyOf } from './epic-views.tsx';
+import { hasLane, laneKeyOf, offLaneLabel } from './epic-views.tsx';
 
 type Outcome = '' | 'answered' | 'dismissed';
 
@@ -12,12 +12,15 @@ type Outcome = '' | 'answered' | 'dismissed';
 function HistoryRow({
   esc,
   lane,
+  groupName,
   now,
   showProject,
   selected,
 }: {
   esc: Escalation;
   lane: Lane | undefined;
+  /** Its group's name, for one raised on the group itself. */
+  groupName?: string;
   now: number;
   showProject: boolean;
   selected: boolean;
@@ -49,7 +52,7 @@ function HistoryRow({
           {outcome.text && <span className="history-note"> {outcome.text}</span>}
         </span>
         <span className="muted history-where">
-          {hasLane(esc.laneId) ? (lane?.name ?? esc.laneId) : `◆ ${esc.epicName ?? 'epic'}`}
+          {hasLane(esc.laneId) ? (lane?.name ?? esc.laneId) : offLaneLabel(esc, groupName)}
           {esc.ticketRef && ` · ticket ${esc.ticketRef}`}
           {hasLane(esc.laneId) && esc.epicName && ` · ◆ ${esc.epicName}`}
           {esc.messageCount > 0 && ` · ${esc.messageCount} message${esc.messageCount > 1 ? 's' : ''}`} ·{' '}
@@ -199,6 +202,7 @@ export function HistoryPane({
             key={e.id}
             esc={e}
             lane={lanes.get(laneKeyOf(e))}
+            groupName={e.group ? groups.get(keyOf(e.project, e.group))?.name : undefined}
             now={now}
             showProject={multiProject}
             selected={selectedId === e.id}

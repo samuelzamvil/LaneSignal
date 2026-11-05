@@ -416,3 +416,51 @@ test("upgrading to v29: a stand-in epic's questions, board and status line becom
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a group's own question stays the group's when the lane it came from moves on", () => {
+  const store = new Store({ path: ':memory:', resolveTicketUrl: () => null });
+  try {
+    publishLane(store, 'default/x', { group: 'default/a', ticket: null }, 'bot');
+    const q = store.createEscalation({ laneId: 'default/x', question: 'What next?' }, 'bot');
+    assert.deepEqual([q.ticketId, q.epicId, q.group], [null, null, 'default/a']);
+    publishLane(store, 'default/x', { group: 'default/b', ticket: null }, 'bot');
+    assert.equal(store.blockingQuestionsOf('default/a'), 1);
+    assert.equal(store.blockingQuestionsOf('default/b'), 0);
+    store.decideEscalation(q.id, 'Accept', null, 'alice');
+    const decided = (group: string) => store.decisionsFor({ groupId: group }).decided.map((e) => e.id);
+    assert.deepEqual(decided('default/a'), [q.id]);
+    assert.deepEqual(decided('default/b'), []);
+  } finally {
+    store.close();
+  }
+});
+
+test('upgrading to v29 never marks an unread group note as read', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'lanesignal-v28-'));
+  const file = path.join(dir, 'lanesignal.db');
+  try {
+    let store = new Store({ path: file, resolveTicketUrl: () => null });
+    publishLane(store, 'default/slot', { group: 'default/grp' }, 'bot');
+    store.close();
+    const db = new DatabaseSync(file);
+    db.exec(`
+      INSERT INTO epics (num, project_id, group_id, ref, display_ref, code_ref, name, links, state, stand_in, agent_read_id, created_at, updated_at)
+        VALUES (77, 'default', 'default/grp', NULL, NULL, 'grp', 'Grp', '[]', 'open', 1, 501, '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z');
+      INSERT INTO group_messages (id, group_id, epic_id, author_kind, author, body, created_at)
+        VALUES (500, 'default/grp', NULL, 'owner', 'alice', 'Group note, unread', '2026-11-01T00:00:01.000Z'),
+               (501, 'default/grp', 77, 'owner', 'alice', 'Board, read', '2026-11-01T00:00:02.000Z'),
+               (502, 'default/grp', 77, 'owner', 'alice', 'Board, unread', '2026-11-01T00:00:03.000Z');
+      ALTER TABLE groups DROP COLUMN code_ref;
+      ALTER TABLE groups DROP COLUMN status_line;
+      UPDATE meta SET value = '28' WHERE key = 'schema_version';`);
+    db.close();
+    store = new Store({ path: file, resolveTicketUrl: () => null });
+    assert.deepEqual(
+      store.unacknowledgedGroupMessages('default/grp').map((m) => m.body),
+      ['Group note, unread', 'Board, read', 'Board, unread'],
+    );
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

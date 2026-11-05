@@ -565,7 +565,10 @@ function Dashboard({
   if (filters.arrange === 'group') {
     // Groups needing a human first, then alphabetical; ungrouped lanes last.
     const ids: (string | null)[] = [...groupIds, null];
-    const urgent = (sec: Section) => sec.lanes.some(needsHuman) || epicsOf(sec.groupId ?? null).some((e) => e.blockingEscalations > 0);
+    const urgent = (sec: Section) => {
+      const g = sec.groupId ? namedGroups.get(sec.groupId) : undefined;
+      return sec.lanes.some(needsHuman) || epicsOf(sec.groupId ?? null).some((e) => e.blockingEscalations > 0) || (!!g && ownBlocking(g) > 0);
+    };
     sections = ids
       .map((id) => ({ key: id ?? '', groupId: id, lanes: visible.filter((l) => laneGroupKey(l) === id) }))
       .sort(
@@ -584,7 +587,7 @@ function Dashboard({
   /** One escalation in the inbox: a card with the answer buttons, or a one-line row. */
   const escItem = (e: Escalation, seq?: { index: number; total: number }) =>
     inboxLayout === 'list' ? (
-      <EscalationRow key={e.id} esc={e} lane={laneOf(e)} now={now} showProject={showProject} selected={route.escId === e.id} />
+      <EscalationRow key={e.id} esc={e} lane={laneOf(e)} groupName={groupOfEsc(e)?.name} now={now} showProject={showProject} selected={route.escId === e.id} />
     ) : (
       <EscalationCard
         key={e.id}
@@ -741,10 +744,17 @@ function Dashboard({
 
   // An epic's card shows while a status filter is off, or a group filter picks its group.
   const epicCardsIn = (sec: Section) => !activeStatuses.length && (!activeGroups.length || (!!sec.groupId && activeGroups.includes(sec.groupId)));
+  // A group with no lanes or epics still shows while it holds questions of its own or a status line.
+  const groupHasOwn = (groupId: string | null) => {
+    const g = groupId ? namedGroups.get(groupId) : undefined;
+    return !!g && (g.openEscalations > 0 || ownBlocking(g) > 0 || !!g.statusLine);
+  };
   const sectionShows = (sec: Section) =>
     sec.lanes.length > 0 ||
     (sec.groupId !== undefined &&
-      (parkedIn(sec.groupId).length > 0 || reopenEpicsIn(sec.groupId).length > 0 || (epicCardsIn(sec) && epicsOf(sec.groupId).length > 0)));
+      (parkedIn(sec.groupId).length > 0 ||
+        reopenEpicsIn(sec.groupId).length > 0 ||
+        (epicCardsIn(sec) && (epicsOf(sec.groupId).length > 0 || groupHasOwn(sec.groupId)))));
 
   const lanePane = (
     <section className="pane lanes" aria-label="Lanes">

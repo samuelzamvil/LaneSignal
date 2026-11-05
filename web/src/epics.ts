@@ -1,4 +1,4 @@
-import type { Epic, Lane, Ticket } from './api.ts';
+import type { Epic, Escalation, Lane, Ticket } from './api.ts';
 import { keyOf } from './merge.ts';
 
 /** A group's epics on its section of the Lanes page, oldest first (none, for a group holding only its own questions). */
@@ -47,3 +47,17 @@ export function groupLayout<L extends Pick<Lane, 'ticketId'>>(
     quiet,
   };
 }
+
+/** Off a lane: a question raised on an epic or a group (servers from before epics sent an epic's internal lane, "~epic-<n>"). */
+const offLane = (laneId: string | null) => laneId === null || /^~epic-\d+$/.test(laneId);
+
+/**
+ * A question's lane key, its epic's for one raised on the epic, or its group's for one raised on the
+ * group itself: questions are grouped by it.
+ */
+export const laneKeyOf = (e: Pick<Escalation, 'project' | 'laneId' | 'epicId' | 'group'>) =>
+  `${e.project}/${!offLane(e.laneId) ? e.laneId : e.epicId ? `~epic-${e.epicId}` : `~group-${e.group ?? ''}`}`;
+
+/** Where a question with no lane sits, for a row: its epic, or its group (by name when known). */
+export const offLaneLabel = (e: Pick<Escalation, 'epicId' | 'epicName' | 'group'>, groupName?: string) =>
+  e.epicId ? `◆ ${e.epicName ?? 'epic'}` : `▣ ${groupName ?? e.group ?? 'group'}`;

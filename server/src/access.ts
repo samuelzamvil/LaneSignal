@@ -372,6 +372,8 @@ export const brief = (e: Escalation & { duplicate?: boolean; upgraded?: boolean;
     laneId: e.laneId === null || isInternalLane(e.laneId) ? undefined : e.laneId,
     // An epic's question: which epic (its lane, if any, is only where it was raised).
     epic: e.epicName,
+    // The group's own question (no ticket or epic): which group.
+    group: e.ticketId === null && e.epicId === null && e.group ? localId(e.group) : undefined,
     state: e.state,
     blocking: e.blocking ? undefined : false,
     question: e.question,

@@ -17,11 +17,9 @@ export const epicRoute = (project: string, id: number) => `#/epic/${encodeURICom
  * Whether a question was raised on a lane anyone can open. One raised on an epic directly has none
  * (`laneId` null; servers from before this change sent its internal lane, "~epic-<n>").
  */
+export { laneKeyOf, offLaneLabel } from './epics.ts';
 export const hasLane = (laneId: string | null): laneId is string => laneId !== null && !/^~epic-\d+$/.test(laneId);
 
-/** A question's lane key, or its epic's for one raised on the epic: questions are grouped by it. */
-export const laneKeyOf = (e: Pick<Escalation, 'project' | 'laneId' | 'epicId'>) =>
-  `${e.project}/${hasLane(e.laneId) ? e.laneId : `~epic-${e.epicId}`}`;
 
 
 /** The overseer's Remote Control session, from its group's links. */
