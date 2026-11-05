@@ -10,6 +10,10 @@ export interface TokenEntry {
   token: string;
 }
 
+/** What `LANESIGNAL_NOTIFY_ON` can turn on. `disconnected`: a group's overseer went offline with questions waiting (off by default). */
+export const NOTIFY_KINDS = ['escalation', 'notice', 'blocked', 'completed', 'disconnected'] as const;
+export type NotifyKind = (typeof NOTIFY_KINDS)[number];
+
 export interface Config {
   name: string;
   host: string;
@@ -42,7 +46,7 @@ export interface Config {
   /** Most attachments on one escalation. */
   attachmentsPerItem: number;
   /** Which events trigger push notifications. */
-  notifyOn: Set<'escalation' | 'notice' | 'blocked' | 'completed'>;
+  notifyOn: Set<NotifyKind>;
   fcmServiceAccountFile: string | null;
   ntfyUrl: string | null;
   ntfyToken: string | null;
@@ -344,8 +348,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   );
   const notifyOn = new Set(
     (list(env.LANESIGNAL_NOTIFY_ON) ?? file.notifyOn ?? ['escalation', 'notice']).filter(
-      (n): n is 'escalation' | 'notice' | 'blocked' | 'completed' =>
-        n === 'escalation' || n === 'notice' || n === 'blocked' || n === 'completed',
+      (n): n is NotifyKind => (NOTIFY_KINDS as readonly string[]).includes(n),
     ),
   );
 

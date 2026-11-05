@@ -248,6 +248,24 @@ export function startNotifier(
         project: e.escalation.project,
       };
     }
+    // The overseer went offline while questions wait on a person: quiet, opt-in, and never for a takeover
+    // (the group has a new overseer). Presence starts disconnected without a transition, so nothing at startup.
+    if (e.type === 'group' && e.presence && config.notifyOn.has('disconnected')) {
+      const { from, to, reason } = e.presence;
+      if (to !== 'disconnected' || from === 'disconnected' || reason === 'taken_over') return null;
+      const waiting = store.blockingQuestionsOf(e.group.id);
+      if (!waiting) return null;
+      const g = e.group;
+      return {
+        title: `${g.name}'s overseer disconnected · ${waiting} ${waiting === 1 ? 'decision' : 'decisions'} waiting`,
+        body: 'Answers reach the overseer when it reconnects.',
+        data: { groupId: localId(g.id), project: g.project },
+        // It opens the group's conversation, like the overseer's notices.
+        route: `#/group/${encodeURIComponent(g.project)}/${encodeURIComponent(localId(g.id))}`,
+        urgent: false,
+        project: g.project,
+      };
+    }
     if (e.type === 'lane' && e.statusChanged) {
       const lane = e.lane;
       // Escalations already notify; don't double up on the lane transition.
