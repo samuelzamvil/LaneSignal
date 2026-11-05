@@ -67,7 +67,17 @@ The plugin carries the skill for a server with the default features (answering i
 
 **Codex** reads skills in the same `SKILL.md` format. Install it from your server into Codex's skills folder: `mkdir -p ~/.codex/skills/lanesignal && curl -fsS https://lanesignal.example.com/api/skill -o ~/.codex/skills/lanesignal/SKILL.md`, and re-run that after upgrading LaneSignal. The source is [`skills/lanesignal/`](../skills/lanesignal/): `SKILL.md`, then `decisions.md` (answering on the dashboard, the default) or `alerts.md` (`LANESIGNAL_DECISIONS=false`), then `requirements.md` when requirements are on. The server joins them. Each part has its Usage section (left out with `?usage=none`); `usage-template.md` is the template for your own. Re-run the command after upgrading LaneSignal or changing its features.
 
-Everything the skill does goes through MCP except long waits, which it runs in the background over HTTP. Those need `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
+Everything the skill does goes through MCP except staying connected: the [relay](#the-relay) (or, as a fallback, a background wait over HTTP). Those need `LANESIGNAL_URL`, `LANESIGNAL_KEY` and `LANESIGNAL_GROUP` (plus `LANESIGNAL_PROJECT` if the key reaches several projects) in the session's environment, for example in the `env` block of `.claude/settings.local.json` (not committed, since it holds the key).
+
+### The relay
+
+In Claude Code, the skill keeps an overseer connected with `relay.mjs`, a small script that holds the [agent socket](api.md#the-agent-socket) for the whole session. It comes with the plugin (next to the skill), and every server serves it at `GET /api/skill/relay.mjs`. It needs Node 22.13 or later and nothing else.
+
+- `node relay.mjs serve --session <id> --parent <pid>` holds the socket, started once in the background with the agent's pid as `--parent` (`$PPID` from its shell). `--session` is the agent's Remote Control URL, or an id it generates once and keeps. It writes each item to `.claude/lanesignal/<group>/<hash of the session>/events.jsonl` under the folder it runs in, reconnects from the last `checkedAt`, and exits when the parent is gone or after `LANESIGNAL_RELAY_IDLE_MINUTES` (30) with nothing following it. A second `serve` for the same session exits at once.
+- `node relay.mjs follow --session <id>` is the command Claude Code's Monitor tool runs: it prints each new line once it's complete, keeping its place in the same folder. While no follower runs, the relay tells the server it's not armed, and after `LANESIGNAL_PRESENCE_OFFLINE_MINUTES` the group shows **not responding**.
+- Its environment: `LANESIGNAL_URL`, `LANESIGNAL_KEY`, `LANESIGNAL_GROUP` and `LANESIGNAL_PROJECT` as above, and behind [Cloudflare Access](cloudflare-access.md), `LANESIGNAL_CF_ACCESS_CLIENT_ID` and `LANESIGNAL_CF_ACCESS_CLIENT_SECRET` (a service token, sent as `CF-Access-Client-Id` and `CF-Access-Client-Secret`). The key goes in the `Authorization` header and never appears in a command line.
+- When it stops for good, it writes one last line, `{"type":"relay_stopped","code","reason",…}`: `taken_over` (4409), `unauthorized` (4401), `forbidden` (4403), `not_found` (4404), `bad_request` (4400), or `unreachable` after 10 minutes without a working connection, or at once when the server has no socket. It reconnects by itself after `4100`, `1012`, a lost connection, or two ping intervals with no frame. `follow` prints `not_running` when no `serve` is running.
+- **Fallback:** without Monitor or Node 22.13+, on `unreachable` (Node's WebSocket doesn't use `HTTPS_PROXY`, so a session that can only reach the server through a proxy can't use it), or on an older server, the skill runs `GET /api/wait` as a background shell command instead. It names its session only when `LANESIGNAL_SESSION` is set.
 
 ### The skill is one way to use LaneSignal
 
@@ -167,7 +177,7 @@ Answers can take minutes or a day. An overseer waits on its whole group with one
 - Pass the previous result's `checkedAt` as `since`, so what changed between two calls is still reported.
 - An unknown `group_id` or lane is an error, so a typo doesn't look like "nothing to wait for".
 
-**Staying connected.** An overseer can instead hold a WebSocket to `GET /api/agent/socket` for the whole session: it gets the same digest items as they happen, without a waiting call, and shows the group as **listening** all along. The skill's relay holds it. With answering on the dashboard off, there's no socket. See [the agent socket](api.md#the-agent-socket) for the protocol:
+**Staying connected.** An overseer can instead hold a WebSocket to `GET /api/agent/socket` for the whole session: it gets the same digest items as they happen, without a waiting call, and shows the group as **listening** all along. The skill's relay holds it. With answering on the dashboard off, there's no socket. See [the relay](#the-relay) for running it, and [the agent socket](api.md#the-agent-socket) for the protocol:
 
 - It takes the agent key from the `Authorization` header only, never from the URL, so the key stays out of proxy logs.
 - Name the session with `session=`, as for waits. Pass the last `checkedAt` it sent as `since` when reconnecting.
@@ -175,6 +185,6 @@ Answers can take minutes or a day. An overseer waits on its whole group with one
 - While it's connected, the group's lanes with open questions show **agent waiting**, as during a group wait. If the relay reports that nothing reads its events (`armed: false`) for longer than `LANESIGNAL_PRESENCE_OFFLINE_MINUTES`, the group shows **not responding**. Each new connection starts armed, so the relay reports `armed` again after every connect.
 - It closes with a code saying why: `4401` (key revoked), `4403` (not the group's overseer), `4404` (group removed), `4409` (another key took the group over) are final; `4100` (project access changed) and `1012` (server restarting) mean reconnect.
 
-**Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. For waits that may last hours, the [skill](#3-install-the-skill) runs the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
+**Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. Where the relay can't run, the [skill](#3-install-the-skill) runs the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
 
 If the key is revoked while the agent is waiting, the call fails.

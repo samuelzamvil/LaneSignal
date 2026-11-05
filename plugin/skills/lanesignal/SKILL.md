@@ -58,7 +58,7 @@ The owner answers on the dashboard with Accept, Reject or Other, quoting codes w
 
 ### Usage: acting on answers
 
-1. **Keep a wait running** on your whole group (below), even when nothing is open: the owner's notes arrive through it. Keep working on lanes that aren't blocked meanwhile.
+1. **Stay connected** to your whole group (below), even when nothing is open: the owner's notes arrive that way. Keep working on lanes that aren't blocked meanwhile.
 2. **Acknowledge as soon as an escalation is decided, before acting,** then act on what it returns, publishing the lane's next `status` and `activity` in the same call.
 3. **On Other, acknowledge to act on what they wrote.** Every reply pages the owner: reply only to ask back or object, and send an update while they decide only when something changed.
 4. **Dismiss** moot escalations too, saying why.
@@ -78,7 +78,19 @@ The owner answers on the dashboard with Accept, Reject or Other, quoting codes w
 
 **Keeping your place:** once you've handled a result's items, save its `checkedAt` to `.claude/lanesignal-since` (overwrite it), so a restart starts there; save only after handling. If `counts` show something you can't find (e.g. after a compaction), `get_updates` returns everything in scope. A failed call is safe to repeat.
 
-**Don't hold your session** with a wait: a waiting call keeps your session busy, and the owner can't reach you through Remote Control. If your client cuts calls off early (some stop at 60 seconds), wait less and call again. For long waits in Claude Code, run the HTTP wait as a background shell command; Claude Code tells you when it exits. It runs outside MCP, so it's the one place you need the key in your environment: it needs `LANESIGNAL_URL` (a trailing `/mcp` is fine), `LANESIGNAL_KEY` and `LANESIGNAL_GROUP`, plus `LANESIGNAL_PROJECT` if your key reaches several projects; `LANESIGNAL_SINCE` overrides the saved place:
+**Don't hold your session** with a wait: a waiting call keeps your session busy, and the owner can't reach you through Remote Control. If your client cuts calls off early (some stop at 60 seconds), wait less and call again.
+
+## Staying connected
+
+In Claude Code, a relay holds your group's socket for the whole session and Monitor wakes you for each item, as a wait would return it; the dashboard shows you listening all along. It runs outside MCP, so the key comes from your environment (never put it in a command): `LANESIGNAL_URL` (a trailing `/mcp` is fine), `LANESIGNAL_KEY` and `LANESIGNAL_GROUP`, plus `LANESIGNAL_PROJECT` if your key reaches several projects, and `LANESIGNAL_CF_ACCESS_CLIENT_ID` and `LANESIGNAL_CF_ACCESS_CLIENT_SECRET` behind Cloudflare Access. It needs Node 22.13 or later. Run its commands from the project's root: it keeps its state in `.claude/lanesignal/`.
+
+1. **Get `relay.mjs`:** the one next to this skill when it's installed as a plugin, or else `base=${LANESIGNAL_URL%/}; base=${base%/mcp}; mkdir -p .claude/lanesignal && curl -fsS "$base/api/skill/relay.mjs" -o .claude/lanesignal/relay.mjs`.
+2. **Name your session** once: your Remote Control URL if you know it, or else an id you generate now and keep for the whole session (the same one after a compaction).
+3. **Start it once,** as a background shell command: `node <relay.mjs> serve --session <id> --parent $PPID` (with its path). It reconnects by itself and exits when you do. Starting it again for the same session does nothing.
+4. **Arm Monitor** with `node <relay.mjs> follow --session <id>` and the maximum timeout. Each line is one item (one may come twice): handle and acknowledge it as above. When the monitor expires, arm it again with the same command, without investigating.
+5. **A `relay_stopped` line** means it stopped; act on its `reason`: `taken_over`, another overseer has your group, so stop overseeing it; `unauthorized`, `forbidden` or `not_found`, tell the person; `not_running`, start it again (3), then re-arm (4); `unreachable`, use the background wait below.
+
+The relay keeps its own place. **Use the background wait** instead without Monitor or Node 22.13+, when the relay reports `unreachable` (for example behind an HTTPS proxy, which Node's WebSocket doesn't use), or on a server without the socket. Run it as a background shell command; Claude Code tells you when it exits. `LANESIGNAL_SINCE` overrides the saved place, and `LANESIGNAL_SESSION`, when set, names your session:
 
 ```bash
 : "${LANESIGNAL_URL:?set LANESIGNAL_URL}" "${LANESIGNAL_KEY:?set LANESIGNAL_KEY}" "${LANESIGNAL_GROUP:?set LANESIGNAL_GROUP}"
@@ -86,7 +98,7 @@ base=${LANESIGNAL_URL%/}; base=${base%/mcp}; sincefile=.claude/lanesignal-since
 out=$(mktemp); since="${LANESIGNAL_SINCE:-$(cat "$sincefile" 2>/dev/null)}"; fails=0
 while :; do
   code=$(curl -sS -o "$out" -w '%{http_code}' -H "Authorization: Bearer $LANESIGNAL_KEY" \
-    "$base/api/wait?group=$LANESIGNAL_GROUP&timeout=86400${since:+&since=$since}${LANESIGNAL_PROJECT:+&project=$LANESIGNAL_PROJECT}" 2>/dev/null)
+    "$base/api/wait?group=$LANESIGNAL_GROUP&timeout=86400${since:+&since=$since}${LANESIGNAL_PROJECT:+&project=$LANESIGNAL_PROJECT}${LANESIGNAL_SESSION:+&session=$LANESIGNAL_SESSION}" 2>/dev/null)
   case "$code" in
     200) # A connection cut mid-wait, or a server error, has no checkedAt: keep the old since.
          s=$(grep -o '"checkedAt":"[^"]*"' "$out" | cut -d'"' -f4)
