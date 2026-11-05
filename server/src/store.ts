@@ -4305,6 +4305,14 @@ export class Store {
     };
   }
 
+  /**
+   * Marks lanes as having a waiting agent for a listener other than a wait (the agent socket); returns the release,
+   * after which they keep showing it for the quiet window, as after a wait.
+   */
+  holdLanes(laneIds: Iterable<string>) {
+    return this.holdWaiting(laneIds);
+  }
+
   private emitLaneIfShown(id: string) {
     try {
       const lane = this.getLane(id);

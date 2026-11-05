@@ -103,6 +103,11 @@ export class Presence {
     };
   }
 
+  /** One session's own state (by key and name), or null when it has none (never connected, ended or dropped). */
+  stateOf(groupId: string, key: string, name: string): PresenceState | null {
+    return this.groups.get(groupId)?.sessions.get(sessionKey(key, name))?.state ?? null;
+  }
+
   /** A wait that returned at once: the session counts as connected just now, and its quiet window starts. */
   touch(groupId: string, key: string, name: string, transport: PresenceTransport) {
     this.attach(groupId, key, name, transport)();

@@ -81,6 +81,8 @@ Only read when `LANESIGNAL_OIDC_ISSUER` is set. See [Sign in with Cloudflare](oi
 | `LANESIGNAL_STALE_MINUTES` | `staleMinutes` | `30` | A lane that is `active`, `pending_ci` or `awaiting_agent` and hasn't published for this long is flagged stale. `0` turns this off |
 | `LANESIGNAL_EVENT_RETENTION` | `eventRetention` | `200` | Routine activity lines kept per lane. Status changes and escalation history are always kept |
 | `LANESIGNAL_PRESENCE_QUIET_SECONDS` | | `60` | How long a group's overseer still shows **listening** after its wait ends, and a lane still shows **agent waiting**, so a re-wait doesn't flicker (1–86400). Must be shorter than the offline window, or the server doesn't start |
+| `LANESIGNAL_AGENT_PING_SECONDS` | | `20` | How often the [agent socket](api.md#the-agent-socket) sends a protocol ping and a `ping` frame, and re-checks the key (1–3600) |
+| `LANESIGNAL_AGENT_MISSED_PINGS` | | `2` | Pings in a row an agent socket may leave unanswered before the server drops it (1–100) |
 | `LANESIGNAL_PRESENCE_OFFLINE_MINUTES` | | `10` | How long after its wait ended an overseer's session shows **reconnecting** before it's **disconnected** (1–10080). See [groups](concepts.md#groups-one-overseer-many-lanes) |
 
 ## Notifications

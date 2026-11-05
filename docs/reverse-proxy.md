@@ -26,7 +26,8 @@ LaneSignal speaks plain HTTP on port 8080. Put HTTPS in front of it whenever it'
    - The single-escalation long-poll (`GET /api/escalations/:id?wait=`) sends nothing until it answers.
 
    Turn off response buffering, and set read timeouts above 300s. Most proxies default to 60s, which cuts the single-escalation long-poll off.
-4. **Uploads:** agents upload attachments of up to `LANESIGNAL_ATTACHMENT_MAX_MB` (5 MB by default) with `upload_attachment` on `/mcp` (in base64, a third larger) or to `POST /api/attachments`. nginx refuses bodies over 1 MB unless you raise `client_max_body_size` (e.g. `8m`); Caddy and Traefik have no limit by default.
+4. **WebSockets:** overseers hold a WebSocket to `/api/agent/socket`. The proxy must pass `Upgrade` and `Connection` through, and its read timeout must be longer than `LANESIGNAL_AGENT_PING_SECONDS` (20s; the server pings every interval, so 310s is plenty). Caddy and Traefik do this by themselves; nginx needs the lines below; Nginx Proxy Manager needs *Websockets Support*.
+5. **Uploads:** agents upload attachments of up to `LANESIGNAL_ATTACHMENT_MAX_MB` (5 MB by default) with `upload_attachment` on `/mcp` (in base64, a third larger) or to `POST /api/attachments`. nginx refuses bodies over 1 MB unless you raise `client_max_body_size` (e.g. `8m`); Caddy and Traefik have no limit by default.
 
 ## Caddy
 
@@ -44,6 +45,12 @@ lanesignal.example.com {
 ## nginx
 
 ```nginx
+# At http level: pass a WebSocket upgrade through, and close other connections as usual.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     server_name lanesignal.example.com;
     listen 443 ssl;   # certificates omitted
@@ -54,6 +61,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;              # the agent socket (/api/agent/socket)
+        proxy_set_header Connection $connection_upgrade;
         proxy_buffering off;          # SSE (LaneSignal also sends X-Accel-Buffering: no)
         proxy_read_timeout 310s;      # long-polls wait up to 300s
         client_max_body_size 8m;      # attachments (5 MB by default)
@@ -64,7 +73,7 @@ server {
 ## Nginx Proxy Manager (common with Dockge)
 
 1. Put LaneSignal on NPM's Docker network: in the stack, remove `ports:` and uncomment the `networks` lines, using NPM's network name. Then add a proxy host for your domain that forwards to `lanesignal:8080`. NPM runs in a container, so it can't reach a port bound to the host's `127.0.0.1`. If you forward to `<host>:8080` instead, the port stays open on your LAN; in that case keep `LANESIGNAL_TRUST_PROXY=false`.
-2. Enable *Websockets Support*, which also helps streaming, and request an SSL certificate.
+2. Enable *Websockets Support* (the agent socket needs it; it also helps streaming), and request an SSL certificate.
 3. Under *Advanced*, add:
 
    ```nginx
@@ -91,3 +100,15 @@ curl -N -H "authorization: Bearer <session or key>" https://lanesignal.example.c
 ```
 
 You should see `retry: 3000`, then a `: ping` every 25s. If nothing arrives until the connection closes, the proxy is still buffering.
+
+For the agent socket, a request without a WebSocket handshake gets `426` from LaneSignal; anything else (`404` from the proxy, or a `400`) means the path isn't reaching it:
+
+```bash
+curl -i -H "authorization: Bearer <agent key>" "https://lanesignal.example.com/api/agent/socket?group=main&session=check"
+```
+
+With Node 22 or later, a real handshake should print `hello`, then `items`:
+
+```bash
+LANESIGNAL_KEY=ls_… node -e 'const ws = new WebSocket("wss://lanesignal.example.com/api/agent/socket?group=main&session=check", { headers: { authorization: `Bearer ${process.env.LANESIGNAL_KEY}` } }); ws.onmessage = (m) => console.log(m.data); ws.onclose = (e) => console.log("closed", e.code, e.reason)'
+```

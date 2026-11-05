@@ -167,6 +167,14 @@ Answers can take minutes or a day. An overseer waits on its whole group with one
 - Pass the previous result's `checkedAt` as `since`, so what changed between two calls is still reported.
 - An unknown `group_id` or lane is an error, so a typo doesn't look like "nothing to wait for".
 
+**Staying connected.** An overseer can instead hold a WebSocket to `GET /api/agent/socket` for the whole session: it gets the same digest items as they happen, without a waiting call, and shows the group as **listening** all along. The skill's relay holds it. With answering on the dashboard off, there's no socket. See [the agent socket](api.md#the-agent-socket) for the protocol:
+
+- It takes the agent key from the `Authorization` header only, never from the URL, so the key stays out of proxy logs.
+- Name the session with `session=`, as for waits. Pass the last `checkedAt` it sent as `since` when reconnecting.
+- Each item comes once per connection. Acknowledge as usual with `acknowledge_escalation` and `ack`: the socket doesn't count a group note as handed over, so a later wait still returns it until acknowledged.
+- While it's connected, the group's lanes with open questions show **agent waiting**, as during a group wait. If the relay reports that nothing reads its events (`armed: false`) for longer than `LANESIGNAL_PRESENCE_OFFLINE_MINUTES`, the group shows **not responding**.
+- It closes with a code saying why: `4401` (key revoked), `4403` (not the group's overseer), `4404` (group removed), `4409` (another key took the group over) are final; `4100` (project access changed) and `1012` (server restarting) mean reconnect.
+
 **Long waits.** Most MCP clients give up on a call after a while, and a waiting call keeps a Claude Code session busy, so you can't talk to it through Remote Control. For waits that may last hours, the [skill](#3-install-the-skill) runs the HTTP version, `GET /api/wait`, as a background shell command. It waits up to 24 hours per request, sending a space every 20 seconds so proxies (Cloudflare included) keep the connection open.
 
 If the key is revoked while the agent is waiting, the call fails.

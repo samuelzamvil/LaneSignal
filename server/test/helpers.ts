@@ -17,7 +17,12 @@ export const ALICE = 'alice-token-0123456789';
  */
 export async function startServer(
   env: Record<string, string> = {},
-  opts: { trmnl?: TrmnlOptions; presence?: { quietMs: number; offlineMs: number } } = {},
+  opts: {
+    trmnl?: TrmnlOptions;
+    presence?: { quietMs: number; offlineMs: number };
+    /** The agent socket's heartbeat (default: the config's, 20s and 2 missed pings). */
+    agentSocket?: { pingMs?: number; missedPings?: number };
+  } = {},
 ) {
   const config = loadConfig({
     LANESIGNAL_DATA_DIR: '/nonexistent-unused',
@@ -44,7 +49,9 @@ export async function startServer(
   const skillFile = fileURLToPath(new URL('../../skills/lanesignal/SKILL.md', import.meta.url));
   const trmnl = opts.trmnl ? new TrmnlPusher(store, opts.trmnl).start() : undefined;
   const trmnlDir = fileURLToPath(new URL('../../integrations/trmnl', import.meta.url));
-  const server = createApp({ config, store, accounts, push: { fcm: false, ntfy: false }, skillFile, trmnl, trmnlDir }).listen(0);
+  const app = createApp({ config, store, accounts, push: { fcm: false, ntfy: false }, skillFile, trmnl, trmnlDir, agentSocket: opts.agentSocket });
+  const server = app.listen(0);
+  server.on('upgrade', app.locals.upgrade);
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
@@ -121,8 +128,11 @@ export async function startServer(
     call,
     tool,
     publish,
+    /** Closes agent sockets with 1012, as shutdown does. */
+    closeSockets: () => app.locals.closeSockets() as void,
     close() {
       trmnl?.stop();
+      app.locals.closeSockets();
       server.closeAllConnections();
       server.close();
     },

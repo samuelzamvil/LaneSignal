@@ -15,6 +15,7 @@ import { mcpHandler } from './mcp.ts';
 import { OIDC_CALLBACK_PATH, OIDC_START_PATH, OIDC_STATE_COOKIE, OidcError } from './oidc.ts';
 import { buildPayload, checkWebhookUrl, maskWebhookUrl, pluginZip, type TrmnlPusher } from './trmnl.ts';
 import * as s from './schemas.ts';
+import { createAgentSockets, SOCKET_PATH } from './socket.ts';
 import { datasetCsvAsync, datasetRowsAsync, exportZip } from './export.ts';
 import {
   ConflictError,
@@ -69,6 +70,8 @@ export interface AppOptions {
   trmnlDir?: string;
   /** Fetches Cloudflare Access's signing keys (tests pass a fake). */
   accessFetch?: typeof fetch;
+  /** The agent socket's heartbeat, overriding LANESIGNAL_AGENT_PING_SECONDS / _MISSED_PINGS (tests use short ones). */
+  agentSocket?: { pingMs?: number; missedPings?: number };
 }
 
 /** The OAuth redirect URI the Android app registers with Cloudflare Access (Managed OAuth). */
@@ -113,7 +116,7 @@ const h = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => 
   Promise.resolve(fn(req, res)).catch(next);
 };
 
-export function createApp({ config, store, accounts, push, webDir, skillFile, trmnl, trmnlDir, accessFetch }: AppOptions) {
+export function createApp({ config, store, accounts, push, webDir, skillFile, trmnl, trmnlDir, accessFetch, agentSocket }: AppOptions) {
   const app = express();
   const cf = config.cloudflareAccess;
   const access: AccessAuth | null = cf && {
@@ -402,6 +405,18 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
   };
   const membershipChanges = new EventEmitter<{ changed: [] }>();
   membershipChanges.setMaxListeners(0);
+  // The agent socket: attach `app.locals.upgrade` to the HTTP server's `upgrade` event, and call
+  // `app.locals.closeSockets()` on shutdown (closing the server's connections doesn't reach upgraded sockets).
+  const sockets = createAgentSockets({
+    store,
+    authenticate: auth.authenticate,
+    decisions: config.decisions,
+    pingMs: agentSocket?.pingMs ?? config.agentSocket.pingSeconds * 1000,
+    missedPings: agentSocket?.missedPings ?? config.agentSocket.missedPings,
+    membershipChanges,
+  });
+  app.locals.upgrade = sockets.upgrade;
+  app.locals.closeSockets = sockets.closeAll;
   // On a one-project server a new person joins it, so they don't sign in to an empty dashboard.
   // With several projects, an admin chooses (Settings → Projects).
   // Account admins see every project anyway, so they aren't made members (which would outlast a demotion).
@@ -1494,6 +1509,11 @@ export function createApp({ config, store, accounts, push, webDir, skillFile, tr
       membershipChanges.off('changed', onMembership);
       unwatch();
     });
+  });
+
+  /** The agent socket answers upgrades only (see socket.ts): a plain request is told so. */
+  app.get(SOCKET_PATH, decisionsOnly, (_req, res) => {
+    res.status(426).set('upgrade', 'websocket').json({ error: 'This is a WebSocket endpoint: connect with Upgrade: websocket' });
   });
 
   // ---- MCP ----

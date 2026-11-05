@@ -89,6 +89,7 @@ The server accepts the upgrade from any agent key, then closes with an applicati
 
 | Code | Meaning | Relay |
 |---|---|---|
+| 4400 | The query is malformed (a client bug) | Writes a final line, exits |
 | 4401 | Not authorized, or the credential was revoked | Writes a final line, exits |
 | 4403 | Not the group's overseer, or the wrong role | Writes a final line, exits |
 | 4404 | Unknown or removed group | Writes a final line, exits |
