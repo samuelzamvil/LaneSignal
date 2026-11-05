@@ -6,6 +6,7 @@ import { LinkedText } from './linked-text.tsx';
 import { absolute, ago } from './format.ts';
 import { keyOf } from './merge.ts';
 import { openItem, stepTo } from './nav.ts';
+import { overseerListening } from './presence.ts';
 import { toast } from './toast.tsx';
 import { TicketChip, useSeparateTicket, useTicketLabel } from './ticket-views.tsx';
 import { EpicChip, EpicsContext, hasLane, laneKeyOf } from './epic-views.tsx';
@@ -21,9 +22,31 @@ export function isCodeOf(e: Escalation, code: string) {
  * Whether the answer will reach an agent now. Open: is an agent waiting on it?
  * Decided: has the agent picked it up, or is it overdue (older than the stale threshold)?
  */
-function AgentPresence({ esc, lane, now, staleMinutes }: { esc: Escalation; lane: Lane | undefined; now: number; staleMinutes: number }) {
+function AgentPresence({
+  esc,
+  lane,
+  group,
+  now,
+  staleMinutes,
+}: {
+  esc: Escalation;
+  lane: Lane | undefined;
+  group: Group | undefined;
+  now: number;
+  staleMinutes: number;
+}) {
+  // An epic's question has no lane the app knows: whether its group's overseer is listening says the same.
+  const viaGroup = hasLane(esc.laneId) ? undefined : overseerListening(group);
+  const waiting = viaGroup ?? !!lane?.agentWaiting;
   if (esc.state === 'open') {
-    return lane?.agentWaiting ? (
+    if (viaGroup !== undefined) {
+      return viaGroup ? (
+        <p className="agent-presence on">● The overseer is listening for this answer.</p>
+      ) : (
+        <p className="agent-presence">The overseer isn't connected right now; it gets your answer when it reconnects.</p>
+      );
+    }
+    return waiting ? (
       <p className="agent-presence on">● An agent is waiting for this answer.</p>
     ) : (
       <p className="agent-presence">No agent is waiting right now; it gets your answer when it next checks in.</p>
@@ -34,7 +57,7 @@ function AgentPresence({ esc, lane, now, staleMinutes }: { esc: Escalation; lane
   return late ? (
     <p className="agent-presence late">
       ⚠ Decided {ago(esc.decidedAt!, now)}; the agent hasn't picked it up yet.
-      {lane?.agentWaiting ? '' : ' No agent is waiting on this lane.'}
+      {waiting ? '' : viaGroup !== undefined ? " The overseer isn't connected." : ' No agent is waiting on this lane.'}
     </p>
   ) : (
     <p className="hint">Waiting for the agent to acknowledge.</p>
@@ -466,7 +489,7 @@ export function EscalationCard({
           <p className="decision">
             <strong>{esc.decision}</strong> — {esc.decidedBy}, {esc.decidedAt && ago(esc.decidedAt, now)}
           </p>
-          <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
+          <AgentPresence esc={esc} lane={lane} group={group} now={now} staleMinutes={staleMinutes} />
         </>
       ) : (
         <>
@@ -832,7 +855,7 @@ export function EscalationDetail({
                 {esc.turn === 'agent' ? (
                   <p className="hint">The agent has your message. It replies here, or acts on it and closes this.</p>
                 ) : (
-                  <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
+                  <AgentPresence esc={esc} lane={lane} group={group} now={now} staleMinutes={staleMinutes} />
                 )}
                 <DecisionForm key={esc.id} esc={esc} client={client} />
               </section>
@@ -870,7 +893,7 @@ export function EscalationDetail({
                 )}
                 {esc.state === 'decided' && (
                   <>
-                    <AgentPresence esc={esc} lane={lane} now={now} staleMinutes={staleMinutes} />
+                    <AgentPresence esc={esc} lane={lane} group={group} now={now} staleMinutes={staleMinutes} />
                     <div className="actions">
                       {decisions && (
                         <button className="ghost" onClick={() => setChanging(true)}>

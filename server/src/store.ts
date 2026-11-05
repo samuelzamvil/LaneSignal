@@ -16,6 +16,7 @@ import {
   type Message,
   type Notice,
   type Position,
+  type PresenceChange,
   type Project,
   type ProjectRole,
   type Product,
@@ -36,6 +37,7 @@ import {
   type ReopenRequest,
   type TicketState,
 } from './types.ts';
+import { Presence } from './presence.ts';
 import { ticketRefs, type TicketRefs } from './tickets.ts';
 
 export class NotFoundError extends Error {}
@@ -133,8 +135,13 @@ export const projectOf = (qualified: string) => {
   return qualified.slice(0, i);
 };
 
-/** How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker. */
-const WAIT_GRACE_MS = 30_000;
+/**
+ * How long a lane keeps showing "agent waiting" after a wait ends, so back-to-back waits don't flicker: the presence
+ * quiet window (LANESIGNAL_PRESENCE_QUIET_SECONDS).
+ */
+const WAIT_GRACE_MS = 60_000;
+/** How long an overseer's session stays reconnecting before it's disconnected (LANESIGNAL_PRESENCE_OFFLINE_MINUTES). */
+const PRESENCE_OFFLINE_MS = 10 * 60_000;
 
 /**
  * The same question in other spacing, case or closing punctuation ("Ship it?" and "ship  it"). Only
@@ -347,8 +354,12 @@ export interface StoreOptions {
   ticketRefs?: TicketRefs;
   eventRetention?: number;
   now?: () => Date;
-  /** How long a lane keeps showing "agent waiting" after a wait ends (default 30s). */
+  /** How long a lane keeps showing "agent waiting" after a wait ends, and an overseer's session stays listening (default 60s). */
   waitGraceMs?: number;
+  /** How long after its last connection ended an overseer's session is disconnected (default 10 minutes). */
+  presenceOfflineMs?: number;
+  /** Answering in LaneSignal (default on): off, groups carry no presence. */
+  decisions?: boolean;
   /** Most files on one escalation (default 5). */
   attachmentsPerItem?: number;
 }
@@ -404,6 +415,9 @@ export class Store {
   private graceTimers = new Set<ReturnType<typeof setTimeout>>();
   private waitGraceMs: number;
   private attachmentsPerItem: number;
+  /** Which of each group's overseer sessions are connected. */
+  readonly presence: Presence;
+  private decisions: boolean;
 
   constructor(opts: StoreOptions) {
     this.db = new DatabaseSync(opts.path);
@@ -417,6 +431,13 @@ export class Store {
     };
     this.waitGraceMs = opts.waitGraceMs ?? WAIT_GRACE_MS;
     this.attachmentsPerItem = opts.attachmentsPerItem ?? 5;
+    this.decisions = opts.decisions ?? true;
+    this.presence = new Presence({
+      quietMs: this.waitGraceMs,
+      offlineMs: opts.presenceOfflineMs ?? PRESENCE_OFFLINE_MS,
+      now: () => this.now(),
+      onChange: (groupId, change) => this.emitPresence(groupId, change),
+    });
     this.events.setMaxListeners(0);
     this.migrate();
     // Each group's latest messages, read with every group: added after v25, so made here for databases already there.
@@ -457,6 +478,7 @@ export class Store {
 
   close() {
     for (const t of this.graceTimers) clearTimeout(t);
+    this.presence.close();
     this.db.close();
   }
 
@@ -1423,7 +1445,27 @@ export class Store {
       overseerReadId: Number(r.overseer_read_id ?? 0),
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
+      ...(this.decisions ? { presence: this.presence.of(r.id as string) } : {}),
     };
+  }
+
+  /**
+   * The group's overseer key, as stored ("user:<account>:<key name>" or "token:<name>"): null when it has none
+   * (made by publishing a lane, or from before overseers), undefined when there's no such group.
+   */
+  groupOwner(id: string): string | null | undefined {
+    const r = this.db.prepare('SELECT owner FROM groups WHERE id = ? AND archived_at IS NULL').get(id) as Row | undefined;
+    return r ? ((r.owner as string | null) ?? null) : undefined;
+  }
+
+  /** A group's presence changed: sent from timers too, so it tolerates a closing database. */
+  private emitPresence(groupId: string, change: PresenceChange | null) {
+    try {
+      const group = this.getGroup(groupId);
+      if (group) this.emit({ type: 'group', group, ...(change ? { presence: change } : {}) });
+    } catch {
+      // The database is closing.
+    }
   }
 
   /** Who has overseen the group, latest first: each change of overseer, when it happened, and who it replaced. */
@@ -1531,7 +1573,8 @@ export class Store {
   /** `owner`: the registering key ("user:<account>:<key name>"), recorded as the group's overseer. */
   upsertGroup(id: string, patch: GroupPatch, actor: string | null, owner?: string): Group {
     const project = projectOf(id);
-    const { group, restored } = this.tx(() => {
+    const ownerBefore = owner ? this.groupOwner(id) : undefined;
+    const { restored } = this.tx(() => {
       // An overseer says what it works on when it registers. After that the choice is a person's,
       // and naming others changes nothing, so it can't cost the rest of this update.
       const takes = !!patch.products && !this.groupProductIds(id, project).length;
@@ -1542,8 +1585,11 @@ export class Store {
         this.writeGroupProducts(id, patch.products!);
         this.db.prepare('UPDATE groups SET updated_at = ?, agent = COALESCE(?, agent) WHERE id = ?').run(at, actor, id);
       }
-      return { group: this.getGroup(id)!, restored };
+      return { restored };
     });
+    // A takeover ends the previous overseer's sessions, once the new owner is stored.
+    if (owner && ownerBefore !== owner) this.presence.endOwner(id, owner);
+    const group = this.getGroup(id)!;
     this.emit({ type: 'group', group });
     this.emitGroupEpics(id);
     if (restored) this.emitGroupLanes(id);
@@ -1588,6 +1634,7 @@ export class Store {
     });
     for (const laneId of removed) touched.lanes.delete(laneId);
     this.emitTouched(touched);
+    this.presence.remove(id);
     this.emit({ type: 'group_deleted', id, project: projectOf(id) });
     for (const laneId of removed) this.emit({ type: 'lane_deleted', id: laneId, project: projectOf(laneId) });
   }

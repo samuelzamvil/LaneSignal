@@ -622,6 +622,20 @@ export function requireWriter(p: Principal, what: string) {
 export const ackerOf = (p: Principal) => ({ key: ownerOf(p), agent: p.role === 'agent' });
 
 /**
+ * A wait on a group by its overseer holds the overseer's session (`session`, or `wait:<key name>`) connected:
+ * call it before checking whether the result is ready, and the release when the wait ends (at once for a
+ * wait that returns at once, which still counts as the session checking in). Only the group's overseer key
+ * counts, or any agent key while the group has none (who may acknowledge its notes); anyone else holds nothing.
+ */
+export function presenceForWait(store: Store, p: Principal, groupId: string | undefined, session: string | undefined): () => void {
+  if (!groupId || !isWriter(p)) return () => {};
+  const owner = store.groupOwner(groupId);
+  const key = ownerOf(p);
+  if (owner === undefined || (owner === null ? p.role !== 'agent' : owner !== key)) return () => {};
+  return store.presence.attach(groupId, key, session ?? `wait:${p.name}`, 'wait');
+}
+
+/**
  * Records that the caller (its key) was handed the group notes in this result, so
  * the next wait treats them as had already once its `since` is past them. Call it with what was returned.
  */

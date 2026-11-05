@@ -16,6 +16,14 @@ The overseer registers its group with `update_group` before publishing lanes in 
 
 **Each group has one conversation.** It holds the messages written to the group, every message on its escalations (each thread stays in the group its question was raised in), and the lane and epic notes written before those moved here, in one place, oldest to newest, with each escalation where its thread starts; a message stays with the group it was written in. Messages written to the group reach its overseer through its group wait (`wait_for_decisions` with `group_id`) and keep coming back until the overseer acknowledges them, so a restart loses nothing. A removed group's conversation stays readable but takes no new messages until the group is registered again.
 
+**Whether the overseer is listening.** With answering in LaneSignal on, each group's header shows whether its overseer is connected right now, so you know whether a message or an answer reaches it at once:
+
+- **● listening**: one of its sessions is waiting on the group, or stopped less than `LANESIGNAL_PRESENCE_QUIET_SECONDS` ago (a minute by default), so an ordinary re-wait doesn't flicker.
+- **◌ reconnecting**: its last wait ended longer ago than that, but less than `LANESIGNAL_PRESENCE_OFFLINE_MINUTES` ago (10 by default).
+- **┆ disconnected**: none of its sessions has waited on the group since then, or since the server started.
+
+Only the group's overseer counts: the key that registered it last (any agent key, for a group nobody has registered). Workers, observer keys and people waiting on the group don't. An overseer names its session when it waits (`session`), so several sessions on one key show separately; hover over the chip to see them. When another overseer takes the group over, the previous one's sessions end at once. The group's conversation says under its box whether the overseer gets your message now, and an epic's question says whether its group's overseer is listening. Presence is kept in memory: after a restart every group shows disconnected until its overseer waits again.
+
 ## Lanes
 
 A lane is a slot work goes through, one ticket at a time, with a stable id the agent picks (`slot-1`, or a work stream such as `e2e-stabilize`). It carries:
@@ -203,7 +211,7 @@ open ──(human decides)──► decided ──(agent acknowledges)──► 
 - Only the agent that raised an escalation (any key of the same account with the same key name) acknowledges or dismisses it, so an overseer can't close another's by reusing a code. A person can on its behalf, and so can the overseer of the group its ticket (or epic) is in now (the key that last published it with `update_group`), so a ticket handed over goes with its questions.
 - You can still answer in the agent's own session (e.g. Remote Control), quoting the code ("A12: drop it"). The agent then dismisses the escalation with a justification ("Sam: drop it, in session"), which is the record on the dashboard and in exports. **Dismiss** on the dashboard closes a stale one whose session ended; the lane then shows as waiting on its agent (`awaiting_agent`) until the agent publishes again.
 - When a lane's last open blocking escalation is decided, the lane moves to `awaiting_agent`, which stops the blocked timer while the agent picks up the answer.
-- While an agent waits for answers on a lane, the lane shows **agent waiting**. Waiting lanes aren't flagged stale. The flag clears about 30 seconds after the agent stops waiting.
+- While an agent waits for answers on a lane, the lane shows **agent waiting**. Waiting lanes aren't flagged stale. The flag clears `LANESIGNAL_PRESENCE_QUIET_SECONDS` (a minute by default) after the agent stops waiting.
 - Raising the same question again on the same ticket or epic while it's still open (ignoring spacing, case and closing punctuation) returns the existing escalation, so agent retries don't create duplicates. An FYI raised again as blocking becomes blocking under its own code; asked from a lane, an FYI on the group's epic (raised on the epic, or from that lane) moves to that lane's ticket and blocks it. An agent can also make an FYI blocking by its code (`upgrade`), whatever the words.
 - A lane stays **blocked** while any of its ticket's blocking escalations is open, whatever status its agent publishes. A parked ticket's questions don't block the lane that parked it, and an epic's questions block no lane.
 

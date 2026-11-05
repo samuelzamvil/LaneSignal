@@ -287,6 +287,9 @@ export const waitScope = z
 const csv = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v);
 
 /** GET /api/wait query: ?group=&lane=a,b&ids=1,2&timeout=seconds&since=iso */
+/** The name an overseer gives its agent session, such as its Remote Control link. */
+export const waitSession = z.string().trim().min(1).max(512);
+
 export const waitQuery = z
   .object({
     group: groupId.optional(),
@@ -298,6 +301,8 @@ export const waitQuery = z
     format: z.enum(['digest', 'full']).optional(),
     /** With `group`: the last group message handled; it and those before it are acknowledged first. */
     ack: z.coerce.number().int().min(0).optional(),
+    /** With `group`, from its overseer: the agent session this wait keeps connected (see Group.presence). */
+    session: waitSession.optional(),
   })
   .strict();
 

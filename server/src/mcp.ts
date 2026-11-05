@@ -24,6 +24,7 @@ import {
   isWriter,
   requireWriter,
   markNotesDelivered,
+  presenceForWait,
   upgradeFor,
   pub,
   q,
@@ -551,11 +552,17 @@ function buildServer(
           '0 for a quick check). `format: "full"`: the older shape.',
         inputSchema: {
           ...waitInput,
+          session: s.waitSession
+            .optional()
+            .describe(
+              'With your group: a name for this agent session (your Remote Control link, or an id you keep for the session). ' +
+                'It shows people that you\'re listening. Without it, the session is `wait:<your key name>`.',
+            ),
           wait_seconds: z.number().int().min(0).max(3600).optional(),
           format: z.enum(['digest', 'full']).optional().describe('Default `digest`. `full` is kept for older agents.'),
         },
       },
-      async ({ group_id, group, lane_ids, ids, wait_seconds, since, ack, format, project }, extra) => {
+      async ({ group_id, group, lane_ids, ids, wait_seconds, since, ack, format, session, project }, extra) => {
         try {
           const scope = {
             ...waitScopeFor(a, s.waitScope.parse({ groupId: group_id ?? group, laneIds: lane_ids, ids, since }), project),
@@ -565,9 +572,11 @@ function buildServer(
           if (ack !== undefined) requireWriter(who, 'acknowledge group notes');
           const acked = ack !== undefined && scope.groupId ? store.ackGroupMessages(scope.groupId, ack, ackerOf(who)) : undefined;
           const timeout = wait_seconds ?? 300;
+          // The overseer's session counts as connected while this waits, and checks in even when it returns at once.
+          const release = presenceForWait(store, who, scope.groupId, session);
           const { value, revoked } = await cancellable(extra, watchRevocation, (signal) =>
             store.waitForDecisions(scope, timeout * 1000, signal),
-          );
+          ).finally(release);
           if (revoked || (timeout && !(await stillValid()))) return fail(new Error('Credential revoked'));
           const visible = timeout ? accessFor(store, a.principal).projects : a.projects;
           // Only what reaches the caller counts as handed over: not a call it cancelled.

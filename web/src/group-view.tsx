@@ -2,7 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Client, Escalation, Group, GroupFeedItem } from './api.ts';
 import { AttachmentList } from './attachments.tsx';
 import { RichText } from './components.tsx';
+import { PresenceSessions } from './epic-views.tsx';
 import { absolute, ago, seenByOverseer } from './format.ts';
+import { deliveryLine } from './presence.ts';
 import { latestEscalationAt, markMessagesSeen } from './seen.ts';
 
 /** A group's conversation: its sheet's route. */
@@ -238,6 +240,7 @@ export function GroupView({
         {canWrite && group && (
           <GroupComposer
             name={name}
+            group={group}
             onSend={async (body, clientKey) => {
               await client.groupMessage(project, groupId, body, clientKey);
               atBottom.current = true;
@@ -353,7 +356,16 @@ function EscalationThread({
 }
 
 /** Writes to the group's overseer. Each message gets its own key, so a retry after a dropped connection never posts twice. */
-function GroupComposer({ name, onSend }: { name: string; onSend: (body: string, clientKey: string) => Promise<void> }) {
+function GroupComposer({
+  name,
+  group,
+  onSend,
+}: {
+  name: string;
+  group: Group;
+  onSend: (body: string, clientKey: string) => Promise<void>;
+}) {
+  const delivery = deliveryLine(group.presence);
   const [body, setBody] = useState('');
   const [key, setKey] = useState(newKey);
   const [busy, setBusy] = useState(false);
@@ -409,6 +421,11 @@ function GroupComposer({ name, onSend }: { name: string; onSend: (body: string, 
           {busy ? 'Sending…' : 'Send'}
         </button>
       </div>
+      {delivery && (
+        <p className={`presence-line presence-${group.presence!.state}`}>
+          {delivery} <PresenceSessions group={group} />
+        </p>
+      )}
     </form>
   );
 }

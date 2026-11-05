@@ -49,6 +49,41 @@ export interface Group {
   overseerReadId: number;
   createdAt: string;
   updatedAt: string;
+  /** Whether its overseer is connected right now. Absent when answering in LaneSignal is off. */
+  presence?: GroupPresence;
+}
+
+/** Best first: a group takes the state of its best session. */
+export type PresenceState = 'listening' | 'not_responding' | 'reconnecting' | 'disconnected';
+/** How a session is connected: the agent socket, or a wait (`wait_for_decisions`, `GET /api/wait`). */
+export type PresenceTransport = 'socket' | 'wait';
+
+export interface PresenceSession {
+  /** The name the agent gave its session (`session`), or `wait:<key name>` without one. */
+  id: string;
+  transport: PresenceTransport;
+  state: Exclude<PresenceState, 'disconnected'>;
+  /** When it took this state. */
+  since: string;
+}
+
+export interface GroupPresence {
+  state: PresenceState;
+  /** When the group took this state; null while disconnected when no session has connected since the server started. */
+  since: string | null;
+  sessions: PresenceSession[];
+}
+
+/**
+ * Why a group's presence changed: a session `connected`, its connection `ended`, the `quiet` window passed,
+ * it went `offline`, another key `taken_over` the group, or its events went unread (`not_reading`) or are read again (`reading`).
+ */
+export type PresenceReason = 'connected' | 'ended' | 'quiet' | 'offline' | 'taken_over' | 'not_reading' | 'reading';
+
+export interface PresenceChange {
+  from: PresenceState;
+  to: PresenceState;
+  reason: PresenceReason;
 }
 
 export interface Lane {
@@ -554,7 +589,8 @@ export interface Notice {
 }
 
 export type StreamEvent =
-  | { type: 'group'; group: Group }
+  /** `presence`: set when this event is the group's presence transition. */
+  | { type: 'group'; group: Group; presence?: PresenceChange }
   | { type: 'group_deleted'; id: string; project: string }
   /** `statusChanged` is set when this event is the lane's status transition (drives notifications). */
   /** `completed`: the lane was published completed and let its ticket go (it shows idle now). */
